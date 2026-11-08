@@ -287,6 +287,57 @@ def test_memorize_tool_writes_with_session_provenance(tmp_path):
     assert tool_records[0]["name"] == "memorize"
 
 
+@pytest.mark.parametrize("case", ["fragments", "anchored", "duplicate", "barrier"])
+def test_adjacent_memorize_calls_share_extraction_without_losing_provenance(tmp_path, case):
+    import json
+
+    facts = ["我喜欢薄荷茶", "我养了一盆罗勒"]
+    original = "。".join(facts)
+    arguments = {
+        "fragments": facts,
+        "anchored": [original, facts[1]],
+        "duplicate": [original, original],
+        "barrier": facts,
+    }[case]
+    calls = [ToolCall(f"write-{index}", "memorize", {"text": text})
+             for index, text in enumerate(arguments)]
+    if case == "barrier":
+        calls.insert(1, ToolCall("read", "recall", {"query": "薄荷茶"}))
+
+    class Extractor:
+        def __init__(self):
+            self.inputs = []
+
+        def extract(self, text, context=""):
+            self.inputs.append((text, context))
+            return ExtractionResult(memories=[
+                Candidate(text=fact, topic="preferences", confidence=0.99)
+                for fact in facts if fact in text
+            ])
+
+    model = FakeChatModel([AssistantTurn(tool_calls=calls), AssistantTurn(content="记下了。")])
+    runtime, service = build_runtime(tmp_path, model)
+    runtime.config.auto_recall = 0
+    service.extractor = extractor = Extractor()
+    reply = runtime.ask(original)
+
+    batched = case in {"fragments", "duplicate"}
+    assert reply.steps == 2
+    assert len(extractor.inputs) == (1 if batched else 2)
+    assert ["原始消息时间锚点" in context for _, context in extractor.inputs] == {
+        "fragments": [False], "anchored": [True, False], "duplicate": [True], "barrier": [False, False],
+    }[case]
+    entries = service.store.entries()
+    assert {entry.text for entry in entries} == set(facts)
+    assert {entry.metadata["session"] for entry in entries} == {runtime.current.id}
+    assert {entry.metadata["message"] for entry in entries} == {runtime.current.last_user_message_id()}
+    records = [record for record in runtime.current.records if record.get("type") == "tool"]
+    assert [record["tool_call_id"] for record in records] == [call.id for call in calls]
+    if batched:
+        assert len(json.loads(records[0]["content"])["admitted"]) == 2
+        assert json.loads(records[-1]["content"]) == {"batched_with": "write-0", "ok": True}
+
+
 def test_recall_tool_result_reaches_model(tmp_path):
     model = FakeChatModel(
         [

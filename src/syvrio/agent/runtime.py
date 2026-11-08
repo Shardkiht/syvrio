@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 from collections.abc import Callable, Iterator
 from copy import copy
@@ -37,19 +38,59 @@ from .tools import (
 
 
 DISTILL_MAX_CHARS = 12000
+MEMORIZE_BATCH_LIMIT = 8
+
+
+def _merged_memorize_text(calls: list[ToolCall], user_text: str) -> str | None:
+    texts = [str(call.arguments.get("text", "")).strip() for call in calls]
+    if len(texts) < 2 or not all(texts):
+        return None
+    distinct = list(dict.fromkeys(texts))
+    if len(distinct) == 1:
+        return distinct[0]
+    # A whole-message write carries a timestamp anchor. Never share it with fragments.
+    if user_text in distinct:
+        return None
+    merged = "\n\n".join(f"独立片段 {index}：\n{text}" for index, text in enumerate(distinct, 1))
+    return merged if merged != user_text else None
 
 
 def _tool_results(
     tools: ToolRegistry, calls: list[ToolCall], on_progress: Callable[[str], None] | None,
-    cancel: Event | None,
+    cancel: Event | None, *, user_text: str | None = None,
 ) -> Iterator[tuple[ToolCall, ToolOutcome]]:
     def ready(call: ToolCall) -> bool:
         if on_progress is not None and not (cancel and cancel.is_set()):
             on_progress(f"Calling tool: {call.name}")
         return not (cancel and cancel.is_set())
 
-    for parallel, group in groupby(calls, key=lambda call: call.name in PARALLEL_TOOLS):
-        if not parallel:
+    def kind(call: ToolCall) -> str:
+        if call.name in PARALLEL_TOOLS:
+            return "network"
+        return "memorize" if call.name == "memorize" and user_text is not None else "serial"
+
+    for batch_kind, group in groupby(calls, key=kind):
+        if batch_kind == "memorize":
+            while batch := list(islice(group, MEMORIZE_BATCH_LIMIT)):
+                merged = _merged_memorize_text(batch, user_text)
+                if merged is None:
+                    for call in batch:
+                        yield call, tools.execute(call.name, call.arguments) if ready(call) else cancelled_tool()
+                    continue
+                first, *rest = batch
+                if not ready(first):
+                    for call in batch:
+                        yield call, cancelled_tool()
+                    continue
+                outcome = tools.execute(first.name, {"text": merged})
+                yield first, replace(outcome, display=f"{outcome.display} ({len(batch)} calls batched)")
+                for call in rest:
+                    payload = {"batched_with": first.id, "ok": outcome.ok}
+                    yield call, ToolOutcome(
+                        outcome.ok, json.dumps(payload), "See the shared memory write result", data=payload
+                    )
+            continue
+        if batch_kind == "serial":
             for call in group:
                 yield call, tools.execute(call.name, call.arguments) if ready(call) else cancelled_tool()
             continue
@@ -326,7 +367,8 @@ class AgentRuntime:
                 break
             started = time.monotonic()
             latency.event("tools.started", tool_count=len(turn.tool_calls))
-            for index, (call, outcome) in enumerate(_tool_results(tools, turn.tool_calls, on_progress, cancel), 1):
+            results = _tool_results(tools, turn.tool_calls, on_progress, cancel, user_text=text)
+            for index, (call, outcome) in enumerate(results, 1):
                 latency.event("tool.finished", tool_index=index, ok=outcome.ok,
                               elapsed_ms=outcome.duration_ms)
                 content = truncate_to_tokens(outcome.content, 2000)

@@ -402,7 +402,7 @@ def build_tools(
     registry.register(
         ToolSpec(
             name="memorize",
-            description="把用户明确陈述的个人事实、偏好或计划静默写入长期记忆。用户说“记住”时优先调用。",
+            description="把用户明确陈述的个人事实、偏好或计划写入长期记忆。用户说“记住”时优先调用。同一条用户消息有多条待记事实时，用一次调用提供相关原文；批处理的后续结果可能引用同批第一条结果。",
             parameters={
                 "type": "object",
                 "properties": {
