@@ -234,6 +234,36 @@ def test_sensitive_file_blocks_commit(tmp_path):
     assert before == after
 
 
+@pytest.mark.parametrize("entrypoint", ["sync", "startup"])
+def test_sensitive_recheck_restores_partial_staging(tmp_path, monkeypatch, entrypoint):
+    service = make_service(tmp_path)
+    vault = service.config.vault
+    path = vault / "sample.txt"
+    path.write_text("staged version", encoding="utf-8")
+    _git("add", "--", path.name, cwd=vault)
+    path.write_text("working tree version", encoding="utf-8")
+    before = _git("diff", "--cached", "--binary", cwd=vault).stdout
+    stage = service.repo.stage_all
+
+    def add_sensitive_file_then_stage():
+        (vault / ".env").write_text("API_KEY=synthetic\n", encoding="utf-8")
+        stage()
+
+    monkeypatch.setattr(service.repo, "stage_all", add_sensitive_file_then_stage)
+    if entrypoint == "sync":
+        result = service.git_sync.sync("manual")
+        assert result.error_kind == "sensitive"
+        assert not result.committed and not result.pushed
+    else:
+        with pytest.raises(GitError, match=r"\.env") as raised:
+            service.commit_pending_changes()
+        assert raised.value.kind == "sensitive"
+    assert service.repo.staged_paths() == [path.name]
+    assert _git("diff", "--cached", "--binary", cwd=vault).stdout == before
+    assert path.read_text(encoding="utf-8") == "working tree version"
+    assert (vault / ".env").exists()
+
+
 # ---------- Git 工作树根目录约束 ----------
 
 

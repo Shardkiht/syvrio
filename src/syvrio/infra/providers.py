@@ -264,6 +264,13 @@ tool_timeout = {config.chat.tool_timeout}
 auto_recall = {config.chat.auto_recall}
 recall_rewrite = {str(config.chat.recall_rewrite).lower()}
 recall_context_turns = {config.chat.recall_context_turns}
+auto_reflect = {str(config.chat.auto_reflect).lower()}
+reflect_idle_seconds = {config.chat.reflect_idle_seconds}
+reflect_interval_seconds = {config.chat.reflect_interval_seconds}
+profile_auto_interval_hours = {config.chat.profile_auto_interval_hours}
+profile_min_cooldown_hours = {config.chat.profile_min_cooldown_hours}
+profile_min_changes = {config.chat.profile_min_changes}
+dream_auto_interval_hours = {config.chat.dream_auto_interval_hours}
 extract_on_exit = {str(config.chat.extract_on_exit).lower()}
 
 [retrieval]

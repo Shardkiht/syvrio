@@ -24,7 +24,7 @@ _EVENTS = frozenset({
     "queue.failed", "usage.failed", "reflection.failed", "reading.changed",
     "generation.started", "generation.finished", "turn.unbound", "tui.finalize_failed",
     "session.scan_failed", "session.delete_failed",
-    "command.failed", "cursor.changed", "undo.failed",
+    "command.failed", "cursor.changed", "undo.failed", "retrieval.vector_dimension_failed",
     "git_sync.failed", "git_sync.scheduler_failed", "git_sync.status_failed",
     "reflection.schedule_failed", "reflection.state_failed", "reflection.summary_failed",
     "latency.turn.started", "latency.turn.finished",
@@ -109,22 +109,23 @@ def stop_diagnostics() -> None:
         _listener = _handler = _queue = _path = None
 
 
-def _safe_traceback(error: BaseException) -> str:
+def _safe_traceback(error: BaseException | str) -> str:
     """Retain chained tracebacks and reasons, without locals or credentials."""
-    detail = "".join(traceback.TracebackException.from_exception(error, capture_locals=False).format())
+    detail = (error if isinstance(error, str) else
+              "".join(traceback.TracebackException.from_exception(error, capture_locals=False).format()))
     for name, value in list(os.environ.items()):
         if re.search(r"(?:KEY|TOKEN|SECRET|PASSWORD)$", name, re.I) and len(value) >= 4:
             detail = detail.replace(value, "[REDACTED]")
     detail = re.sub(r"(?i)(bearer\s+)[^\s\"',}]+", r"\1[REDACTED]", detail)
     detail = re.sub(
-        r"(?i)((?:api[_ -]?key|access[_ -]?token|secret|password|passwd|密码|口令|验证码|私钥)"
+        r"(?i)((?:api[_ -]?key|access[_ -]?token|secret|password|passwd|密码|口令|验证码|私钥|密钥|秘钥|令牌|凭据)"
         r"[\"']?\s*(?:是|为|[:：=])\s*[\"']?)[^\s\"',;}]+",
         r"\1[REDACTED]", detail)
     detail = re.sub(r"\bsk-[A-Za-z0-9_-]{8,}", "[REDACTED]", detail)
     return detail[:32768]
 
 
-def record_event(event: str, error: BaseException | None = None, **state: bool | int | float) -> None:
+def record_event(event: str, error: BaseException | str | None = None, **state: bool | int | float) -> None:
     """Write allowlisted events and state. Latency entries never include error text."""
     if event not in _EVENTS:
         return

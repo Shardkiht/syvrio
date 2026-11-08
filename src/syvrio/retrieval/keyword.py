@@ -55,7 +55,7 @@ def _query_field_labels(query: str, fields: dict[str, list[int]]) -> set[str]:
         starts = {start for _, start, _ in tokens}
         ends = {end for _, _, end in tokens}
     else:  # pragma: no cover - jieba is a required dependency
-        tokens = tuple(re.finditer(r"[a-z0-9_]+|[^a-z0-9_]", query))
+        tokens = tuple(re.finditer(r"[^\W_]+|[^\w\s]", query))
         starts = {token.start() for token in tokens}
         ends = {token.end() for token in tokens}
     spans = []
@@ -72,6 +72,35 @@ def _query_field_labels(query: str, fields: dict[str, list[int]]) -> set[str]:
             selected.add(label)
             covered.update(positions)
     return selected
+
+
+def _lookup_fields(query: str, labels: set[str], fields: dict[str, list[int]],
+                   entries: list[Entry]) -> dict[int, str]:
+    """Give exact priority to field lookups, with evidence for contextual qualifiers."""
+    query = _field_key(query).rstrip("?.!。！？")
+    if not labels:
+        return {}
+    remaining = re.sub("|".join(map(re.escape, sorted(labels, key=len, reverse=True))), "", query)
+    if re.fullmatch(r"(?:\s|和|与|及|、|,|，|\band\b)*", remaining):
+        return {index: label for label in labels for index in fields[label]}
+
+    first, *rest = query.split()
+    personal_question = first.startswith("我") and (
+        "什么" in first or re.fullmatch(r"我多大(?:了)?", first) is not None
+    )
+    result = {}
+    for label in labels:
+        lookup = rf"(?:请问\s*)?(?:我的?|我用的|我指的是|用户|本人|find my |what is my )?{re.escape(label)}"
+        lookup += r"(?:是什么|是啥|是多少|是哪个|是哪里|叫什么|有多少)?"
+        if re.fullmatch(lookup, query) or re.fullmatch(lookup, first) or (personal_question and label in rest):
+            result.update((index, label) for index in fields[label])
+            continue
+        suffix = f"的{label}"
+        if query.endswith(suffix):
+            qualifier = query[:-len(suffix)]
+            result.update((index, label) for index in fields[label]
+                          if qualifier and qualifier in _field_key(entries[index].index_text))
+    return result
 
 
 class KeywordRetriever:
@@ -120,7 +149,7 @@ class KeywordRetriever:
 
         scores = bm25.get_scores(query_tokens)
         labels = _query_field_labels(query, self._fields) if self._fields else set()
-        fields = {index: label for label in labels for index in self._fields[label]}
+        fields = _lookup_fields(query, labels, self._fields, entries)
         lowered = query.lower()
         ranked = sorted(
             (

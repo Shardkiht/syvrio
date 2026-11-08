@@ -128,6 +128,35 @@ def test_spark_streaming_preserves_deltas_and_usage(monkeypatch):
     assert not {"temperature", "reasoning_effort", "stream_options"} & calls[0].keys()
 
 
+def test_streaming_tool_arguments_keep_identity_and_explicit_index_order():
+    from syvrio.llm.client import _StreamAccumulator
+
+    parser = _StreamAccumulator(lambda _: None, None)
+    parser.feed({"choices": [{"delta": {"tool_calls": [
+        {"index": 1, "id": "second", "function": {"name": "fetch", "arguments": '{"b":'}},
+        {"index": 0, "id": "first", "function": {"name": "search", "arguments": {"a": 1}}},
+        {"id": "third", "function": {"name": "search", "arguments": '{"c":3}'}},
+    ]}}]})
+    parser.feed({"choices": [{"delta": {"tool_calls": [
+        {"id": "second", "function": {"arguments": "2}"}},
+    ]}}]})
+    assert [(call.id, call.arguments) for call in parser.finish().tool_calls] == [
+        ("first", {"a": 1}), ("second", {"b": 2}), ("third", {"c": 3}),
+    ]
+
+
+@pytest.mark.parametrize("arguments", ["{", "[]", "null"])
+def test_streaming_rejects_invalid_tool_arguments(arguments):
+    from syvrio.llm.client import ChatModelError, _StreamAccumulator
+
+    parser = _StreamAccumulator(lambda _: None, None)
+    parser.feed({"choices": [{"delta": {"tool_calls": [
+        {"id": "synthetic", "function": {"name": "search", "arguments": arguments}},
+    ]}}]})
+    with pytest.raises(ChatModelError, match="arguments"):
+        parser.finish()
+
+
 def test_spark_does_not_offer_openai_reasoning_effort():
     from syvrio.llm.client import supported_params
 

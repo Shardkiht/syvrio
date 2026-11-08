@@ -4,7 +4,6 @@ import threading
 import time
 from functools import partial
 
-from rich.markup import escape
 from textual.widgets import Input
 
 from ..infra.diagnostics import record_event
@@ -189,7 +188,7 @@ class ChatReflectionMixin:
 
     def _after_reflection(self, message: str) -> None:
         self._reflection_pending = False
-        self.add_card(escape(message))
+        self.add_card(message)
 
     def on_unmount(self) -> None:
         token = getattr(self, "_reflection_cancel", None)

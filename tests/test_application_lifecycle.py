@@ -134,9 +134,15 @@ def test_session_load_failure_returns_turn_result_and_releases_on_ack(tmp_path, 
     assert conv.ask_active is False
 
 
-def test_switch_cancel_and_undo_are_bound_to_original_session(tmp_path):
+@pytest.mark.parametrize("model_fails", [False, True])
+def test_switch_cancel_and_undo_are_bound_to_original_session(tmp_path, monkeypatch, model_fails):
+    from queue import Queue
+    from syvrio.infra import diagnostics
+
     runtime, conv = build(tmp_path, [])
-    model = GatedModel([AssistantTurn(content="reply A")])
+    monkeypatch.setattr(diagnostics, "_queue", Queue())
+    response = RuntimeError("Synthetic model failure") if model_fails else AssistantTurn(content="reply A")
+    model = GatedModel([response])
     runtime.model = model
     a = runtime.ensure_session()
     runtime.sessions.append(a, {"type": "message", "id": "old", "role": "user", "content": "earlier"})

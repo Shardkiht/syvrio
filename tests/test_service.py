@@ -408,6 +408,7 @@ def test_commit_pending_changes_auto_commits_without_llm(tmp_path):
         "password=!Demo1234",
         "验证码 458712请勿转发",
         "密码是 合成测试口令",
+        "我的 API 密钥是 synthetic-token-1234",
     ],
 )
 def test_note_correct_and_memorize_reject_secrets(tmp_path, text):

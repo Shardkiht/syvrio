@@ -121,8 +121,8 @@ class InferenceScreen(ModalScreen):
                     with VerticalScroll(id="inference-detail-body", classes="thin-scroll"):
                         yield Static(id="inference-detail-status")
                         yield Static(id="inference-detail-kind", classes="inference-detail-line")
-                        yield Static(id="inference-detail-text")
-                        yield Static(id="inference-detail-sources")
+                        yield Static(id="inference-detail-text", markup=False)
+                        yield Static(id="inference-detail-sources", markup=False)
                     yield TextArea(id="inference-editor", soft_wrap=True, show_line_numbers=False)
             with Horizontal(id="inference-actions"):
                 yield Button("Confirm", id="inference-confirm")
@@ -131,7 +131,7 @@ class InferenceScreen(ModalScreen):
             with Horizontal(id="inference-edit-actions"):
                 yield Button("Save edit", id="inference-save")
                 yield Button("Cancel", id="inference-cancel")
-            yield Static("", id="inference-message")
+            yield Static("", id="inference-message", markup=False)
             yield Static("C Confirm · R Reject · E Edit · Esc Close", id="inference-hint")
 
     def on_mount(self) -> None:

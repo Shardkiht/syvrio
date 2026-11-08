@@ -222,6 +222,64 @@ def test_literal_coverage_does_not_join_words_across_separators():
     assert bigram_coverage("名年", "姓名 年龄") == 0.0
 
 
+def test_hybrid_preserves_keyword_hits_without_literal_signal():
+    class Keyword:
+        def search(self, query, limit):
+            return [SearchHit(id="keyword", text="docker 部署命令", topic="work")]
+
+    class Vector:
+        def __init__(self, hits):
+            self.hits = hits
+
+        def search(self, query, limit):
+            return self.hits
+
+    other = SearchHit(id="vector", text="其他命中", topic="work")
+    for query in ("搜 docker", "docker 是什么"):
+        assert {hit.id for hit in HybridRetriever(Keyword(), Vector([other])).search(query)} == {
+            "keyword", "vector",
+        }
+    assert [hit.id for hit in HybridRetriever(Keyword(), Vector([])).search("git 是什么")] == ["keyword"]
+
+
+def test_field_mentions_do_not_force_lookup_priority(tmp_path):
+    store = MemoryStore(tmp_path)
+    name = store.append("identity", "姓名：虚构人物甲")
+    store.append("work", "保管地点：合成仓库")
+    keyword = KeywordRetriever(store)
+    for query in ("帮我修改我的姓名", "写个包含姓名和电话的签名", "把保管地点挪一下"):
+        assert not any(hit.matched_field for hit in keyword.search(query))
+    assert keyword.search("我的姓名是什么")[0].id == name.id
+    assert keyword.search("姓名")[0].matched_field == "姓名"
+
+
+@pytest.mark.parametrize("add_entry", [False, True])
+def test_same_model_dimension_change_rebuilds_stale_cache(tmp_path, add_entry):
+    class ResizedEmbedder:
+        model_id = "synthetic"
+        dimension = 2
+
+        def embed(self, texts):
+            return [[1.0] * self.dimension for _ in texts]
+
+        def embed_query(self, text):
+            return [1.0] * self.dimension
+
+    store = MemoryStore(tmp_path)
+    original = store.append("work", "Synthetic first note.")
+    embedder = ResizedEmbedder()
+    retriever = VectorRetriever(store, embedder)
+    assert [hit.id for hit in retriever.search("synthetic")] == [original.id]
+    embedder.dimension = 3
+    expected = {original.id}
+    if add_entry:
+        expected.add(store.append("work", "Synthetic second note.").id)
+    assert {hit.id for hit in retriever.search("synthetic")} == expected
+    assert not retriever.degraded
+    with np.load(retriever.cache_path) as data:
+        assert data["vectors"].shape == (len(expected), 3)
+
+
 def test_short_field_coverage_keeps_exact_hit_without_restoring_noise(tmp_path):
     store = MemoryStore(tmp_path)
     name = store.append("identity", "姓名：虚构人物甲", title="合成人物资料")

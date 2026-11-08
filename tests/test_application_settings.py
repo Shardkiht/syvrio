@@ -123,6 +123,24 @@ def test_apply_model_reloads_runtime_and_persists(tmp_path):
     assert service.config_path.exists()
 
 
+def test_switch_model_preserves_chat_configuration(tmp_path, monkeypatch):
+    from dataclasses import replace
+    from syvrio.infra.providers import write_config
+
+    service, _, settings = build(tmp_path)
+    service.config_path = tmp_path / "config.toml"
+    chat = replace(service.config.chat, auto_reflect=False, reflect_idle_seconds=91,
+                   reflect_interval_seconds=301, profile_auto_interval_hours=171,
+                   profile_min_cooldown_hours=28, profile_min_changes=21, dream_auto_interval_hours=25)
+    service.config.chat = chat
+    monkeypatch.setattr(settings_module, "model_metadata", lambda *_: {})
+    assert settings.apply_model("deepseek", "synthetic-model").ok
+    saved = load_config(service.config_path)
+    assert saved.chat == chat
+    write_config(service.config_path, saved)
+    assert load_config(service.config_path) == saved
+
+
 def test_recent_models_survive_reload_and_prioritize_matching_catalog_entries(tmp_path, monkeypatch):
     service, _, settings = build(tmp_path)
     service.config_path = tmp_path / "config.toml"

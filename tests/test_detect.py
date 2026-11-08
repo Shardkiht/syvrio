@@ -26,6 +26,10 @@ def entry(entry_id: str, text: str, topic: str = "housing") -> Entry:
         "密码：合成测试口令",
         "密码是 合成测试口令",
         "私钥: -----BEGIN PRIVATE KEY-----",
+        "我的 API 密钥是 synthetic-token-1234",
+        "秘钥：DEMO1234",
+        "访问令牌为 demo_token",
+        "凭据=ABCD1234",
     ],
 )
 def test_detects_secret_material(text):
@@ -43,6 +47,8 @@ def test_detects_secret_material(text):
         "验证码收不到时需要联系客服",
         "密码 忘记了怎么办",
         "验证码 一直收不到",
+        "密钥管理可以通过控制台完成",
+        "访问令牌是临时凭据",
     ],
 )
 def test_allows_statements_about_credentials(text):

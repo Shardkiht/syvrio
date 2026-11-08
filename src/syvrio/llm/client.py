@@ -392,6 +392,7 @@ class _StreamAccumulator:
         self.litellm = litellm
         self.content_parts: list[str] = []
         self.tool_acc: dict[int, dict] = {}
+        self.tool_indices: dict[str, int] = {}
         self.usage = Usage()
 
     def feed(self, chunk) -> None:
@@ -424,27 +425,50 @@ class _StreamAccumulator:
         if tool_calls:
             mark_model("first_tool")
         for tc in tool_calls:
-            index = _field(tc, "index", 0) or 0
-            acc = self.tool_acc.setdefault(index, {"id": "", "name": "", "arguments": ""})
+            index = _field(tc, "index")
             tc_id = _field(tc, "id")
+            if index is None:
+                if tc_id:
+                    index = self.tool_indices.get(tc_id)
+                    if index is None:
+                        index = max(self.tool_acc, default=-1) + 1
+                elif len(tool_calls) == 1 and len(self.tool_acc) <= 1:
+                    index = next(iter(self.tool_acc), 0)
+                else:
+                    raise ChatModelError("Streaming tool fragment is missing its index and ID.")
+            if type(index) is not int or index < 0:
+                raise ChatModelError("Streaming tool call has an invalid index.")
+            acc = self.tool_acc.setdefault(index, {"id": "", "name": "", "arguments": ""})
             if tc_id:
+                if acc["id"] not in ("", tc_id) or self.tool_indices.get(tc_id, index) != index:
+                    raise ChatModelError("Streaming tool call changed its identity.")
                 acc["id"] = tc_id
+                self.tool_indices[tc_id] = index
             function = _field(tc, "function")
             if function is not None:
                 name = _field(function, "name")
                 if name:
                     acc["name"] = name
                 arguments = _field(function, "arguments")
-                if arguments:
-                    acc["arguments"] += arguments
+                if arguments is not None and arguments != "":
+                    previous = acc["arguments"]
+                    if isinstance(arguments, str) and isinstance(previous, str):
+                        acc["arguments"] += arguments
+                    elif isinstance(arguments, dict) and previous == "":
+                        acc["arguments"] = arguments
+                    else:
+                        raise ChatModelError("Streaming tool call returned inconsistent arguments.")
 
     def finish(self) -> AssistantTurn:
         tool_calls: list[ToolCall] = []
-        for acc in self.tool_acc.values():
+        for _, acc in sorted(self.tool_acc.items()):
+            raw = acc["arguments"]
             try:
-                arguments = json.loads(acc["arguments"] or "{}")
-            except json.JSONDecodeError:
-                arguments = {}
+                arguments = raw if isinstance(raw, dict) else json.loads(raw or "{}")
+            except json.JSONDecodeError as exc:
+                raise ChatModelError("Streaming tool call returned malformed JSON arguments.") from exc
+            if not isinstance(arguments, dict) or not acc["name"]:
+                raise ChatModelError("Streaming tool call is missing a name or object arguments.")
             tool_calls.append(
                 ToolCall(id=acc["id"] or f"call-{len(tool_calls)}", name=acc["name"], arguments=arguments)
             )

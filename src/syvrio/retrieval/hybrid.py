@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from ..memory.detect import CJK_RE, bigram_coverage
+import re
+
+from ..memory.detect import bigram_coverage, has_literal_bigrams
 from .base import Retriever, SearchHit
 
 RRF_K = 60
@@ -8,6 +10,7 @@ RRF_K = 60
 # 不参与 RRF（否则干扰项的 BM25 高名次会把向量路的正确结果挤下去，
 # 见 evals/ 数字类失败用例："投递了多少份申请" → "申请里的经历的措辞…"）。
 MIN_QUERY_COVERAGE = 0.3
+_ASCII_TERM = re.compile(r"[a-z0-9][a-z0-9_+.#-]*[a-z0-9_+#]", re.IGNORECASE | re.ASCII)
 
 
 class HybridRetriever:
@@ -22,18 +25,20 @@ class HybridRetriever:
         keyword_hits = self.keyword.search(query, deep)
         vector_hits = self.vector.search(query, deep)
         # 查询本身也可能触发降级；纯关键词兜底不套用于融合降噪的字面闸。
-        if getattr(self.vector, "degraded", False):
+        if not vector_hits or getattr(self.vector, "degraded", False):
             return keyword_hits[:limit]
-        # 非 CJK 查询没有 bigram 覆盖率信号，不能套字面闸，否则精确命中也会被清空。
-        literal_gate = bool(CJK_RE.search(query))
+        # 中文 bigram 与技术名称都可以提供字面证据。
+        literal_gate = has_literal_bigrams(query)
+        ascii_terms = set(_ASCII_TERM.findall(query.lower())) if literal_gate else set()
         exact_fields = {hit.id: hit.matched_field for hit in keyword_hits if hit.matched_field}
         keyword_hits = [
             hit for hit in keyword_hits
             if (hit.id in exact_fields or not literal_gate
+                or (ascii_terms and not ascii_terms.isdisjoint(
+                    _ASCII_TERM.findall((hit.index_text or hit.text).lower())
+                ))
                 or bigram_coverage(query, hit.index_text or hit.text) >= MIN_QUERY_COVERAGE)
         ]
-        if not vector_hits:
-            return keyword_hits[:limit]
         if not keyword_hits:
             return vector_hits[:limit]
 

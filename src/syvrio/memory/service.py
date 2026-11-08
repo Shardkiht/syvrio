@@ -770,8 +770,8 @@ class MemoryService:
     def _stage_all_checked(self) -> None:
         """首次初始化与后续提交共用：暂存前后都检查，覆盖索引里已有的文件。"""
         self._refuse_sensitive()
-        self.repo.stage_all()
-        self._refuse_sensitive()
+        with self.repo.stage_checked():
+            self._refuse_sensitive()
 
     def commit_pending_changes(self) -> str | None:
         """启动检查用：自动提交 vault 未保存变更（不 push、不调 LLM 生成总结）。"""

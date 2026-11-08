@@ -628,7 +628,7 @@ class ChatApp(ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixi
 
     def add_card(self, text: str, title: str | None = None) -> None:
         body = f"{title}\n{text}" if title else text
-        self._chat().mount(Static(body, classes="card"))
+        self._chat().mount(Static(body, classes="card", markup=False))
         self._scroll_end()
 
     def add_markdown_card(self, markdown: str, title: str | None = None) -> None:

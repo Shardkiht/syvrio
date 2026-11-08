@@ -282,21 +282,8 @@ class GitSyncService:
                 emit(STAGE_CHECK, "done")
                 if modified:
                     emit(STAGE_COMMIT, "running")
-                    self.repo.stage_all()
-                    # 预检可能漏掉索引里已存在的敏感文件；提交前按实际暂存内容复核。
-                    staged_sensitive = self.repo.sensitive_paths()
-                    if staged_sensitive:
-                        emit(STAGE_COMMIT, "failed")
-                        skip_remaining()
-                        result.error = (
-                            "Refusing to commit sensitive paths: "
-                            + ", ".join(staged_sensitive[:5])
-                            + ". Move them outside the vault or add them to .gitignore."
-                        )
-                        result.error_kind = "sensitive"
-                        self._record_state(result, now, commit_at=None)
-                        return result
-                    commit_hash = self.repo.commit(self._commit_message(trigger, now))
+                    with self.repo.stage_checked():
+                        commit_hash = self.repo.commit(self._commit_message(trigger, now))
                     result.committed = commit_hash is not None
                     result.commit_hash = commit_hash
                     emit(STAGE_COMMIT, "done" if result.committed else "skipped")

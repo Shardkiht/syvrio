@@ -8,6 +8,7 @@ from collections.abc import Callable
 
 import numpy as np
 
+from ..infra.diagnostics import record_event
 from ..memory.models import Entry
 from ..memory.store import MemoryStore, normalize_text
 from .base import SearchHit
@@ -83,7 +84,7 @@ class VectorRetriever:
         self._degraded = True
         self._retry_at = self._clock() + RETRY_COOLDOWN_SECONDS
 
-    def sync(self) -> None:
+    def sync(self, *, expected_dim: int | None = None) -> None:
         """与记忆条目对齐：复用未变更向量，只为新增/变更条目计算 embedding。"""
         if self._degraded and self._clock() < self._retry_at:
             return
@@ -95,6 +96,8 @@ class VectorRetriever:
             unique.setdefault(entry.id, entry)
         entries = list(unique.values())
         ids, hashes, cached = self._load_cache()
+        if expected_dim is not None and cached is not None and cached.shape[1] != expected_dim:
+            ids, hashes, cached = [], [], None
         known = {entry_id: index for index, entry_id in enumerate(ids)}
         keep: list[int] = []
         fresh: list[Entry] = []
@@ -118,6 +121,13 @@ class VectorRetriever:
                     raise ValueError("embedding 返回形状或数量与输入不一致")
                 if vectors.shape[1] == 0 or not np.isfinite(vectors).all():
                     raise ValueError("embedding 返回空维度或非有限数值")
+                if expected_dim is not None and vectors.shape[1] != expected_dim:
+                    record_event("retrieval.vector_dimension_failed", ValueError("Embedding dimensions differ."))
+                    self._mark_degraded()
+                    return
+                if keep and expected_dim is None and vectors.shape[1] != cached.shape[1]:
+                    self.sync(expected_dim=vectors.shape[1])
+                    return
                 if rows and vectors.shape[1] != rows[0].shape[1]:
                     raise ValueError("embedding 返回维度与已有向量不一致")
                 rows.append(_unit(vectors))
@@ -147,10 +157,12 @@ class VectorRetriever:
             return []
         try:
             vector = np.array(self.embedder.embed_query(query), dtype=np.float32)
-            if vector.ndim != 1 or vector.shape[0] != self._matrix.shape[1]:
-                raise ValueError("查询 embedding 返回维度与条目向量不一致")
-            if not np.isfinite(vector).all():
-                raise ValueError("查询 embedding 返回非有限数值")
+            if vector.ndim != 1 or not vector.size or not np.isfinite(vector).all():
+                raise ValueError("查询 embedding 返回无效向量")
+            if vector.size != self._matrix.shape[1]:
+                self.sync(expected_dim=vector.size)
+                if self._degraded or self._matrix is None:
+                    return []
             vector = _unit(vector[None, :])[0]
             scores = self._matrix @ vector
         except Exception:

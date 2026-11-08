@@ -258,15 +258,16 @@ async def test_inference_screen_long_text_and_long_source_ids(tmp_path):
     from syvrio.memory.models import Inference
 
     app = build_app(tmp_path, [])
-    long_fact = "合成事实：" + "长期项目偏好先验证最小闭环。" * 20
+    long_fact = "合成事实 [/x]：" + "长期项目偏好先验证最小闭环。" * 20
     source = app.service.note(long_fact)
-    long_text = "可能在做长期项目时偏好先搭建可验证的最小闭环，再逐步扩展功能；面对不确定需求时倾向先确认边界。" * 4
+    long_text = "[/x] 可能在做长期项目时偏好先搭建可验证的最小闭环，再逐步扩展功能；面对不确定需求时倾向先确认边界。" * 4
     app.service.propose_inference(long_text, [source.id])
     async with app.run_test(size=(120, 36)) as pilot:
         screen = await _open_inferences(app, pilot)
         assert str(screen.query_one("#inference-detail-text").render()) == long_text
         sources = str(screen.query_one("#inference-detail-sources").render())
         assert "Sources (1)" in sources
+        assert "[/x]" in sources
         assert len(sources) < len(long_fact) + 40  # 来源只给摘录，不整段搬运
         assert screen.query_one("#inference-detail-body").region.height <= screen.query_one("#inference-detail").region.height
         assert screen.query_one("#inference-actions").region.bottom <= screen.query_one("#inference-card").region.bottom
@@ -4029,6 +4030,46 @@ async def test_undo_during_ask_is_immediate_and_idempotent(tmp_path):
         assert "m1" not in active and "reply-1" not in active
 
 
+async def test_model_failure_during_undo_releases_tui_with_diagnostics_enabled(tmp_path, monkeypatch):
+    from queue import Queue
+    from syvrio.infra import diagnostics
+
+    monkeypatch.setattr(diagnostics, "_queue", Queue())
+    app = build_app(tmp_path, [])
+    entered, release = threading.Event(), threading.Event()
+
+    class FailFirst(FakeChatModel):
+        def chat(self, messages, tools, on_delta=None):
+            if not entered.is_set():
+                entered.set()
+                assert release.wait(5)
+                raise RuntimeError("Synthetic model failure")
+            return super().chat(messages, tools, on_delta)
+
+    app.runtime.model = FailFirst([AssistantTurn(content="Synthetic recovery reply")])
+    async with app.run_test(size=(120, 40)) as pilot:
+        widget = app.query_one("#input", Input)
+        widget.value = "Synthetic first message"
+        await pilot.press("enter")
+        try:
+            for _ in range(50):
+                if entered.is_set():
+                    break
+                await pilot.pause()
+            assert entered.is_set()
+            widget.value = "/undo"
+            await pilot.press("enter")
+            assert app._undo_requested
+        finally:
+            release.set()
+        await _wait_idle(app, pilot)
+        assert widget.value == "Synthetic first message"
+        widget.value = "Synthetic next message"
+        await pilot.press("enter")
+        await _wait_reply(app, pilot)
+        assert not app.busy
+
+
 async def test_undo_keeps_queued_message_paused_without_losing_it(tmp_path):
     app = build_app(tmp_path, [])
     gated = GatedChatModel([
@@ -4915,7 +4956,7 @@ async def test_long_pending_review_actions_keep_full_text(tmp_path, action):
     from syvrio.app.chat_widgets import TextInputScreen
     from syvrio.memory.models import Candidate, PendingItem
     app = build_app(tmp_path, [])
-    text = "Synthetic pending full text 中文 \n" * 30 + "LAST LINE"
+    text = "Synthetic [/x] pending full text 中文 \n" * 30 + "LAST LINE"
     item = PendingItem.from_candidate(Candidate(text=text, confidence=0.5), "chat", "low confidence")
     app.service.queue.add(item)
     async with app.run_test(size=(120, 40)) as pilot:
@@ -4929,7 +4970,7 @@ async def test_long_pending_review_actions_keep_full_text(tmp_path, action):
             await pilot.pause()
             assert isinstance(app.screen, TextInputScreen)
             assert app.screen.query_one("#pick-input", Input).value == text
-            app.screen.query_one("#pick-input", Input).value = "Synthetic final edited text"
+            app.screen.query_one("#pick-input", Input).value = "Synthetic [/x] final edited text"
             await pilot.press("enter")
         elif action == "reject":
             await pilot.press("down", "down", "enter")
@@ -4940,11 +4981,12 @@ async def test_long_pending_review_actions_keep_full_text(tmp_path, action):
             if not app._pending_review_busy:
                 break
         assert not app.service.pending()
+        assert any("[/x]" in str(card.render()) for card in app.query(".card"))
         entries = app.service.store.entries()
         if action == "reject":
             assert not entries
         else:
-            expected = "Synthetic final edited text" if action == "edit" else text.strip()
+            expected = "Synthetic [/x] final edited text" if action == "edit" else text.strip()
             assert [entry.text for entry in entries] == [expected]
 
 

@@ -212,7 +212,7 @@ class ChatCommandsMixin:
             self.update_status()
         if self.screen is not self.default_screen or self.application.conversation.current_id != session_id:
             if message:
-                self.notify(message)
+                self.notify(message, markup=False)
             return
         if message:
             self.add_card(message)
@@ -441,9 +441,9 @@ class ChatCommandsMixin:
 
     def _show_import_progress(self, progress) -> None:
         if progress.chunk:
-            self.add_card(escape(f"Analyzing {progress.file}: chunk {progress.chunk}/{progress.total_chunks}"))
+            self.add_card(f"Analyzing {progress.file}: chunk {progress.chunk}/{progress.total_chunks}")
         if progress.error:
-            self.add_card(escape(f"{progress.file} import failed: {progress.error}"))
+            self.add_card(f"{progress.file} import failed: {progress.error}")
             return
         if not progress.chunk:
             return
@@ -453,7 +453,7 @@ class ChatCommandsMixin:
         ]
         lines += [f"[{topic}] {text}" for topic, text in progress.admitted]
         lines += [f"Pending [{topic}] {text}" for topic, text in progress.pending]
-        self.add_card(escape("\n".join(lines)))
+        self.add_card("\n".join(lines))
 
     # ---------- 设置类选择器（逻辑在 application/settings.py） ----------
 

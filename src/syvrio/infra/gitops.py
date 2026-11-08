@@ -5,6 +5,7 @@ import os
 import posixpath
 import re
 import subprocess
+from contextlib import contextmanager
 from pathlib import Path
 
 LOCAL_TIMEOUT = 15.0
@@ -250,6 +251,56 @@ class GitRepo:
         self._require_own_repo()
         self._run(["add", "-A"], check=True)
 
+    def _index_path(self) -> Path:
+        result = self._run(["rev-parse", "--path-format=absolute", "--git-path", "index"], check=True)
+        return Path(result.stdout.rstrip("\r\n"))
+
+    @staticmethod
+    def _restore_index(path: Path, previous: bytes | None, staged: bytes | None) -> None:
+        lock = path.with_name(path.name + ".lock")
+        published = False
+        try:
+            with lock.open("xb") as handle:
+                try:
+                    current = path.read_bytes() if path.exists() else None
+                    if current != staged:
+                        raise GitError("Git index changed during sensitive-path validation.", kind="sensitive")
+                    if previous is not None:
+                        handle.write(previous)
+                        handle.close()
+                        os.replace(lock, path)
+                        published = True
+                    else:
+                        path.unlink(missing_ok=True)
+                finally:
+                    if not published:
+                        lock.unlink(missing_ok=True)
+        except OSError as exc:
+            raise GitError(f"Could not restore the Git index: {exc}", kind="sensitive") from exc
+
+    @contextmanager
+    def stage_checked(self):
+        """Restore the previous index if validation rejects our staged changes."""
+        index = self._index_path()
+        try:
+            previous = index.read_bytes()
+        except FileNotFoundError:
+            previous = None
+        except OSError as exc:
+            raise GitError(f"Could not read the Git index: {exc}") from exc
+        self.stage_all()
+        try:
+            staged = index.read_bytes()
+        except OSError as exc:
+            raise GitError(f"Could not verify the Git index: {exc}") from exc
+        try:
+            self._refuse_staged_sensitive()
+            yield
+        except GitError as exc:
+            if exc.kind == "sensitive":
+                self._restore_index(index, previous, staged)
+            raise
+
     def staged_stat(self) -> str:
         return self._run(["diff", "--cached", "--stat"]).stdout
 
@@ -262,15 +313,18 @@ class GitRepo:
         if not self.has_staged():
             return None
         # 最终保护：只按即将提交的索引判断，未暂存的工作区文件不影响独立提交。
-        sensitive = self.sensitive_staged_paths()
-        if sensitive:
-            paths = "、".join(sensitive[:5])
-            raise GitError(f"拒绝提交疑似敏感文件：{paths}。请移出 vault 或加入 .gitignore。", kind="sensitive")
+        self._refuse_staged_sensitive()
         completed = self._run([*self._identity_args(), "commit", "-m", message])
         if completed.returncode != 0:
             detail = completed.stderr.strip() or completed.stdout.strip()
             raise GitError(detail, kind=classify_git_error(detail))
         return self._run(["rev-parse", "--short", "HEAD"]).stdout.strip()
+
+    def _refuse_staged_sensitive(self) -> None:
+        sensitive = self.sensitive_staged_paths()
+        if sensitive:
+            paths = "、".join(sensitive[:5])
+            raise GitError(f"拒绝提交疑似敏感文件：{paths}。请移出 vault 或加入 .gitignore。", kind="sensitive")
 
     def has_commits(self) -> bool:
         return self._run(["rev-parse", "--verify", "HEAD"]).returncode == 0
