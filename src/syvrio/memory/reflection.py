@@ -407,7 +407,8 @@ class ReflectionEngine:
             json.dumps(payload, ensure_ascii=False))
         if input_tokens + max_tokens + PROFILE_SUMMARY_MARGIN_TOKENS > window:
             raise ValueError("画像摘要输入超出上下文窗口。")
-        config = replace(llm, num_retries=0, fallbacks=[], timeout=min(llm.timeout, 60.0))
+        # 画像摘要 payload 大、spark 生成 60s 内出不完，7/7 超时；放宽到 6 分钟。
+        config = replace(llm, num_retries=0, fallbacks=[], timeout=min(llm.timeout, 360.0))
         response = complete(config, [
             {"role": "system", "content": PROFILE_SUMMARY_PROMPT},
             {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
@@ -594,8 +595,8 @@ class ReflectionEngine:
         output_tokens = min(1800, window // 4)
         if llm.requires_api_key() and not llm.api_key():
             raise ValueError("未配置模型凭据。")
-        # 请求预算按真实发送次数约束；关闭底层重试和候补模型。
-        config = replace(llm, num_retries=0, fallbacks=[], timeout=min(llm.timeout, 60.0))
+        # 请求预算按真实发送次数约束；关闭底层重试和候补模型。超时与画像摘要同款放宽（6 分钟）。
+        config = replace(llm, num_retries=0, fallbacks=[], timeout=min(llm.timeout, 360.0))
         facts = [{"id": item.id, "topic": truncate_to_tokens(item.topic, 40), "text": truncate_to_tokens(item.text, 250),
                   "context": {key: truncate_to_tokens(value, 40) for key, value in item.context.model_dump(exclude_none=True).items()} if item.context else {}}
                  for item in entries]
