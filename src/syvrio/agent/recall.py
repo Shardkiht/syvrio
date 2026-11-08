@@ -7,6 +7,7 @@ from dataclasses import dataclass, replace
 from collections.abc import Iterable
 from threading import BoundedSemaphore
 from typing import Callable
+from unicodedata import normalize
 
 from ..infra.tokens import estimate_tokens
 from ..retrieval.base import SearchHit
@@ -28,6 +29,11 @@ ATTRIBUTE_RE = re.compile(
     r"叫什么|名字|姓名|怎么称呼|我是谁|我的身份|我多大|年龄|家乡|老家|"
     r"住哪|住处|住址|我的职业|从事什么|设备型号",
     re.IGNORECASE,
+)
+_DIRECT_FIELD_RE = re.compile(
+    r"(?:请问\s*)?我(?:的)?\s*(?P<field>[\w -]{2,18}?)\s*"
+    r"(?:是什么|是啥|是多少|是哪个|叫什么|有多少)[?。!]*"
+    r"(?:\s*只回复(?P=field)[。!]*)?"
 )
 REWRITE_PROMPT = """为当前问题生成用于检索个人记忆的独立关键词查询。
 要求：
@@ -70,6 +76,12 @@ def should_auto_recall(text: str, recent_texts: list[str]) -> bool:
         return True
     return bool(FOLLOWUP_RE.search(text) and recent_texts and personal.search(recent_texts[-1])
                 and not task.search(recent_texts[-1]))
+
+
+def direct_recall_field(text: str) -> str:
+    """Only a standalone, explicitly named field can bypass contextual rewriting."""
+    match = _DIRECT_FIELD_RE.fullmatch(normalize("NFKC", text).casefold().strip())
+    return " ".join(match["field"].split()) if match else ""
 
 
 class RecallQueryBuilder:

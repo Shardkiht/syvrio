@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import re
+from threading import local
 from typing import Any, Callable
 from urllib.parse import urlsplit, urlunsplit
 
@@ -80,10 +81,14 @@ class SearxngProvider:
         self.base_url = normalize_base_url(base_url)
         self.timeout = max(0.05, float(timeout))
         self._client_factory = client_factory or (lambda: httpx.Client(timeout=self.timeout))
-        self.last_partial_failures: list[SearchFailure] = []
+        self._search_state = local()
+
+    @property
+    def last_partial_failures(self) -> list[SearchFailure]:
+        return getattr(self._search_state, "partial_failures", [])
 
     def search(self, query: SearchQuery) -> list[SearchResult]:
-        self.last_partial_failures = []
+        self._search_state.partial_failures = []
         timeout = self.timeout
         if query.timeout is not None:
             timeout = max(0.05, min(self.timeout, query.timeout))
@@ -128,7 +133,7 @@ class SearxngProvider:
                     f"{item.provider}: {item.detail}" for item in partial[:5]
                 ),
             )
-        self.last_partial_failures = partial
+        self._search_state.partial_failures = partial
         return mapped
 
 

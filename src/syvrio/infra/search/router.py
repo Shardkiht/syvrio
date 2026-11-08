@@ -3,18 +3,17 @@ from __future__ import annotations
 from ..paths import SyvrioPaths, vault_paths
 
 import hashlib
-import time
 from collections.abc import Sequence
+from contextlib import closing
 from typing import Any
 import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
 
 from ..config import SearchConfig, read_api_key
+from .attempts import SearchAttempt, SearchRun
 from .base import (
     FetchResult,
-    ProviderError,
-    ProviderErrorKind,
     SearchFailure,
     SearchOutcome,
     SearchProvider,
@@ -400,70 +399,60 @@ class SearchRouter:
                     verification=cached.verification,
                 )
 
-        failures: list[SearchFailure] = list(selection_failures)
+        failures = list(selection_failures)
         pool = CandidatePool()
-        attempted: list[str] = []
-        successful: list[str] = []
-        # 查询变体只用于第一个引擎槽位：上下文消歧针对的是原始查询，不值得
-        # 为每个候补引擎都放大请求数。显式指定引擎时保持单次请求语义。
-        slot_queries = [text]
-        if not query.engines:
-            slot_queries += query_variants(text, query.context_terms)
-        # 变体只在第一家实际尝试的 provider 上执行：后续 provider 只跑原始
-        # 查询，避免每家重复放大同一组变体请求。
-        variants_used = False
-        budget = {"requests": 0}
-
-        started = time.perf_counter()  # Windows monotonic 分辨率粗，预算计时用高精度时钟
+        attempts: list[SearchAttempt] = []
+        variants = query_variants(text, query.context_terms) if not query.engines else []
         for name in names:
             provider = self.registry.get(name)
             if provider is None:
                 failures.append(SearchFailure(name, "unavailable", "未注册的搜索 provider"))
                 continue
-            if query.engines or variants_used:
-                provider_queries = [text]
+            if query.engines:
+                slots = (query.engines,)
+            elif "engines" in provider.capabilities:
+                slots = self._engine_slots(engines)
             else:
-                provider_queries = slot_queries
-                variants_used = True
-            outcome = self._search_one_provider(
-                provider, name, query, text, limit, fetch_limit, engine, engines,
-                provider_queries, analysis, pool, cache_key, failures, started, budget,
-                allow_early_stop=strategy != "compare",
-                attempted=attempted,
-                strategy=strategy,
-            )
-            if strategy == "compare":
-                if pool.has_provider(name):
-                    successful.append(name)
-                if outcome is not None:
-                    # 预算/超时收尾：如实标注交叉验证是否完成。
-                    return self._with_compare_hint(outcome, successful, failures)
-                if len(successful) >= 2 and quality_gate(
-                    pool.ranked(analysis), analysis
-                ).should_stop:
-                    final = self._final_outcome(
-                        failures, pool, analysis, limit, cache_key,
-                        name_hint=successful[-1],
-                        attempted=attempted,
-                        strategy=strategy,
-                        contributors=successful,
-                    )
-                    return self._with_compare_hint(final, successful, failures)
-            elif outcome is not None:
-                return outcome
-        # 最后一个 Provider 自己的超时也可能刚好耗尽全局预算：收尾时再核验一次。
-        timed_out = self._timed_out(started)
-        final = self._final_outcome(
-            failures, pool, analysis, limit, cache_key,
-            name_hint=names[-1] if names else "",
-            attempted=attempted,
-            strategy=strategy,
-            contributors=successful,
-            timed_out=timed_out,
+                slots = ((),)
+            for index, slot in enumerate(slots):
+                for phrase in ([text, *variants] if index == 0 else [text]):
+                    attempts.append(SearchAttempt(name, provider, SearchQuery(
+                        phrase, limit=fetch_limit, engine=engine, lang=query.lang,
+                        freshness=query.freshness, engines=slot,
+                    ), index))
+            variants = []
+
+        run = SearchRun(attempts, self.timeout_budget, self.max_requests, self.usage_limiter, failures)
+        successful: list[str] = []
+        name_hint = names[-1] if names else ""
+        with closing(run.results()) as responses:
+            for attempt, raw in responses:
+                results = normalize_results(raw)
+                for result in results:
+                    if not result.engine and attempt.query.engines:
+                        result.engine = attempt.query.engines[0]
+                if not results:
+                    continue
+                pool.add(results)
+                name_hint = attempt.name
+                if pool.has_provider(attempt.name) and attempt.name not in successful:
+                    successful.append(attempt.name)
+                if run.timed_out or not quality_gate(pool.ranked(analysis), analysis).should_stop:
+                    continue
+                if strategy == "compare" and len(successful) < 2:
+                    run.skip_provider(attempt.name)
+                    continue
+                break
+
+        outcome = self._final_outcome(
+            failures, pool, analysis, limit, cache_key, name_hint=name_hint,
+            budget_exhausted=run.budget_exhausted, timed_out=run.timed_out,
+            attempted=run.attempted, strategy=strategy,
+            contributors=successful if strategy == "compare" else pool.providers(),
         )
         if strategy == "compare":
-            return self._with_compare_hint(final, successful, failures)
-        return final
+            return self._with_compare_hint(outcome, successful, failures)
+        return outcome
 
     def _compare_note(
         self,
@@ -495,176 +484,6 @@ class SearchRouter:
         note = self._compare_note(outcome.verification, successful, failures)
         outcome.hint = f"{outcome.hint} {note}".strip()
         return outcome
-
-    def _timed_out(self, started: float) -> bool:
-        return self.timeout_budget - (time.perf_counter() - started) <= 0
-
-    def _search_one_provider(
-        self,
-        provider: SearchProvider,
-        name: str,
-        query: SearchQuery,
-        text: str,
-        limit: int,
-        fetch_limit: int,
-        engine: str,
-        engines: tuple[str, ...],
-        slot_queries: list[str],
-        analysis: QueryAnalysis,
-        pool: CandidatePool,
-        cache_key: str,
-        failures: list[SearchFailure],
-        started: float,
-        budget: dict[str, int],
-        *,
-        allow_early_stop: bool = True,
-        attempted: list[str] | None = None,
-        strategy: str = "auto",
-    ) -> SearchOutcome | None:
-        """渐进式尝试：原始查询优先，逐槽位补候补；候选池质量够好才早停。
-
-        引擎回退只对声明 engines 能力的 provider 生效；其余 provider 单次尝试，
-        失败交给上层换下一个 provider。请求次数预算跨 Provider 共享。
-        """
-        if query.engines:
-            slots: tuple[tuple[str, ...], ...] = (query.engines,)
-        elif "engines" in provider.capabilities:
-            slots = self._engine_slots(engines)
-        else:
-            slots = ((),)
-
-        for slot_index, slot_engines in enumerate(slots):
-            queries = slot_queries if slot_index == 0 else [text]
-            for attempt_query in queries:
-                # 单次请求的超时上限取剩余预算，避免默认 10s 越过总预算。
-                remaining = self.timeout_budget - (time.perf_counter() - started)
-                if remaining <= 0:
-                    failures.append(
-                        SearchFailure(name, "timeout", "搜索超时预算已用尽，停止引擎回退")
-                    )
-                    return self._final_outcome(
-                        failures, pool, analysis, limit, cache_key, name_hint=name,
-                        attempted=attempted, strategy=strategy, timed_out=True,
-                        contributors=pool.providers(),
-                    )
-                if budget["requests"] >= self.max_requests:
-                    # 本地请求预算耗尽不是厂商配额问题，用独立分类区分。
-                    failures.append(
-                        SearchFailure(
-                            name,
-                            ProviderErrorKind.BUDGET_EXHAUSTED.value,
-                            "单次搜索请求次数预算已用尽",
-                        )
-                    )
-                    return self._final_outcome(
-                        failures, pool, analysis, limit, cache_key,
-                        name_hint=name, budget_exhausted=True,
-                        attempted=attempted, strategy=strategy,
-                        contributors=pool.providers(),
-                    )
-                if self.usage_limiter is not None:
-                    # 达到厂商上限即跳过该厂商，交给后续 provider 回退。
-                    if not self.usage_limiter.acquire(name):
-                        failures.append(
-                            SearchFailure(
-                                name,
-                                ProviderErrorKind.QUOTA.value,
-                                self.usage_limiter.reason(name),
-                            )
-                        )
-                        return None
-                    # 请求失败也保守计数：在实际发起前记账。
-                budget["requests"] += 1
-                # 只有真正发起请求才计入 attempted（额度/预算拦截不算尝试）。
-                if attempted is not None and (
-                    not attempted or attempted[-1] != name
-                ):
-                    attempted.append(name)
-                try:
-                    raw = provider.search(
-                        SearchQuery(
-                            query=attempt_query,
-                            limit=fetch_limit,
-                            engine=engine,
-                            lang=query.lang,
-                            freshness=query.freshness,
-                            engines=slot_engines,
-                            timeout=round(max(remaining, 0.05), 3),
-                        )
-                    )
-                except ProviderError as exc:
-                    if self.usage_limiter is not None:
-                        self.usage_limiter.note_error(name, exc)
-                    failures.append(SearchFailure.from_error(exc))
-                    # 异常本身已耗尽总预算：按截断收尾，不再换引擎/Provider。
-                    if self._timed_out(started):
-                        return self._final_outcome(
-                            failures, pool, analysis, limit, cache_key,
-                            name_hint=name, attempted=attempted,
-                            strategy=strategy, timed_out=True,
-                            contributors=pool.providers(),
-                        )
-                    # 请求级失败（超时/网络/限流）：换下一个引擎，不再变体。
-                    break
-                except Exception as exc:
-                    failures.append(SearchFailure(name, "unavailable", str(exc)))
-                    if self._timed_out(started):
-                        return self._final_outcome(
-                            failures, pool, analysis, limit, cache_key,
-                            name_hint=name, attempted=attempted,
-                            strategy=strategy, timed_out=True,
-                            contributors=pool.providers(),
-                        )
-                    break
-
-                # daemon 报告的部分引擎失败转成结构化诊断，不静默吞掉。
-                failures.extend(getattr(provider, "last_partial_failures", ()) or ())
-                results = normalize_results(raw)
-                for result in results:
-                    # daemon 已逐条标注真实引擎时保留；缺失才补槽位引擎。
-                    if not result.engine and slot_engines:
-                        result.engine = slot_engines[0]
-                if results:
-                    pool.add(results)
-                # Provider 可能超出请求前的剩余预算才返回：先保留候选，
-                # 再按总超时收尾，不能让质量门控早停把结果写进缓存。
-                if self._timed_out(started):
-                    failures.append(
-                        SearchFailure(name, "timeout", "搜索总超时预算已用尽，停止后续检索")
-                    )
-                    return self._final_outcome(
-                        failures, pool, analysis, limit, cache_key, name_hint=name,
-                        attempted=attempted, strategy=strategy, timed_out=True,
-                        contributors=pool.providers(),
-                    )
-                if not results:
-                    continue
-                decision = quality_gate(pool.ranked(analysis), analysis)
-                if decision.should_stop:
-                    if not allow_early_stop:
-                        # compare 需要至少两家来源：本 Provider 已达标，但先停止
-                        # 继续消耗它的候补引擎，交给上层换下一家 Provider。
-                        return None
-                    # 缓存与返回必须是同一份最终结果：先排序截断再入缓存，
-                    # 否则缓存命中后顺序与首查不一致。
-                    merged = pool.ranked(analysis)[:limit]
-                    self._cache_put(
-                        cache_key, merged, name, analysis,
-                        strategy=strategy,
-                        attempted=list(attempted or [name]),
-                        contributors=[name],
-                    )
-                    return SearchOutcome(
-                        results=merged,
-                        provider=name,
-                        failed=failures,
-                        hint=weak_share_hint(merged, analysis),
-                        attempted=list(attempted or [name]),
-                        strategy=strategy,
-                    )
-                # 质量不足：保留候选继续候补引擎/变体/下一个 provider，
-                # 由 search() 在全部遍历或预算耗尽后统一收尾。
-        return None
 
     def _final_outcome(
         self,

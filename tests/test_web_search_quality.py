@@ -289,7 +289,7 @@ def test_mapped_result_keeps_daemon_engine():
 
 def test_request_timeout_bounded_by_remaining_budget(monkeypatch):
     """T14：单次请求超时上限取剩余预算，不能拿默认 10s 越过总预算。"""
-    from syvrio.infra.search import router as router_module
+    from syvrio.infra.search import attempts as attempts_module
 
     clock = [0.0]
     seen_timeouts: list[float | None] = []
@@ -303,7 +303,7 @@ def test_request_timeout_bounded_by_remaining_budget(monkeypatch):
             clock[0] += 4.0
             return [SearchResult("filler page", f"https://example.com/{len(seen_timeouts)}", "")]
 
-    monkeypatch.setattr(router_module.time, "perf_counter", lambda: clock[0])
+    monkeypatch.setattr(attempts_module.time, "perf_counter", lambda: clock[0])
     router = SearchRouter(
         {"fake": TimedProvider()},
         engines=["bing"],
@@ -587,7 +587,7 @@ def test_all_providers_exhausted_finalizes_with_collected_pool():
 
 def test_provider_budget_shared_across_providers(monkeypatch):
     """全局超时预算跨 provider 共享：第一家耗时耗尽后不再打第二家。"""
-    from syvrio.infra.search import router as router_module
+    from syvrio.infra.search import attempts as attempts_module
 
     clock = [0.0]
 
@@ -599,7 +599,7 @@ def test_provider_budget_shared_across_providers(monkeypatch):
 
     weak = SlowProvider("weak_one", [SearchResult("Unrelated", "https://example.com/w", "")])
     second = NamedProvider("second", [SearchResult("Tibo roadmap", "https://example.com/s", "")])
-    monkeypatch.setattr(router_module.time, "perf_counter", lambda: clock[0])
+    monkeypatch.setattr(attempts_module.time, "perf_counter", lambda: clock[0])
     router = SearchRouter(
         {"weak_one": weak, "second": second},
         order=["weak_one", "second"],

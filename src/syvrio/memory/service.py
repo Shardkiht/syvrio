@@ -564,12 +564,35 @@ class MemoryService:
                         combined.setdefault(hit.id, hit)
             hits = list(combined.values())
         filters = any((date_from, date_to, location, emotion))
-        return [hit.model_copy(update={"status": entries[hit.id].status,
-            "raw_markdown": entries[hit.id].raw_markdown, "source_path": entries[hit.id].source_path,
-            "line": entries[hit.id].line, "end_line": entries[hit.id].end_line,
-            "context": entries[hit.id].context.model_dump(exclude_none=True) if entries[hit.id].context else None})
+        return [
+            self._recall_hit(hit, entries[hit.id])
             for hit in hits if hit.id in entries and (not filters or matches_context(
-                entries[hit.id].context, date_from, date_to, location, emotion))][:max(0, limit)]
+                entries[hit.id].context, date_from, date_to, location, emotion
+            ))
+        ][:max(0, limit)]
+
+    @staticmethod
+    def _recall_hit(hit: SearchHit, entry: Entry) -> SearchHit:
+        return hit.model_copy(update={
+            "status": entry.status, "raw_markdown": entry.raw_markdown, "source_path": entry.source_path,
+            "line": entry.line, "end_line": entry.end_line,
+            "context": entry.context.model_dump(exclude_none=True) if entry.context else None,
+        })
+
+    def recall_exact_field(self, field: str) -> SearchHit | None:
+        from .temporal import select_facts
+
+        keyword = self.retriever.keyword if isinstance(self.retriever, HybridRetriever) else self.retriever
+        if not isinstance(keyword, KeywordRetriever):
+            return None
+        exact = [hit for hit in keyword.search(field, 2) if hit.matched_field]
+        if len(exact) != 1 or exact[0].matched_field != field:
+            return None
+        hit = exact[0]
+        entry = self.store.find(hit.id)
+        if entry is None or entry.text != hit.text or not select_facts([entry]):
+            return None
+        return self._recall_hit(hit, entry)
 
     def current_facts(self) -> list[Entry]:
         from .temporal import select_facts

@@ -461,6 +461,7 @@ class OpenWebSearchProvider:
         engines: list[str] | tuple[str, ...] | None = None,
         fetch_timeout: float = 45.0,
     ):
+        self._search_state = threading.local()
         if transport == "mcp":
             self.transport: HttpTransport | McpStdioTransport = McpStdioTransport(
                 timeout=timeout, command=mcp_command, args=mcp_args, engines=engines
@@ -478,10 +479,14 @@ class OpenWebSearchProvider:
             # engines 能力声明此 provider 支持按请求指定上游搜索引擎（可回退）。
             self.capabilities = {"search", "fetch", "engines"}
 
+    @property
+    def last_partial_failures(self) -> list[SearchFailure]:
+        return getattr(self._search_state, "partial_failures", [])
+
     def search(self, query: SearchQuery) -> list[SearchResult]:
         # 最近一次成功请求里 daemon 报告的部分引擎失败；router 读取后转成
         # 结构化诊断，避免有部分结果时静默吞掉上游故障。
-        self.last_partial_failures: list[SearchFailure] = []
+        self._search_state.partial_failures = []
         try:
             raw, partial = self.transport.search(
                 query.query, query.limit, query.engines or None, query.timeout
@@ -490,7 +495,7 @@ class OpenWebSearchProvider:
             raise
         except Exception as exc:
             raise ProviderError(NAME, ProviderErrorKind.NETWORK, str(exc)) from exc
-        self.last_partial_failures = [_partial_failure(item) for item in partial]
+        self._search_state.partial_failures = [_partial_failure(item) for item in partial]
         results = (_map_result(item) for item in raw)
         return [result for result in results if result is not None]
 

@@ -29,7 +29,7 @@ from ..memory.detect import redact_secrets
 from ..memory.service import MemoryService, load_persona
 from .context import ContextManager
 from .prompts import build_system_prompt
-from .recall import RecallQueryBuilder, memory_references, should_auto_recall
+from .recall import RecallQueryBuilder, direct_recall_field, memory_references, should_auto_recall
 from .session import Session, SessionStore, new_message_id
 from .tools import (
     PARALLEL_NETWORK_LIMIT, PARALLEL_TOOLS, ToolOutcome, ToolRegistry,
@@ -629,14 +629,19 @@ class AgentRuntime:
         recent = session.user_texts()[:-1]
         if not should_auto_recall(text, recent):
             return ""
-        recall = recall_queries.build(text, recent)
-        limit = config.auto_recall
-        if recall.cue or recall.rewrite_timed_out:
-            limit = max(limit, 8)
-        if recall.original and recall.original != recall.text:
-            hits = self.service.recall(recall.text, limit, original_query=recall.original)
+        field = direct_recall_field(text)
+        exact = self.service.recall_exact_field(field) if field else None
+        if exact is not None:
+            hits = [exact]
         else:
-            hits = self.service.recall(recall.text, limit)
+            recall = recall_queries.build(text, recent)
+            limit = config.auto_recall
+            if recall.cue or recall.rewrite_timed_out:
+                limit = max(limit, 8)
+            if recall.original and recall.original != recall.text:
+                hits = self.service.recall(recall.text, limit, original_query=recall.original)
+            else:
+                hits = self.service.recall(recall.text, limit)
         text = memory_references(hits, max_tokens=min(2400, config.context_window // 8))
         try:
             profile = self.service.reflection.context({hit.id for hit in hits})

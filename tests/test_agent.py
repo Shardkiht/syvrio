@@ -487,6 +487,54 @@ def test_original_short_field_reaches_model_via_prefetch_and_recall_tool(tmp_pat
     assert runtime.ask("我指的是姓名").content == target
 
 
+@pytest.mark.parametrize(("question", "scenario", "fast"), [
+    ("我的姓名是什么？只回复姓名。", "unique", True),
+    ("我的测试编号是什么？", "custom", True),
+    ("我的姓名是什么？", "conflict", False),
+    ("我的姓名是什么？", "future", False),
+    ("我的姓名是什么？", "deleted", False),
+    ("我的姓名和职业是什么？", "unique", False),
+    ("那我的姓名是什么？", "unique", False),
+    ("我叫什么名字？", "unique", False),
+])
+def test_auto_recall_skips_rewrite_only_for_direct_unique_current_field(tmp_path, monkeypatch, question, scenario, fast):
+    from syvrio.agent.recall import RecallQuery
+    from syvrio.memory.models import MemoryContext
+    from syvrio.retrieval import HybridRetriever, KeywordRetriever
+
+    rewritten = []
+    vector_calls = []
+
+    class Vector:
+        def search(self, query, limit):
+            vector_calls.append(query)
+            return []
+
+    model = FakeChatModel([AssistantTurn(content="收到")])
+    runtime, service = build_runtime(tmp_path, model)
+    context = MemoryContext(valid_from="2099-01-01") if scenario == "future" else None
+    label = "测试编号" if scenario == "custom" else "姓名"
+    fact = service.store.append("identity", f"{label}：合成字段甲", context=context)
+    if scenario == "conflict":
+        service.note("姓名：合成字段乙", topic="identity")
+    if scenario == "deleted":
+        service.store.set_status(fact.id, "deleted")
+    service.retriever = HybridRetriever(KeywordRetriever(service.store), Vector())
+
+    def rewrite(text, recent):
+        rewritten.append(text)
+        return RecallQuery("姓名", rewritten=True, original=text)
+
+    monkeypatch.setattr(runtime.recall_queries, "build", rewrite)
+    runtime.ask(question)
+    if fast:
+        assert rewritten == vector_calls == []
+        assert any(fact.raw_markdown in m["content"] for m in model.calls[0][0])
+    else:
+        assert rewritten == [question]
+        assert vector_calls
+
+
 def test_memory_cue_increases_auto_recall_limit(tmp_path, monkeypatch):
     model = FakeChatModel([AssistantTurn(content="记得。")])
     runtime, service = build_runtime(tmp_path, model)

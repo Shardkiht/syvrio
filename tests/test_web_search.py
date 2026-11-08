@@ -650,6 +650,97 @@ def test_explicit_unknown_engine_does_not_fall_back():
     assert outcome.failed[0].provider == "brave"
 
 
+def test_slow_preferred_provider_overlaps_candidates_and_early_stop_releases_caller():
+    from threading import Event
+
+    started = Event()
+    release = Event()
+    finished = Event()
+
+    class SlowProvider:
+        name = "slow"
+        capabilities = {"search"}
+
+        def search(self, query):
+            started.set()
+            try:
+                assert release.wait(4)
+                return []
+            finally:
+                finished.set()
+
+    class FastProvider:
+        name = "fast"
+        capabilities = {"search"}
+
+        def search(self, query):
+            assert started.is_set()
+            assert not finished.is_set()
+            return [SearchResult("Tibo roadmap", "https://example.com/tibo", "details", provider="fast")]
+
+    router = SearchRouter({"slow": SlowProvider(), "fast": FastProvider()})
+    try:
+        outcome = router.search(SearchQuery("tibo"))
+        assert outcome.provider == "fast"
+        assert outcome.attempted == ["slow", "fast"]
+        assert not finished.is_set()
+    finally:
+        release.set()
+        assert finished.wait(4)
+
+
+def test_query_variants_can_overlap_within_a_single_provider_without_exceeding_budget():
+    from threading import Barrier
+
+    overlap = Barrier(3, timeout=4)
+    calls = []
+
+    class Provider:
+        name = "fake"
+        capabilities = {"search", "engines"}
+
+        def search(self, query):
+            calls.append((query.query, query.engines))
+            overlap.wait()
+            return []
+
+    router = SearchRouter({"fake": Provider()}, engines=["bing"], max_requests=3)
+    outcome = router.search(SearchQuery("tibo", context_terms=("Codex", "OpenAI")))
+    assert len(calls) == 3
+    assert {phrase for phrase, _ in calls} == {"tibo", "tibo Codex", "tibo OpenAI"}
+    assert {engines for _, engines in calls} == {("bing",)}
+    assert "请求次数上限" in outcome.hint
+
+
+def test_parallel_deadline_does_not_wait_for_an_unresponsive_provider(tmp_path):
+    from threading import Event
+
+    release = Event()
+    finished = Event()
+
+    class Provider:
+        name = "fake"
+        capabilities = {"search"}
+
+        def search(self, query):
+            try:
+                assert release.wait(4)
+                return [SearchResult("Tibo", "https://example.com/tibo", "details", provider="fake")]
+            finally:
+                finished.set()
+
+    cache = SearchCache(tmp_path / "cache.json", ttl=60)
+    router = SearchRouter({"fake": Provider()}, cache=cache, timeout_budget=0.5)
+    try:
+        outcome = router.search(SearchQuery("tibo"))
+        assert not outcome.results and not outcome.cached
+        assert any(item.kind == "timeout" for item in outcome.failed)
+        assert not finished.is_set()
+    finally:
+        release.set()
+        assert finished.wait(4)
+
+
 def test_cache_avoids_second_provider_call(tmp_path):
     provider = FakeProvider([SearchResult("ok", "https://example.com", "")])
     cache = SearchCache(tmp_path / "cache.json", ttl=60)
@@ -710,7 +801,7 @@ def test_budget_exhausted_core_hits_are_not_cached(tmp_path):
 
 def test_global_timeout_truncated_results_are_not_cached(tmp_path, monkeypatch):
     """总超时截断的候选不能当成完整结果缓存；下次必须重新请求。"""
-    from syvrio.infra.search import router as router_module
+    from syvrio.infra.search import attempts as attempts_module
 
     clock = [0.0]
 
@@ -727,7 +818,7 @@ def test_global_timeout_truncated_results_are_not_cached(tmp_path, monkeypatch):
             return [SearchResult("Unrelated", "https://example.com/w", "")]
 
     provider = SlowProvider()
-    monkeypatch.setattr(router_module.time, "perf_counter", lambda: clock[0])
+    monkeypatch.setattr(attempts_module.time, "perf_counter", lambda: clock[0])
     router = SearchRouter(
         {"slow": provider},
         order=["slow"],
@@ -751,7 +842,7 @@ def test_global_timeout_truncated_results_are_not_cached(tmp_path, monkeypatch):
 
 def test_high_quality_result_returned_after_timeout_is_not_cached(tmp_path, monkeypatch):
     """Provider 超时返回高质量结果也不能走早停缓存：先判预算，再判质量。"""
-    from syvrio.infra.search import router as router_module
+    from syvrio.infra.search import attempts as attempts_module
 
     clock = [0.0]
 
@@ -772,7 +863,7 @@ def test_high_quality_result_returned_after_timeout_is_not_cached(tmp_path, monk
             ]
 
     provider = SlowStrongProvider()
-    monkeypatch.setattr(router_module.time, "perf_counter", lambda: clock[0])
+    monkeypatch.setattr(attempts_module.time, "perf_counter", lambda: clock[0])
     router = SearchRouter(
         {"slow": provider},
         order=["slow"],
@@ -794,7 +885,7 @@ def test_high_quality_result_returned_after_timeout_is_not_cached(tmp_path, monk
 
 def test_provider_timeout_after_partial_candidates_is_not_cached(tmp_path, monkeypatch):
     """后一家抛出超时并耗尽预算时，保留已有候选但按截断收尾，不写缓存。"""
-    from syvrio.infra.search import router as router_module
+    from syvrio.infra.search import attempts as attempts_module
 
     clock = [0.0]
 
@@ -827,7 +918,7 @@ def test_provider_timeout_after_partial_candidates_is_not_cached(tmp_path, monke
 
     weak = WeakProvider()
     slow = TimeoutProvider()
-    monkeypatch.setattr(router_module.time, "perf_counter", lambda: clock[0])
+    monkeypatch.setattr(attempts_module.time, "perf_counter", lambda: clock[0])
     router = SearchRouter(
         {"weak": weak, "slow": slow},
         order=["weak", "slow"],
@@ -873,7 +964,7 @@ def test_compare_timeout_keeps_actual_verification_and_skips_cache(
     tmp_path, monkeypatch
 ):
     """compare 第二家耗尽预算：验证状态按实际贡献来源，截断结果不缓存。"""
-    from syvrio.infra.search import router as router_module
+    from syvrio.infra.search import attempts as attempts_module
 
     clock = [0.0]
 
@@ -894,7 +985,7 @@ def test_compare_timeout_keeps_actual_verification_and_skips_cache(
 
     first = StrongProvider("first", "https://example.com/1")
     second = StrongProvider("second", "https://example.com/2", slow=True)
-    monkeypatch.setattr(router_module.time, "perf_counter", lambda: clock[0])
+    monkeypatch.setattr(attempts_module.time, "perf_counter", lambda: clock[0])
     router = SearchRouter(
         {"first": first, "second": second},
         order=["first", "second"],
@@ -1718,7 +1809,7 @@ def test_empty_results_use_short_ttl(tmp_path):
 
 
 def test_budget_exhaustion_preserves_collected_candidates(monkeypatch):
-    from syvrio.infra.search import router as router_module
+    from syvrio.infra.search import attempts as attempts_module
 
     clock = [0.0]
     calls = []
@@ -1731,7 +1822,7 @@ def test_budget_exhaustion_preserves_collected_candidates(monkeypatch):
             clock[0] = 2.0
             return [SearchResult("Unrelated candidate", "https://example.com/candidate", "")]
 
-    monkeypatch.setattr(router_module.time, "perf_counter", lambda: clock[0])
+    monkeypatch.setattr(attempts_module.time, "perf_counter", lambda: clock[0])
     router = SearchRouter({"fake": SlowProvider()}, engines=["bing"], timeout_budget=1)
     result = router.search(SearchQuery("alpha"))
     assert [item.title for item in result.results] == ["Unrelated candidate"]
