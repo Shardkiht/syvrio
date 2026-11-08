@@ -83,6 +83,7 @@ class ChatApp(ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixi
         self._model_status = Static("", id="model-status")
         self._context_loading = False
         self._import_running = False
+        self._pending_review_busy = False
         self._stream_widget: ChatReply | None = None
         self._stream_buffer = ""
         self._stream_stamp = ""

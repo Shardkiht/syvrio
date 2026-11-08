@@ -4,12 +4,12 @@ import os
 import platform
 import sys
 
-from rich.cells import cell_len
 from rich.control import Control
 from rich.segment import Segment
 from textual.geometry import Offset
 from textual.strip import Strip
 from textual.widgets import Input
+from textual.widgets.input import Selection
 
 from ..infra.diagnostics import record_event
 
@@ -56,16 +56,26 @@ class BarInput(Input):
 
     @property
     def cursor_screen_offset(self) -> Offset:
-        # Input adds an end-of-value cell for scroll visibility. The terminal
-        # caret must instead sit at the actual insertion point (also when empty).
-        offset = super().cursor_screen_offset
-        return offset - Offset(1, 0) if self.cursor_at_end else offset
+        viewport = self.scrollable_content_region
+        return Offset(viewport.x + self._position_to_cell(self.cursor_position) - self.scroll_offset.x, viewport.y)
+
+    def _sync_caret(self) -> None:
+        viewport = self.scrollable_content_region
+        if not viewport.width:
+            return
+        # Commit the scroll before publishing the terminal coordinate. A deferred
+        # scroll can otherwise leave the caret using the previous viewport.
+        cell = self._position_to_cell(self.cursor_position)
+        self.scroll_x = min(cell, max(self.scroll_offset.x, cell - viewport.width + 1))
+        if self.has_focus:
+            self.app.cursor_position = self.cursor_screen_offset
+
+    def _watch_selection(self, selection: Selection) -> None:
+        self.app.clear_selection()
+        self._sync_caret()
 
     def on_resize(self) -> None:
-        # 折叠侧栏/窗口缩放会移动输入框，但 App 每帧只回放上次记录的光标坐标；
-        # 不及时刷新硬件光标就会落在旧位置（看起来停在文字中间）。
-        if self._native_cursor_active and self.has_focus:
-            self.app.cursor_position = self.cursor_screen_offset
+        self._sync_caret()
 
     def _restart_blink(self) -> None:
         if self._uses_native_cursor:
@@ -139,6 +149,7 @@ class BarInput(Input):
     def _watch_value(self, value: str) -> None:
         super()._watch_value(value)
         self.border_title = None if value else (self._hint or None)
+        self._sync_caret()
 
     def render_line(self, y: int) -> Strip:
         strip = super().render_line(y)
@@ -147,7 +158,7 @@ class BarInput(Input):
 
         # 在渲染结果里插竖线，不能改 _value：额外字符会让 Textual 的输入框重绘
         # 把背景刷到左侧，形成横贯侧栏的黑条。
-        cursor_cell = cell_len(self.value[: self.cursor_position]) - self.scroll_offset.x
+        cursor_cell = self._position_to_cell(self.cursor_position) - self.scroll_offset.x
         if not 0 <= cursor_cell < strip.cell_length:
             return strip
         prefix = strip.crop(0, cursor_cell)

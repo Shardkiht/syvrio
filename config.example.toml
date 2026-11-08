@@ -36,6 +36,8 @@ reasoning_effort = ""
 spark_thinking = ""
 # 保存各供应商用于模型发现和切换的 Base URL。
 provider_urls = {}
+# 模型选择器维护的最近记录，每项为 [供应商, 模型 ID]。
+recent_models = []
 temperature = 0.1
 timeout = 60.0
 

@@ -155,6 +155,7 @@ class ModelOption:
     model: str
     label: str
     current: bool = False
+    recent: bool = False
 
 
 @dataclass

@@ -123,6 +123,34 @@ def test_apply_model_reloads_runtime_and_persists(tmp_path):
     assert service.config_path.exists()
 
 
+def test_recent_models_survive_reload_and_prioritize_matching_catalog_entries(tmp_path, monkeypatch):
+    service, _, settings = build(tmp_path)
+    service.config_path = tmp_path / "config.toml"
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "synthetic-key")
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "synthetic-key")
+    for model in ("oldest", "unlisted", "shared", "two", "three"):
+        assert settings.apply_model("deepseek", model).ok
+    assert settings.apply_model("dashscope", "shared").ok
+    assert settings.apply_model("deepseek", "two").ok
+
+    service.config.llm = load_config(service.config_path).llm
+    assert service.config.llm.recent_models == [
+        ("deepseek", "two"), ("dashscope", "shared"), ("deepseek", "three"),
+        ("deepseek", "shared"), ("deepseek", "unlisted"),
+    ]
+    options = settings.model_options(
+        {"deepseek": ["oldest", "shared", "two", "three", "shared"], "dashscope": ["shared"]},
+        capabilities=False,
+    )
+    assert [(row.provider, row.model, row.recent, row.current) for row in options] == [
+        ("deepseek", "two", True, True),
+        ("dashscope", "shared", True, False),
+        ("deepseek", "three", True, False),
+        ("deepseek", "shared", True, False),
+        ("deepseek", "oldest", False, False),
+    ]
+
+
 def test_apply_model_without_key_does_not_switch(tmp_path):
     service, runtime, settings = build(tmp_path)
     before = service.config.llm

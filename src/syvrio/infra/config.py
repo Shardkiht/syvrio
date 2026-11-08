@@ -19,6 +19,7 @@ DEFAULT_EMBEDDING_MODEL = "BAAI/bge-small-zh-v1.5"
 DEFAULT_EMBEDDING_BASE_URL = "https://api.siliconflow.cn/v1"
 SPARK_THINKING_MODES = ("enabled", "auto", "disabled")
 CONFIG_FILENAME = "syvrio.toml"
+RECENT_MODEL_LIMIT = 5
 _TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 
 
@@ -29,8 +30,8 @@ class ConfigError(ValueError):
     """配置读取、TOML 语法或字段校验失败；消息可直接展示给用户。"""
 
 
-def toml_literal(value: str | list[str]) -> str:
-    """序列化 TOML 字符串及字符串数组，保留 Unicode 标量。"""
+def toml_literal(value: str | list[str] | list[tuple[str, str]]) -> str:
+    """序列化 TOML 字符串和数组，保留 Unicode 标量。"""
     # ASCII 模式会把非 BMP 字符拆成 TOML 不接受的代理对；DEL 也必须转义。
     return json.dumps(value, ensure_ascii=False).replace("\x7f", "\\u007f")
 
@@ -48,6 +49,12 @@ class LLMConfig:
     timeout: float = 60.0
     spark_thinking: str = ""
     provider_urls: dict[str, str] = field(default_factory=dict)
+    recent_models: list[tuple[str, str]] = field(default_factory=list)
+
+    def recent_model_ids(self) -> list[tuple[str, str]]:
+        models = [(self.provider, self.model), *self.recent_models]
+        return list(dict.fromkeys((provider, model) for provider, model in models
+                                  if provider.strip() and model.strip()))[:RECENT_MODEL_LIMIT]
 
     @property
     def is_spark(self) -> bool:
@@ -279,6 +286,14 @@ def _validate_types(data: dict, defaults: dict, prefix: str = "") -> None:
                 raise ConfigError(f"配置字段 {name} 必须是表（section）。")
             _validate_types(value, default, name)
         elif isinstance(default, list):
+            if name == "llm.recent_models":
+                if not isinstance(value, list) or any(
+                    not isinstance(pair, list) or len(pair) != 2
+                    or any(not isinstance(part, str) or not part.strip() for part in pair)
+                    for pair in value
+                ):
+                    raise ConfigError("配置字段 llm.recent_models 必须是 [供应商, 模型] 字符串对的数组。")
+                continue
             if not isinstance(value, list):
                 raise ConfigError(f"配置字段 {name} 必须是字符串数组。")
             for index, item in enumerate(value):
@@ -383,6 +398,7 @@ def load_config(path: Path | str | None = None) -> Config:
         timeout=float(llm_raw.get("timeout", 60.0)),
         spark_thinking=llm_raw.get("spark_thinking", ""),
         provider_urls=dict(llm_raw.get("provider_urls", {})),
+        recent_models=[(provider, model) for provider, model in llm_raw.get("recent_models", [])],
     )
     chat_raw = data.get("chat", {})
     chat = ChatConfig(
@@ -542,6 +558,7 @@ api_key_env = {toml_literal(DEFAULT_API_KEY_ENV)}
 reasoning_effort = {toml_literal("")}
 spark_thinking = {toml_literal("")}
 provider_urls = {{}}
+recent_models = []
 fallbacks = {toml_literal([])}
 num_retries = 2
 temperature = 0.1

@@ -25,7 +25,7 @@ from textual.selection import Selection
 from textual.style import Style
 from textual.strip import Strip
 from textual.visual import RenderOptions, RichVisual
-from textual.widgets import Button, Input, Label, ListView, ListItem, Static
+from textual.widgets import Button, Input, Label, ListView, ListItem, OptionList, Static
 
 from ..agent.session import Session
 from ..infra.diagnostics import record_event
@@ -399,6 +399,9 @@ class PickScreen(ModalScreen):
     def _items(options: list[tuple]) -> list[OptionItem]:
         return [OptionItem(*option) for option in options]
 
+    def _compose_list(self) -> ListView | OptionList:
+        return ListView(*self._items(self._options), id="pick-list", classes="thin-scroll")
+
     def compose(self) -> ComposeResult:
         with Vertical(id="pick-card", classes="has-detail" if self._detail is not None else ""):
             yield Static(self._title, classes="pick-title")
@@ -407,7 +410,7 @@ class PickScreen(ModalScreen):
                     yield Static(self._detail, markup=False, id="pick-detail-text")
             if self._searchable:
                 yield Input(placeholder="Search models…", id="pick-search")
-            yield ListView(*self._items(self._options), id="pick-list", classes="thin-scroll")
+            yield self._compose_list()
             hint = (
                 "Type to filter · ↑↓ select · Enter confirm · ESC cancel"
                 if self._searchable
@@ -482,6 +485,30 @@ class PickScreen(ModalScreen):
         self.dismiss()
         # dismiss 尚未完成时直接 push 下一层会撞屏，延迟到下一帧再回调。
         self.app.call_later(on_result, value)
+
+
+class PendingPickerScreen(PickScreen):
+    """Render queue rows as options without mounting widgets for every item."""
+
+    BINDINGS = [
+        Binding("up", "move_selection(-1)", "Previous", priority=True),
+        Binding("down", "move_selection(1)", "Next", priority=True),
+    ]
+
+    def _compose_list(self) -> OptionList:
+        return OptionList(
+            *(label for label, _ in self._options),
+            id="pick-list", classes="thin-scroll", markup=False, compact=True,
+        )
+
+    def action_move_selection(self, step: int) -> None:
+        listing = self.query_one("#pick-list", OptionList)
+        if listing.option_count:
+            listing.highlighted = max(0, min(listing.option_count - 1, (listing.highlighted or 0) + step))
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        event.stop()
+        self._finish(self._options[event.option_index][1])
 
 
 class ModelPickerScreen(PickScreen):

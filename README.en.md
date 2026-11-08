@@ -108,6 +108,7 @@ model = "deepseek-flash"
 api_key_env = "DEEPSEEK_API_KEY"
 reasoning_effort = ""         # low / medium / high; only effective when supported by the model
 provider_urls = {}             # Base URL overrides by provider, such as a DashScope workspace
+recent_models = []              # Automatically saved model history, as [provider, model ID] pairs
 spark_thinking = ""           # Spark MaaS only. enabled / auto / disabled, or empty for the provider default
 fallbacks = []                 # e.g. ["openai/gpt-4o-mini"]
 num_retries = 2
@@ -222,7 +223,7 @@ In-session commands:
 | `/summary` | View the current session summary |
 | `/status` | Session, model, retrieval mode, context, and pending status |
 | `/git` | Open Git management: repository, Remote/Upstream, working tree and unpushed commits; `Ctrl+S` opens sync confirmation (defaults to Cancel and runs only after explicitly selecting Synchronize) |
-| `/model` | Search and switch models; `Ctrl+P` opens separate provider management, `Ctrl+R` refreshes, and `Ctrl+N` enters a custom model name. Discovers models through each configured provider's `/models` endpoint and shows only API-returned IDs. May reuse a cache scoped to the endpoint and credential. `/model refresh` requests fresh lists |
+| `/model` | Search and switch models, with up to five recently used models from the available catalog shown first. Discovers models through each configured provider's `/models` endpoint and may reuse a cache scoped to the endpoint and credential. `Ctrl+P` manages providers, `Ctrl+R` or `/model refresh` refreshes the catalog, and `Ctrl+N` enters a custom model name |
 | `/think` | Set and save the model's thinking preference. Spark MaaS offers enabled / auto / disabled. Other models with reasoning effort support offer default / low / medium / high |
 | `/context` | Switch the context window: presets generated from the current model's limit, custom value allowed; effective on the next turn |
 | `/setup` | Reminds you that the full setup wizard runs `syvrio setup` in a terminal (manage built-in provider keys with `Ctrl+P` in `/model`) |

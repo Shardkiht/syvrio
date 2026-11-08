@@ -248,6 +248,7 @@ api_key_env = {toml_literal(config.llm.api_key_env)}
 reasoning_effort = {toml_literal(config.llm.reasoning_effort or '')}
 spark_thinking = {toml_literal(config.llm.spark_thinking)}
 provider_urls = {{ {provider_urls} }}
+recent_models = {toml_literal(config.llm.recent_models)}
 fallbacks = {toml_literal(config.llm.fallbacks)}
 num_retries = {config.llm.num_retries}
 temperature = {config.llm.temperature}
@@ -712,11 +713,13 @@ def _run_llm_setup(config: Config, path: Path) -> dict:
         spark_thinking=config.llm.spark_thinking,
         provider_urls={**({config.llm.provider: config.llm.base_url} if config.llm.base_url else {}),
                        **config.llm.provider_urls, provider: base_url},
+        recent_models=config.llm.recent_model_ids(),
         fallbacks=config.llm.fallbacks,
         num_retries=config.llm.num_retries,
         temperature=config.llm.temperature,
         timeout=config.llm.timeout,
     )
+    config.llm.recent_models = config.llm.recent_model_ids()
     config.chat.context_window = context_window
     write_config(path, config)
 

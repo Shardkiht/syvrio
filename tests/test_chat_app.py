@@ -1757,20 +1757,23 @@ async def test_model_picker_prioritizes_the_exact_api_id_over_vendor_variants(tm
     from textual.widgets import ListView
 
     model = "deepseek-v4.1-flash-1017"
+    vendor_model = f"vanchin/{model}"
     app = build_app(tmp_path, [])
+    llm = app.service.config.llm
+    llm.recent_models = [("dashscope", vendor_model)]
+    entries = app._model_entries({"dashscope": [model, vendor_model]}, capabilities=False)
     async with app.run_test(size=(120, 40)) as pilot:
-        app._show_model_picker([
-            (f"百炼 · vanchin/{model}", ("dashscope", f"vanchin/{model}"), False),
-            (f"百炼 · {model}", ("dashscope", model), False),
-        ])
+        app._show_model_picker(entries)
         await pilot.pause()
         picker = app.screen
-        picker.query_one("#pick-search", Input).value = model
         listing = picker.query_one("#pick-list", ListView)
+        assert [item.value[1] for item in listing.children] == [vendor_model, model]
+        assert listing.children[0].label.startswith("Recent · ")
+        picker.query_one("#pick-search", Input).value = model
         async with asyncio.timeout(5):
             while listing.highlighted_child is None or listing.highlighted_child.value != ("dashscope", model):
                 await pilot.pause()
-        assert [item.value[1] for item in listing.children] == [model, f"vanchin/{model}"]
+        assert [item.value[1] for item in listing.children] == [model, vendor_model]
 
 
 async def test_model_picker_uses_cache_and_refreshes_in_background(tmp_path, monkeypatch):
@@ -2784,46 +2787,76 @@ async def test_startup_catchup_shows_card_for_crashed_session(tmp_path):
         assert app.runtime.consolidate_pending()["scanned"] == 0  # 已标记，不会重复
 
 
-async def test_pending_interactive_approve(tmp_path):
-    # 回归：/pending 必须能在界面内完成确认闭环（issue #1）。
+@pytest.mark.parametrize("action", ["approve", "reject"])
+async def test_pending_decision_keeps_tui_responsive(tmp_path, monkeypatch, action):
+    from syvrio.app.chat_widgets import PendingPickerScreen, PickScreen
+    from syvrio.memory.models import Candidate, PendingItem
+
     app = build_app(tmp_path, [])
+    item, remaining = [
+        PendingItem.from_candidate(Candidate(text=text, topic="preferences", confidence=0.5),
+                                   "chat", "low confidence")
+        for text in ("Synthetic first preference", "Synthetic second preference")
+    ]
+    app.service.queue.add(item)
+    app.service.queue.add(remaining)
+    started, release = threading.Event(), threading.Event()
+    decide = getattr(app.service, action)
+
+    def delayed_decision(*args, **kwargs):
+        started.set()
+        assert release.wait(5)
+        return decide(*args, **kwargs)
+
+    monkeypatch.setattr(app.service, action, delayed_decision)
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        from syvrio.memory.models import Candidate, PendingItem
-
-        item = PendingItem.from_candidate(
-            Candidate(text="低置信的偏好内容", topic="preferences", confidence=0.5), "chat", "low confidence"
-        )
-        app.service.queue.add(item)
-        app.refresh_pending()
-
         widget = app.query_one("#input", Input)
         widget.value = "/pending"
         await pilot.press("enter")
         for _ in range(50):
             await pilot.pause()
-            if app.screen.__class__.__name__ == "PickScreen":
+            if isinstance(app.screen, PendingPickerScreen):
                 break
-        await pilot.press("enter")  # 选中第一条 → 动作菜单
-        for _ in range(50):
-            await pilot.pause()
-            if len(app.screen_stack) >= 2 and app.screen.__class__.__name__ == "PickScreen":
-                break
-        await pilot.press("enter")  # 高亮"确认写入"
+        assert isinstance(app.screen, PendingPickerScreen)
+        assert app.pending_count == 2
+        await pilot.press("up", "enter")
+        await pilot.pause()
+        assert type(app.screen) is PickScreen
+        if action == "reject":
+            await pilot.press("down", "down")
+        try:
+            await pilot.press("enter")
+            for _ in range(50):
+                if started.is_set():
+                    break
+                await pilot.pause()
+            assert started.is_set()
+            assert app._pending_review_busy
+            widget.value = "/help"
+            await pilot.press("enter")
+            assert any("Commands" in str(card.render()) for card in app.query(".card"))
+            assert app._pending_review_busy
+        finally:
+            release.set()
         for _ in range(100):
             await pilot.pause()
-            if not app.service.pending():
+            if not app._pending_review_busy:
                 break
-        assert not app.service.pending()
-        assert app.service.store.has_text("低置信的偏好内容")
+        assert [pending.id for pending in app.service.pending()] == [remaining.id]
+        assert app.service.store.has_text(item.text) == (action == "approve")
+        assert app.pending_count == 1
+        assert isinstance(app.screen, PendingPickerScreen)
+        assert app.screen._options[0][1].id == remaining.id
+        await pilot.press("escape")
         cards = [str(w.render()) for w in app.query(".card")]
-        assert any("Saved" in c for c in cards)
+        assert any(("Saved" if action == "approve" else "Rejected") in c for c in cards)
+        assert widget.has_focus
 
 
 async def test_pending_interactive_edit_approves_only_final_text(tmp_path):
-    from textual.widgets import ListView
+    from textual.widgets import ListView, OptionList
 
-    from syvrio.app.chat_widgets import PickScreen, TextInputScreen
+    from syvrio.app.chat_widgets import PendingPickerScreen, PickScreen, TextInputScreen
     from syvrio.memory.models import Candidate, PendingItem
 
     app = build_app(tmp_path, [])
@@ -2841,7 +2874,7 @@ async def test_pending_interactive_edit_approves_only_final_text(tmp_path):
         await pilot.press("enter")
         for _ in range(50):
             await pilot.pause()
-            if isinstance(app.screen, PickScreen) and app.screen.query_one(ListView).has_focus:
+            if isinstance(app.screen, PendingPickerScreen) and app.screen.query_one(OptionList).has_focus:
                 break
         picker = app.screen
         assert isinstance(picker, PickScreen)
@@ -2868,7 +2901,7 @@ async def test_pending_interactive_edit_approves_only_final_text(tmp_path):
         await pilot.press("enter")
         for _ in range(100):
             await pilot.pause()
-            if not app.service.pending() and widget.has_focus and not app.busy:
+            if not app._pending_review_busy and widget.has_focus and not app.busy:
                 break
 
         entries = app.service.store.entries(include_inactive=True)
@@ -4719,6 +4752,57 @@ async def test_input_caret_matches_insertion_cell(tmp_path, value, position, cel
         assert widget.value == value
 
 
+@pytest.mark.parametrize("chunk", ["ab cd", "中文混排a"])
+async def test_native_input_caret_follows_horizontal_scroll(tmp_path, monkeypatch, chunk):
+    from rich.cells import cell_len
+
+    monkeypatch.setattr(BarInput, "_uses_native_cursor", property(lambda self: True))
+    app = build_app(tmp_path, [AssistantTurn(content="Synthetic reply")])
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        widget = app.query_one("#input", BarInput)
+        value = chunk * 30 + "尾"
+
+        def assert_caret():
+            region = widget.content_region
+            cells = cell_len(widget.value[:widget.cursor_position])
+            assert app.cursor_position == Offset(region.x + cells - widget.scroll_offset.x, region.y)
+            assert region.x <= app.cursor_position.x < region.right
+
+        widget.insert_text_at_cursor(value)
+        await pilot.pause()
+        assert widget.value == value
+        assert widget.scroll_offset.x > 0
+        assert_caret()
+
+        await pilot.press("home")
+        assert widget.scroll_offset.x == 0
+        assert_caret()
+
+        await pilot.press("end", "left")
+        assert widget.scroll_offset.x > 0
+        assert_caret()
+
+        await pilot.press("backspace")
+        assert widget.value == value[:-2] + "尾"
+        assert_caret()
+
+        await pilot.press("end")
+        await pilot.resize_terminal(62, 24)
+        assert widget.scroll_offset.x > 0
+        assert_caret()
+
+        await pilot.press("enter")
+        await _wait_idle(app, pilot)
+        assert widget.value == ""
+        assert widget.scroll_offset.x == 0
+        assert widget.has_focus
+        assert_caret()
+        await pilot.press("a")
+        assert widget.value == "a"
+        assert_caret()
+
+
 async def test_escape_stops_stream_keeps_draft_and_drains_visible_queue(tmp_path):
     app = build_app(tmp_path, [])
     release = threading.Event()
@@ -4798,7 +4882,7 @@ async def test_pending_long_text_scrolls_without_hiding_actions(tmp_path, size):
     app.service.queue.add(item)
     async with app.run_test(size=size) as pilot:
         await pilot.pause()
-        app._pending_picked(item.id)
+        app._pending_picked(item)
         await pilot.pause()
         screen = app.screen
         assert isinstance(screen, PickScreen)
@@ -4836,7 +4920,7 @@ async def test_long_pending_review_actions_keep_full_text(tmp_path, action):
     app.service.queue.add(item)
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
-        app._pending_picked(item.id)
+        app._pending_picked(item)
         await pilot.pause()
         app.screen.query_one("#pick-detail", VerticalScroll).scroll_end(animate=False)
         await pilot.pause()
@@ -4851,7 +4935,10 @@ async def test_long_pending_review_actions_keep_full_text(tmp_path, action):
             await pilot.press("down", "down", "enter")
         else:
             await pilot.press("enter")
-        await pilot.pause()
+        for _ in range(100):
+            await pilot.pause()
+            if not app._pending_review_busy:
+                break
         assert not app.service.pending()
         entries = app.service.store.entries()
         if action == "reject":
@@ -4872,7 +4959,7 @@ async def test_short_pending_review_stays_compact(tmp_path, size):
     app.service.queue.add(item)
     async with app.run_test(size=size) as pilot:
         await pilot.pause()
-        app._pending_picked(item.id)
+        app._pending_picked(item)
         await pilot.pause()
         card = app.screen.query_one("#pick-card")
         panel = app.screen.query_one("#pick-detail", VerticalScroll)
@@ -4904,6 +4991,36 @@ async def test_welcome_transitions_to_left_aligned_conversation(tmp_path, size):
         bubble = app.query_one(".bubble")
         assert bubble.region.x <= app.query_one(".reply").region.x + 1
         assert bubble.region.width > chat.content_region.width * 0.8
+
+
+async def test_conversation_caps_wide_prose_and_adapts_to_narrow_windows(tmp_path):
+    from rich.cells import cell_len
+    from textual.selection import SELECT_ALL
+    from syvrio.app.chat_widgets import ChatReply
+
+    content = "这是一段用于检查中文长句换行的合成回复。" * 10
+    app = build_app(tmp_path, [AssistantTurn(content=content)])
+    async with app.run_test(size=(160, 40)) as pilot:
+        await pilot.pause()
+        app.query_one("#input", Input).value = "Synthetic question"
+        await pilot.press("enter")
+        await _wait_reply(app, pilot)
+        reply = app.query_one(ChatReply)
+        header = app.query_one(".who-ai")
+        meta = app.query_one(".meta")
+        assert reply.region.width == app.query_one(".bubble").region.width == 100
+        assert reply.region.x == header.region.x == meta.region.x
+        assert reply.region.y == header.region.bottom + 1
+        assert meta.region.y == reply.region.bottom + 1
+
+        await pilot.resize_terminal(80, 24)
+        await pilot.pause()
+        chat = app.query_one("#chat")
+        assert 0 < reply.region.width < 100
+        assert reply.region.right <= chat.scrollable_content_region.right
+        rendered = reply.get_selection(SELECT_ALL)[0].splitlines()
+        assert all(cell_len(line) <= reply.content_size.width for line in rendered)
+        assert "".join(line.strip() for line in rendered) == content
 
 
 @pytest.mark.parametrize("size", [(50, 24), (120, 40)])

@@ -60,6 +60,7 @@ class SettingsUseCases:
         if catalog is None:
             catalog = self.model_catalog(cached_only=True)
         entries = [(provider, model) for provider, models in catalog.items() for model in models]
+        recent = {key: index for index, key in enumerate(current.recent_model_ids())}
 
         seen: set[tuple[str, str]] = set()
         options: list[ModelOption] = []
@@ -88,9 +89,10 @@ class SettingsUseCases:
                     model,
                     label,
                     current=(provider, model) == (current.provider, current.model),
+                    recent=(provider, model) in recent,
                 )
             )
-        options.sort(key=lambda option: not option.current)
+        options.sort(key=lambda option: recent.get((option.provider, option.model), len(recent)))
         return options
 
     def provider_options(self) -> list[ProviderOption]:
@@ -225,6 +227,7 @@ class SettingsUseCases:
             provider_urls={**({current.provider: current.base_url} if current.base_url else {}),
                            **current.provider_urls},
             api_key_env=preset.api_key_env if preset and provider != current.provider else current.api_key_env,
+            recent_models=current.recent_model_ids(),
         )
         if new_llm.provider != current.provider and not new_llm.api_key():
             return SettingsResult(
@@ -245,6 +248,7 @@ class SettingsUseCases:
         if max_input and context_window > max_input:
             context_window = max_input
 
+        new_llm.recent_models = new_llm.recent_model_ids()
         self.service.config.llm = new_llm
         self.service.config.chat.context_window = context_window
         if self.service.config_path:
