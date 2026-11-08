@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from datetime import date
+from itertools import groupby, islice
 from threading import Event
 
 from ..infra.config import ChatConfig, Config
@@ -17,6 +18,7 @@ from ..llm import (
     LiteLLMChatModel,
     OpenAISummarizer,
     Summarizer,
+    ToolCall,
     Usage,
 )
 from ..memory.extractor import split_chunks
@@ -26,10 +28,38 @@ from .context import ContextManager
 from .prompts import build_system_prompt
 from .recall import RecallQueryBuilder, memory_references, should_auto_recall
 from .session import Session, SessionStore, new_message_id
-from .tools import ToolOutcome, build_tools, compact_tool_outputs
+from .tools import (
+    PARALLEL_NETWORK_LIMIT, PARALLEL_TOOLS, ToolOutcome, ToolRegistry,
+    build_tools, cancelled_tool, compact_tool_outputs,
+)
 
 
 DISTILL_MAX_CHARS = 12000
+
+
+def _tool_results(
+    tools: ToolRegistry, calls: list[ToolCall], on_progress: Callable[[str], None] | None,
+    cancel: Event | None,
+) -> Iterator[tuple[ToolCall, ToolOutcome]]:
+    def ready(call: ToolCall) -> bool:
+        if on_progress is not None and not (cancel and cancel.is_set()):
+            on_progress(f"Calling tool: {call.name}")
+        return not (cancel and cancel.is_set())
+
+    for parallel, group in groupby(calls, key=lambda call: call.name in PARALLEL_TOOLS):
+        if not parallel:
+            for call in group:
+                yield call, tools.execute(call.name, call.arguments) if ready(call) else cancelled_tool()
+            continue
+        # A non-network call is a barrier. Keep each result paired in model order.
+        while batch := list(islice(group, PARALLEL_NETWORK_LIMIT)):
+            waits = [
+                tools.start(call.name, call.arguments, cancel=cancel, shared_deadline=True)
+                if ready(call) else cancelled_tool
+                for call in batch
+            ]
+            for call, wait in zip(batch, waits, strict=True):
+                yield call, wait()
 
 
 @dataclass
@@ -268,14 +298,7 @@ class AgentRuntime:
                 final = turn.content
                 completed = True
                 break
-            for call in turn.tool_calls:
-                # Keep every persisted tool call paired with a result, even when stopped.
-                if on_progress is not None and not (cancel is not None and cancel.is_set()):
-                    on_progress(f"Calling tool: {call.name}")
-                if cancel is not None and cancel.is_set():
-                    outcome = ToolOutcome(content="Cancelled by user before execution", display="Tool cancelled", ok=False)
-                else:
-                    outcome = tools.execute(call.name, call.arguments)
+            for call, outcome in _tool_results(tools, turn.tool_calls, on_progress, cancel):
                 content = truncate_to_tokens(outcome.content, 2000)
                 self.sessions.append(
                     session,
@@ -532,7 +555,7 @@ class AgentRuntime:
             return ""
         recall = self.recall_queries.build(text, recent)
         limit = self.config.auto_recall
-        if recall.cue:
+        if recall.cue or recall.rewrite_timed_out:
             limit = max(limit, 8)
         if recall.original and recall.original != recall.text:
             hits = self.service.recall(recall.text, limit, original_query=recall.original)

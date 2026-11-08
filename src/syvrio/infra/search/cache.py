@@ -5,12 +5,14 @@ import os
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from threading import Lock
 from typing import Callable
 
 from .base import SearchFailure, SearchResult
 
 CACHE_VERSION = 2
 _MAX_META_ITEMS = 20
+_WRITE_LOCK = Lock()
 
 
 @dataclass(slots=True)
@@ -122,32 +124,34 @@ class SearchCache:
         """ttl 为空时用实例默认值；空结果等短命条目传更短的 ttl。"""
         if self.ttl <= 0:
             return
-        data = self._load()
-        now = self.clock()
-        entries = {
-            item_key: item
-            for item_key, item in data.get("entries", {}).items()
-            if isinstance(item, dict) and _expires(item) > now
-        }
-        entries[key] = {
-            "expires": now + (self.ttl if ttl is None else min(ttl, self.ttl)),
-            "provider": provider,
-            "strategy": strategy,
-            "attempted": list(attempted)[:_MAX_META_ITEMS],
-            "contributors": list(contributors)[:_MAX_META_ITEMS],
-            "verification": verification,
-            "failed": [asdict(item) for item in list(failed)[:_MAX_META_ITEMS]],
-            "results": [asdict(result) for result in results],
-        }
-        data = {"version": CACHE_VERSION, "entries": entries}
-        try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self.path.with_name(self.path.name + ".tmp")
-            tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-            os.replace(tmp, self.path)
-        except OSError:
-            # 缓存写失败不影响搜索结果；下次直接重新请求。
-            return
+        # Parallel tools may share this cache. Merge and publish under one lock.
+        with _WRITE_LOCK:
+            data = self._load()
+            now = self.clock()
+            entries = {
+                item_key: item
+                for item_key, item in data.get("entries", {}).items()
+                if isinstance(item, dict) and _expires(item) > now
+            }
+            entries[key] = {
+                "expires": now + (self.ttl if ttl is None else min(ttl, self.ttl)),
+                "provider": provider,
+                "strategy": strategy,
+                "attempted": list(attempted)[:_MAX_META_ITEMS],
+                "contributors": list(contributors)[:_MAX_META_ITEMS],
+                "verification": verification,
+                "failed": [asdict(item) for item in list(failed)[:_MAX_META_ITEMS]],
+                "results": [asdict(result) for result in results],
+            }
+            data = {"version": CACHE_VERSION, "entries": entries}
+            try:
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+                tmp = self.path.with_name(self.path.name + ".tmp")
+                tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+                os.replace(tmp, self.path)
+            except OSError:
+                # 缓存写失败不影响搜索结果；下次直接重新请求。
+                return
 
     def _load(self) -> dict:
         try:

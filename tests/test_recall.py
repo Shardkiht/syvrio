@@ -113,6 +113,36 @@ def test_identity_question_can_rewrite_on_first_turn(monkeypatch):
     assert len(calls) == 1
 
 
+def test_slow_rewrite_returns_original_before_request_finishes(monkeypatch):
+    from threading import Event
+
+    monkeypatch.setattr(LLMConfig, "api_key", lambda self: "test-key")
+    monkeypatch.setattr("syvrio.agent.recall.REWRITE_TIMEOUT", 0.1)
+    release = Event()
+    completed = Event()
+    configs = []
+
+    def slow(config, *args, **kwargs):
+        configs.append(config)
+        try:
+            release.wait(3)
+            return response("姓名")
+        finally:
+            completed.set()
+
+    try:
+        cfg = LLMConfig(provider="spark", timeout=60, num_retries=2, fallbacks=["other"])
+        query = RecallQueryBuilder(cfg, completer=slow).build("我叫什么名字", [])
+        assert query.text == query.original == "我叫什么名字"
+        assert query.rewrite_timed_out and not completed.is_set()
+        assert configs and configs[0].timeout == 0.1
+        assert configs[0].num_retries == 0 and not configs[0].fallbacks
+        assert cfg.timeout == 60 and cfg.num_retries == 2
+    finally:
+        release.set()
+        completed.wait(2)
+
+
 @pytest.mark.parametrize("text,recent,expected", [
     ("你好", [], False), ("帮我解释 Python", [], False), ("帮我翻译这句话", [], False),
     ("搜索 https://example.com", [], False), ("HTTP 是什么", [], False),

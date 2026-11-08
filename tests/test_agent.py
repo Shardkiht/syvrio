@@ -1321,6 +1321,56 @@ def test_progress_precedes_model_and_tool_execution(tmp_path, monkeypatch):
     assert progress == ["Preparing context", "Waiting for model", "Calling tool: recall", "Waiting for model"]
 
 
+def test_network_tools_share_a_batch_but_keep_results_and_writes_ordered(tmp_path, monkeypatch):
+    from threading import Barrier, Event
+    from syvrio.agent import runtime as module
+    from syvrio.agent.tools import ToolOutcome, ToolRegistry, ToolSpec
+
+    overlap = Barrier(2, timeout=3)
+    fetch_finished = Event()
+    search_finished = Event()
+    write_finished = Event()
+
+    def search(args):
+        if args.get("after_write"):
+            assert write_finished.is_set()
+        else:
+            overlap.wait()
+            assert fetch_finished.wait(3)
+            search_finished.set()
+        return ToolOutcome(True, "search result", "searched")
+
+    def fetch(args):
+        overlap.wait()
+        fetch_finished.set()
+        return ToolOutcome(True, "fetch result", "fetched")
+
+    def write(args):
+        assert search_finished.is_set() and fetch_finished.is_set()
+        write_finished.set()
+        return ToolOutcome(True, "write result", "wrote")
+
+    registry = ToolRegistry()
+    registry.register(ToolSpec("search", "", {}, search, timeout=4, executor="network"))
+    registry.register(ToolSpec("fetch_web", "", {}, fetch, timeout=4, executor="network"))
+    registry.register(ToolSpec("memorize", "", {}, write, timeout=4, mutating=True))
+    monkeypatch.setattr(module, "build_tools", lambda *args, **kwargs: registry)
+    calls = [
+        ToolCall(id="one", name="search", arguments={}),
+        ToolCall(id="two", name="fetch_web", arguments={}),
+        ToolCall(id="three", name="memorize", arguments={}),
+        ToolCall(id="four", name="search", arguments={"after_write": True}),
+    ]
+    model = FakeChatModel([AssistantTurn(tool_calls=calls), AssistantTurn(content="done")])
+    runtime, _ = build_runtime(tmp_path, model)
+    assert runtime.ask("hello").content == "done"
+    records = [r for r in runtime.current.records if r["type"] == "tool"]
+    assert [r["tool_call_id"] for r in records] == ["one", "two", "three", "four"]
+    assert all(r["ok"] for r in records)
+    messages = model.calls[1][0]
+    assert [m["tool_call_id"] for m in messages if m["role"] == "tool"] == ["one", "two", "three", "four"]
+
+
 @pytest.mark.parametrize("stop_at", ["context", "stream", "tool"])
 def test_cancel_preserves_partial_and_tool_pairs(tmp_path, monkeypatch, stop_at):
     from threading import Event

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
+from dataclasses import dataclass, replace
 from collections.abc import Iterable
+from threading import BoundedSemaphore
 from typing import Callable
 
 from ..infra.tokens import estimate_tokens
@@ -37,6 +39,9 @@ COMBINED_QUERY_MAX_CHARS = 400
 REWRITE_MAX_TOKENS = 120
 SPARK_REWRITE_MAX_TOKENS = 600  # Spark's completion cap includes its reasoning.
 REWRITTEN_QUERY_MAX_CHARS = 200
+REWRITE_TIMEOUT = 4.0
+_REWRITE_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="syvrio-rewrite")
+_REWRITE_SLOTS = BoundedSemaphore(2)
 
 
 @dataclass(slots=True)
@@ -45,6 +50,7 @@ class RecallQuery:
     cue: bool = False
     rewritten: bool = False
     original: str = ""
+    rewrite_timed_out: bool = False
 
 
 Completer = Callable[..., object]
@@ -101,9 +107,13 @@ class RecallQueryBuilder:
             return RecallQuery(combined, cue=cue, original=text)
 
         recent_block = "\n".join(f"- {item}" for item in recent)[-COMBINED_QUERY_MAX_CHARS:]
+        if not _REWRITE_SLOTS.acquire(blocking=False):
+            return RecallQuery(combined, cue=cue, original=text, rewrite_timed_out=attribute)
+        timeout = min(REWRITE_TIMEOUT, self.llm.timeout)
         try:
-            response = self.completer(
-                self.llm,
+            future = _REWRITE_EXECUTOR.submit(
+                self.completer,
+                replace(self.llm, timeout=timeout, num_retries=0, fallbacks=[]),
                 [
                     {"role": "system", "content": REWRITE_PROMPT},
                     {
@@ -115,10 +125,21 @@ class RecallQueryBuilder:
                 max_tokens=(SPARK_REWRITE_MAX_TOKENS if self.llm.provider.lower() == "spark"
                             else REWRITE_MAX_TOKENS),
             )
+        except BaseException:
+            _REWRITE_SLOTS.release()
+            raise
+        # If the SDK is still unwinding a timed-out request, it keeps its slot
+        # until it actually exits. Slow rewrites cannot build up a queue.
+        future.add_done_callback(lambda _: _REWRITE_SLOTS.release())
+        try:
+            response = future.result(timeout=timeout)
             content = (response.choices[0].message.content or "").strip()
             query = content.splitlines()[0].strip().strip("\"'“”")
             if query:
                 return RecallQuery(query[:REWRITTEN_QUERY_MAX_CHARS], cue=cue, rewritten=True, original=text)
+        except FutureTimeout:
+            future.cancel()
+            return RecallQuery(combined, cue=cue, original=text, rewrite_timed_out=attribute)
         except Exception:
             pass
         return RecallQuery(combined, cue=cue, original=text)
