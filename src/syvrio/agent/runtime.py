@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass, field
+from copy import copy
+from dataclasses import dataclass, field, replace
 from datetime import date
 from itertools import groupby, islice
 from threading import Event
 
 from ..infra.config import ChatConfig, Config
+from ..infra.latency import TurnLatency, elapsed_ms, track_turn
 from ..infra.tokens import truncate_to_tokens
 from ..infra.documents import document_paths
 from ..llm import (
@@ -197,10 +199,11 @@ class AgentRuntime:
             on_session(session)
         self._active_ask = session
         try:
-            return self._run_ask(
-                session, text, on_event, on_delta, on_progress, cancel,
-                on_user_message,
-            )
+            with track_turn(cancel) as latency:
+                return self._run_ask(
+                    session, text, on_event, on_delta, on_progress, cancel,
+                    latency, on_user_message,
+                )
         except GenerationCancelled as exc:
             partial = getattr(exc, "partial_content", "")
             self._append_assistant(session, AssistantTurn(
@@ -226,8 +229,15 @@ class AgentRuntime:
         on_delta: Callable[[str], None] | None,
         on_progress: Callable[[str], None] | None,
         cancel: Event | None,
+        latency: TurnLatency,
         on_user_message: Callable[[str], None] | None = None,
     ) -> AgentReply:
+        # Settings can change while this turn waits on a model or tool.
+        model = self.model
+        context = copy(self.context)
+        config = context.config = replace(self.config)
+        recall_queries = self.recall_queries
+
         def progress(phase: str) -> None:
             if cancel is not None and cancel.is_set():
                 raise GenerationCancelled("Stopped by user")
@@ -247,16 +257,23 @@ class AgentRuntime:
 
         progress("Preparing context")
         recall_events: list[str] = []
-        memory_context = self._auto_recall(session, text, recall_events.append)
+        started = time.monotonic()
+        latency.event("recall.started")
+        memory_context = self._auto_recall(session, text, config, recall_queries, recall_events.append)
+        latency.event("recall.finished", elapsed_ms=elapsed_ms(started))
         if cancel is not None and cancel.is_set():
             raise GenerationCancelled("Stopped by user")
-        plan = self.context.prepare(
+        started = time.monotonic()
+        latency.event("context.started")
+        plan = context.prepare(
             session,
             self._system_prompt(),
             text,
             current_id=message_id,
             memory_context=memory_context,
         )
+        latency.event("context.finished", elapsed_ms=elapsed_ms(started),
+                      estimated_tokens=plan.estimated_tokens, compacted=plan.compacted)
         self.last_plan = plan
         self.last_plan_session = session.id
         events: list[str] = []
@@ -279,7 +296,7 @@ class AgentRuntime:
                     f"{flushed.get('queued', 0)} pending"
                 )
 
-        tools = build_tools(self.service, session, timeout=self.config.tool_timeout,
+        tools = build_tools(self.service, session, timeout=config.tool_timeout,
                             file_paths=document_paths(text))
         messages = plan.messages
         usage = Usage()
@@ -287,9 +304,18 @@ class AgentRuntime:
         final = ""
         completed = False
 
-        while steps < self.config.max_tool_steps:
+        def request_model(schemas: list[dict]) -> AssistantTurn:
+            with latency.model_step() as started:
+                turn = self._chat_with_retry(model, messages, schemas, on_delta=on_delta, cancel=cancel)
+                latency.event("model.finished", ok=True, elapsed_ms=elapsed_ms(started),
+                              prompt_tokens=turn.usage.prompt_tokens,
+                              completion_tokens=turn.usage.completion_tokens,
+                              tool_count=len(turn.tool_calls))
+                return turn
+
+        while steps < config.max_tool_steps:
             progress("Waiting for model")
-            turn = self._chat_with_retry(messages, tools.schemas(), on_delta=on_delta, cancel=cancel)
+            turn = request_model(tools.schemas())
             usage.add(turn.usage)
             steps += 1
             record = self._append_assistant(session, turn)
@@ -298,7 +324,11 @@ class AgentRuntime:
                 final = turn.content
                 completed = True
                 break
-            for call, outcome in _tool_results(tools, turn.tool_calls, on_progress, cancel):
+            started = time.monotonic()
+            latency.event("tools.started", tool_count=len(turn.tool_calls))
+            for index, (call, outcome) in enumerate(_tool_results(tools, turn.tool_calls, on_progress, cancel), 1):
+                latency.event("tool.finished", tool_index=index, ok=outcome.ok,
+                              elapsed_ms=outcome.duration_ms)
                 content = truncate_to_tokens(outcome.content, 2000)
                 self.sessions.append(
                     session,
@@ -317,7 +347,8 @@ class AgentRuntime:
                 )
                 emit(outcome.display)
             # 工具结果预算随上下文窗口走；200K 窗口下 8K 会过早丢证据。
-            compact_tool_outputs(messages, max_tokens=max(8000, self.config.context_window // 4))
+            compact_tool_outputs(messages, max_tokens=max(8000, config.context_window // 4))
+            latency.event("tools.finished", elapsed_ms=elapsed_ms(started))
 
         if not completed:
             progress("Generating final answer")
@@ -327,7 +358,7 @@ class AgentRuntime:
                     "content": "已达到工具调用上限。请基于以上信息直接给出最终回答，不要再调用工具。",
                 }
             )
-            turn = self._chat_with_retry(messages, [], on_delta=on_delta, cancel=cancel)
+            turn = request_model([])
             usage.add(turn.usage)
             steps += 1
             record = self._append_assistant(session, turn)
@@ -546,22 +577,25 @@ class AgentRuntime:
         # 联网结果常只给到月/日；给出当前日期，模型才能判断“最新”是否成立。
         return f"{prompt}\n\n当前日期：{date.today().isoformat()}"
 
-    def _auto_recall(self, session: Session, text: str, on_event: Callable[[str], None] | None = None) -> str:
-        if self.config.auto_recall <= 0:
+    def _auto_recall(
+        self, session: Session, text: str, config: ChatConfig, recall_queries: RecallQueryBuilder,
+        on_event: Callable[[str], None] | None = None,
+    ) -> str:
+        if config.auto_recall <= 0:
             return ""
         # 显式绑定请求的会话：进行中切换会话时不得读错当前会话的近期消息。
         recent = session.user_texts()[:-1]
         if not should_auto_recall(text, recent):
             return ""
-        recall = self.recall_queries.build(text, recent)
-        limit = self.config.auto_recall
+        recall = recall_queries.build(text, recent)
+        limit = config.auto_recall
         if recall.cue or recall.rewrite_timed_out:
             limit = max(limit, 8)
         if recall.original and recall.original != recall.text:
             hits = self.service.recall(recall.text, limit, original_query=recall.original)
         else:
             hits = self.service.recall(recall.text, limit)
-        text = memory_references(hits, max_tokens=min(2400, self.config.context_window // 8))
+        text = memory_references(hits, max_tokens=min(2400, config.context_window // 8))
         try:
             profile = self.service.reflection.context({hit.id for hit in hits})
         except (ValueError, OSError):
@@ -608,6 +642,7 @@ class AgentRuntime:
 
     def _chat_with_retry(
         self,
+        model: ChatModel,
         messages: list[dict],
         tools: list[dict],
         on_delta: Callable[[str], None] | None = None,
@@ -624,8 +659,8 @@ class AgentRuntime:
                 on_delta(text)
 
             try:
-                kwargs = {"cancel": cancel} if isinstance(self.model, LiteLLMChatModel) else {}
-                turn = self.model.chat(messages, tools, on_delta=delta, **kwargs)
+                kwargs = {"cancel": cancel} if isinstance(model, LiteLLMChatModel) else {}
+                turn = model.chat(messages, tools, on_delta=delta, **kwargs)
                 if cancel is not None and cancel.is_set():
                     raise GenerationCancelled("Stopped by user")
                 return turn
@@ -639,7 +674,7 @@ class AgentRuntime:
         last_error: Exception | None = None
         for attempt in range(3):
             try:
-                return self.model.chat(messages, tools)
+                return model.chat(messages, tools)
             except ChatModelError:
                 raise
             except Exception as exc:

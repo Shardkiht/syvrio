@@ -10,6 +10,7 @@ from threading import Event
 from typing import Protocol
 
 from ..infra.config import LLMConfig
+from ..infra.latency import mark_model, track_completion
 
 
 class ChatModelError(RuntimeError):
@@ -93,7 +94,9 @@ def complete(
     if config.fallbacks:
         kwargs["fallbacks"] = config.fallbacks
     _adapt_spark_params(config, kwargs)
-    return litellm.completion(**kwargs)
+    mark_model("request")
+    with track_completion():
+        return litellm.completion(**kwargs)
 
 
 def _adapt_spark_params(config: LLMConfig, kwargs: dict) -> None:
@@ -329,7 +332,9 @@ class LiteLLMChatModel:
         if cancel is not None:
             return asyncio.run(self._cancellable_stream(kwargs, on_delta, litellm, cancel))
         parser = _StreamAccumulator(on_delta, litellm)
+        mark_model("request")
         stream = litellm.completion(**kwargs)
+        mark_model("stream_open")
         try:
             for chunk in stream:
                 parser.feed(chunk)
@@ -344,7 +349,9 @@ class LiteLLMChatModel:
         parser = _StreamAccumulator(on_delta, litellm)
 
         async def consume() -> AssistantTurn:
+            mark_model("request")
             stream = await litellm.acompletion(**kwargs)
+            mark_model("stream_open")
             try:
                 async for chunk in stream:
                     if cancel.is_set():
@@ -378,6 +385,7 @@ class _StreamAccumulator:
         self.usage = Usage()
 
     def feed(self, chunk) -> None:
+        mark_model("first_chunk")
         chunk_usage = _field(chunk, "usage")
         if chunk_usage is not None:
             try:
@@ -395,11 +403,17 @@ class _StreamAccumulator:
         delta = _field(choices[0], "delta")
         if delta is None:
             return
+        if _field(delta, "reasoning_content") or _field(delta, "reasoning"):
+            mark_model("first_reasoning")
         text = _field(delta, "content") or ""
         if text:
+            mark_model("first_text")
             self.content_parts.append(text)
             self.on_delta(text)
-        for tc in _field(delta, "tool_calls") or []:
+        tool_calls = _field(delta, "tool_calls") or []
+        if tool_calls:
+            mark_model("first_tool")
+        for tc in tool_calls:
             index = _field(tc, "index", 0) or 0
             acc = self.tool_acc.setdefault(index, {"id": "", "name": "", "arguments": ""})
             tc_id = _field(tc, "id")

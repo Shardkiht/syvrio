@@ -70,6 +70,76 @@ def test_threaded_events_drain_at_shutdown():
     assert len(read_events(path)) == 102
 
 
+def test_chat_latency_separates_stream_and_tool_completion_without_payloads(tmp_path, monkeypatch):
+    from threading import Event
+    from types import SimpleNamespace
+
+    from syvrio.agent.runtime import AgentRuntime
+    from syvrio.agent.session import SessionStore
+    from syvrio.infra.config import ChatConfig, Config, LLMConfig, RetrievalConfig
+    from syvrio.llm import client
+    from syvrio.memory.service import MemoryService
+
+    class Stream:
+        def __init__(self, deltas):
+            self.deltas = deltas
+
+        async def __aiter__(self):
+            for delta in self.deltas:
+                yield {"choices": [{"delta": delta}]}
+
+        async def aclose(self):
+            pass
+
+    tool_call = {
+        "index": 0, "id": "test-tool-id",
+        "function": {"name": "memorize", "arguments": '{"text": "private synthetic memory"}'},
+    }
+    rounds = iter([
+        [{"reasoning_content": "private synthetic reasoning"}, {"tool_calls": [tool_call]}],
+        [{"content": "private synthetic answer"}, {"content": " again"}],
+    ])
+    tool_requests = []
+
+    async def acompletion(**kwargs):
+        return Stream(next(rounds))
+
+    def completion(**kwargs):
+        tool_requests.append(True)
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='{"memories": []}'))])
+
+    monkeypatch.setattr(client, "_litellm", lambda: SimpleNamespace(acompletion=acompletion, completion=completion))
+    path = diagnostics.start_diagnostics()
+    config = Config(
+        vault=tmp_path / "vault", llm=LLMConfig(provider="local"),
+        chat=ChatConfig(auto_recall=0), retrieval=RetrievalConfig(method="keyword"),
+    )
+    service = MemoryService(config)
+    service.init_vault()
+    runtime = AgentRuntime(service, client.LiteLLMChatModel(config.llm), SessionStore(config.paths()))
+    reply = runtime.ask("private synthetic prompt", on_delta=lambda _: None, cancel=Event())
+    assert reply.steps == 2 and tool_requests == [True]
+    diagnostics.stop_diagnostics()
+
+    latency_path = path.with_name("latency.log")
+    events = read_events(latency_path)
+    names = [event["event"].removeprefix("latency.") for event in events]
+    assert names == [
+        "turn.started", "recall.started", "recall.finished", "context.started", "context.finished",
+        "model.started", "model.request", "model.stream_open", "model.first_chunk",
+        "model.first_reasoning", "model.first_tool", "model.finished", "tools.started",
+        "completion.started", "completion.finished", "tool.finished", "tools.finished",
+        "model.started", "model.request", "model.stream_open", "model.first_chunk",
+        "model.first_text", "model.finished", "turn.finished",
+    ]
+    assert len({event["state"]["turn"] for event in events}) == 1
+    assert events[names.index("completion.finished")]["state"]["step"] == 1
+    assert events[names.index("model.first_text")]["state"]["step"] == 2
+    assert events[-1]["state"]["ok"]
+    assert "private synthetic" not in latency_path.read_text(encoding="utf-8")
+    assert all(not event["event"].startswith("latency.") for event in read_events(path))
+
+
 def test_unavailable_file_does_not_break_application(monkeypatch):
     def denied(*args, **kwargs):
         raise PermissionError("synthetic denial")

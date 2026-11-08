@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
+from contextvars import copy_context
 from dataclasses import dataclass, replace
 from collections.abc import Iterable
 from threading import BoundedSemaphore
@@ -112,6 +113,7 @@ class RecallQueryBuilder:
         timeout = min(REWRITE_TIMEOUT, self.llm.timeout)
         try:
             future = _REWRITE_EXECUTOR.submit(
+                copy_context().run,
                 self.completer,
                 replace(self.llm, timeout=timeout, num_retries=0, fallbacks=[]),
                 [

@@ -41,6 +41,8 @@ class ChatFlowMixin:
             self._after_undo_requested(submission)
         elif submission.kind == "queued":
             self._refresh_queue()
+            if line.startswith("/"):
+                self.notify(f"{line} will run after the current reply, before the next message.")
 
     def _after_undo_requested(self, submission) -> None:
         self._progress_phase = "Stopping"
@@ -53,9 +55,10 @@ class ChatFlowMixin:
         snapshot = self.application.conversation.queue_snapshot()
         panel = self.query_one("#send-queue", Static)
         panel.display = bool(snapshot.items)
-        lines = [f"Queued ({snapshot.count}) · sent automatically in order"]
+        lines = [f"Queued ({snapshot.count}) · commands before messages"]
         for item in snapshot.items[:3]:
-            lines.append(f"{item.index + 1}. {item.line[:100]}")
+            kind = "Command: " if item.line.startswith("/") else ""
+            lines.append(f"{item.index + 1}. {kind}{item.line[:100]}")
         if snapshot.count > 3:
             lines.append(f"+{snapshot.count - 3} more")
         panel.update("\n".join(lines))

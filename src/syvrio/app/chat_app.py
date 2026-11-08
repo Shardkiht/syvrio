@@ -46,7 +46,7 @@ from .chat_widgets import (
     TranscriptView,
 )
 from .session_ui import visible_sessions
-from .command_catalog import SLASH_SUBCOMMANDS
+from .command_catalog import SLASH_COMMANDS, SLASH_SUBCOMMANDS
 
 
 class ChatApp(ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixin, App):
@@ -82,6 +82,7 @@ class ChatApp(ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixi
         self._navigation_started = 0.0
         self._model_status = Static("", id="model-status")
         self._context_loading = False
+        self._import_running = False
         self._stream_widget: ChatReply | None = None
         self._stream_buffer = ""
         self._stream_stamp = ""
@@ -295,12 +296,14 @@ class ChatApp(ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixi
     def run_command_from_palette(self, command: str) -> None:
         self.query_one("#cmd-palette", CommandPalette).close()
         self.query_one("#input", Input).value = ""
-        line = f"/{command}"
-        if self._ask_active:
-            # 面板路径与输入路径同规则；/undo 走即时控制路径，不进入 FIFO。
+        self._submit_command(f"/{command}")
+
+    def _submit_command(self, line: str) -> None:
+        name = line[1:].partition(" ")[0].lower()
+        if self._ask_active and any(name == command for command, _, _ in SLASH_COMMANDS):
             self._submit_during_ask(line)
-            return
-        self._command(line)
+        else:
+            self._command(line)
 
     # ---------- 会话侧栏 ----------
 
@@ -408,15 +411,17 @@ class ChatApp(ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixi
             else:
                 self._switch_session(session_id)
             return
-        if self._queue_paused_after_undo:
-            # 撤销后保留队列但不自动发送，直到用户下一次主动提交。
-            return
-        item = self.application.conversation.take_pending_command()
+        conversation = self.application.conversation
+        item = conversation.take_pending_command() or conversation.take_next_command()
         if item is not None:
+            self._refresh_queue()
             # 导航期间可能再次切换视图，执行前重新核验完整队列项的目标。
             self._run_queued_command(item)
             if not self.busy:
                 self._drain_pending_intent()
+            return
+        if self._queue_paused_after_undo:
+            # 撤销后保留消息，直到用户下一次主动提交。
             return
         self._dispatch_queue()
 
@@ -733,7 +738,7 @@ class ChatApp(ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixi
         self.application.conversation.begin_turn(session_id)
         self._progress_started = time.monotonic()
         self._progress_phase = "Working"
-        self.query_one("#input", BarInput).set_hint("Message to queue · Esc to stop")
+        self.query_one("#input", BarInput).set_hint("Message or /command · Esc to stop")
         self._render_model_status()
 
     def _end_ask(self, turn_id: int | None) -> bool:
@@ -801,19 +806,19 @@ class ChatApp(ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixi
         event.input.value = ""
         if not line:
             return
+        palette = self.query_one("#cmd-palette", CommandPalette)
+        if line.startswith("/"):
+            if (palette.display and palette.current
+                    and palette.prefix == event.value[1:] and " " not in event.value):
+                self.run_command_from_palette(palette.current)
+                return
+            palette.close()
+            self._submit_command(line)
+            return
+        palette.close()
         if self._ask_active:
             self._submit_during_ask(line)
             return
         # 用户主动开始下一轮消息后，撤销期间暂停的旧队列才恢复接续。
-        if not line.startswith("/"):
-            self.application.conversation.resume_after_undo()
-        if line.startswith("/"):
-            palette = self.query_one("#cmd-palette", CommandPalette)
-            if palette.display and palette.current and " " not in event.value:
-                self.run_command_from_palette(palette.current)
-                return
-            palette.close()
-            self._command(line)
-            return
-        self.query_one("#cmd-palette", CommandPalette).close()
+        self.application.conversation.resume_after_undo()
         self._start_ask(line)

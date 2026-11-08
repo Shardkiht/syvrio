@@ -234,11 +234,14 @@ class SettingsUseCases:
         if llm.is_spark:
             if value not in SPARK_THINKING_MODES:
                 return SettingsResult(False, "Thinking mode must be enabled, auto, or disabled.")
-            llm.spark_thinking = value
+            new_llm = replace(llm, spark_thinking=value)
         else:
-            llm.reasoning_effort = value or None
+            new_llm = replace(llm, reasoning_effort=value or None)
+        self.service.config.llm = new_llm
         if self.service.config_path:
             write_config(self.service.config_path, self.service.config)
+        if self.runtime is not None:
+            self.runtime.reload_llm(self.service.config)
         label, current = self.reasoning_selection()
         return SettingsResult(True, f"{label}: {current or 'default'}", True)
 

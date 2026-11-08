@@ -27,11 +27,23 @@ _EVENTS = frozenset({
     "command.failed", "cursor.changed", "undo.failed",
     "git_sync.failed", "git_sync.scheduler_failed", "git_sync.status_failed",
     "reflection.schedule_failed", "reflection.state_failed", "reflection.summary_failed",
+    "latency.turn.started", "latency.turn.finished",
+    "latency.recall.started", "latency.recall.finished",
+    "latency.context.started", "latency.context.finished",
+    "latency.model.started", "latency.model.request", "latency.model.stream_open",
+    "latency.model.first_chunk", "latency.model.first_reasoning", "latency.model.first_text",
+    "latency.model.first_tool", "latency.model.finished",
+    "latency.tools.started", "latency.tool.finished", "latency.tools.finished",
+    "latency.completion.started", "latency.completion.finished",
 })
 _FIELDS = frozenset({
     "follow", "selecting", "selected", "grabbed", "scroll_y", "scroll_max",
     "streaming", "queued", "busy",
     "native", "suspended", "cursor_x", "cursor_y", "elapsed_ms",
+})
+_LATENCY_FIELDS = frozenset({
+    "turn", "step", "call", "at_ms", "elapsed_ms", "ok", "cancelled", "estimated_tokens",
+    "prompt_tokens", "completion_tokens", "compacted", "tool_count", "tool_index",
 })
 _lock = RLock()
 _listener: QueueListener | None = None
@@ -52,6 +64,7 @@ def start_diagnostics(config_file: Path | None = None) -> Path | None:
     with _lock:
         if _listener is not None:
             return _path
+        handler = None
         try:
             paths = load_config(config_file).paths(config_file)
             paths.validate()
@@ -59,13 +72,21 @@ def start_diagnostics(config_file: Path | None = None) -> Path | None:
             path.parent.mkdir(parents=True, exist_ok=True)
             handler = _QuietFileHandler(path, maxBytes=2 * 1024 * 1024,
                                         backupCount=3, encoding="utf-8")
+            latency_handler = _QuietFileHandler(path.with_name("latency.log"), maxBytes=2 * 1024 * 1024,
+                                                backupCount=3, encoding="utf-8")
         except (OSError, ConfigError, ValueError):
+            if handler is not None:
+                handler.close()
             print("Local diagnostics unavailable: cannot open log file.", file=sys.stderr)
             return None
-        handler.setFormatter(logging.Formatter("%(message)s"))
+        formatter = logging.Formatter("%(message)s")
+        handler.setFormatter(formatter)
+        latency_handler.setFormatter(formatter)
+        handler.addFilter(lambda record: record.name == "syvrio.diagnostics")
+        latency_handler.addFilter(logging.Filter("syvrio.latency"))
         _queue = Queue(maxsize=1024)
         _handler = handler
-        _listener = QueueListener(_queue, handler)
+        _listener = QueueListener(_queue, handler, latency_handler)
         _listener.start()
         _path = path
         record_event("app.start")
@@ -83,7 +104,8 @@ def stop_diagnostics() -> None:
         # full queue cannot prevent shutdown. No producers enqueue under this lock.
         _queue.join()
         _listener.stop()
-        _handler.close()
+        for handler in _listener.handlers:
+            handler.close()
         _listener = _handler = _queue = _path = None
 
 
@@ -103,23 +125,25 @@ def _safe_traceback(error: BaseException) -> str:
 
 
 def record_event(event: str, error: BaseException | None = None, **state: bool | int | float) -> None:
-    """Only fixed event names and numeric UI state may cross the privacy boundary."""
+    """Write allowlisted events and state. Latency entries never include error text."""
     if event not in _EVENTS:
         return
     with _lock:
         if _queue is None:
             return
+        latency = event.startswith("latency.")
+        fields = _LATENCY_FIELDS if latency else _FIELDS
         payload = {
             "time": datetime.now(timezone.utc).isoformat(), "event": event,
             "pid": os.getpid(), "version": __version__, "platform": platform.system(),
             "python": platform.python_version(),
             "thread": current_thread().name, "level": "ERROR" if error is not None else "INFO",
             "state": {key: value for key, value in state.items()
-                      if key in _FIELDS and type(value) in (bool, int, float)},
+                      if key in fields and type(value) in (bool, int, float)},
         }
-        if error is not None:
+        if error is not None and not latency:
             payload["traceback"] = _safe_traceback(error)
-        record = logging.LogRecord("syvrio.diagnostics", logging.INFO, "", 0,
+        record = logging.LogRecord("syvrio.latency" if latency else "syvrio.diagnostics", logging.INFO, "", 0,
                                    json.dumps(payload, ensure_ascii=False), (), None)
         try:
             _queue.put_nowait(record)

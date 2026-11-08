@@ -21,6 +21,7 @@ from .contracts import (
 SAFE_COMMANDS = frozenset({
     "/new", "/sessions", "/exit", "/quit", "/help", "/model",
     "/status", "/topics", "/summary", "/pending", "/git",
+    "/think", "/context", "/setup", "/rename", "/import", "/inferences", "/profile", "/dream",
 })
 
 
@@ -175,6 +176,13 @@ class ConversationUseCases:
     def take_next(self) -> QueuedLine | None:
         with self._lock:
             return self.queue.pop(0) if self.queue else None
+
+    def take_next_command(self) -> QueuedLine | None:
+        with self._lock:
+            for index, item in enumerate(self.queue):
+                if item.line.startswith("/"):
+                    return self.queue.pop(index)
+        return None
 
     def purge_undo(self) -> tuple[int, bool]:
         with self._lock:

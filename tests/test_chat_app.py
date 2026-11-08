@@ -730,9 +730,9 @@ async def test_import_command_uses_worker_and_releases_busy(tmp_path, monkeypatc
             await pilot.press("enter")
         for _ in range(100):
             await pilot.pause()
-            if not app.busy:
+            if not app._import_running:
                 break
-        assert not app.busy
+        assert not app._import_running and not app.busy
         assert bool(app.service.store.entries()) is apply
         assert not app.query_one("#input", Input).disabled
 
@@ -743,9 +743,9 @@ async def test_import_error_releases_busy(tmp_path):
         app._command(f'/import "{tmp_path / "missing.pdf"}"')
         for _ in range(100):
             await pilot.pause()
-            if not app.busy:
+            if not app._import_running:
                 break
-        assert not app.busy
+        assert not app._import_running and not app.busy
         assert any("import failed" in str(card.render()).lower() for card in app.query(".card"))
 
 
@@ -3704,6 +3704,90 @@ async def test_input_stays_enabled_during_ask(tmp_path):
         await _wait_idle(app, pilot)
 
 
+async def test_slash_commands_during_streaming_use_palette_and_execute(tmp_path, monkeypatch):
+    app = build_app(tmp_path, [])
+    gated = GatedChatModel([AssistantTurn(content="streaming reply")], stream_first=True)
+    gate = threading.Event()
+    gated.gates.append(gate)
+    app.runtime.model = gated
+    commands = []
+    monkeypatch.setattr(app, "_command", commands.append)
+    async with app.run_test(size=(120, 40)) as pilot:
+        widget = app.query_one("#input", Input)
+        try:
+            widget.value = "question"
+            await pilot.press("enter")
+            await _wait_ask_started(app, pilot)
+            for _ in range(100):
+                await pilot.pause()
+                if app._stream_buffer:
+                    break
+            assert app._stream_buffer == "streaming reply"
+
+            await pilot.press("slash", "down", "enter")
+            assert commands == ["/sessions"]
+            assert not app._queue
+
+            widget.value = "/th"
+            await pilot.pause()
+            await pilot.press("enter")
+            widget.value = "/profile r"
+            widget.cursor_position = len(widget.value)
+            await pilot.press("tab", "enter")
+            widget.value = "/not-a-command"
+            await pilot.press("enter")
+            assert commands == ["/sessions", "/think", "/profile refresh", "/not-a-command"]
+            assert not app._queue
+        finally:
+            gate.set()
+        await _wait_idle(app, pilot)
+        assert gated.calls == ["question"]
+
+
+async def test_spark_thinking_selection_during_reply_applies_to_next_turn(tmp_path, monkeypatch):
+    from textual.widgets import ListView
+    from syvrio.llm import LiteLLMChatModel, ToolCall
+
+    app = build_app(tmp_path, [])
+    app.service.config.llm = LLMConfig(provider="spark", model="spark-x2.6", spark_thinking="enabled")
+    app.runtime.reload_llm(app.service.config)
+    gate = threading.Event()
+    calls = []
+
+    def chat(model, messages, tools, on_delta=None, cancel=None):
+        calls.append(model.config.spark_thinking)
+        if len(calls) == 1:
+            gate.wait(timeout=20)
+            return AssistantTurn(tool_calls=[ToolCall("tool-1", "test_missing_tool", {})])
+        on_delta("answer")
+        return AssistantTurn(content="answer")
+
+    monkeypatch.setattr(LiteLLMChatModel, "chat", chat)
+    async with app.run_test(size=(120, 40)) as pilot:
+        widget = app.query_one("#input", Input)
+        try:
+            widget.value = "first question"
+            await pilot.press("enter")
+            for _ in range(100):
+                await pilot.pause()
+                if calls:
+                    break
+            assert calls == ["enabled"]
+            widget.value = "/think"
+            await pilot.press("enter")
+            await pilot.pause()
+            app.screen.query_one("#pick-list", ListView).index = 2
+            await pilot.press("enter")
+            assert app._ask_active
+            assert app.service.config.llm.spark_thinking == "disabled"
+            widget.value = "next question"
+            await pilot.press("enter")
+        finally:
+            gate.set()
+        await _wait_idle(app, pilot)
+        assert calls == ["enabled", "enabled", "disabled"]
+
+
 async def test_submit_during_ask_queues_fifo_across_sessions(tmp_path):
     # 验收场景：A 生成中 → 切 B（/new）→ A/B 各排队一条 → 按提交顺序全局执行，
     # 回复各自落回原会话，且任意时刻至多一个请求。
@@ -4196,7 +4280,7 @@ async def test_queued_command_skipped_when_target_unavailable(tmp_path):
         await _wait_ask_started(app, pilot)
         session_a = app.runtime.current.id
 
-        app.query_one("#input", Input).value = "/rename queued"
+        app.query_one("#input", Input).value = "/compact"
         await pilot.press("enter")
         await pilot.pause()
         session_b = app.sessions.create().id
@@ -4370,26 +4454,66 @@ async def test_delete_blocked_while_generating(tmp_path):
 
 
 async def test_command_during_ask_queues_and_runs_after_reply(tmp_path):
-    # 回归：等待期的 /compact 进全局队列，回复完成后执行，而不是取消进行中的请求。
     app = build_app(tmp_path, [])
-    gated = GatedChatModel([AssistantTurn(content="reply body")])
-    gated.gates.append(threading.Event())
+    gated = GatedChatModel([AssistantTurn(content="reply body"), AssistantTurn(content="next reply")])
+    gated.gates = [threading.Event(), threading.Event()]
     app.runtime.model = gated
     async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        app.query_one("#input", Input).value = "q"
-        await pilot.press("enter")
-        await _wait_ask_started(app, pilot)
+        widget = app.query_one("#input", Input)
+        try:
+            for line in ["q", "next question", "/compact"]:
+                widget.value = line
+                await pilot.press("enter")
+                await _wait_ask_started(app, pilot)
+            assert [item.line for item in app._queue] == ["next question", "/compact"]
+            assert len(gated.calls) == 1
 
-        app.query_one("#input", Input).value = "/compact"
-        await pilot.press("enter")
-        await pilot.pause()
-        assert [item.line for item in app._queue] == ["/compact"]
-        assert len(gated.calls) == 1  # 请求未被取消
-
-        gated.gates[0].set()
+            gated.gates[0].set()
+            for _ in range(200):
+                await pilot.pause()
+                if len(gated.calls) == 2:
+                    break
+            assert gated.calls == ["q", "next question"]
+            assert any("No earlier records" in str(card.render()) for card in app.query(".event-card"))
+        finally:
+            for gate in gated.gates:
+                gate.set()
         await _wait_idle(app, pilot)
-        assert any("No earlier records" in str(card.render()) for card in app.query(".event-card"))
+
+
+async def test_import_during_reply_runs_in_background(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    app = build_app(tmp_path, [])
+    model = GatedChatModel([AssistantTurn(content="reply")])
+    reply_gate, import_gate, import_started = (threading.Event() for _ in range(3))
+    model.gates.append(reply_gate)
+    app.runtime.model = model
+
+    def import_path(*args, **kwargs):
+        import_started.set()
+        import_gate.wait(timeout=20)
+        return SimpleNamespace(errors=[])
+
+    monkeypatch.setattr(app.application.memory, "import_path", import_path)
+    async with app.run_test(size=(120, 40)) as pilot:
+        widget = app.query_one("#input", Input)
+        try:
+            widget.value = "q"
+            await pilot.press("enter")
+            await _wait_ask_started(app, pilot)
+            widget.value = "/import example.txt"
+            await pilot.press("enter")
+            for _ in range(100):
+                await pilot.pause()
+                if import_started.is_set():
+                    break
+            assert import_started.is_set() and app._ask_active
+            assert not widget.disabled and not app._queue
+        finally:
+            reply_gate.set()
+            import_gate.set()
+        await _wait_idle(app, pilot)
 
 
 async def test_switch_consolidate_skipped_while_ask_in_flight(tmp_path, monkeypatch):

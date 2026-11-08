@@ -353,10 +353,9 @@ class ChatCommandsMixin:
         self._drain_pending_intent()
 
     def _after_import(self, message: str) -> None:
+        self._import_running = False
         self.add_card(message)
         self.update_status()
-        self._end_navigation()
-        self._drain_pending_intent()
 
     def _run_import(self, argument: str) -> None:
         # 不用 POSIX shlex 拆路径，避免吃掉 Windows 反斜线。
@@ -393,10 +392,13 @@ class ChatCommandsMixin:
         self._start_import(path, True)
 
     def _start_import(self, path: Path, apply: bool) -> None:
-        self._begin_navigation()
+        if self._import_running:
+            self.notify("An import is already running.")
+            return
+        self._import_running = True
         self.add_card("Starting import: parsing is local; extraction calls the configured model and may incur charges. " + ("Memories will be saved." if apply else "Preview only; memories will not be saved."))
         self.run_worker(partial(self._import_work, path, apply),
-                        group="ask", thread=True, exclusive=True, exit_on_error=False)
+                        group="import", thread=True, exit_on_error=False)
 
     def _import_work(self, path: Path, apply: bool) -> None:
         try:
@@ -405,7 +407,7 @@ class ChatCommandsMixin:
             )
         except Exception as exc:
             record_event("command.failed", exc)
-            self.call_from_thread(self._finish_navigation_error, f"Import failed: {exc}")
+            self.call_from_thread(self._after_import, f"Import failed: {exc}")
             return
         self.call_from_thread(self.refresh_pending)
         message = "Import complete." if apply else "Preview complete; use /import <path> --apply to analyze again and save."

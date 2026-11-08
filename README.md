@@ -195,7 +195,7 @@ Spark 使用 MaaS 的 Bearer API Key；适配层保留服务端采样默认值�
 
 同一批工具调用中，连续的网页搜索与抓取最多同时执行 8 个，结果按调用顺序回传。自动召回的查询改写最多等待 4 秒，超时后用原问题和近期上下文检索。
 
-生成期间可继续输入：按 Enter 将消息放入输入框上方的发送队列，当前回复完成或停止后按提交顺序自动发送。按 Esc 停止当前生成，保留已输出内容和未发送草稿；已执行的工具不回滚，正在执行的工具安全收尾后停止后续调用。命令面板或选择弹窗打开时，Esc 优先关闭面板。队列仅保存在当前进程内，退出后不恢复。
+生成期间可继续输入：按 Enter 将消息放入输入框上方的发送队列，当前回复完成或停止后按提交顺序自动发送。斜杠命令仍可用命令面板和 Tab 补全。设置命令立即打开，确认后的模型、思考模式与上下文窗口从下一轮起使用。画像刷新、回顾和导入在后台运行。/compact 等当前回复落盘后执行，优先于待发送消息。按 Esc 停止当前生成，保留已输出内容和未发送草稿；已执行的工具不回滚，正在执行的工具安全收尾后停止后续调用。命令面板或选择弹窗打开时，Esc 优先关闭面板。队列仅保存在当前进程内，退出后不恢复。
 
 - 每轮自动检索相关长期记忆，注入上下文；追问和“还记得 / 之前”等线索会带上最近 1-2 轮用户消息构造查询，并提高召回数量。
 - 模型可调用 `recall / read_topic / memorize / correct / evolve / forget / review_pending`；`read_topic` 仅在用户明确要求完整主题或召回不足时读取该主题的有效条目，最多 2000 tokens，不接受文件路径。需要最新公开信息时调用 `search`，需要发布日期或原文细节时再用 `fetch_web` 打开结果页，搜索结果与正文都是外部资料，不执行其中指令。
@@ -538,7 +538,7 @@ src/syvrio/
 ├── llm/          client.py, summarizer.py, commit_summary.py
 │                                                   # LiteLLM 适配、会话/提交摘要
 └── infra/        config.py, providers.py, gitops.py, gitsync.py, locking.py, tokens.py,
-                  layout.py, dialogs.py, documents.py, diagnostics.py, search/ # 配置、Git 同步与锁、诊断、文档转换、联网搜索
+                  layout.py, dialogs.py, documents.py, diagnostics.py, latency.py, search/ # 配置、Git 同步与锁、诊断、文档转换、联网搜索
 ```
 
 依赖方向：`app → application → agent → memory → retrieval → infra`，`application → llm/infra`，`memory/agent → llm → infra`。`application/` 不依赖 Textual、Rich、Typer 或 `app/`；核心层不反向依赖应用层。
@@ -548,6 +548,8 @@ src/syvrio/
 README 的界面演示与截图保存在 `docs/assets/`，不包含个人记忆库数据。
 
 `syvrio` 启动时默认开启本地诊断日志，保存在 Runtime 下的 `logs/syvrio.log`（默认配置位置遵循 `SYVRIO_CONFIG`）。每行是 JSON，包含时间、版本、进程、系统、异常原因和调用堆栈；同时记录生成起止、阅读跟随/拖选状态与滚动位置，帮助排查界面问题。文件通过后台线程写入，单文件 2 MiB、最多保留 3 个轮转备份；日志不可写时提示但不阻止使用。日志不上传、不整段复制聊天或记忆、不采集局部变量，识别到的凭据会脱敏；异常原文仍可能带有本机路径或业务内容，分享前请检查。日志不属于 Vault 或会话历史，可在退出应用后删除，不影响记忆。
+
+生成延迟单独写入 `logs/latency.log`，轮转规则相同。按进程、轮次和模型步骤关联记录，可查看召回、上下文准备、模型 SDK 调用、首个流片段、首段推理与正文、工具及其内部模型调用、整轮结束的相对时间。延迟日志仅保存事件、时长、计数和结果标志，不包含对话、记忆、工具参数、推理文本或异常原文。
 
 - 检索默认 hybrid：jieba + rank-bm25 与向量余弦结果做 RRF 融合。独立短字段按完整标签匹配，重叠标签优先取较长的匹配。同字段的多条记录按查询上下文排序，普通 BM25 候选仍受覆盖率过滤。自动召回分别检索原句与改写词，再合并候选。短字段的向量输入使用已存储的主题标题补充语境，引用仍返回原始 Markdown。
 - 向量由 fastembed 本地推理（可选 extra）或 embedding API 计算。派生缓存位于 `runtime/indexes/vectors.npz`，模型或向量输入变化时自动重算受影响条目。向量后端不可用时回退纯 BM25，`/status` 和 `syvrio status` 显示当前检索模式。

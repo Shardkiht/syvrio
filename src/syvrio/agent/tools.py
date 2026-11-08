@@ -5,7 +5,9 @@ from .recall import memory_references
 import json
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
+from contextvars import copy_context
 from dataclasses import dataclass
+from functools import partial
 from threading import Event
 from typing import Callable
 from pathlib import Path
@@ -99,6 +101,7 @@ class ToolRegistry:
             )
         started = time.monotonic()
         executor = self._executors.get(spec.executor, self._executors["default"])
+        context = copy_context()
         finished: list[float] = []
         if shared_deadline or cancel is not None:
             def run() -> ToolOutcome:
@@ -109,9 +112,9 @@ class ToolRegistry:
                 finally:
                     finished.append(time.monotonic())
 
-            future = executor.submit(run)
+            future = executor.submit(partial(context.run, run))
         else:
-            future = executor.submit(spec.handler, arguments)
+            future = executor.submit(partial(context.run, spec.handler), arguments)
         return lambda: self._finish(spec, future, started, shared_deadline, finished)
 
     @staticmethod
