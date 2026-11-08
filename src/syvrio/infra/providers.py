@@ -316,6 +316,7 @@ base_url = {toml_literal(config.llm.base_url)}
 model = {toml_literal(config.llm.model)}
 api_key_env = {toml_literal(config.llm.api_key_env)}
 reasoning_effort = {toml_literal(config.llm.reasoning_effort or '')}
+spark_thinking = {toml_literal(config.llm.spark_thinking)}
 fallbacks = {toml_literal(config.llm.fallbacks)}
 num_retries = {config.llm.num_retries}
 temperature = {config.llm.temperature}
@@ -770,6 +771,7 @@ def _run_llm_setup(config: Config, path: Path) -> dict:
         model=model.strip(),
         api_key_env=env_name.strip(),
         reasoning_effort=effort,
+        spark_thinking=config.llm.spark_thinking,
         fallbacks=config.llm.fallbacks,
         num_retries=config.llm.num_retries,
         temperature=config.llm.temperature,

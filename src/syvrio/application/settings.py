@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+from ..infra.config import SPARK_THINKING_MODES
 from ..infra.providers import (
     PRESETS,
     delete_api_key,
@@ -92,12 +93,21 @@ class SettingsUseCases:
         ]
 
     def supports_reasoning(self) -> bool:
-        return "reasoning_effort" in supported_params(self.service.config.llm.litellm_model())
+        llm = self.service.config.llm
+        return llm.is_spark or "reasoning_effort" in supported_params(llm.litellm_model())
 
     def reasoning_options(self) -> list[tuple[str, str]]:
+        if self.service.config.llm.is_spark:
+            return [(mode, mode) for mode in SPARK_THINKING_MODES]
         if not self.supports_reasoning():
             return []
         return [("", "default"), ("low", "low"), ("medium", "medium"), ("high", "high")]
+
+    def reasoning_selection(self) -> tuple[str, str]:
+        llm = self.service.config.llm
+        if llm.is_spark:
+            return "Thinking mode", llm.spark_thinking or "enabled"
+        return "Reasoning effort", llm.reasoning_effort or ""
 
     def context_options(self) -> list[int]:
         max_input = self._max_input()
@@ -215,15 +225,22 @@ class SettingsUseCases:
             True,
             f"Model switched: {self.runtime.model_label}"
             f" · context {format_tokens(context_window)}"
-            f" · reasoning {new_llm.reasoning_effort or 'default'}",
+            f" · reasoning {self.reasoning_selection()[1] or 'default'}",
             True,
         )
 
     def apply_reasoning(self, value: str) -> SettingsResult:
-        self.service.config.llm.reasoning_effort = value or None
+        llm = self.service.config.llm
+        if llm.is_spark:
+            if value not in SPARK_THINKING_MODES:
+                return SettingsResult(False, "Thinking mode must be enabled, auto, or disabled.")
+            llm.spark_thinking = value
+        else:
+            llm.reasoning_effort = value or None
         if self.service.config_path:
             write_config(self.service.config_path, self.service.config)
-        return SettingsResult(True, f"Reasoning effort: {value or 'default'}", True)
+        label, current = self.reasoning_selection()
+        return SettingsResult(True, f"{label}: {current or 'default'}", True)
 
     def apply_context(self, value: int) -> SettingsResult:
         max_input = self._max_input()

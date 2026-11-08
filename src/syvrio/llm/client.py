@@ -97,11 +97,18 @@ def complete(
 
 
 def _adapt_spark_params(config: LLMConfig, kwargs: dict) -> None:
-    if config.provider.strip().lower() != "spark":
+    if not config.is_spark:
         return
     # MaaS 固定采样参数，thinking 不等于 OpenAI reasoning_effort；JSON 由提示词约束。
     for name in ("temperature", "reasoning_effort", "response_format", "stream_options"):
         kwargs.pop(name, None)
+    if config.spark_thinking:
+        kwargs["extra_body"] = {"thinking": {"type": config.spark_thinking}}
+        if kwargs.get("fallbacks"):
+            # LiteLLM inherits extra_body on fallback requests unless explicitly overridden.
+            kwargs["fallbacks"] = [
+                {"model": model, "extra_body": None} for model in kwargs["fallbacks"]
+            ]
     if "max_tokens" in kwargs:
         kwargs["max_completion_tokens"] = kwargs.pop("max_tokens")
 

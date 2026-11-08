@@ -17,6 +17,7 @@ DEFAULT_MODEL = "deepseek-flash"
 DEFAULT_API_KEY_ENV = "DEEPSEEK_API_KEY"
 DEFAULT_EMBEDDING_MODEL = "BAAI/bge-small-zh-v1.5"
 DEFAULT_EMBEDDING_BASE_URL = "https://api.siliconflow.cn/v1"
+SPARK_THINKING_MODES = ("enabled", "auto", "disabled")
 CONFIG_FILENAME = "syvrio.toml"
 _TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 
@@ -45,6 +46,11 @@ class LLMConfig:
     num_retries: int = 2
     temperature: float = 0.1
     timeout: float = 60.0
+    spark_thinking: str = ""
+
+    @property
+    def is_spark(self) -> bool:
+        return self.provider.strip().lower() == "spark"
 
     def litellm_model(self) -> str:
         provider = (self.provider or "").strip().lower()
@@ -317,6 +323,8 @@ def _validate_range(
 
 def _validate_config(data: dict) -> None:
     _validate_types(data, asdict(Config(vault=Path("."))))
+    if data.get("llm", {}).get("spark_thinking", "") not in ("", *SPARK_THINKING_MODES):
+        raise ConfigError("配置字段 llm.spark_thinking 必须为空或为 enabled、auto、disabled。")
     for name in (
         "llm.timeout", "chat.context_window", "chat.max_tool_steps", "chat.tool_timeout",
         "search.timeout", "search.max_results", "search.fetch_timeout",
@@ -369,6 +377,7 @@ def load_config(path: Path | str | None = None) -> Config:
         num_retries=int(llm_raw.get("num_retries", 2)),
         temperature=float(llm_raw.get("temperature", 0.1)),
         timeout=float(llm_raw.get("timeout", 60.0)),
+        spark_thinking=llm_raw.get("spark_thinking", ""),
     )
     chat_raw = data.get("chat", {})
     chat = ChatConfig(
@@ -526,6 +535,7 @@ base_url = {toml_literal(DEFAULT_BASE_URL)}
 model = {toml_literal(DEFAULT_MODEL)}
 api_key_env = {toml_literal(DEFAULT_API_KEY_ENV)}
 reasoning_effort = {toml_literal("")}
+spark_thinking = {toml_literal("")}
 fallbacks = {toml_literal([])}
 num_retries = 2
 temperature = 0.1

@@ -107,6 +107,7 @@ base_url = "https://api.deepseek.com/v1"
 model = "deepseek-flash"
 api_key_env = "DEEPSEEK_API_KEY"
 reasoning_effort = ""         # low / medium / high；仅模型支持时生效
+spark_thinking = ""           # 仅 Spark MaaS；enabled / auto / disabled，留空使用供应商默认值
 fallbacks = []                 # 例如 ["openai/gpt-4o-mini"]
 num_retries = 2
 temperature = 0.1
@@ -220,7 +221,7 @@ Spark 使用 MaaS 的 Bearer API Key；适配层保留服务端采样默认值�
 | `/status` | 会话、模型、检索模式、上下文和待确认状态 |
 | `/git` | 打开 Git 管理界面：查看仓库、Remote/Upstream、工作区与未推送提交，`Ctrl+S` 打开同步确认（默认 Cancel，显式选择 Synchronize 才执行） |
 | `/model` | 搜索切换模型；`Ctrl+P` 打开独立供应商管理，`Ctrl+R` 刷新，`Ctrl+N` 输入自定义模型名。列表先用缓存或预设打开，再后台刷新；`/model refresh` 跳过旧缓存 |
-| `/think` | 切换思考强度：默认 / low / medium / high，仅模型支持时可选，实时生效并写回配置 |
+| `/think` | 切换思考设置并写回配置。Spark MaaS 可选 enabled / auto / disabled，分别表示强制思考、模型自行判断、关闭思考。其他支持思考强度的模型可选默认 / low / medium / high |
 | `/context` | 切换上下文长度：档位按当前模型上限生成，也可自定义，下一轮即生效 |
 | `/setup` | 提示完整配置向导需在终端运行 `syvrio setup`（内置厂商的 Key 增删在 `/model` 按 `Ctrl+P` 管理） |
 | `/rename <title>` | 重命名会话 |

@@ -632,9 +632,9 @@ class ChatCommandsMixin:
         if not options:
             self.add_card(f"{self.application.conversation.model_label} does not support reasoning effort; use /model to switch to a reasoning-capable model.")
             return
-        current = self.application.config.llm.reasoning_effort or ""
+        title, current = self.application.settings.reasoning_selection()
         entries = [(label, value, value == current) for value, label in options]
-        self.push_screen(PickScreen(f"Reasoning effort: {current or 'default'}", entries, self._reasoning_picked))
+        self.push_screen(PickScreen(f"{title}: {current or 'default'}", entries, self._reasoning_picked))
 
     def _reasoning_picked(self, value) -> None:
         if value is None:

@@ -1,5 +1,9 @@
 # 开发交接
 
+## Spark MaaS 思考模式
+
+- Spark 的 `/think` 提供 `enabled`、`auto`、`disabled`，保存在 `[llm].spark_thinking`。旧配置未设置时沿用 Spark 默认开启。流式和非流式请求均使用 MaaS 的 `thinking.type`，备用模型请求不继承该字段。其他模型继续使用 `reasoning_effort`。
+
 ## 工具并行与召回改写时限
 
 - 模型一次返回的连续 `search` / `fetch_web` 调用最多 8 个同时执行。其他工具保留顺序并隔开并行批次，工具结果仍按模型返回的调用顺序记录与回传。搜索缓存的写入在同一进程内串行合并。

@@ -107,6 +107,7 @@ base_url = "https://api.deepseek.com/v1"
 model = "deepseek-flash"
 api_key_env = "DEEPSEEK_API_KEY"
 reasoning_effort = ""         # low / medium / high; only effective when supported by the model
+spark_thinking = ""           # Spark MaaS only. enabled / auto / disabled, or empty for the provider default
 fallbacks = []                 # e.g. ["openai/gpt-4o-mini"]
 num_retries = 2
 temperature = 0.1
@@ -219,7 +220,7 @@ In-session commands:
 | `/status` | Session, model, retrieval mode, context, and pending status |
 | `/git` | Open Git management: repository, Remote/Upstream, working tree and unpushed commits; `Ctrl+S` opens sync confirmation (defaults to Cancel and runs only after explicitly selecting Synchronize) |
 | `/model` | Search and switch models; `Ctrl+P` opens separate provider management, `Ctrl+R` refreshes, and `Ctrl+N` enters a custom model name. Opens from cache or presets, then refreshes in the background; `/model refresh` skips the old cache |
-| `/think` | Switch reasoning effort: default / low / medium / high, only when the model supports it; applies immediately and persists to the config |
+| `/think` | Set and save the model's thinking preference. Spark MaaS offers enabled / auto / disabled. Other models with reasoning effort support offer default / low / medium / high |
 | `/context` | Switch the context window: presets generated from the current model's limit, custom value allowed; effective on the next turn |
 | `/setup` | Reminds you that the full setup wizard runs `syvrio setup` in a terminal (manage built-in provider keys with `Ctrl+P` in `/model`) |
 | `/rename <title>` | Rename the session |

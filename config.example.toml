@@ -32,6 +32,8 @@ model = "deepseek-flash"
 api_key_env = "DEEPSEEK_API_KEY"
 # 支持该参数的模型可选 low / medium / high；留空表示默认
 reasoning_effort = ""
+# 仅 Spark MaaS 使用。可选 enabled / auto / disabled，留空使用供应商默认值。
+spark_thinking = ""
 temperature = 0.1
 timeout = 60.0
 

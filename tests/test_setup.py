@@ -79,7 +79,8 @@ def test_spark_preset_and_configuration_roundtrip(tmp_path):
     assert load_config(path).llm == llm
 
 
-def test_spark_chat_parameters_match_maas_contract(monkeypatch):
+@pytest.mark.parametrize("mode", ["", "enabled", "auto", "disabled"])
+def test_spark_chat_parameters_match_maas_contract(monkeypatch, mode):
     from types import SimpleNamespace
     from syvrio.llm import client
 
@@ -89,7 +90,8 @@ def test_spark_chat_parameters_match_maas_contract(monkeypatch):
     monkeypatch.setattr(client, "_litellm", lambda: fake)
     preset = next(item for item in PRESETS if item.key == "spark")
     config = LLMConfig(provider="spark", model=preset.model, base_url=preset.base_url,
-                       api_key_env=preset.api_key_env, reasoning_effort="high")
+                       api_key_env=preset.api_key_env, reasoning_effort="high", spark_thinking=mode,
+                       fallbacks=["openai/gpt-4o-mini"])
     tools = [{"type": "function", "function": {"name": "synthetic_tool", "parameters": {"type": "object"}}}]
     assert client.complete(config, [{"role": "user", "content": "合成输入"}], tools=tools,
                            response_format={"type": "json_object"}, max_tokens=128) == "response"
@@ -99,6 +101,9 @@ def test_spark_chat_parameters_match_maas_contract(monkeypatch):
     assert sent["api_key"] == "synthetic-key"
     assert sent["tools"] == tools and sent["max_completion_tokens"] == 128
     assert not {"temperature", "reasoning_effort", "response_format", "max_tokens"} & sent.keys()
+    assert sent.get("extra_body") == ({"thinking": {"type": mode}} if mode else None)
+    expected_fallback = {"model": "openai/gpt-4o-mini", "extra_body": None} if mode else "openai/gpt-4o-mini"
+    assert sent["fallbacks"] == [expected_fallback]
 
 
 def test_spark_streaming_preserves_deltas_and_usage(monkeypatch):
@@ -114,12 +119,14 @@ def test_spark_streaming_preserves_deltas_and_usage(monkeypatch):
     fake = SimpleNamespace(completion=lambda **kwargs: calls.append(kwargs) or iter(chunks),
                            completion_cost=lambda **kwargs: 0)
     monkeypatch.setattr(client, "_litellm", lambda: fake)
-    config = LLMConfig(provider="spark", model="spark-x2.6", api_key_env="SPARK_API_KEY", reasoning_effort="high")
+    config = LLMConfig(provider="spark", model="spark-x2.6", api_key_env="SPARK_API_KEY",
+                       reasoning_effort="high", spark_thinking="disabled")
     deltas = []
     result = client.LiteLLMChatModel(config).chat([{"role": "user", "content": "合成输入"}], [], on_delta=deltas.append)
     assert result.content == "合成回复" and deltas == ["合成", "回复"]
     assert result.usage.prompt_tokens == 3 and result.usage.completion_tokens == 2
     assert calls[0]["stream"] is True
+    assert calls[0]["extra_body"] == {"thinking": {"type": "disabled"}}
     assert not {"temperature", "reasoning_effort", "stream_options"} & calls[0].keys()
 
 
@@ -198,6 +205,7 @@ def test_load_config_rejects_wrong_types_and_ranges(tmp_path):
         ("[search]\nmax_requests = -2\n", "必须大于 0"),
         ("[search]\nmax_requests = 1.5\n", "必须是整数"),
         ("[search]\nmax_requests = \"nine\"\n", "必须是整数"),
+        ('[llm]\nspark_thinking = "high"\n', "llm.spark_thinking"),
     ]
     for content, message in cases:
         path = tmp_path / "syvrio.toml"

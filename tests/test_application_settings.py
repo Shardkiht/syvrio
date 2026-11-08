@@ -5,7 +5,7 @@ import pytest
 
 from syvrio.application import settings as settings_module
 from syvrio.application.settings import SettingsUseCases
-from syvrio.infra.config import Config, LLMConfig, RetrievalConfig
+from syvrio.infra.config import Config, LLMConfig, RetrievalConfig, load_config
 from syvrio.infra.providers import PRESETS
 from syvrio.memory.service import MemoryService
 
@@ -136,3 +136,20 @@ def test_reasoning_options_follow_model_support(tmp_path, monkeypatch):
 
     monkeypatch.setattr(settings_module, "supported_params", lambda *_: ())
     assert settings.reasoning_options() == []
+
+
+def test_spark_thinking_modes_persist_without_overwriting_reasoning_effort(tmp_path):
+    service, _, settings = build(tmp_path)
+    service.config_path = tmp_path / "config.toml"
+    llm = service.config.llm
+    llm.provider = "spark"
+    llm.model = "spark-x2.6"
+    llm.reasoning_effort = "medium"
+    assert settings.reasoning_selection() == ("Thinking mode", "enabled")
+    assert [value for value, _ in settings.reasoning_options()] == ["enabled", "auto", "disabled"]
+    assert not settings.apply_reasoning("high").ok
+    assert settings.apply_reasoning("auto").ok
+    assert settings.reasoning_selection() == ("Thinking mode", "auto")
+    saved = load_config(service.config_path).llm
+    assert saved.spark_thinking == "auto"
+    assert saved.reasoning_effort == "medium"
