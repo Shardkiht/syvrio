@@ -1321,6 +1321,26 @@ def test_progress_precedes_model_and_tool_execution(tmp_path, monkeypatch):
     assert progress == ["Preparing context", "Waiting for model", "Calling tool: recall", "Waiting for model"]
 
 
+def test_network_batch_runs_eight_calls_at_once():
+    from threading import Barrier
+    from syvrio.agent.runtime import _tool_results
+    from syvrio.agent.tools import ToolOutcome, ToolRegistry, ToolSpec
+
+    overlap = Barrier(8, timeout=4)
+
+    def search(args):
+        overlap.wait()
+        return ToolOutcome(True, str(args["index"]), "searched")
+
+    registry = ToolRegistry()
+    registry.register(ToolSpec("search", "", {}, search, timeout=5, executor="network"))
+    calls = [ToolCall(id=str(i), name="search", arguments={"index": i}) for i in range(8)]
+    results = list(_tool_results(registry, calls, None, None))
+    assert [(call.id, outcome.content) for call, outcome in results if outcome.ok] == [
+        (str(i), str(i)) for i in range(8)
+    ]
+
+
 def test_network_tools_share_a_batch_but_keep_results_and_writes_ordered(tmp_path, monkeypatch):
     from threading import Barrier, Event
     from syvrio.agent import runtime as module
