@@ -47,6 +47,7 @@ class LLMConfig:
     temperature: float = 0.1
     timeout: float = 60.0
     spark_thinking: str = ""
+    provider_urls: dict[str, str] = field(default_factory=dict)
 
     @property
     def is_spark(self) -> bool:
@@ -323,6 +324,9 @@ def _validate_range(
 
 def _validate_config(data: dict) -> None:
     _validate_types(data, asdict(Config(vault=Path("."))))
+    if any(not isinstance(url, str) or not url.strip()
+           for url in data.get("llm", {}).get("provider_urls", {}).values()):
+        raise ConfigError("配置字段 llm.provider_urls 的值必须是非空字符串。")
     if data.get("llm", {}).get("spark_thinking", "") not in ("", *SPARK_THINKING_MODES):
         raise ConfigError("配置字段 llm.spark_thinking 必须为空或为 enabled、auto、disabled。")
     for name in (
@@ -378,6 +382,7 @@ def load_config(path: Path | str | None = None) -> Config:
         temperature=float(llm_raw.get("temperature", 0.1)),
         timeout=float(llm_raw.get("timeout", 60.0)),
         spark_thinking=llm_raw.get("spark_thinking", ""),
+        provider_urls=dict(llm_raw.get("provider_urls", {})),
     )
     chat_raw = data.get("chat", {})
     chat = ChatConfig(
@@ -536,6 +541,7 @@ model = {toml_literal(DEFAULT_MODEL)}
 api_key_env = {toml_literal(DEFAULT_API_KEY_ENV)}
 reasoning_effort = {toml_literal("")}
 spark_thinking = {toml_literal("")}
+provider_urls = {{}}
 fallbacks = {toml_literal([])}
 num_retries = 2
 temperature = 0.1

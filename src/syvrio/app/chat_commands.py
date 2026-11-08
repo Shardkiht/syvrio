@@ -4,11 +4,10 @@ from functools import partial
 from pathlib import Path
 from rich.markup import escape
 
-from textual.widgets import Input
+from textual.widgets import Input, Static
 
 from ..infra.tokens import format_tokens
 from ..infra.diagnostics import record_event
-from ..llm import cached_provider_models, fetch_provider_models
 from .chat_widgets import ModelPickerScreen, PickScreen, SessionPickerScreen, TextInputScreen
 from .inference_screen import InferenceScreen
 from .command_catalog import SLASH_COMMANDS
@@ -443,10 +442,9 @@ class ChatCommandsMixin:
         )
 
     def _open_models_work(self, refresh: bool) -> None:
-        fetched = None if refresh else cached_provider_models(self.application.config.llm)
         try:
-            # 先不带能力标签开屏：LiteLLM 元数据首次导入很慢，放到后台刷新补全。
-            entries = self._model_entries(fetched, capabilities=False)
+            catalog = {} if refresh else self.application.settings.model_catalog(cached_only=True)
+            entries = self._model_entries(catalog, capabilities=False)
         except Exception as exc:
             record_event("command.failed", exc)
             self.call_from_thread(self._background_error, f"Loading models failed: {exc}")
@@ -454,7 +452,7 @@ class ChatCommandsMixin:
         self.call_from_thread(self._show_model_picker, entries, True, refresh)
 
     def _model_entries(
-        self, fetched: list[str] | None = None, *, capabilities: bool = True
+        self, fetched: dict[str, list[str]] | list[str] | None = None, *, capabilities: bool = True
     ) -> list[tuple]:
         options = self.application.settings.model_options(fetched, capabilities)
         return [
@@ -470,7 +468,8 @@ class ChatCommandsMixin:
     ) -> PickScreen:
         self._drain_pending_intent()
         picker = ModelPickerScreen(
-            f"Current model: {self.application.conversation.model_label}",
+            f"Current model: {self.application.conversation.model_label}"
+            + (" · Loading API model lists…" if background_refresh else ""),
             entries,
             self._model_picked,
             searchable=True,
@@ -490,22 +489,24 @@ class ChatCommandsMixin:
 
     def _refresh_models_work(self, picker: PickScreen, refresh: bool = False) -> None:
         try:
-            fetched = fetch_provider_models(self.application.config.llm, refresh=refresh)
-            # 即使线上列表不可用，也要用完整能力标签覆盖先前的快速清单。
-            entries = self._model_entries(
-                fetched or cached_provider_models(self.application.config.llm)
-            )
+            catalog = self.application.settings.model_catalog(refresh=refresh)
+            entries = self._model_entries(catalog)
         except Exception as exc:
             record_event("command.failed", exc)
+            self.call_from_thread(self._apply_fetched_models, picker, [], "Model discovery failed")
             return
-        if entries:
-            self.call_from_thread(self._apply_fetched_models, picker, entries)
+        unavailable = [provider for provider, models in catalog.items() if not models]
+        status = ("No configured providers" if not catalog else
+                  f"No API models: {', '.join(unavailable)}" if unavailable else "")
+        self.call_from_thread(self._apply_fetched_models, picker, entries, status)
 
-    def _apply_fetched_models(self, picker: PickScreen, entries: list[tuple]) -> None:
+    def _apply_fetched_models(self, picker: PickScreen, entries: list[tuple], status: str = "") -> None:
         # 异步刷新完成时用户可能已离开 /model；只更新仍然打开的这一屏。
         if self.screen is not picker:
             return
         picker.update_options(entries)
+        title = f"Current model: {self.application.conversation.model_label}"
+        picker.query_one(".pick-title", Static).update(f"{title} · {status}" if status else title)
 
     def _model_picked(self, value) -> None:
         if value is None:
@@ -515,7 +516,8 @@ class ChatCommandsMixin:
         if provider == "__providers__":
             self.push_screen(PickScreen(
                 "Providers (Esc to return to models)",
-                [("Add provider", "add"), ("Update provider key", "update"), ("Remove provider", "remove")],
+                [("Add provider", "add"), ("Update provider key", "update"), ("Set provider Base URL", "endpoint"),
+                 ("Remove provider", "remove")],
                 self._provider_management_picked,
             ))
             return
@@ -558,6 +560,10 @@ class ChatCommandsMixin:
             candidates = [option for option in options if option.configured]
             title = "Update provider key"
             empty = "No built-in provider has a saved API key yet."
+        elif action == "endpoint":
+            candidates = options
+            title = "Set provider Base URL"
+            empty = "No built-in providers."
         else:
             candidates = [option for option in options if option.configured and option.key != current]
             title = "Remove provider"
@@ -581,6 +587,12 @@ class ChatCommandsMixin:
             self.query_one("#input", Input).focus()
             return
         provider_key, label, _ = value
+        if action == "endpoint":
+            self.push_screen(TextInputScreen(
+                f"{label} Base URL", default=self.application.settings.provider_endpoint(provider_key),
+                on_result=partial(self._provider_endpoint_entered, provider_key),
+            ))
+            return
         if action == "remove":
             self.push_screen(
                 PickScreen(
@@ -603,12 +615,25 @@ class ChatCommandsMixin:
             self.query_one("#input", Input).focus()
             return
         if action == "add":
-            message = self.application.settings.configure_provider(provider_key, api_key).message
+            result = self.application.settings.configure_provider(provider_key, api_key)
         else:
-            message = self.application.settings.update_provider_key(provider_key, api_key).message
-        self.add_card(message)
-        self.update_status()
-        self.query_one("#input", Input).focus()
+            result = self.application.settings.update_provider_key(provider_key, api_key)
+        self.add_card(result.message)
+        if result.ok:
+            self._open_models(refresh=True)
+        else:
+            self.query_one("#input", Input).focus()
+
+    def _provider_endpoint_entered(self, provider: str, endpoint: str | None) -> None:
+        if endpoint is None:
+            self.query_one("#input", Input).focus()
+            return
+        result = self.application.settings.set_provider_endpoint(provider, endpoint)
+        self.add_card(result.message)
+        if result.ok:
+            self._open_models(refresh=True)
+        else:
+            self.query_one("#input", Input).focus()
 
     def _remove_provider_result(self, provider_key: str, confirmed) -> None:
         if confirmed is not True:

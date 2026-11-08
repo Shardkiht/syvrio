@@ -355,7 +355,7 @@ class OptionItem(ListItem):
     def __init__(self, label: str, value, marker: bool = False) -> None:
         self.label = label
         self.value = value
-        super().__init__(Label(f"{label}  ← current" if marker else label))
+        super().__init__(Label(f"{label}  ← current" if marker else label, markup=False))
 
 
 class SessionItem(ListItem):
@@ -437,9 +437,12 @@ class PickScreen(ModalScreen):
         self._options = list(options)
         self._apply_filter(self.query_one("#pick-search", Input).value if self._searchable else "", preserve=True)
 
+    def _filtered_options(self, needle: str) -> list[tuple]:
+        return [option for option in self._options if needle in option[0].lower()]
+
     def _apply_filter(self, value: str, preserve: bool = False) -> None:
         needle = value.strip().lower()
-        options = [option for option in self._options if needle in option[0].lower()]
+        options = self._filtered_options(needle)
         listing = self.query_one("#pick-list", ListView)
         previous, previous_index = listing.highlighted_child, listing.index
         listing.clear()
@@ -496,6 +499,10 @@ class ModelPickerScreen(PickScreen):
             "Type to search · ↑↓ select · Enter to confirm · Esc to cancel\n"
             "Ctrl+P providers · Ctrl+R refresh · Ctrl+N custom model"
         )
+
+    def _filtered_options(self, needle: str) -> list[tuple]:
+        options = super()._filtered_options(needle)
+        return sorted(options, key=lambda option: option[1][1].lower() != needle) if needle else options
 
     def action_providers(self) -> None:
         self._finish(("__providers__", ""))

@@ -80,7 +80,7 @@ uv sync --extra local-embed
 uv run syvrio
 ```
 
-首次使用先运行 `uv run syvrio setup` 配置模型和 API Key；进入对话后用 `/model` 搜索和切换模型，在该界面按 `Ctrl+P` 才打开供应商管理，可添加、更新或移除内置厂商的 API Key，`Esc` 返回模型列表。模型界面还支持 `Ctrl+R` 刷新、`Ctrl+N` 输入自定义模型名。
+首次使用先运行 `uv run syvrio setup` 配置模型和 API Key；进入对话后用 `/model` 搜索和切换模型，在该界面按 `Ctrl+P` 才打开供应商管理，可添加、更新或移除内置厂商的 API Key，也可配置各厂商的 Base URL，`Esc` 返回模型列表。模型界面还支持 `Ctrl+R` 刷新、`Ctrl+N` 输入自定义模型名。
 
 `syvrio setup` 会写入配置文件（默认 `syvrio.toml`），初始化记忆库，并可选做一次连接测试。Key 也可以用环境变量提供，环境变量优先于 keyring：
 
@@ -107,6 +107,7 @@ base_url = "https://api.deepseek.com/v1"
 model = "deepseek-flash"
 api_key_env = "DEEPSEEK_API_KEY"
 reasoning_effort = ""         # low / medium / high；仅模型支持时生效
+provider_urls = {}             # 按供应商保存 Base URL，例如 dashscope 工作空间地址
 spark_thinking = ""           # 仅 Spark MaaS；enabled / auto / disabled，留空使用供应商默认值
 fallbacks = []                 # 例如 ["openai/gpt-4o-mini"]
 num_retries = 2
@@ -222,7 +223,7 @@ Spark 使用 MaaS 的 Bearer API Key；适配层保留服务端采样默认值�
 | `/summary` | 查看当前会话摘要 |
 | `/status` | 会话、模型、检索模式、上下文和待确认状态 |
 | `/git` | 打开 Git 管理界面：查看仓库、Remote/Upstream、工作区与未推送提交，`Ctrl+S` 打开同步确认（默认 Cancel，显式选择 Synchronize 才执行） |
-| `/model` | 搜索切换模型；`Ctrl+P` 打开独立供应商管理，`Ctrl+R` 刷新，`Ctrl+N` 输入自定义模型名。列表先用缓存或预设打开，再后台刷新；`/model refresh` 跳过旧缓存 |
+| `/model` | 搜索切换模型；`Ctrl+P` 打开独立供应商管理，`Ctrl+R` 刷新，`Ctrl+N` 输入自定义模型名。首次从各已配置供应商的 `/models` 获取型号。列表仅展示 API 返回的 ID，可复用同一端点和凭据的缓存；`/model refresh` 重新请求 |
 | `/think` | 切换思考设置并写回配置。Spark MaaS 可选 enabled / auto / disabled，分别表示强制思考、模型自行判断、关闭思考。其他支持思考强度的模型可选默认 / low / medium / high |
 | `/context` | 切换上下文长度：档位按当前模型上限生成，也可自定义，下一轮即生效 |
 | `/setup` | 提示完整配置向导需在终端运行 `syvrio setup`（内置厂商的 Key 增删在 `/model` 按 `Ctrl+P` 管理） |

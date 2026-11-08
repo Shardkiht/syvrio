@@ -37,14 +37,45 @@ def build(tmp_path):
     return service, runtime, SettingsUseCases(service, runtime)
 
 
-def test_model_options_current_first_and_presets_merged(tmp_path):
+def test_model_options_only_show_discovered_models(tmp_path):
     service, runtime, settings = build(tmp_path)
 
     options = settings.model_options(["deepseek-flash"])
 
     assert options[0].current
     assert options[0].provider == "deepseek"
-    assert "deepseek-v4-pro" in {option.model for option in options}
+    assert {option.model for option in options} == {"deepseek-flash"}
+
+
+def test_discover_models_for_inactive_provider_at_saved_endpoint(tmp_path, monkeypatch):
+    from syvrio.infra.config import load_config
+
+    service, runtime, settings = build(tmp_path)
+    service.config_path = tmp_path / "config.toml"
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "synthetic-deepseek-key")
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "synthetic-workspace-key")
+    endpoint = "https://workspace.example.invalid/compatible-mode/v1"
+    assert settings.set_provider_endpoint("dashscope", endpoint).ok
+    assert service.config.llm.provider == "deepseek" and runtime.reloads == 0
+    assert load_config(service.config_path).llm.provider_urls == {"dashscope": endpoint}
+
+    seen = {}
+    def fetch(source, *, refresh=False):
+        seen[source.provider] = (source.base_url, source.api_key_env, refresh)
+        return ["deepseek-v4.1-flash-1017"] if source.provider == "dashscope" else []
+
+    monkeypatch.setattr(settings_module, "fetch_provider_models", fetch)
+    options = settings.model_options(settings.model_catalog(refresh=True), capabilities=False)
+    assert seen["dashscope"] == (endpoint, "DASHSCOPE_API_KEY", True)
+    assert set(seen) == {"deepseek", "dashscope"}
+    assert [(option.provider, option.model) for option in options] == [
+        ("dashscope", "deepseek-v4.1-flash-1017")
+    ]
+    assert settings.apply_model(options[0].provider, options[0].model).ok
+    assert service.config.llm.base_url == endpoint
+    assert settings.apply_model("deepseek", "deepseek-flash").ok
+    assert settings.apply_model("dashscope", "deepseek-v4.1-flash-1017").ok
+    assert service.config.llm.base_url == endpoint
 
 
 def test_provider_options_mark_configured_and_current(tmp_path, monkeypatch):

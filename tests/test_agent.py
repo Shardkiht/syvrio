@@ -648,36 +648,19 @@ def test_apply_model_updates_config_and_runtime(tmp_path, monkeypatch):
     assert "deepseek-v4-pro" in config_path.read_text(encoding="utf-8")
 
 
-def test_model_options_lists_current_first(service):
+def test_model_options_lists_current_first_when_api_returns_it(service):
     from syvrio.app import actions
 
-    options = actions.model_options(service)
-
-    assert options
+    options = actions.model_options(service, ["future-model", "deepseek-flash"])
+    assert [option.model for option in options] == ["deepseek-flash", "future-model"]
     assert options[0].current
-    # 未配置其他供应商的 Key 时只展示当前供应商。
-    assert {option.provider for option in options} == {"deepseek"}
 
 
-def test_model_options_uses_fetched_models(service):
+def test_model_options_do_not_inject_unlisted_current_model(service):
     from syvrio.app import actions
 
     options = actions.model_options(service, ["future-model"])
-
-    assert options[0].current
-    assert "future-model" in {option.model for option in options}
-
-
-def test_model_options_merges_short_fetched_list_with_presets(service):
-    """线上列表只含当前模型时仍保留预设模型，否则选择器只剩一项、方向键无事可做。"""
-    from syvrio.app import actions
-
-    options = actions.model_options(service, ["deepseek-flash"])
-    models = {option.model for option in options if option.provider == "deepseek"}
-
-    assert "deepseek-flash" in models
-    assert "deepseek-v4-pro" in models
-    assert len(options) > 1
+    assert [(option.model, option.current) for option in options] == [("future-model", False)]
 
 
 def test_model_options_can_skip_metadata_for_fast_open(service, monkeypatch):
@@ -691,7 +674,7 @@ def test_model_options_can_skip_metadata_for_fast_open(service, monkeypatch):
         settings_module, "supported_params", lambda *_: pytest.fail("快速开屏不应读取模型能力")
     )
 
-    options = SettingsUseCases(service, None).model_options(capabilities=False)
+    options = SettingsUseCases(service, None).model_options(["deepseek-flash"], capabilities=False)
 
     assert options[0].current
     assert "(" not in options[0].label
@@ -707,7 +690,7 @@ def test_provider_options_mark_current_and_unconfigured(service):
     assert by_key["siliconflow"] == ("SiliconFlow · add provider", False)
 
 
-def test_configure_provider_saves_key_and_switches_model(tmp_path, monkeypatch):
+def test_configure_provider_saves_key_without_guessing_model(tmp_path, monkeypatch):
     import sys
     import types
 
@@ -726,12 +709,9 @@ def test_configure_provider_saves_key_and_switches_model(tmp_path, monkeypatch):
 
     assert "SiliconFlow" in message
     assert keys["SILICONFLOW_API_KEY"] == "sk-test"
-    assert service.config.llm.provider == "siliconflow"
-    assert service.config.llm.model == "deepseek-ai/DeepSeek-V3"
-    assert runtime.model_label == "siliconflow/deepseek-ai/DeepSeek-V3"
-    config_text = config_path.read_text(encoding="utf-8")
-    assert 'provider = "siliconflow"' in config_text
-    assert "sk-test" not in config_text
+    assert service.config.llm.provider == "deepseek"
+    assert service.config.llm.model == "deepseek-flash"
+    assert not config_path.exists()
 
 
 def test_configure_provider_keeps_state_when_keyring_fails(tmp_path, monkeypatch):

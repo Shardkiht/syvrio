@@ -1,20 +1,22 @@
 """模型、供应商、推理与上下文设置用例。"""
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 
-from ..infra.config import SPARK_THINKING_MODES
+from ..infra.config import LLMConfig, SPARK_THINKING_MODES
 from ..infra.providers import (
     PRESETS,
     delete_api_key,
-    display_model,
     has_api_key,
+    normalize_provider_url,
+    provider_base_url,
     provider_label,
     save_api_key,
     write_config,
 )
 from ..infra.tokens import format_tokens
-from ..llm import model_metadata, supported_params
+from ..llm import cached_provider_models, fetch_provider_models, model_metadata, supported_params
 from ..memory.service import MemoryService
 from .contracts import ModelOption, ProviderOption, SettingsResult
 
@@ -26,26 +28,38 @@ class SettingsUseCases:
 
     # ---------- 查询 ----------
 
+    def model_sources(self) -> dict[str, LLMConfig]:
+        current = self.service.config.llm
+        sources = {}
+        if current.api_key() or not current.requires_api_key():
+            sources[current.provider] = replace(current, base_url=self.provider_endpoint(current.provider))
+        for preset in PRESETS:
+            if preset.key not in {"custom", current.provider} and has_api_key(preset):
+                sources[preset.key] = replace(
+                    current, provider=preset.key, base_url=provider_base_url(current, preset),
+                    api_key_env=preset.api_key_env,
+                )
+        return sources
+
+    def model_catalog(self, *, cached_only: bool = False, refresh: bool = False) -> dict[str, list[str]]:
+        sources = self.model_sources()
+        if cached_only:
+            return {key: cached_provider_models(source) or [] for key, source in sources.items()}
+        if not sources:
+            return {}
+        with ThreadPoolExecutor(max_workers=len(sources), thread_name_prefix="syvrio-models") as pool:
+            requests = {key: pool.submit(fetch_provider_models, source, refresh=refresh)
+                        for key, source in sources.items()}
+            return {key: request.result() for key, request in requests.items()}
+
     def model_options(
-        self, fetched: list[str] | None = None, capabilities: bool = True
+        self, fetched: dict[str, list[str]] | list[str] | None = None, capabilities: bool = True,
     ) -> list[ModelOption]:
         current = self.service.config.llm
-        entries: list[tuple[str, str]] = []
-        for preset in PRESETS:
-            if preset.key == "custom":
-                continue
-            if preset.key != current.provider and not has_api_key(preset):
-                continue
-            models = list(preset.models)
-            if preset.key == current.provider and fetched:
-                # 线上 /models 可能只返回当前一个模型（如 Spark）；与预设合并，
-                # 避免选择器里只剩一项、方向键看起来失效。
-                models = list(fetched) + [model for model in preset.models if model not in fetched]
-            entries.extend((preset.key, model) for model in models)
-        if current.provider not in {preset.key for preset in PRESETS}:
-            entries = [(current.provider, model) for model in (fetched or [current.model])] + entries
-        if (current.provider, current.model) not in entries:
-            entries.insert(0, (current.provider, current.model))
+        catalog = {current.provider: fetched} if isinstance(fetched, list) else fetched
+        if catalog is None:
+            catalog = self.model_catalog(cached_only=True)
+        entries = [(provider, model) for provider, models in catalog.items() for model in models]
 
         seen: set[tuple[str, str]] = set()
         options: list[ModelOption] = []
@@ -65,7 +79,7 @@ class SettingsUseCases:
                         pass
                 if "reasoning_effort" in supported_params(key):
                     caps.append("reasoning")
-            label = f"{provider_label(provider)} · {display_model(model)}"
+            label = f"{provider_label(provider)} · {model}"
             if caps:
                 label += f"  ({', '.join(caps)})"
             options.append(
@@ -144,12 +158,25 @@ class SettingsUseCases:
                 "Could not save the API key to system credentials. "
                 f"Set {preset.api_key_env} in your environment instead.",
             )
-        applied = self.apply_model(preset.key, preset.model)
-        return SettingsResult(
-            applied.ok,
-            f"{provider_label(preset.key)} API key saved. {applied.message}",
-            applied.config_changed,
-        )
+        return SettingsResult(True, f"{provider_label(preset.key)} API key saved. Choose an API-listed model to switch.")
+
+    def provider_endpoint(self, provider: str) -> str:
+        current = self.service.config.llm
+        preset = self._preset(provider)
+        return provider_base_url(current, preset) if preset else current.provider_urls.get(provider, current.base_url)
+
+    def set_provider_endpoint(self, provider: str, endpoint: str) -> SettingsResult:
+        current = self.service.config.llm
+        if provider != current.provider and self._preset(provider) is None:
+            return SettingsResult(False, f"Unknown provider: {provider}")
+        try:
+            endpoint = normalize_provider_url(endpoint)
+        except ValueError as exc:
+            return SettingsResult(False, str(exc))
+        self.service.config.llm = replace(current, provider_urls={**current.provider_urls, provider: endpoint})
+        if self.service.config_path:
+            write_config(self.service.config_path, self.service.config)
+        return SettingsResult(True, f"{provider_label(provider)} Base URL saved.", True)
 
     def update_provider_key(self, provider: str, api_key: str) -> SettingsResult:
         preset = self._preset(provider)
@@ -194,7 +221,9 @@ class SettingsUseCases:
             current,
             provider=provider,
             model=model,
-            base_url=preset.base_url if preset and provider != current.provider else current.base_url,
+            base_url=self.provider_endpoint(provider),
+            provider_urls={**({current.provider: current.base_url} if current.base_url else {}),
+                           **current.provider_urls},
             api_key_env=preset.api_key_env if preset and provider != current.provider else current.api_key_env,
         )
         if new_llm.provider != current.provider and not new_llm.api_key():

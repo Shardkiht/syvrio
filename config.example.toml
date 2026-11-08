@@ -34,6 +34,8 @@ api_key_env = "DEEPSEEK_API_KEY"
 reasoning_effort = ""
 # 仅 Spark MaaS 使用。可选 enabled / auto / disabled，留空使用供应商默认值。
 spark_thinking = ""
+# 保存各供应商用于模型发现和切换的 Base URL。
+provider_urls = {}
 temperature = 0.1
 timeout = 60.0
 

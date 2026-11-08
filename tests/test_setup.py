@@ -19,7 +19,7 @@ from syvrio.infra.config import (
     load_config,
     toml_literal,
 )
-from syvrio.infra.providers import PRESETS, display_model, provider_label, write_config
+from syvrio.infra.providers import PRESETS, provider_label, write_config
 
 
 @pytest.mark.parametrize("provider", ["custom", "deepseek", "spark"])
@@ -67,13 +67,11 @@ def test_spark_preset_and_configuration_roundtrip(tmp_path):
 
     preset = next(item for item in PRESETS if item.key == "spark")
     assert preset.base_url == "https://maas-api.cn-huabei-1.xf-yun.com/v2"
-    assert preset.model == "spark-x2.6"
     assert preset.api_key_env == "SPARK_API_KEY"
-    llm = LLMConfig(provider=preset.key, base_url=preset.base_url, model=preset.model, api_key_env=preset.api_key_env)
+    llm = LLMConfig(provider=preset.key, base_url=preset.base_url, model="spark-x2.6", api_key_env=preset.api_key_env)
     assert llm.litellm_model() == "openai/spark-x2.6"
     assert infer_provider(preset.base_url) == "spark"
     assert provider_label("spark") == "讯飞星火"
-    assert display_model(preset.model) == "Spark X2.6"
     path = tmp_path / "config.toml"
     write_config(path, Config(vault=tmp_path / "vault", llm=llm))
     assert load_config(path).llm == llm
@@ -89,7 +87,7 @@ def test_spark_chat_parameters_match_maas_contract(monkeypatch, mode):
     fake = SimpleNamespace(completion=lambda **kwargs: calls.append(kwargs) or "response")
     monkeypatch.setattr(client, "_litellm", lambda: fake)
     preset = next(item for item in PRESETS if item.key == "spark")
-    config = LLMConfig(provider="spark", model=preset.model, base_url=preset.base_url,
+    config = LLMConfig(provider="spark", model="spark-x2.6", base_url=preset.base_url,
                        api_key_env=preset.api_key_env, reasoning_effort="high", spark_thinking=mode,
                        fallbacks=["openai/gpt-4o-mini"])
     tools = [{"type": "function", "function": {"name": "synthetic_tool", "parameters": {"type": "object"}}}]
@@ -370,7 +368,7 @@ def test_provider_model_list_cache(monkeypatch):
     monkeypatch.setattr(
         client,
         "_fetch_provider_models_uncached",
-        lambda cfg, timeout: calls.append(1) or ["model-a"],
+        lambda cfg, timeout, api_key: calls.append(1) or ["model-a"],
     )
     client.clear_model_cache()
     try:
@@ -380,6 +378,11 @@ def test_provider_model_list_cache(monkeypatch):
 
         assert client.fetch_provider_models(config, refresh=True) == ["model-a"]
         assert len(calls) == 2
+
+        monkeypatch.setattr(LLMConfig, "api_key", lambda self: "different-workspace-key")
+        assert client.cached_provider_models(config) is None
+        assert client.fetch_provider_models(config) == ["model-a"]
+        assert len(calls) == 3
     finally:
         client.clear_model_cache()
 
@@ -393,7 +396,7 @@ def test_cached_provider_models_reads_cache_only(monkeypatch):
     monkeypatch.setattr(
         client,
         "_fetch_provider_models_uncached",
-        lambda cfg, timeout: calls.append(1) or ["model-a"],
+        lambda cfg, timeout, api_key: calls.append(1) or ["model-a"],
     )
     client.clear_model_cache()
     try:
@@ -574,6 +577,32 @@ def test_run_setup_routes_to_search_wizard(tmp_path, monkeypatch):
 
     data = tomllib.loads(config_path.read_text(encoding="utf-8"))
     assert data["search"]["providers"] == ["open_websearch"]
+
+
+def test_llm_setup_discovers_models_using_the_entered_workspace_and_key(tmp_path, monkeypatch):
+    import syvrio.llm
+    from syvrio.infra import providers
+
+    preset = next(item for item in PRESETS if item.key == "dashscope")
+    endpoint = "https://workspace.example.invalid/compatible-mode/v1"
+    model = "deepseek-v4.1-flash-1017"
+    _script_answers(monkeypatch, ["llm", preset, endpoint, "synthetic-key", model, 32000, False, False])
+    keys = {}
+    _install_fake_keyring(monkeypatch, keys)
+    monkeypatch.setattr(providers, "_capabilities", lambda *_: ({}, ()))
+
+    def fetch(source, *, refresh, api_key):
+        assert source.provider == "dashscope" and source.base_url == endpoint
+        assert refresh and api_key == "synthetic-key" and not keys
+        return [model]
+
+    monkeypatch.setattr(syvrio.llm, "fetch_provider_models", fetch)
+    path = tmp_path / "config.toml"
+    result = providers.run_setup(path, tmp_path / "vault")
+    assert result["model"] == model
+    assert load_config(path).llm.provider_urls["dashscope"] == endpoint
+    assert keys == {"DASHSCOPE_API_KEY": "synthetic-key"}
+    assert "synthetic-key" not in path.read_text()
 
 
 def test_search_setup_saves_key_and_enables_search_and_fetch(tmp_path, monkeypatch):
@@ -766,8 +795,7 @@ def test_search_setup_search_and_fetch_independent(tmp_path, monkeypatch):
     assert result["fetch_providers"] == ["open_websearch"]
 
 
-def test_llm_setup_flow_unchanged(tmp_path, monkeypatch):
-    """顶层菜单选 LLM 时走原有流程，返回结构不变。"""
+def test_llm_setup_can_enter_a_model_manually_when_api_discovery_is_unavailable(tmp_path, monkeypatch):
     from syvrio.infra import providers as providers_module
 
     config_path = tmp_path / "syvrio.toml"
@@ -779,9 +807,9 @@ def test_llm_setup_flow_unchanged(tmp_path, monkeypatch):
             next(p for p in providers_module.PRESETS if p.key == "custom"),
             "https://api.example.com/v1",
             "MY_KEY_ENV",
+            "",  # API Key 留空，发现不可用，进入独立的手动输入
             "my-model",
             16000,  # context（reasoning 因 custom 无参数而跳过）
-            "",  # API Key 留空
             False,  # 不初始化记忆库
         ],
     )
@@ -793,6 +821,7 @@ def test_llm_setup_flow_unchanged(tmp_path, monkeypatch):
 
     assert result["provider"] == "custom"
     assert result["base_url"] == "https://api.example.com/v1"
+    assert result["model"] == "my-model"
     assert result["key_saved"] is False
 
 

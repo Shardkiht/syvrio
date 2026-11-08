@@ -1494,6 +1494,10 @@ async def test_model_picker_can_configure_provider_key(tmp_path, monkeypatch):
     fake.set_password = lambda service_name, name, value: keys.__setitem__(name, value)
     monkeypatch.setitem(sys.modules, "keyring", fake)
 
+    monkeypatch.setattr(
+        "syvrio.application.settings.fetch_provider_models",
+        lambda source, refresh=False: ["live-siliconflow-model"] if source.provider == "siliconflow" else [],
+    )
     app = build_app(tmp_path, [])
     app.service.config_path = tmp_path / "syvrio.toml"
     async with app.run_test(size=(120, 40)) as pilot:
@@ -1510,14 +1514,14 @@ async def test_model_picker_can_configure_provider_key(tmp_path, monkeypatch):
         model_picker = app.screen
         listing = model_picker.query_one("#pick-list", ListView)
         labels = [str(item.query_one(Label).render()) for item in listing.children]
-        assert labels
+        assert not labels
         assert all(not item.value[0].startswith("__") for item in listing.children)
         assert "Ctrl+P" in str(model_picker.query_one(".pick-hint").render())
         await pilot.press("ctrl+p")
         await pilot.pause()
         assert "Providers" in str(app.screen.query_one(".pick-title").render())
         listing = app.screen.query_one("#pick-list", ListView)
-        assert [item.value for item in listing.children] == ["add", "update", "remove"]
+        assert [item.value for item in listing.children] == ["add", "update", "endpoint", "remove"]
         listing.index = 0
         listing.focus()
         await pilot.press("enter")
@@ -1546,11 +1550,15 @@ async def test_model_picker_can_configure_provider_key(tmp_path, monkeypatch):
         await pilot.press("enter")
         for _ in range(100):
             await pilot.pause()
-            if app.service.config.llm.provider == "siliconflow" and not app.busy:
+            items = list(app.screen.query("#pick-list OptionItem"))
+            if any(item.value == ("siliconflow", "live-siliconflow-model") for item in items):
                 break
-
         assert keys["SILICONFLOW_API_KEY"] == "sk-test"
-        assert app.service.config.llm.model == "deepseek-ai/DeepSeek-V3"
+        assert app.service.config.llm.provider == "deepseek"
+        assert [item.value for item in items] == [("siliconflow", "live-siliconflow-model")]
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.service.config.llm.model == "live-siliconflow-model"
         assert not app.busy
 
 
@@ -1576,7 +1584,7 @@ async def test_model_picker_can_remove_provider_key(tmp_path, monkeypatch):
         await pilot.press("ctrl+p")
         await pilot.pause()
         listing = app.screen.query_one("#pick-list", ListView)
-        listing.index = 2
+        listing.index = 3
         listing.focus()
         await pilot.press("enter")
         for _ in range(50):
@@ -1646,7 +1654,7 @@ async def test_model_picker_provider_menu_returns_to_models(tmp_path, monkeypatc
     from textual.widgets import ListView
     from syvrio.app.chat_widgets import ModelPickerScreen
 
-    monkeypatch.setattr("syvrio.app.chat_commands.fetch_provider_models", lambda *args, **kwargs: [])
+    monkeypatch.setattr("syvrio.application.settings.fetch_provider_models", lambda *args, **kwargs: [])
     app = build_app(tmp_path, [])
     async with app.run_test(size=(120, 40)) as pilot:
         app._show_model_picker(app._model_entries())
@@ -1657,9 +1665,9 @@ async def test_model_picker_provider_menu_returns_to_models(tmp_path, monkeypatc
         await pilot.press("ctrl+p")
         await pilot.pause()
         assert not isinstance(app.screen, ModelPickerScreen)
-        assert [item.value for item in app.screen.query_one("#pick-list", ListView).children] == ["add", "update", "remove"]
+        assert [item.value for item in app.screen.query_one("#pick-list", ListView).children] == ["add", "update", "endpoint", "remove"]
         app._apply_fetched_models(picker, [("late-model", ("deepseek", "late"), False)])
-        assert [item.value for item in app.screen.query_one("#pick-list", ListView).children] == ["add", "update", "remove"]
+        assert [item.value for item in app.screen.query_one("#pick-list", ListView).children] == ["add", "update", "endpoint", "remove"]
         await pilot.press("escape")
         for _ in range(100):
             await pilot.pause()
@@ -1744,6 +1752,27 @@ async def test_model_picker_filters_by_search(tmp_path):
         assert listing.index == 0
 
 
+async def test_model_picker_prioritizes_the_exact_api_id_over_vendor_variants(tmp_path):
+    import asyncio
+    from textual.widgets import ListView
+
+    model = "deepseek-v4.1-flash-1017"
+    app = build_app(tmp_path, [])
+    async with app.run_test(size=(120, 40)) as pilot:
+        app._show_model_picker([
+            (f"百炼 · vanchin/{model}", ("dashscope", f"vanchin/{model}"), False),
+            (f"百炼 · {model}", ("dashscope", model), False),
+        ])
+        await pilot.pause()
+        picker = app.screen
+        picker.query_one("#pick-search", Input).value = model
+        listing = picker.query_one("#pick-list", ListView)
+        async with asyncio.timeout(5):
+            while listing.highlighted_child is None or listing.highlighted_child.value != ("dashscope", model):
+                await pilot.pause()
+        assert [item.value[1] for item in listing.children] == [model, f"vanchin/{model}"]
+
+
 async def test_model_picker_uses_cache_and_refreshes_in_background(tmp_path, monkeypatch):
     import threading
 
@@ -1756,13 +1785,14 @@ async def test_model_picker_uses_cache_and_refreshes_in_background(tmp_path, mon
         return ["fresh-model"]
 
     monkeypatch.setattr(
-        "syvrio.app.chat_commands.cached_provider_models",
+        "syvrio.application.settings.cached_provider_models",
         lambda config: ["cached-model"],
     )
     monkeypatch.setattr(
-        "syvrio.app.chat_commands.fetch_provider_models", fake_fetch
+        "syvrio.application.settings.fetch_provider_models", fake_fetch
     )
 
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "synthetic-key")
     app = build_app(tmp_path, [])
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
@@ -1890,13 +1920,14 @@ async def test_model_picker_opens_quickly_before_metadata_enrichment(tmp_path, m
         return [ModelOption("deepseek", "model", label, True)]
 
     monkeypatch.setattr("syvrio.application.settings.SettingsUseCases.model_options", fake_options)
-    monkeypatch.setattr("syvrio.app.chat_commands.cached_provider_models", lambda config: None)
+    monkeypatch.setattr("syvrio.application.settings.cached_provider_models", lambda config: None)
 
     def fake_fetch(config, refresh=False):
         release.wait(5)
         return []
 
-    monkeypatch.setattr("syvrio.app.chat_commands.fetch_provider_models", fake_fetch)
+    monkeypatch.setattr("syvrio.application.settings.fetch_provider_models", fake_fetch)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "synthetic-key")
     app = build_app(tmp_path, [])
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()

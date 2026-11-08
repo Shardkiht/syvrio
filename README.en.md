@@ -80,7 +80,7 @@ uv sync --extra local-embed
 uv run syvrio
 ```
 
-On first use, run `uv run syvrio setup` to configure the model and API key. Use `/model` to search and switch models. Press `Ctrl+P` in that screen to open separate provider management for adding, updating, or removing built-in provider API keys; `Esc` returns to the model list. The model picker also supports `Ctrl+R` to refresh and `Ctrl+N` to enter a custom model name.
+On first use, run `uv run syvrio setup` to configure the model and API key. Use `/model` to search and switch models. Press `Ctrl+P` in that screen to open separate provider management for adding, updating, or removing built-in provider API keys and setting their Base URLs; `Esc` returns to the model list. The model picker also supports `Ctrl+R` to refresh and `Ctrl+N` to enter a custom model name.
 
 `syvrio setup` writes the config file (default: `syvrio.toml`), initializes the vault, and optionally runs a connection test. Keys can also be provided through environment variables, which take precedence over keyring:
 
@@ -107,6 +107,7 @@ base_url = "https://api.deepseek.com/v1"
 model = "deepseek-flash"
 api_key_env = "DEEPSEEK_API_KEY"
 reasoning_effort = ""         # low / medium / high; only effective when supported by the model
+provider_urls = {}             # Base URL overrides by provider, such as a DashScope workspace
 spark_thinking = ""           # Spark MaaS only. enabled / auto / disabled, or empty for the provider default
 fallbacks = []                 # e.g. ["openai/gpt-4o-mini"]
 num_retries = 2
@@ -221,7 +222,7 @@ In-session commands:
 | `/summary` | View the current session summary |
 | `/status` | Session, model, retrieval mode, context, and pending status |
 | `/git` | Open Git management: repository, Remote/Upstream, working tree and unpushed commits; `Ctrl+S` opens sync confirmation (defaults to Cancel and runs only after explicitly selecting Synchronize) |
-| `/model` | Search and switch models; `Ctrl+P` opens separate provider management, `Ctrl+R` refreshes, and `Ctrl+N` enters a custom model name. Opens from cache or presets, then refreshes in the background; `/model refresh` skips the old cache |
+| `/model` | Search and switch models; `Ctrl+P` opens separate provider management, `Ctrl+R` refreshes, and `Ctrl+N` enters a custom model name. Discovers models through each configured provider's `/models` endpoint and shows only API-returned IDs. May reuse a cache scoped to the endpoint and credential. `/model refresh` requests fresh lists |
 | `/think` | Set and save the model's thinking preference. Spark MaaS offers enabled / auto / disabled. Other models with reasoning effort support offer default / low / medium / high |
 | `/context` | Switch the context window: presets generated from the current model's limit, custom value allowed; effective on the next turn |
 | `/setup` | Reminds you that the full setup wizard runs `syvrio setup` in a terminal (manage built-in provider keys with `Ctrl+P` in `/model`) |

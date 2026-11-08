@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import questionary
 from prompt_toolkit.styles import Style
@@ -46,86 +47,19 @@ class ProviderPreset:
     key: str
     label: str
     base_url: str
-    model: str
     api_key_env: str
-    models: tuple[str, ...] = ()
 
 
 PRESETS: tuple[ProviderPreset, ...] = (
-    ProviderPreset(
-        "deepseek",
-        "DeepSeek（国内，便宜）",
-        "https://api.deepseek.com/v1",
-        "deepseek-flash",
-        "DEEPSEEK_API_KEY",
-        ("deepseek-flash", "deepseek-v4-pro"),
-    ),
-    ProviderPreset(
-        "siliconflow",
-        "硅基流动 SiliconFlow",
-        "https://api.siliconflow.cn/v1",
-        "deepseek-ai/DeepSeek-V3",
-        "SILICONFLOW_API_KEY",
-        ("deepseek-ai/DeepSeek-V3", "Qwen/Qwen2.5-72B-Instruct", "Qwen/Qwen3-32B"),
-    ),
-    ProviderPreset(
-        "dashscope",
-        "阿里云百炼",
-        "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "qwen-plus",
-        "DASHSCOPE_API_KEY",
-        ("qwen-plus", "qwen-max", "qwen-turbo"),
-    ),
-    ProviderPreset(
-        "spark",
-        "讯飞星火 Spark（MaaS）",
-        "https://maas-api.cn-huabei-1.xf-yun.com/v2",
-        "spark-x2.6",
-        "SPARK_API_KEY",
-        ("spark-x2.6", "spark-x2.6-4b", "spark-x2.6-preview", "spark-x2.5"),
-    ),
-    ProviderPreset(
-        "openai",
-        "OpenAI",
-        "https://api.openai.com/v1",
-        "gpt-4o-mini",
-        "OPENAI_API_KEY",
-        ("gpt-4o-mini", "gpt-4o", "o3-mini"),
-    ),
-    ProviderPreset(
-        "openrouter",
-        "OpenRouter",
-        "https://openrouter.ai/api/v1",
-        "openai/gpt-4o-mini",
-        "OPENROUTER_API_KEY",
-        ("openai/gpt-4o-mini", "anthropic/claude-sonnet-4.5", "google/gemini-2.5-flash"),
-    ),
-    ProviderPreset("custom", "自定义 OpenAI 兼容接口", "", "", "OPENAI_API_KEY"),
+    ProviderPreset("deepseek", "DeepSeek", "https://api.deepseek.com/v1", "DEEPSEEK_API_KEY"),
+    ProviderPreset("siliconflow", "硅基流动 SiliconFlow", "https://api.siliconflow.cn/v1", "SILICONFLOW_API_KEY"),
+    ProviderPreset("dashscope", "阿里云百炼", "https://dashscope.aliyuncs.com/compatible-mode/v1", "DASHSCOPE_API_KEY"),
+    ProviderPreset("spark", "讯飞星火 Spark（MaaS）", "https://maas-api.cn-huabei-1.xf-yun.com/v2", "SPARK_API_KEY"),
+    ProviderPreset("openai", "OpenAI", "https://api.openai.com/v1", "OPENAI_API_KEY"),
+    ProviderPreset("openrouter", "OpenRouter", "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY"),
+    ProviderPreset("custom", "自定义 OpenAI 兼容接口", "", "OPENAI_API_KEY"),
 )
 
-
-MODEL_LABELS = {
-    "spark-x2.6": "Spark X2.6",
-    "spark-x2.6-4b": "Spark X2.6 4B",
-    "spark-x2.6-preview": "Spark X2.6 Preview",
-    "spark-x2.5": "Spark X2.5",
-    "deepseek-flash": "DeepSeek Flash",
-    "deepseek-v4-pro": "DeepSeek V4 Pro",
-    "deepseek-chat": "DeepSeek Chat",
-    "deepseek-reasoner": "DeepSeek Reasoner",
-    "deepseek-ai/DeepSeek-V3": "DeepSeek V3",
-    "Qwen/Qwen2.5-72B-Instruct": "Qwen 2.5 72B",
-    "Qwen/Qwen3-32B": "Qwen3 32B",
-    "qwen-plus": "Qwen Plus",
-    "qwen-max": "Qwen Max",
-    "qwen-turbo": "Qwen Turbo",
-    "gpt-4o-mini": "GPT-4o mini",
-    "gpt-4o": "GPT-4o",
-    "o3-mini": "o3 mini",
-    "openai/gpt-4o-mini": "GPT-4o mini",
-    "anthropic/claude-sonnet-4.5": "Claude Sonnet 4.5",
-    "google/gemini-2.5-flash": "Gemini 2.5 Flash",
-}
 
 PROVIDER_LABELS = {
     "deepseek": "DeepSeek",
@@ -138,10 +72,6 @@ PROVIDER_LABELS = {
 }
 
 
-def display_model(model: str) -> str:
-    return MODEL_LABELS.get(model, model)
-
-
 def provider_label(provider: str) -> str:
     return PROVIDER_LABELS.get(provider, provider)
 
@@ -152,7 +82,6 @@ def has_api_key(preset: ProviderPreset) -> bool:
     llm = LLMConfig(
         provider=preset.key,
         base_url=preset.base_url,
-        model=preset.model,
         api_key_env=preset.api_key_env,
     )
     return bool(llm.api_key())
@@ -166,42 +95,39 @@ EFFORT_CHOICES = (
 )
 
 
-def _choose_model(preset: ProviderPreset, current: str) -> str:
-    options = list(preset.models)
-    if current and current not in options:
-        options.insert(0, current)
-    if not options:
-        value = ask(questionary.text("模型名称", default=current))
-        if value is None or not value.strip():
-            raise KeyboardInterrupt
-        return value.strip()
-    preferred = current if current in options else preset.model
-    ordered = [preferred] + [model for model in options if model != preferred]
-    ordered.append("自定义模型")
-    selected = ask(
-        questionary.select(
+def provider_base_url(config: LLMConfig, preset: ProviderPreset) -> str:
+    fallback = config.base_url if config.provider == preset.key else preset.base_url
+    return config.provider_urls.get(preset.key, fallback)
+
+
+def normalize_provider_url(value: str) -> str:
+    url = value.strip().rstrip("/")
+    parts = urlsplit(url)
+    if (parts.scheme not in ("http", "https") or not parts.hostname
+            or parts.username is not None or parts.query or parts.fragment):
+        raise ValueError("Base URL must be an HTTP(S) endpoint without credentials, query or fragment.")
+    return url
+
+
+def _choose_model(models: list[str], current: str) -> str:
+    if models:
+        ordered = ([current] if current in models else []) + [model for model in models if model != current]
+        selected = ask(questionary.select(
             "选择模型",
-            choices=[
-                questionary.Choice(
-                    (display_model(model) + ("  ← 当前" if model == current else "")),
-                    value=model,
-                )
-                for model in ordered
-            ],
-            style=_MENU_STYLE,
-            qmark="›",
-            pointer="❯",
-            instruction="↑↓ 选择 · Enter 确认",
-        )
-    )
-    if selected is None:
-        raise KeyboardInterrupt
-    if selected == "自定义模型":
-        value = ask(questionary.text("模型名称", default=current))
-        if value is None or not value.strip():
+            choices=[questionary.Choice(model, value=model) for model in ordered]
+                    + [questionary.Choice("手动输入模型 ID", value="")],
+            style=_MENU_STYLE, qmark="›", pointer="❯", instruction="↑↓ 选择 · Enter 确认",
+        ))
+        if selected is None:
             raise KeyboardInterrupt
-        return value.strip()
-    return selected
+        if selected:
+            return selected
+    else:
+        console.print("[dim]API 未返回模型列表，可手动输入已确认的模型 ID。[/dim]")
+    value = ask(questionary.text("模型名称", default=current))
+    if value is None or not value.strip():
+        raise KeyboardInterrupt
+    return value.strip()
 
 
 def _choose_reasoning(params: tuple[str, ...], current: str | None) -> str | None:
@@ -298,6 +224,10 @@ def test_connection(llm: LLMConfig) -> tuple[bool, str]:
 
 def write_config(path: Path, config: Config) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    provider_urls = ", ".join(
+        f"{toml_literal(name)} = {toml_literal(url)}"
+        for name, url in config.llm.provider_urls.items()
+    )
     content = f'''# Syvrio 配置（由 syvrio setup 生成）
 vault = {toml_literal(config.vault.as_posix())}
 runtime = {toml_literal(config.runtime or "~/.syvrio/runtime")}
@@ -317,6 +247,7 @@ model = {toml_literal(config.llm.model)}
 api_key_env = {toml_literal(config.llm.api_key_env)}
 reasoning_effort = {toml_literal(config.llm.reasoning_effort or '')}
 spark_thinking = {toml_literal(config.llm.spark_thinking)}
+provider_urls = {{ {provider_urls} }}
 fallbacks = {toml_literal(config.llm.fallbacks)}
 num_retries = {config.llm.num_retries}
 temperature = {config.llm.temperature}
@@ -723,19 +654,31 @@ def _run_llm_setup(config: Config, path: Path) -> dict:
         raise KeyboardInterrupt
     preset: ProviderPreset = choice
 
-    if preset.key == "custom":
-        base_url = ask(questionary.text("Base URL", default=config.llm.base_url or "https://"))
-        env_name = ask(questionary.text("API Key 环境变量名", default=config.llm.api_key_env))
-        if base_url is None or env_name is None:
-            raise KeyboardInterrupt
-        model = _choose_model(preset, config.llm.model)
-        provider = "custom"
-    else:
-        base_url = preset.base_url
-        env_name = preset.api_key_env
-        current_model = config.llm.model if config.llm.provider == preset.key else preset.model
-        model = _choose_model(preset, current_model)
-        provider = preset.key
+    from ..llm import fetch_provider_models
+
+    provider = preset.key
+    base_url = ask(questionary.text("Base URL", default=provider_base_url(config.llm, preset) or "https://"))
+    env_name = (ask(questionary.text("API Key 环境变量名", default=config.llm.api_key_env))
+                if provider == "custom" else preset.api_key_env)
+    if base_url is None or env_name is None:
+        raise KeyboardInterrupt
+    while True:
+        try:
+            base_url = normalize_provider_url(base_url)
+            break
+        except ValueError as exc:
+            console.print(str(exc))
+            base_url = ask(questionary.text("Base URL", default=base_url))
+            if base_url is None:
+                raise KeyboardInterrupt
+    env_name = env_name.strip()
+    api_key = ask(questionary.password("API Key（不会写入配置文件；留空使用已配置的密钥）"))
+    if api_key is None:
+        raise KeyboardInterrupt
+    api_key = api_key.strip()
+    source = replace(config.llm, provider=provider, base_url=base_url, api_key_env=env_name)
+    current_model = config.llm.model if config.llm.provider == provider else ""
+    model = _choose_model(fetch_provider_models(source, refresh=True, api_key=api_key or None), current_model)
 
     metadata, params = _capabilities(provider, base_url.strip(), model, env_name.strip())
     max_input = metadata.get("max_input_tokens")
@@ -753,11 +696,6 @@ def _run_llm_setup(config: Config, path: Path) -> dict:
         f"思考强度 {effort or '默认'}"
     )
 
-    api_key = ask(
-        questionary.password(
-            "API Key（不会写入配置文件；留空则跳过）"
-        )
-    )
     key_saved = False
     keyring_error = ""
     if api_key:
@@ -772,6 +710,8 @@ def _run_llm_setup(config: Config, path: Path) -> dict:
         api_key_env=env_name.strip(),
         reasoning_effort=effort,
         spark_thinking=config.llm.spark_thinking,
+        provider_urls={**({config.llm.provider: config.llm.base_url} if config.llm.base_url else {}),
+                       **config.llm.provider_urls, provider: base_url},
         fallbacks=config.llm.fallbacks,
         num_retries=config.llm.num_retries,
         temperature=config.llm.temperature,

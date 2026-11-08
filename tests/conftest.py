@@ -107,7 +107,8 @@ def isolate_llm_credentials(monkeypatch):
     fake.get_password = lambda service, name: None
     fake.set_password = lambda service, name, value: None
     monkeypatch.setitem(sys.modules, "keyring", fake)
-    for name in ("DEEPSEEK_API_KEY", "SILICONFLOW_API_KEY", "DASHSCOPE_API_KEY", "OPENAI_API_KEY", "SPARK_API_KEY"):
+    for name in ("DEEPSEEK_API_KEY", "SILICONFLOW_API_KEY", "DASHSCOPE_API_KEY",
+                 "OPENAI_API_KEY", "OPENROUTER_API_KEY", "SPARK_API_KEY"):
         monkeypatch.delenv(name, raising=False)
 
 

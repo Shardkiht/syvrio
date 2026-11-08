@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import time
 from collections.abc import Sequence
@@ -21,7 +22,7 @@ class GenerationCancelled(ChatModelError):
     """The user stopped the current generation; never retry it."""
 
 
-_MODEL_CACHE: dict[tuple[str, str], tuple[float, list[str]]] = {}
+_MODEL_CACHE: dict[tuple[str, str, bytes], tuple[float, list[str]]] = {}
 
 
 @dataclass
@@ -204,9 +205,12 @@ def fetch_provider_models(
     timeout: float = 5.0,
     ttl: float = 12 * 3600,
     refresh: bool = False,
+    *,
+    api_key: str | None = None,
 ) -> list[str]:
     """向 OpenAI 兼容端点请求真实模型列表；带进程内 12 小时 TTL 缓存。"""
-    key = (config.provider, config.base_url)
+    api_key = api_key or config.api_key()
+    key = _model_cache_key(config, api_key)
     now = time.monotonic()
     cached = _MODEL_CACHE.get(key)
     if cached and not refresh:
@@ -214,14 +218,18 @@ def fetch_provider_models(
         if now - cached[0] < max_age:
             return list(cached[1])
 
-    models = _fetch_provider_models_uncached(config, timeout)
+    models = _fetch_provider_models_uncached(config, timeout, api_key)
     _MODEL_CACHE[key] = (now, models)
-    return models
+    return list(models)
+
+
+def _model_cache_key(config: LLMConfig, api_key: str | None) -> tuple[str, str, bytes]:
+    return config.provider, config.base_url, hashlib.sha256((api_key or "").encode()).digest()
 
 
 def cached_provider_models(config: LLMConfig) -> list[str] | None:
     """返回当前进程里最近一次成功获取的模型列表，不发起网络请求。"""
-    cached = _MODEL_CACHE.get((config.provider, config.base_url))
+    cached = _MODEL_CACHE.get(_model_cache_key(config, config.api_key()))
     return list(cached[1]) if cached and cached[1] else None
 
 
@@ -229,15 +237,17 @@ def clear_model_cache() -> None:
     _MODEL_CACHE.clear()
 
 
-def _fetch_provider_models_uncached(config: LLMConfig, timeout: float) -> list[str]:
-    api_key = config.api_key()
-    if not api_key or not config.base_url:
+def _fetch_provider_models_uncached(config: LLMConfig, timeout: float, api_key: str | None) -> list[str]:
+    if not config.base_url or (not api_key and config.requires_api_key()):
         return []
     try:
         from openai import OpenAI
 
-        client = OpenAI(api_key=api_key, base_url=config.base_url, timeout=timeout)
-        return [model.id for model in client.models.list().data]
+        with OpenAI(api_key=api_key or "local", base_url=config.base_url, timeout=timeout,
+                    max_retries=0) as client:
+            return list(dict.fromkeys(
+                model.id for model in client.models.list().data if model.id and model.id.strip()
+            ))
     except Exception:
         return []
 
