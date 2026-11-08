@@ -69,11 +69,35 @@ def record_to_message(record: dict) -> dict | None:
 
 
 def records_to_messages(records: list[dict]) -> list[dict]:
-    return [
-        message
-        for record in records
-        if (message := record_to_message(record)) is not None
-    ]
+    messages: list[dict] = []
+    pending: dict[str, None] = {}
+
+    def finish_tool_batch() -> None:
+        # A process may stop after a tool has run but before its result is
+        # saved. Complete the request history without rerunning the tool.
+        for call_id in pending:
+            messages.append({
+                "role": "tool",
+                "tool_call_id": call_id,
+                "content": "Tool result was not recorded. Execution status and side effects are unknown.",
+            })
+
+    for record in records:
+        message = record_to_message(record)
+        if message is None:
+            continue
+        if message["role"] == "tool":
+            call_id = message.get("tool_call_id")
+            if isinstance(call_id, str) and call_id in pending:
+                del pending[call_id]
+                messages.append(message)
+            continue
+
+        finish_tool_batch()
+        messages.append(message)
+        pending = dict.fromkeys(call["id"] for call in message.get("tool_calls", []))
+    finish_tool_batch()
+    return messages
 
 
 class ContextManager:

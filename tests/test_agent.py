@@ -359,6 +359,56 @@ def test_recall_tool_result_reaches_model(tmp_path):
     assert any("Recalled" in event for event in reply.events)
 
 
+def test_reopening_session_with_interrupted_tool_results_does_not_reexecute(tmp_path, monkeypatch):
+    calls = [
+        ToolCall("read", "recall", {"query": "合成档案"}),
+        ToolCall("write", "memorize", {"text": "偏好使用合成测试资料。"}),
+    ]
+    candidate = Candidate(text="偏好使用合成测试资料。", topic="preferences", confidence=0.99)
+    model = FakeChatModel([
+        AssistantTurn(content="Synthetic tool request", tool_calls=calls),
+        AssistantTurn(content="Synthetic resumed reply"),
+    ])
+    runtime, service = build_runtime(tmp_path, model, [candidate])
+    runtime.config.auto_recall = 0
+    append = runtime.sessions.append
+    memorize = service.memorize
+    writes = []
+
+    def append_until_interrupted(session, record):
+        if record.get("tool_call_id") == "write":
+            raise OSError("Synthetic interruption before recording the tool result")
+        return append(session, record)
+
+    def count_write(*args, **kwargs):
+        writes.append(1)
+        return memorize(*args, **kwargs)
+
+    monkeypatch.setattr(runtime.sessions, "append", append_until_interrupted)
+    monkeypatch.setattr(service, "memorize", count_write)
+    with pytest.raises(OSError, match="Synthetic interruption"):
+        runtime.ask("Synthetic first request")
+    interrupted = runtime.current
+    original = interrupted.path.read_bytes()
+    assert [entry.text for entry in service.store.entries()] == [candidate.text]
+    assert [r["tool_call_id"] for r in interrupted.records if r["type"] == "tool"] == ["read"]
+
+    monkeypatch.setattr(runtime.sessions, "append", append)
+    runtime.start()
+    runtime.resume(interrupted.id)
+    assert runtime.ask("Synthetic next request").content == "Synthetic resumed reply"
+    request = model.calls[-1][0]
+    batch = next(i for i, message in enumerate(request) if message.get("tool_calls"))
+    assert request[batch]["content"] == "Synthetic tool request"
+    assert [message["tool_call_id"] for message in request[batch + 1:batch + 3]] == ["read", "write"]
+    assert request[batch + 1]["content"] == next(r["content"] for r in interrupted.records if r["type"] == "tool")
+    assert "side effects are unknown" in request[batch + 2]["content"]
+    assert request[batch + 3]["role"] == "user"
+    assert writes == [1]
+    assert interrupted.path.read_bytes().startswith(original)
+    assert [r["tool_call_id"] for r in runtime.current.records if r["type"] == "tool"] == ["read"]
+
+
 def test_read_topic_tool_result_reaches_model(tmp_path):
     model = FakeChatModel(
         [

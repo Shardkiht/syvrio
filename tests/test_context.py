@@ -4,7 +4,7 @@ import pytest
 
 pytestmark = pytest.mark.agent
 
-from syvrio.agent.context import ContextManager
+from syvrio.agent.context import ContextManager, records_to_messages
 from syvrio.agent.session import SessionStore, new_message_id
 from syvrio.infra.config import ChatConfig
 from syvrio.infra.tokens import estimate_messages_tokens
@@ -57,6 +57,27 @@ def test_prepare_under_budget_does_not_compact(tmp_path):
     assert not plan.compacted
     assert plan.summary == ""
     assert plan.messages[-1] == {"role": "user", "content": "继续"}
+
+
+def test_tool_replay_drops_orphans_and_duplicates_and_closes_each_batch():
+    records = [
+        {"type": "tool", "tool_call_id": "orphan", "content": "orphan"},
+        {"type": "assistant", "tool_calls": [{"id": "a", "name": "recall"}]},
+        {"type": "tool", "tool_call_id": "a", "content": "original"},
+        {"type": "tool", "tool_call_id": "a", "content": "duplicate"},
+        {"type": "assistant", "tool_calls": [{"id": "b", "name": "recall"}]},
+        {"type": "message", "role": "user", "content": "next turn"},
+        {"type": "tool", "tool_call_id": "b", "content": "late"},
+        {"type": "assistant", "tool_calls": [{"id": "c", "name": "recall"}]},
+    ]
+    messages = records_to_messages(records)
+    assert [message["role"] for message in messages] == [
+        "assistant", "tool", "assistant", "tool", "user", "assistant", "tool",
+    ]
+    results = [message for message in messages if message["role"] == "tool"]
+    assert [message["tool_call_id"] for message in results] == ["a", "b", "c"]
+    assert results[0]["content"] == "original"
+    assert all("was not recorded" in message["content"] for message in results[1:])
 
 
 def test_force_compact_summarizes_and_flushes(tmp_path):
