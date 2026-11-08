@@ -79,6 +79,7 @@ class ChatApp(ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixi
         self.pending_count = 0
         self._progress_phase = ""
         self._progress_started = 0.0
+        self._navigation_started = 0.0
         self._model_status = Static("", id="model-status")
         self._context_loading = False
         self._stream_widget: ChatReply | None = None
@@ -718,8 +719,7 @@ class ChatApp(ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixi
     def _begin_navigation(self) -> None:
         self._reflection_activity()
         self._navigation_busy = True
-        self._progress_started = time.monotonic()
-        self._progress_phase = "Working"
+        self._navigation_started = time.monotonic()
         self.query_one("#input", Input).disabled = True
         self._render_model_status()
 
@@ -763,11 +763,17 @@ class ChatApp(ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixi
         if not self._model_status.is_mounted:
             return
         label = self.application.conversation.model_label
-        if self.busy:
-            elapsed = time.monotonic() - self._progress_started
+        phase = ""
+        started = 0.0
+        if self._ask_active and self._ask_in_current_view():
+            phase, started = self._progress_phase, self._progress_started
+        elif self._navigation_busy:
+            phase, started = "Working", self._navigation_started
+        if phase:
+            elapsed = time.monotonic() - started
             frame = int(elapsed * 5) % 6
             bar = "".join("━" if i == frame else "─" for i in range(6))
-            label += f"  {bar} {self._progress_phase} {elapsed:.0f}s"
+            label += f"  {bar} {phase} {elapsed:.0f}s"
         if label != str(self._model_status.content):
             self._model_status.update(label)
 

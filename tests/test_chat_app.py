@@ -4221,6 +4221,8 @@ async def test_queued_command_skipped_when_target_unavailable(tmp_path):
 
 
 async def test_switch_during_ask_is_immediate_and_reply_lands_in_original(tmp_path):
+    import asyncio
+
     # 回归：请求进行中切会话必须立即执行（不再排队），回复写回原会话且不串入当前视图。
     app = build_app(tmp_path, [])
     gated = GatedChatModel([AssistantTurn(content="slow reply")])
@@ -4232,17 +4234,37 @@ async def test_switch_during_ask_is_immediate_and_reply_lands_in_original(tmp_pa
         await pilot.press("enter")
         await _wait_ask_started(app, pilot)
         session_a = app.runtime.current.id
+        model_status = app.query_one("#model-status", Static)
+        model_label = app.application.conversation.model_label
+        app._progress_started -= 20  # Simulate a request already waiting before switching.
+        started = app._progress_started
+        assert str(model_status.content) != model_label
 
         session_b = app.sessions.create().id
-        app._switch_session(session_b)
-        for _ in range(100):
-            await pilot.pause()
-            if not app._navigation_busy:
-                break
-        assert app.runtime.current.id == session_b  # 立即切换成功
-        assert app._ask_active  # 请求仍在后台进行
+        try:
+            app._switch_session(session_b)
+            async with asyncio.timeout(5):
+                while app._navigation_busy or app.runtime.current.id != session_b:
+                    await pilot.pause()
+            assert app._ask_active
+            assert str(model_status.content) == model_label
+            assert app._progress_started == started
 
-        gated.gates[0].set()
+            app._switch_session(session_a)
+            async with asyncio.timeout(5):
+                while app._navigation_busy or app.runtime.current.id != session_a:
+                    await pilot.pause()
+            assert app._ask_active
+            assert app._progress_started == started
+            elapsed = str(model_status.content).rsplit(" ", 1)[-1]
+            assert int(elapsed.removesuffix("s")) >= 20
+
+            app._switch_session(session_b)
+            async with asyncio.timeout(5):
+                while app._navigation_busy or app.runtime.current.id != session_b:
+                    await pilot.pause()
+        finally:
+            gated.gates[0].set()
         await _wait_idle(app, pilot)
         records_a = app.sessions.load(session_a).records
         assert any(r.get("type") == "assistant" and "slow reply" in str(r.get("content")) for r in records_a)
