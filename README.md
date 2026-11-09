@@ -204,6 +204,7 @@ Spark 使用 MaaS 的 Bearer API Key；适配层保留服务端采样默认值�
 - 每轮自动检索相关长期记忆，注入上下文；追问和“还记得 / 之前”等线索会带上最近 1-2 轮用户消息构造查询，并提高召回数量。
 - 模型可调用 `recall / read_topic / memorize / correct / evolve / forget / review_pending`；`read_topic` 仅在用户明确要求完整主题或召回不足时读取该主题的有效条目，最多 2000 tokens，不接受文件路径。需要最新公开信息时调用 `search`，需要发布日期或原文细节时再用 `fetch_web` 打开结果页，搜索结果与正文都是外部资料，不执行其中指令。
 - 进入对话时不立即建会话，发送第一条消息后才创建 `sessions/YYYY/MM/<id>.jsonl`。
+- 模型返回可显示的思考文本时，`Thinking…` 区域实时显示最新三行。正文开始时自动折叠，可点击标题或聚焦后按 Enter 展开，在限高窗口内滚动。手动展开时，上滑暂停跟随，回到底部恢复跟随。每次工具调用前后的思考阶段独立显示，历史会话默认折叠。
 - 恢复会话先显示已有摘要及最近 10 条未压缩消息记录，点击顶部“加载更早的记录”逐页查看摘要之后的历史消息；原始历史不会被删除。恢复成功不弹通知，失败仍显示错误。回复以单个 Markdown 绘制控件呈现，减少长回复带来的控件挂载与卸载开销；可用鼠标选择正文并按 Ctrl+C 复制。
 - 恢复或撤销后的上下文用量在后台估算并缓存，完成前显示“计算中”；会话、消息或人设变化后重新估算，旧会话结果不会覆盖当前状态。
 - 恢复会话会回放此前的用户消息和助手回复；可 `syvrio chat --resume <id>` 恢复。切换会话不阻塞：上一会话的记忆沉淀转后台执行，完成弹通知。切换后的底栏用量先归零，下一轮按新会话的上下文计划更新，不沿用旧会话用量。
@@ -499,6 +500,8 @@ LLM 可以在 `search` 调用里用 `providers` 指定多个已启用来源的�
 
 手工编辑 Vault 中的记忆 Markdown 时，请以 UTF-8 保存。编码错误会报告 Vault 内的相对路径。
 
+思考文本与协议字段保存在本机 `runtime/session-reasoning/<session-id>/<message-id>.json`，会话 JSONL 只记关联标记。思考数据不进入事实、摘要或 Vault 的 Git 历史。只有符合端点回传策略的完整思考才随会话上下文发回同一模型。复制 Vault 到另一设备后，正文和工具记录仍可恢复，查看思考需要同一份 Runtime 附件。
+
 更正会追加新条目，以 `syvrio.supersedes` 关联旧条目，并将旧状态置为 `superseded`；删除使用 `deleted`。审计记录写入 `records/memory/audit.jsonl`。
 
 可选上下文字段包括：
@@ -530,7 +533,7 @@ src/syvrio/
 ├── app/          cli.py, server.py, tui.py, chat_app.py, chat_commands.py, chat_flow.py,
 │                 chat_widgets.py, chat_input.py, chat_theme.py, command_catalog.py,
 │                 ui.py, session_ui.py, chat_reflection.py, chat_git.py, git_screen.py,
-│                 inference_screen.py, pending_screen.py, actions.py
+│                 inference_screen.py, pending_screen.py, thinking_panel.py, actions.py
 │                                                    # CLI / Textual TUI / FastMCP 展示适配
 ├── application/  service.py, conversation.py, memory.py, settings.py,
 │                 reflection.py, git.py, contracts.py # 与前端无关的用例编排与数据契约

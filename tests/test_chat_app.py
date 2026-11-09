@@ -60,6 +60,7 @@ async def test_inference_review_uses_worker_and_keeps_facts_separate(tmp_path):
         await pilot.pause()
         assert isinstance(app.screen, InferenceScreen)
         assert not app.busy
+
         await pilot.press("escape")
         app._run_inference_review(item.id, "confirm")
         await asyncio.wait_for(app.workers.wait_for_complete(), timeout=30)
@@ -3824,7 +3825,7 @@ async def test_spark_thinking_selection_during_reply_applies_to_next_turn(tmp_pa
     gate = threading.Event()
     calls = []
 
-    def chat(model, messages, tools, on_delta=None, cancel=None):
+    def chat(model, messages, tools, on_delta=None, cancel=None, *, on_reasoning=None):
         calls.append(model.config.spark_thinking)
         if len(calls) == 1:
             gate.wait(timeout=20)
@@ -5674,3 +5675,177 @@ async def test_context_compact_and_import_failures_release_only_own_state(tmp_pa
         assert app._navigation_busy is False
         assert app._ask_active is False
         assert not app.busy
+
+
+@pytest.mark.parametrize("size", [(80, 24), (120, 40)])
+async def test_reasoning_preview_expansion_follow_and_folding(tmp_path, monkeypatch, size):
+    from textual.widgets import Button
+
+    from syvrio.app.thinking_panel import ThinkingPanel, ThinkingText
+    from syvrio.llm import LiteLLMChatModel, ToolCall
+
+    app = build_app(tmp_path, [])
+    app.runtime.model = LiteLLMChatModel(LLMConfig())
+    first = "".join(f"合成 thought {index:03d} " + "中英 mixed " * 8 + "\n" for index in range(32))
+    more = "".join(f"next line {index}\n" for index in range(200))
+    release_more, release_bottom, release_tool, release_body = [threading.Event() for _ in range(4)]
+    calls = []
+
+    def chat(model, messages, tools, on_delta=None, cancel=None, *, on_reasoning=None):
+        calls.append(1)
+        if len(calls) == 1:
+            on_reasoning(first)
+            assert release_more.wait(30)
+            for chunk in more.splitlines(keepends=True):
+                on_reasoning(chunk)
+            assert release_bottom.wait(30)
+            on_reasoning("latest thought\n")
+            assert release_tool.wait(30)
+            return AssistantTurn(reasoning_content=first + more + "latest thought\n",
+                                 tool_calls=[ToolCall("step-1", "recall", {"query": "synthetic"})])
+        on_reasoning("Second reasoning stage")
+        assert release_body.wait(30)
+        on_delta("Visible answer")
+        return AssistantTurn(content="Visible answer", reasoning_content="Second reasoning stage")
+
+    monkeypatch.setattr(LiteLLMChatModel, "chat", chat)
+
+    async def until(pilot, condition):
+        for _ in range(100):
+            await pilot.pause(0.025)
+            if condition():
+                return
+        assert condition()
+
+    async with app.run_test(size=size) as pilot:
+        widget = app.query_one("#input", Input)
+        widget.value = "Synthetic multi-stage question"
+        try:
+            await pilot.press("enter")
+            await until(pilot, lambda: bool(app.query(ThinkingText))
+                        and app.query_one(ThinkingText).size.height == 3
+                        and app.query_one(ThinkingText).is_vertical_scroll_end)
+            panel = app.query_one(ThinkingPanel)
+            area = panel.query_one(ThinkingText)
+            assert widget.has_focus and area.size.height == 3 and area.is_vertical_scroll_end
+            await pilot.click(panel.query_one(Button))
+            assert area.size.height == min(10, size[1] // 3)
+            area.focus()
+            await pilot.press("pageup")
+            await pilot.wait_for_scheduled_animations()
+            assert not area.is_vertical_scroll_end
+            position = area.scroll_y
+            release_more.set()
+            await until(pilot, lambda: area.text.endswith("next line 199\n"))
+            assert area.scroll_y == position
+            assert len(app.query(ThinkingPanel)) == 1
+            area.scroll_end(animate=False, immediate=True)
+            release_bottom.set()
+            await until(pilot, lambda: area.text.endswith("latest thought\n"))
+            assert area.is_vertical_scroll_end
+            release_tool.set()
+            await until(pilot, lambda: len(app.query(ThinkingPanel)) == 2)
+            next_panel = list(app.query(ThinkingPanel))[-1]
+            await until(pilot, lambda: next_panel.query_one(ThinkingText).size.height == 3)
+            assert next_panel.query_one(ThinkingText).size.height == 3
+            assert area.display  # User explicitly opened the earlier stage.
+            release_body.set()
+            await _wait_idle(app, pilot)
+            assert not next_panel.query_one(ThinkingText).display
+            assert app.query_one(".reply")._markdown == "Visible answer"
+
+            app._clear_chat()
+            app.build_transcript()
+            await pilot.pause()
+            history = list(app.query(ThinkingPanel))
+            assert len(history) == 2 and all(not p.query_one(ThinkingText).display for p in history)
+            await pilot.click(history[-1].query_one(Button))
+            assert history[-1].query_one(ThinkingText).text == "Second reasoning stage"
+        finally:
+            for event in (release_more, release_bottom, release_tool, release_body):
+                event.set()
+
+
+async def test_reasoning_only_cancellation_restores_collapsed_history(tmp_path, monkeypatch):
+    from textual.widgets import Button
+
+    from syvrio.app.thinking_panel import ThinkingPanel, ThinkingText
+    from syvrio.llm import GenerationCancelled, LiteLLMChatModel
+
+    app = build_app(tmp_path, [])
+    app.runtime.model = LiteLLMChatModel(LLMConfig())
+
+    def chat(model, messages, tools, on_delta=None, cancel=None, *, on_reasoning=None):
+        on_reasoning("Synthetic interrupted thinking")
+        assert cancel.wait(20)
+        raise GenerationCancelled("Stopped by user")
+
+    monkeypatch.setattr(LiteLLMChatModel, "chat", chat)
+    async with app.run_test(size=(80, 24)) as pilot:
+        widget = app.query_one("#input", Input)
+        widget.value = "Synthetic stop request"
+        await pilot.press("enter")
+        for _ in range(100):
+            await pilot.pause()
+            if app.query(ThinkingPanel):
+                break
+        assert app.query_one(ThinkingPanel).query_one(ThinkingText).display
+        await pilot.press("escape")
+        await _wait_idle(app, pilot)
+        assert not app.query_one(ThinkingPanel).query_one(ThinkingText).display
+        assert widget.has_focus
+        app._clear_chat()
+        app.build_transcript()
+        await pilot.pause()
+        panel = app.query_one(ThinkingPanel)
+        assert not panel.query_one(ThinkingText).display
+        await pilot.click(panel.query_one(Button))
+        assert panel.query_one(ThinkingText).text == "Synthetic interrupted thinking"
+
+
+async def test_reasoning_stays_with_background_session(tmp_path, monkeypatch):
+    from syvrio.app.thinking_panel import ThinkingPanel, ThinkingText
+    from syvrio.llm import LiteLLMChatModel
+
+    app = build_app(tmp_path, [])
+    app.runtime.model = LiteLLMChatModel(LLMConfig())
+    release = threading.Event()
+
+    def chat(model, messages, tools, on_delta=None, cancel=None, *, on_reasoning=None):
+        on_reasoning("Synthetic background first")
+        assert release.wait(30)
+        on_reasoning(" and second")
+        on_delta("Synthetic background answer")
+        return AssistantTurn(content="Synthetic background answer",
+                             reasoning_content="Synthetic background first and second")
+
+    monkeypatch.setattr(LiteLLMChatModel, "chat", chat)
+    async with app.run_test(size=(120, 40)) as pilot:
+        try:
+            app.query_one("#input", Input).value = "Synthetic background question"
+            await pilot.press("enter")
+            for _ in range(100):
+                await pilot.pause()
+                if app.query(ThinkingPanel):
+                    break
+            assert app.query(ThinkingPanel)
+            original = app.application.conversation.current_id
+            app._new_session()
+            for _ in range(100):
+                await pilot.pause()
+                if not app._navigation_busy and app.application.conversation.current_id is None:
+                    break
+            assert app.application.conversation.current_id is None
+            assert not app.query(ThinkingPanel)
+            release.set()
+            await _wait_idle(app, pilot)
+            assert not app.query(ThinkingPanel)
+            app._switch_session(original)
+            for _ in range(100):
+                await pilot.pause()
+                if app.query(ThinkingPanel):
+                    break
+            assert app.application.conversation.current_id == original
+            assert not app.query_one(ThinkingPanel).query_one(ThinkingText).display
+        finally:
+            release.set()

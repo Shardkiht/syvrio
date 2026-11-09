@@ -24,11 +24,16 @@ class ContextPlan:
 
 
 def record_tokens(record: dict) -> int:
+    if record.get("interrupted") is True:
+        return 0
     record_type = record.get("type")
     if record_type in ("message", "assistant"):
         tokens = estimate_tokens(str(record.get("content") or "")) + 8
         for call in record.get("tool_calls") or []:
             tokens += estimate_tokens(json.dumps(call.get("arguments", {}), ensure_ascii=False))
+        reasoning = record.get("reasoning") or {}
+        if reasoning.get("source"):
+            tokens += estimate_tokens(reasoning.get("text") or "")
         return tokens
     if record_type == "tool":
         return estimate_tokens(str(record.get("content") or "")) + 8
@@ -44,7 +49,13 @@ def record_to_message(record: dict) -> dict | None:
     if record_type == "message":
         return {"role": record.get("role", "user"), "content": record.get("content", "")}
     if record_type == "assistant":
+        if record.get("interrupted") is True:
+            return None
         message: dict = {"role": "assistant", "content": record.get("content") or ""}
+        reasoning = record.get("reasoning") or {}
+        if reasoning.get("source") and reasoning.get("text"):
+            message["reasoning_content"] = reasoning["text"]
+            message["reasoning_source"] = reasoning["source"]
         tool_calls = record.get("tool_calls") or []
         if tool_calls:
             message["tool_calls"] = [

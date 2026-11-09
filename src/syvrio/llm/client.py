@@ -4,11 +4,12 @@ import asyncio
 import hashlib
 import json
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from functools import lru_cache
 from threading import Event
 from typing import Protocol
+from urllib.parse import urlsplit
 
 from ..infra.config import LLMConfig
 from ..infra.latency import mark_model, track_completion
@@ -49,6 +50,68 @@ class AssistantTurn:
     content: str = ""
     tool_calls: list[ToolCall] = field(default_factory=list)
     usage: Usage = field(default_factory=Usage)
+    reasoning_content: str = ""
+    reasoning_fragments: list[dict] = field(default_factory=list)
+    reasoning_source: str = ""
+    reasoning_seconds: float | None = None
+
+
+def _reasoning_fields(message) -> tuple[str, dict]:
+    text = _field(message, "reasoning_content")
+    alias = _field(message, "reasoning")
+    metadata = {}
+    for key, value in (
+        ("reasoning", alias),
+        ("reasoning_details", _field(message, "reasoning_details")),
+        ("thinking_blocks", _field(message, "thinking_blocks")),
+    ):
+        if isinstance(value, (list, dict)) and value:
+            metadata[key] = value
+    return (text if isinstance(text, str) and text else alias if isinstance(alias, str) else ""), metadata
+
+
+def _reasoning_route(config: LLMConfig) -> tuple[str, str]:
+    """Only verified request shapes can receive session reasoning."""
+    provider = config.provider.strip().lower()
+    endpoint = (config.base_url or "").rstrip("/")
+    url = urlsplit(endpoint)
+    if provider == "deepseek" and (
+        not endpoint or (url.scheme == "https" and url.hostname == "api.deepseek.com")
+    ):
+        policy = "history"
+    elif (
+        provider == "dashscope"
+        and url.scheme == "https"
+        and url.hostname in {"dashscope.aliyuncs.com", "dashscope-intl.aliyuncs.com"}
+        and config.litellm_model() == "dashscope/deepseek-v4.1-flash-1017"
+    ):
+        # Limit the compatible endpoint to the active tool chain.
+        policy = "turn"
+    else:
+        return "", ""
+    source = hashlib.sha256(f"{provider}\n{endpoint}\n{config.litellm_model()}".encode()).hexdigest()
+    return source, policy
+
+
+def _chat_history(config: LLMConfig, messages: list[dict]) -> tuple[list[dict], list[dict], str]:
+    source, policy = _reasoning_route(config)
+    last_user = max((i for i, msg in enumerate(messages)
+                     if msg["role"] == "user" and not msg.get("_tool_wrap_up")), default=-1)
+    private = {"reasoning_content", "reasoning_source", "reasoning", "reasoning_details",
+               "thinking_blocks", "_tool_wrap_up"}
+    clean = [
+        {k: v for k, v in msg.items() if k not in private}
+        for msg in messages
+    ]
+    primary = [
+        {**msg, "reasoning_content": original["reasoning_content"]}
+        if source and msg["role"] == "assistant"
+        and original.get("reasoning_source") == source and original.get("reasoning_content")
+        and (policy == "history" or index > last_user)
+        else msg
+        for index, (msg, original) in enumerate(zip(clean, messages, strict=True))
+    ]
+    return primary, clean, source
 
 
 def _litellm():
@@ -71,6 +134,7 @@ def complete(
     response_format: dict | None = None,
     temperature: float | None = None,
     max_tokens: int | None = None,
+    fallback_messages: list[dict] | None = None,
 ):
     """统一的 LiteLLM 调用入口；provider/base_url/retry/fallback 都由配置决定。"""
     litellm = _litellm()
@@ -95,6 +159,7 @@ def complete(
     if config.fallbacks:
         kwargs["fallbacks"] = config.fallbacks
     _adapt_spark_params(config, kwargs)
+    _strip_fallback_reasoning(kwargs, fallback_messages)
     mark_model("request")
     with track_completion():
         return litellm.completion(**kwargs)
@@ -115,6 +180,23 @@ def _adapt_spark_params(config: LLMConfig, kwargs: dict) -> None:
             ]
     if "max_tokens" in kwargs:
         kwargs["max_completion_tokens"] = kwargs.pop("max_tokens")
+
+
+def _strip_fallback_reasoning(kwargs: dict, messages: list[dict] | None) -> None:
+    if messages is not None and kwargs.get("fallbacks"):
+        kwargs["fallbacks"] = [
+            {**(item if isinstance(item, dict) else {"model": item}), "messages": messages}
+            for item in kwargs["fallbacks"]
+        ]
+
+
+def _primary_response(response, fallbacks: Sequence[str]) -> bool:
+    if not fallbacks:
+        return True
+    hidden = _field(response, "_hidden_params") or {}
+    headers = hidden.get("additional_headers") or {}
+    # A missing provenance marker is ambiguous when fallback routing is enabled.
+    return headers.get("x-litellm-attempted-fallbacks") in (0, "0")
 
 
 def embed_texts(config: LLMConfig, texts: list[str], batch_size: int = 32) -> list[list[float]]:
@@ -276,17 +358,18 @@ def _tool_calls(message) -> list[ToolCall]:
         if isinstance(raw_arguments, str):
             try:
                 arguments = json.loads(raw_arguments or "{}")
-            except json.JSONDecodeError:
-                arguments = {}
-        elif isinstance(raw_arguments, dict):
-            arguments = raw_arguments
+            except json.JSONDecodeError as exc:
+                raise ChatModelError("Tool call returned malformed JSON arguments.") from exc
         else:
-            arguments = {}
+            arguments = raw_arguments
+        name = _field(function, "name")
+        if not isinstance(arguments, dict) or not name:
+            raise ChatModelError("Tool call is missing a name or object arguments.")
         calls.append(
             ToolCall(
                 id=_field(call, "id") or f"call-{index}",
-                name=_field(function, "name", ""),
-                arguments=arguments if isinstance(arguments, dict) else {},
+                name=name,
+                arguments=arguments,
             )
         )
     return calls
@@ -300,24 +383,40 @@ class LiteLLMChatModel:
     def __init__(self, config: LLMConfig):
         self.config = config
 
-    def chat(self, messages: list[dict], tools: list[dict], on_delta=None, cancel: Event | None = None) -> AssistantTurn:
+    def chat(
+        self, messages: list[dict], tools: list[dict], on_delta: Callable[[str], None] | None = None,
+        cancel: Event | None = None, *, on_reasoning: Callable[[str], None] | None = None,
+    ) -> AssistantTurn:
         if self.config.requires_api_key() and not self.config.api_key():
             raise ChatModelError(
                 f"LLM API key is not configured. Set {self.config.api_key_env} "
                 "or run syvrio setup to save it to system credentials."
             )
         litellm = _litellm()
-        if on_delta is None:
-            response = complete(self.config, messages, tools=tools or None)
-            message = response.choices[0].message
+        primary, clean, source = _chat_history(self.config, messages)
+        fallback_messages = clean if primary != clean else None
+        source = source if tools else ""
+        if on_delta is None and on_reasoning is None:
+            kwargs = {"fallback_messages": fallback_messages} if fallback_messages is not None else {}
+            response = complete(self.config, primary, tools=tools or None, **kwargs)
+            choice = response.choices[0]
+            message = choice.message
+            reasoning, metadata = _reasoning_fields(message)
+            calls = _tool_calls(message)
+            if calls and _field(choice, "finish_reason") in {"length", "content_filter"}:
+                raise ChatModelError("Model stopped before its tool calls completed.")
             return AssistantTurn(
                 content=_field(message, "content") or "",
-                tool_calls=_tool_calls(message),
+                tool_calls=calls,
                 usage=_usage(response, litellm),
+                reasoning_content=reasoning,
+                reasoning_fragments=[metadata] if metadata else [],
+                reasoning_source=source if reasoning and _primary_response(response, self.config.fallbacks) else "",
             )
-        return self._chat_stream(messages, tools or None, on_delta, litellm, cancel)
+        parser = _StreamAccumulator(on_delta, litellm, on_reasoning, source)
+        return self._chat_stream(primary, tools or None, parser, litellm, cancel, fallback_messages)
 
-    def _chat_stream(self, messages, tools, on_delta, litellm, cancel=None) -> AssistantTurn:
+    def _chat_stream(self, messages, tools, parser, litellm, cancel, fallback_messages) -> AssistantTurn:
         """流式：文本 delta 实时回调，tool_calls 增量累积，结束时返回聚合结果。"""
         kwargs: dict = {
             "model": self.config.litellm_model(),
@@ -338,12 +437,14 @@ class LiteLLMChatModel:
         if self.config.fallbacks:
             kwargs["fallbacks"] = self.config.fallbacks
         _adapt_spark_params(self.config, kwargs)
+        _strip_fallback_reasoning(kwargs, fallback_messages)
 
         if cancel is not None:
-            return asyncio.run(self._cancellable_stream(kwargs, on_delta, litellm, cancel))
-        parser = _StreamAccumulator(on_delta, litellm)
+            return asyncio.run(self._cancellable_stream(kwargs, parser, litellm, cancel))
         mark_model("request")
         stream = litellm.completion(**kwargs)
+        if not _primary_response(stream, self.config.fallbacks):
+            parser.source = ""
         mark_model("stream_open")
         try:
             for chunk in stream:
@@ -354,13 +455,13 @@ class LiteLLMChatModel:
                 close()
         return parser.finish()
 
-    async def _cancellable_stream(self, kwargs, on_delta, litellm, cancel: Event) -> AssistantTurn:
+    async def _cancellable_stream(self, kwargs, parser, litellm, cancel: Event) -> AssistantTurn:
         # Async transport cancellation also interrupts waiting for the first token.
-        parser = _StreamAccumulator(on_delta, litellm)
-
         async def consume() -> AssistantTurn:
             mark_model("request")
             stream = await litellm.acompletion(**kwargs)
+            if not _primary_response(stream, self.config.fallbacks):
+                parser.source = ""
             mark_model("stream_open")
             try:
                 async for chunk in stream:
@@ -387,10 +488,17 @@ class LiteLLMChatModel:
 
 
 class _StreamAccumulator:
-    def __init__(self, on_delta, litellm) -> None:
+    def __init__(self, on_delta, litellm, on_reasoning=None, source: str = "") -> None:
         self.on_delta = on_delta
+        self.on_reasoning = on_reasoning
+        self.source = source
         self.litellm = litellm
         self.content_parts: list[str] = []
+        self.reasoning_parts: list[str] = []
+        self.reasoning_fragments: list[dict] = []
+        self.reasoning_started: float | None = None
+        self.reasoning_seconds: float | None = None
+        self.finish_reason: str | None = None
         self.tool_acc: dict[int, dict] = {}
         self.tool_indices: dict[str, int] = {}
         self.usage = Usage()
@@ -411,17 +519,29 @@ class _StreamAccumulator:
         choices = _field(chunk, "choices") or []
         if not choices:
             return
+        self.finish_reason = _field(choices[0], "finish_reason") or self.finish_reason
         delta = _field(choices[0], "delta")
         if delta is None:
             return
-        if _field(delta, "reasoning_content") or _field(delta, "reasoning"):
+        reasoning, metadata = _reasoning_fields(delta)
+        if metadata:
+            self.reasoning_fragments.append(metadata)
+        if reasoning:
             mark_model("first_reasoning")
+            if self.reasoning_started is None:
+                self.reasoning_started = time.monotonic()
+            self.reasoning_parts.append(reasoning)
+            if self.on_reasoning is not None:
+                self.on_reasoning(reasoning)
         text = _field(delta, "content") or ""
+        tool_calls = _field(delta, "tool_calls") or []
+        if text.strip() or tool_calls or _field(choices[0], "finish_reason"):
+            self._finish_reasoning()
         if text:
             mark_model("first_text")
             self.content_parts.append(text)
-            self.on_delta(text)
-        tool_calls = _field(delta, "tool_calls") or []
+            if self.on_delta is not None:
+                self.on_delta(text)
         if tool_calls:
             mark_model("first_tool")
         for tc in tool_calls:
@@ -459,7 +579,13 @@ class _StreamAccumulator:
                     else:
                         raise ChatModelError("Streaming tool call returned inconsistent arguments.")
 
+    def _finish_reasoning(self) -> None:
+        if self.reasoning_started is not None and self.reasoning_seconds is None:
+            self.reasoning_seconds = time.monotonic() - self.reasoning_started
+
     def finish(self) -> AssistantTurn:
+        if self.tool_acc and self.finish_reason in {"length", "content_filter"}:
+            raise ChatModelError("Model stopped before its tool calls completed.")
         tool_calls: list[ToolCall] = []
         for _, acc in sorted(self.tool_acc.items()):
             raw = acc["arguments"]
@@ -472,4 +598,9 @@ class _StreamAccumulator:
             tool_calls.append(
                 ToolCall(id=acc["id"] or f"call-{len(tool_calls)}", name=acc["name"], arguments=arguments)
             )
-        return AssistantTurn(content="".join(self.content_parts), tool_calls=tool_calls, usage=self.usage)
+        self._finish_reasoning()
+        return AssistantTurn(
+            content="".join(self.content_parts), tool_calls=tool_calls, usage=self.usage,
+            reasoning_content="".join(self.reasoning_parts), reasoning_fragments=self.reasoning_fragments,
+            reasoning_source=self.source if self.reasoning_parts else "", reasoning_seconds=self.reasoning_seconds,
+        )

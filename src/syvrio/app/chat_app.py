@@ -86,6 +86,8 @@ class ChatApp(ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixi
         self._pending_review_busy = False
         self._stream_widget: ChatReply | None = None
         self._stream_buffer = ""
+        self._thinking_widget = None
+        self._thinking_parts: list[str] = []
         self._stream_stamp = ""
         self._stream_flush_scheduled = False
         self._usage_cache: dict[tuple, int] = {}
@@ -548,6 +550,7 @@ class ChatApp(ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixi
         self.query_one("#chat", TranscriptView).clear_transcript()
         # 视图销毁后活跃段控件失效；buffer 保留供切回时重放（落盘段由磁盘重建负责）。
         self._stream_widget = None
+        self._thinking_widget = None
         self._stream_flush_scheduled = False
 
     def _scroll_end(self) -> None:
@@ -749,6 +752,10 @@ class ChatApp(ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixi
                      elapsed_ms=round((time.monotonic() - self._progress_started) * 1000))
         self._stream_widget = None
         self._stream_buffer = ""
+        if self._thinking_widget is not None:
+            self._thinking_widget.fold_preview()
+        self._thinking_widget = None
+        self._thinking_parts.clear()
         self._stream_stamp = ""
         self._stream_flush_scheduled = False
         self.query_one("#input", BarInput).set_hint("Message or /command")

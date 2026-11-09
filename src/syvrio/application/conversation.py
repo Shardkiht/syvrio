@@ -339,6 +339,7 @@ class ConversationUseCases:
                 on_user_message=on_user_message,
                 on_event=callbacks.on_event,
                 on_delta=callbacks.on_delta,
+                on_thinking=callbacks.on_thinking,
                 on_progress=callbacks.on_progress,
                 cancel=cancel,
             )

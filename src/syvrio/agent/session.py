@@ -14,6 +14,7 @@ from ..infra.diagnostics import record_event
 from ..infra.locking import vault_write_lock
 from ..infra.paths import SyvrioPaths, vault_paths
 from ..memory.detect import redact_secrets
+from ..memory.store import atomic_write
 
 _LOG = logging.getLogger(__name__)
 
@@ -217,6 +218,7 @@ class SessionStore:
     def __init__(self, vault: Path | SyvrioPaths):
         paths = vault if isinstance(vault, SyvrioPaths) else vault_paths(vault)
         self.root = paths.sessions_dir
+        self._reasoning_root = paths.runtime_dir / "session-reasoning"
         # 会话追加与 Git 快照共用 Vault 写锁，避免提交到写了一半的 JSONL。
         self._lock = vault_write_lock(paths)
         self._listing_cache: dict[str, tuple[tuple[int, int], dict]] = {}
@@ -256,7 +258,7 @@ class SessionStore:
     def exists(self, session_id: str) -> bool:
         return self._path(session_id).exists()
 
-    def load(self, session_id: str) -> Session:
+    def load(self, session_id: str, *, include_reasoning: bool = True) -> Session:
         path = self._path(session_id)
         if not path.exists():
             raise KeyError(f"会话不存在：{session_id}")
@@ -273,6 +275,7 @@ class SessionStore:
                 errors[number] = exc
                 continue
             _validate_record(record)
+            record.pop("reasoning", None)  # Only local Runtime attachments can carry replay data.
             records.append(record)
             if record.get("type") == "recovery":
                 ignored = record.get("ignored_line")
@@ -291,6 +294,20 @@ class SessionStore:
         meta = records[0] if records and records[0].get("type") == "meta" else {}
         if meta.get("id", session_id) != session_id:
             raise ValueError("Session ID differs from archive filename")
+        if include_reasoning:
+            for record in records:
+                if record.get("type") == "assistant" and record.get("reasoning_local") is True:
+                    attachment = self._reasoning_path(session_id, record["id"])
+                    try:
+                        reasoning = json.loads(attachment.read_text(encoding="utf-8"))
+                    except FileNotFoundError:
+                        continue  # Runtime is local and may be absent after a Vault sync.
+                    if (not isinstance(reasoning, dict) or not isinstance(reasoning.get("text"), str)
+                            or not isinstance(reasoning.get("source", ""), str)
+                            or reasoning.get("seconds") is not None
+                            and type(reasoning["seconds"]) not in (float, int)):
+                        raise ValueError("Invalid local session reasoning")
+                    record["reasoning"] = reasoning
         return Session(
             id=session_id,
             started_at=meta.get("started_at", ""),
@@ -300,10 +317,19 @@ class SessionStore:
         )
 
     def append(self, session: Session, record: dict) -> dict:
+        raw_reasoning = record.get("reasoning")
         record = _redact_record(record)
+        reasoning = record.pop("reasoning", None)
+        if reasoning and reasoning != raw_reasoning:
+            # A scrubbed reasoning fragment must never be replayed as original protocol data.
+            reasoning.pop("source", None)
         record.setdefault("at", now_iso())
         # 损坏尾行原样保留：只追加换行和恢复标记，后续加载据此跳过该行。
         with self._lock:
+            if reasoning:
+                attachment = self._reasoning_path(session.id, record["id"])
+                atomic_write(attachment, json.dumps(reasoning, ensure_ascii=False).encode("utf-8"))
+                record["reasoning_local"] = True
             with session.path.open("a+b") as handle:
                 handle.seek(0, 2)
                 if handle.tell():
@@ -319,8 +345,19 @@ class SessionStore:
                     session.records.append(recovery)
                     session.damaged_tail_line = None
                 handle.write((json.dumps(record, ensure_ascii=False) + "\n").encode("utf-8"))
+            if reasoning:
+                record["reasoning"] = reasoning
             session.records.append(record)
         return record
+
+    def _reasoning_path(self, session_id: str, record_id: str) -> Path:
+        if not SESSION_ID_RE.fullmatch(session_id) or not SESSION_ID_RE.fullmatch(record_id):
+            raise ValueError("Invalid local session reasoning identifier")
+        path = self._reasoning_root / session_id / f"{record_id}.json"
+        if (any(p.is_symlink() for p in (self._reasoning_root, path.parent, path))
+                or not path.resolve().is_relative_to(self._reasoning_root.parent.resolve())):
+            raise ValueError("Local session reasoning cannot redirect outside Runtime")
+        return path
 
     def rename(self, session: Session, title: str) -> None:
         self.append(session, {"type": "title", "title": title.strip()[:80]})
@@ -330,6 +367,9 @@ class SessionStore:
             path = self._path(session_id)
             if not path.exists():
                 return False
+            attachments = self._reasoning_path(session_id, "attachment").parent
+            for attachment in attachments.glob("*.json"):
+                attachment.unlink()
             path.unlink()
             self._listing_cache.pop(session_id, None)
             self._undistilled_cache.pop(session_id, None)
@@ -344,7 +384,7 @@ class SessionStore:
         cached = self._listing_cache.get(path.stem)
         if cached is None or cached[0] != signature:
             try:
-                session = self.load(path.stem)
+                session = self.load(path.stem, include_reasoning=False)
             except (ValueError, KeyError, OSError) as exc:
                 _LOG.warning("Unable to list session %s (%s)", path.stem, type(exc).__name__)
                 record_event("session.scan_failed", exc)
@@ -364,7 +404,7 @@ class SessionStore:
             row = cached[1]
             if with_tokens and row.get("tokens") is None:
                 try:
-                    row["tokens"] = self.load(path.stem).estimated_tokens()
+                    row["tokens"] = self.load(path.stem, include_reasoning=False).estimated_tokens()
                 except (ValueError, KeyError, OSError) as exc:
                     _LOG.warning("Unable to list session %s (%s)", path.stem, type(exc).__name__)
                     record_event("session.scan_failed", exc)
@@ -413,7 +453,7 @@ class SessionStore:
                 if cached[1] < needed:
                     continue
                 try:
-                    session = self.load(path.stem)
+                    session = self.load(path.stem, include_reasoning=False)
                 except (ValueError, KeyError, OSError) as exc:
                     _LOG.warning("Unable to scan session %s (%s)", path.stem, type(exc).__name__)
                     record_event("session.scan_failed", exc)
@@ -421,7 +461,7 @@ class SessionStore:
                 found.append((session.updated_at, session))
                 continue
             try:
-                session = self.load(path.stem)
+                session = self.load(path.stem, include_reasoning=False)
             except (ValueError, KeyError, OSError) as exc:
                 _LOG.warning("Unable to scan session %s (%s)", path.stem, type(exc).__name__)
                 record_event("session.scan_failed", exc)

@@ -45,11 +45,14 @@ Core has exactly four fields. The ID must be unique across the Vault and should 
     cache/profile/profile-summary.json
     state/{reflection,fingerprints,git-sync,usage,vault-binding}.json
     jobs/dreaming/jobs.jsonl
+    session-reasoning/<session-id>/<message-id>.json
     locks/{vault,git}.lock
     logs/
 ```
 
 Categories can be nested. Use the Vault-relative Markdown path when topic names repeat. Git tracks only the Vault and sees memory, session and record changes. Stop running Syvrio clients before switching the active Vault. A Runtime bound to a different Vault invalidates its known derived files; Vault data stays intact. Deleting Runtime while Syvrio is stopped does not delete facts or sessions, but does remove local counters, scheduling and job progress.
+
+Assistant records may contain a `reasoning_local` flag that points to a private Runtime attachment. The attachment contains reasoning and optional protocol fragments. Keep the Runtime if you need to reopen this reasoning after a restore. A session remains readable when the attachment is missing.
 
 Configuration lookup: `SYVRIO_CONFIG`, local `syvrio.toml`, then `~/.syvrio/config.toml`. If the last file does not exist, the previous platform configuration path is still accepted. `vault` and `runtime` are independent top-level settings; `SYVRIO_RUNTIME` overrides the runtime path. Runtime must be outside any Git working tree and separate from the Vault. See [config.example.toml](../config.example.toml).
 

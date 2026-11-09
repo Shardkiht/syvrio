@@ -37,6 +37,8 @@ def estimate_messages_tokens(messages: list[dict]) -> int:
     for message in messages:
         total += 4
         total += estimate_tokens(str(message.get("content") or ""))
+        if reasoning := message.get("reasoning_content"):
+            total += estimate_tokens(reasoning)
         for call in message.get("tool_calls") or []:
             function = call.get("function", {})
             total += estimate_tokens(str(function.get("name", "")))

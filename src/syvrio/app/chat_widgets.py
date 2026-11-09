@@ -28,6 +28,7 @@ from textual.visual import RenderOptions, RichVisual
 from textual.widgets import Button, Input, Label, ListView, ListItem, Static
 
 from ..agent.session import Session
+from .thinking_panel import ThinkingPanel
 from ..infra.diagnostics import record_event
 from .command_catalog import SLASH_COMMANDS, slash_matches
 from .chat_theme import MARKDOWN_THEME
@@ -244,7 +245,7 @@ class TranscriptView(VerticalScroll):
                 self._tools[str(record.get("tool_call_id"))] = record
             elif kind == "message" and record.get("role") == "user" and str(record.get("content") or "").strip():
                 self._turns.append(record)
-            elif kind == "assistant" and (str(record.get("content") or "").strip() or record.get("tool_calls")):
+            elif kind == "assistant" and (record.get("content") or record.get("tool_calls") or record.get("reasoning")):
                 self._turns.append(record)
         widgets = []
         if session.damaged_tail_line is not None:
@@ -270,6 +271,10 @@ class TranscriptView(VerticalScroll):
                     widgets.append(Static(f"You · {stamp}", classes="who-user"))
                 widgets.append(Vertical(Static(content, classes="bubble"), classes="user-turn"))
                 continue
+            reasoning = record.get("reasoning") or {}
+            if (reasoning.get("text") or "").strip():
+                widgets.append(ThinkingPanel(reasoning["text"], record_id=record["id"],
+                                             seconds=reasoning.get("seconds")))
             if content.strip():
                 widgets.append(Static(f"Syvrio · {stamp}" if stamp else "Syvrio", classes="who-ai"))
                 widgets.append(ChatReply(content, classes="reply"))

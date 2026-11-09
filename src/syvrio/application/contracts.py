@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable
 
-from ..agent.runtime import AgentReply
+from ..agent.runtime import AgentReply, ThinkingUpdate
 from ..agent.session import Session
 from ..memory.models import Inference, PendingItem
 
@@ -53,6 +53,7 @@ class TurnCallbacks:
     on_progress: Callable[[str], None] | None = None
     on_session: Callable[[Session], None] | None = None
     on_user_message: Callable[[str], None] | None = None
+    on_thinking: Callable[[ThinkingUpdate], None] | None = None
 
 
 @dataclass

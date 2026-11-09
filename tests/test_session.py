@@ -257,10 +257,11 @@ def test_list_reuses_cached_summary_until_file_changes(tmp_path, monkeypatch):
     calls = 0
     original = store.load
 
-    def counting(session_id):
+    def counting(session_id, *, include_reasoning=True):
         nonlocal calls
         calls += 1
-        return original(session_id)
+        assert not include_reasoning
+        return original(session_id, include_reasoning=include_reasoning)
 
     monkeypatch.setattr(store, "load", counting)
 
@@ -287,10 +288,11 @@ def test_unconsolidated_skips_unchanged_consolidated_files(tmp_path, monkeypatch
     calls = 0
     original = store.load
 
-    def counting(session_id):
+    def counting(session_id, *, include_reasoning=True):
         nonlocal calls
         calls += 1
-        return original(session_id)
+        assert not include_reasoning
+        return original(session_id, include_reasoning=include_reasoning)
 
     monkeypatch.setattr(store, "load", counting)
 

@@ -204,6 +204,7 @@ While a reply is generating, keep typing and press Enter to queue messages above
 - Automatically retrieves relevant long-term memories every turn and injects them into context; follow-ups and memory cues such as "remember" or "last time" include the last 1-2 user turns in the search query and raise the result limit.
 - The model can call `recall / read_topic / memorize / correct / evolve / forget / review_pending`. `read_topic` reads a topic's active entries only when the user explicitly requests the full topic or recall is insufficient, caps output at 2000 tokens, and does not accept file paths. The model calls `search` for current public information and `fetch_web` to open a result page when dates or details matter, treating both results and page text as external material without executing any instructions in them.
 - No session is created when entering chat; `sessions/YYYY/MM/<id>.jsonl` is created after the first message.
+- When a model returns displayable reasoning, the `Thinking…` pane follows the latest three wrapped lines. It collapses when the answer starts. Click its header or focus it and press Enter to open a bounded scrollable pane. Scrolling up pauses follow mode while expanded, and returning to the bottom resumes it. Each model step has its own pane. Restored panes start collapsed.
 - Resumed sessions initially display the existing summary and the latest 10 unsummarized message records. Click “加载更早的记录” (load earlier records) to page through older messages after the summary boundary; the original history is retained. Successful resume does not show a notification; failures still show an error. Each reply uses a single Markdown-rendering widget to reduce mounting and cleanup overhead for long replies. Select reply text with the mouse and press Ctrl+C to copy it.
 - Context usage after resuming or undoing is estimated and cached in the background. The status shows “计算中” (calculating) until ready; changes to the session, messages, or persona trigger a new estimate, and stale results cannot overwrite the current session.
 - Resuming a session replays previous user messages and assistant replies; use `syvrio chat --resume <id>`. Session switches never block: the previous session's distillation runs in the background and notifies when done. The bottom context meter resets to zero after switching and updates from the new session's context plan on the next turn, rather than retaining the previous session's usage.
@@ -501,6 +502,8 @@ Memories use [Schema and Vault Layout v2](docs/vault-v2.md). Each top-level Mark
 
 Save manually edited Vault memory Markdown as UTF-8. Encoding errors report the path relative to the Vault.
 
+Reasoning text and protocol fields live locally in `runtime/session-reasoning/<session-id>/<message-id>.json`. The session JSONL holds only a reference flag. Reasoning stays out of facts, summaries, and Vault Git history. Complete reasoning is sent back only to the same model when the endpoint's replay policy permits it. On another device, a copied Vault restores the answers and tool history. Displaying reasoning also requires the local Runtime attachments.
+
 Corrections create a new entry linked by `syvrio.supersedes` and mark the original as superseded; deletion uses the `deleted` status. Audit events go to `records/memory/audit.jsonl`.
 
 Optional context includes:
@@ -534,7 +537,7 @@ src/syvrio/
 ├── app/          cli.py, server.py, tui.py, chat_app.py, chat_commands.py, chat_flow.py,
 │                 chat_widgets.py, chat_input.py, chat_theme.py, command_catalog.py,
 │                 ui.py, session_ui.py, chat_reflection.py, chat_git.py, git_screen.py,
-│                 inference_screen.py, pending_screen.py, actions.py
+│                 inference_screen.py, pending_screen.py, thinking_panel.py, actions.py
 │                                                    # CLI / Textual TUI / FastMCP presentation adapters
 ├── application/  service.py, conversation.py, memory.py, settings.py,
 │                 reflection.py, git.py, contracts.py # frontend-neutral use cases and data contracts

@@ -41,6 +41,13 @@ DISTILL_MAX_CHARS = 12000
 MEMORIZE_BATCH_LIMIT = 8
 
 
+@dataclass(frozen=True)
+class ThinkingUpdate:
+    text: str
+    record_id: str | None = None
+    seconds: float | None = None
+
+
 def _merged_memorize_text(calls: list[ToolCall], user_text: str) -> str | None:
     texts = [str(call.arguments.get("text", "")).strip() for call in calls]
     if len(texts) < 2 or not all(texts):
@@ -223,6 +230,7 @@ class AgentRuntime:
         on_user_message: Callable[[str], None] | None = None,
         on_event: Callable[[str], None] | None = None,
         on_delta: Callable[[str], None] | None = None,
+        on_thinking: Callable[[ThinkingUpdate], None] | None = None,
         on_progress: Callable[[str], None] | None = None,
         cancel: Event | None = None,
     ) -> AgentReply:
@@ -243,13 +251,14 @@ class AgentRuntime:
             with track_turn(cancel) as latency:
                 return self._run_ask(
                     session, text, on_event, on_delta, on_progress, cancel,
-                    latency, on_user_message,
+                    latency, on_user_message, on_thinking,
                 )
         except GenerationCancelled as exc:
             partial = getattr(exc, "partial_content", "")
             self._append_assistant(session, AssistantTurn(
                 content=partial + "\n\n*(generation stopped by user)*",
-            ))
+                reasoning_content=getattr(exc, "partial_reasoning", ""),
+            ), on_thinking, interrupted=True)
             raise
         finally:
             self._active_ask = None
@@ -272,6 +281,7 @@ class AgentRuntime:
         cancel: Event | None,
         latency: TurnLatency,
         on_user_message: Callable[[str], None] | None = None,
+        on_thinking: Callable[[ThinkingUpdate], None] | None = None,
     ) -> AgentReply:
         # Settings can change while this turn waits on a model or tool.
         model = self.model
@@ -347,7 +357,19 @@ class AgentRuntime:
 
         def request_model(schemas: list[dict]) -> AssistantTurn:
             with latency.model_step() as started:
-                turn = self._chat_with_retry(model, messages, schemas, on_delta=on_delta, cancel=cancel)
+                try:
+                    turn = self._chat_with_retry(
+                        model, messages, schemas, on_delta=on_delta, cancel=cancel, on_thinking=on_thinking,
+                    )
+                except GenerationCancelled:
+                    raise
+                except ChatModelError as exc:
+                    if reasoning := getattr(exc, "partial_reasoning", ""):
+                        self._append_assistant(session, AssistantTurn(
+                            content=getattr(exc, "partial_content", "") + "\n\n*(generation interrupted)*",
+                            reasoning_content=reasoning,
+                        ), on_thinking, interrupted=True)
+                    raise
                 latency.event("model.finished", ok=True, elapsed_ms=elapsed_ms(started),
                               prompt_tokens=turn.usage.prompt_tokens,
                               completion_tokens=turn.usage.completion_tokens,
@@ -359,7 +381,7 @@ class AgentRuntime:
             turn = request_model(tools.schemas())
             usage.add(turn.usage)
             steps += 1
-            record = self._append_assistant(session, turn)
+            record = self._append_assistant(session, turn, on_thinking)
             messages.append(self._message_from_record(record))
             if not turn.tool_calls:
                 final = turn.content
@@ -398,12 +420,13 @@ class AgentRuntime:
                 {
                     "role": "user",
                     "content": "已达到工具调用上限。请基于以上信息直接给出最终回答，不要再调用工具。",
+                    **({"_tool_wrap_up": True} if isinstance(model, LiteLLMChatModel) else {}),
                 }
             )
             turn = request_model([])
             usage.add(turn.usage)
             steps += 1
-            record = self._append_assistant(session, turn)
+            self._append_assistant(session, turn, on_thinking)
             final = turn.content or "(no answer generated)"
             emit("Tool-step limit reached; forced wrap-up")
 
@@ -667,19 +690,31 @@ class AgentRuntime:
                 totals[key] += len(getattr(result, key))
         return totals
 
-    def _append_assistant(self, session: Session, turn: AssistantTurn) -> dict:
-        return self.sessions.append(
-            session,
-            {
-                "type": "assistant",
-                "id": new_message_id(),
-                "content": turn.content,
-                "tool_calls": [
-                    {"id": call.id, "name": call.name, "arguments": call.arguments}
-                    for call in turn.tool_calls
-                ],
-            },
-        )
+    def _append_assistant(
+        self, session: Session, turn: AssistantTurn,
+        on_thinking: Callable[[ThinkingUpdate], None] | None = None, *, interrupted: bool = False,
+    ) -> dict:
+        record = {
+            "type": "assistant",
+            "id": new_message_id(),
+            "content": turn.content,
+            "tool_calls": [
+                {"id": call.id, "name": call.name, "arguments": call.arguments}
+                for call in turn.tool_calls
+            ],
+        }
+        if interrupted:
+            record["interrupted"] = True
+        if turn.reasoning_content or turn.reasoning_fragments:
+            record["reasoning"] = {
+                "text": turn.reasoning_content, "fragments": turn.reasoning_fragments,
+                "source": turn.reasoning_source, "seconds": turn.reasoning_seconds,
+            }
+        saved = self.sessions.append(session, record)
+        if on_thinking is not None and turn.reasoning_content:
+            reasoning = saved["reasoning"]
+            on_thinking(ThinkingUpdate(reasoning["text"], saved["id"], reasoning["seconds"]))
+        return saved
 
     @staticmethod
     def _message_from_record(record: dict) -> dict:
@@ -694,30 +729,48 @@ class AgentRuntime:
         tools: list[dict],
         on_delta: Callable[[str], None] | None = None,
         cancel: Event | None = None,
+        on_thinking: Callable[[ThinkingUpdate], None] | None = None,
     ) -> AssistantTurn:
-        if on_delta is not None:
+        native_adapter = isinstance(model, LiteLLMChatModel)
+        if not native_adapter and any("reasoning_source" in message for message in messages):
+            messages = [
+                {key: value for key, value in message.items() if key not in {"reasoning_source", "reasoning_content"}}
+                for message in messages
+            ]
+        if on_delta is not None or on_thinking is not None:
             # 流式不做循环级重试：中断重发会让界面收到重复 delta。
             parts: list[str] = []
+            thoughts: list[str] = []
 
             def delta(text: str) -> None:
                 if cancel is not None and cancel.is_set():
                     raise GenerationCancelled("Stopped by user")
                 parts.append(text)
-                on_delta(text)
+                if on_delta is not None:
+                    on_delta(text)
+
+            def reasoning(text: str) -> None:
+                if cancel is not None and cancel.is_set():
+                    raise GenerationCancelled("Stopped by user")
+                thoughts.append(text)
+                if on_thinking is not None:
+                    on_thinking(ThinkingUpdate(text))
 
             try:
-                kwargs = {"cancel": cancel} if isinstance(model, LiteLLMChatModel) else {}
+                kwargs = {"cancel": cancel, "on_reasoning": reasoning} if native_adapter else {}
                 turn = model.chat(messages, tools, on_delta=delta, **kwargs)
                 if cancel is not None and cancel.is_set():
                     raise GenerationCancelled("Stopped by user")
                 return turn
-            except GenerationCancelled as exc:
+            except ChatModelError as exc:
                 exc.partial_content = "".join(parts)
-                raise
-            except ChatModelError:
+                exc.partial_reasoning = "".join(thoughts)
                 raise
             except Exception as exc:
-                raise ChatModelError(f"LLM call failed: {exc}") from exc
+                error = ChatModelError(f"LLM call failed: {exc}")
+                error.partial_content = "".join(parts)
+                error.partial_reasoning = "".join(thoughts)
+                raise error from exc
         last_error: Exception | None = None
         for attempt in range(3):
             try:

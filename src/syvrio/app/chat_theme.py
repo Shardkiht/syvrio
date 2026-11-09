@@ -82,7 +82,7 @@ APP_CSS = """
     /* 右侧留白改由子元素承担，滚动条才能贴在窗口最右侧 */
     #chat > * { margin-right: 2; }
     /* 长回复用固定上限的阅读列，窄窗口继续使用全部可用宽度。 */
-    #chat > .user-turn, #chat > .who-ai, #chat > .reply, #chat > .meta { max-width: 100; }
+    #chat > .user-turn, #chat > .who-ai, #chat > .reply, #chat > .meta, #chat > .thinking-panel { max-width: 100; }
     #chat > .who-ai { margin: 1 2 1 0; }
     #chat > .meta { margin: 1 2 0 0; }
     .who-user { content-align: left top; color: $faint; width: 1fr; margin-top: 1; }
@@ -90,6 +90,11 @@ APP_CSS = """
     .bubble { background: #222222; color: #dedede; border-left: solid $accent; padding: 1 2; width: 1fr; height: auto; }
     .who-ai { color: #b5cfe7; text-style: bold; width: 1fr; }
     .reply { color: #d5d5d5; width: 1fr; height: auto; }
+    .thinking-panel { width: 1fr; height: auto; margin-top: 1; }
+    .thinking-toggle { height: 1; min-width: 0; border: none; padding: 0 1; color: $muted; background: $panel; }
+    .thinking-toggle:hover, .thinking-toggle:focus { color: $accent; }
+    .thinking-text { height: 3; border: none; padding: 0 1; color: $muted; background: $panel; }
+    .thinking-text:focus { border: none; }
     /* 工具事件用薄边线和弱底色分组，不与正式回复争夺注意力 */
     .event-card { border-left: solid $dim; background: transparent; color: $muted; padding: 0 1; width: 1fr; }
     .event-card.memo { border-left: solid $accent; color: #b9b9b9; }

@@ -5,10 +5,11 @@ from functools import partial
 
 from textual.widgets import Input, Static
 
-from ..application.contracts import TurnCallbacks, UndoOutcome
+from ..application.contracts import ThinkingUpdate, TurnCallbacks, UndoOutcome
 from ..application.conversation import QueuedLine as _QueuedLine
 from ..infra.diagnostics import record_event
 from .chat_widgets import ASSISTANT_NAME, ChatReply
+from .thinking_panel import ThinkingPanel
 
 
 class ChatFlowMixin:
@@ -271,9 +272,11 @@ class ChatFlowMixin:
         token,
     ) -> None:
         started = time.monotonic()
+        turn_id = self.application.conversation.active_turn_id
         callbacks = TurnCallbacks(
             on_event=lambda event: self.call_from_thread(self.add_event, event),
             on_delta=lambda delta: self.call_from_thread(self._stream_append, stamp, delta),
+            on_thinking=lambda update: self.call_from_thread(self._thinking_update, turn_id, update),
             on_progress=lambda phase: self.call_from_thread(self._progress_update, phase),
             on_session=lambda session: self.call_from_thread(self._bind_ask_session, session.id),
             on_user_message=lambda message_id: self.call_from_thread(
@@ -330,6 +333,8 @@ class ChatFlowMixin:
         self._stream_buffer += delta
         if not self._ask_in_current_view():
             return  # 请求在后台会话：内容留在 buffer，切回时重放。
+        if self._thinking_widget is not None and delta.strip():
+            self._thinking_widget.fold_preview()
         chat = self._chat()
         if self._stream_widget is None:
             chat.mount(Static(f"{ASSISTANT_NAME} · {stamp}", classes="who-ai"))
@@ -338,6 +343,45 @@ class ChatFlowMixin:
         if not self._stream_flush_scheduled:
             self._stream_flush_scheduled = True
             self.call_after_refresh(self._stream_flush)
+
+    def _thinking_update(self, turn_id: int | None, update: ThinkingUpdate) -> None:
+        if turn_id is None or self.application.conversation.active_turn_id != turn_id:
+            return
+        widget = self._thinking_widget
+        if update.record_id is not None:
+            self._thinking_parts.clear()
+            self._thinking_widget = None
+            if not self._ask_in_current_view():
+                return
+            chat = self._chat()
+            if any(panel.record_id == update.record_id for panel in chat.query(ThinkingPanel)):
+                if widget is not None:
+                    widget.remove()
+                return  # A session switch already loaded the finalized record.
+            if widget is None and update.text.strip():
+                chat.mount(ThinkingPanel(update.text, record_id=update.record_id, seconds=update.seconds),
+                           before=self._stream_widget)
+            elif widget is not None:
+                widget.finish(update.text, update.record_id, update.seconds)
+            self._scroll_end()
+            return
+        cancel = self.application.conversation.cancel_event
+        if cancel is not None and cancel.is_set():
+            return
+        self._thinking_parts.append(update.text)
+        if not self._ask_in_current_view():
+            return
+        if widget is None:
+            if update.text.strip():
+                self._mount_live_thinking()
+        else:
+            widget.append(update.text)
+
+    def _mount_live_thinking(self) -> None:
+        widget = ThinkingPanel("".join(self._thinking_parts), active=not self._stream_buffer.strip())
+        self._thinking_widget = widget
+        self._chat().mount(widget, before=self._stream_widget)
+        self._scroll_end()
 
     def _stream_flush(self) -> None:
         self._stream_flush_scheduled = False
@@ -354,6 +398,8 @@ class ChatFlowMixin:
 
     def _replay_stream(self) -> None:
         """切回生成中的会话：磁盘重建负责已完成轮次，这里只补挂尚未落盘的活跃段。"""
+        if any(part.strip() for part in self._thinking_parts):
+            self._mount_live_thinking()
         if not self._stream_buffer:
             return
         chat = self._chat()
