@@ -85,6 +85,19 @@ def test_parser_and_status_edit_preserve_raw_records(tmp_path, newline):
     assert store.document(path).records[1].entry.raw_markdown == second.entry.raw_markdown
 
 
+def test_store_reports_non_utf8_memory_file(tmp_path):
+    store = MemoryStore(tmp_path)
+    path = store.topic_path("custom/events")
+    path.parent.mkdir(parents=True)
+    original = "# 合成记录\n".encode("gbk")
+    path.write_bytes(original)
+
+    with pytest.raises(SchemaError, match=r"memories/custom/events\.md: invalid UTF-8.*Save"):
+        store.entries()
+
+    assert path.read_bytes() == original
+
+
 @pytest.mark.parametrize(("old", "new", "problem"), [
     ("`status`: `active`", "`status`: `other`", "invalid Core"),
     ("`confidence`: `0.95`", "`confidence`: `NaN`", "invalid Core"),
@@ -168,11 +181,14 @@ def migrator():
 
 
 def test_migration_checks_recovery_hashes_and_history(tmp_path, migrator, monkeypatch):
-    src, dst, run = (tmp_path / name for name in ("source", "vault", "vault-runtime"))
+    src = tmp_path / "source"
+    dst = tmp_path / "合成记忆库"
+    run = dst.with_name(dst.name + "-runtime")
     (src / "memories").mkdir(parents=True)
     (src / "sessions").mkdir()
     (src / ".syvrio").mkdir()
     (src / ".hidden").write_bytes(b"unchanged")
+    (src / ".合成文件").write_bytes(b"unchanged")
     (src / "memories" / "one.md").write_text(
         "# One\n\n- 2026-02-01T01:02:03 — A note  `id=mem-one` `status=active` "
         "`source=chat` `confidence=0.95` `future_field=synthetic`\n", encoding="utf-8",
@@ -209,10 +225,13 @@ def test_migration_checks_recovery_hashes_and_history(tmp_path, migrator, monkey
     assert migrator.main([*args, "--verify"]) == 0
     assert before == migrator.inventory(src)
     assert (dst / ".git" / "HEAD").read_bytes() == head
-    git_root = subprocess.check_output(["git", "-C", str(dst), "rev-parse", "--show-toplevel"], text=True)
+    git_root = subprocess.check_output(
+        ["git", "-C", str(dst), "rev-parse", "--show-toplevel"], encoding="utf-8",
+    )
     assert Path(git_root.strip()) == dst
     assert (dst / "records" / "memory" / "audit.jsonl").read_bytes() == event
-    report = json.loads((run / migrator.REPORT).read_text())
+    report = json.loads((run / migrator.REPORT).read_text(encoding="utf-8"))
+    assert report["source"] == before
     assert report["counts"]["memory"] == 2 and report["counts"]["manual_review"] == 1
     store = MemoryStore(dst)
     entry = store.find("mem-one")

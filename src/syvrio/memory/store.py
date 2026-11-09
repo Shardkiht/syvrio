@@ -94,7 +94,10 @@ class MemoryStore:
     def document(self, path: Path) -> Document:
         self._assert_path(path)
         relative = self._topic(path)
-        raw = path.read_bytes().decode("utf-8") if path.exists() else ""
+        try:
+            raw = path.read_bytes().decode("utf-8") if path.exists() else ""
+        except UnicodeDecodeError as exc:
+            raise SchemaError(f"{relative}: invalid UTF-8. Save the memory file as UTF-8 and try again.") from exc
         return parse_document(raw, relative, relative)
 
     @staticmethod

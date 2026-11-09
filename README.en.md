@@ -499,6 +499,8 @@ Fetching independently follows `[fetch].providers`. Official fetch adapters and 
 
 Memories use [Schema and Vault Layout v2](docs/vault-v2.md). Each top-level Markdown list item contains the body, a required Core, and optional Context and Extensions. Recall sends the selected original Markdown to the model as untrusted reference data. Legacy Vaults require the explicit migration described in the guide.
 
+Save manually edited Vault memory Markdown as UTF-8. Encoding errors report the path relative to the Vault.
+
 Corrections create a new entry linked by `syvrio.supersedes` and mark the original as superseded; deletion uses the `deleted` status. Audit events go to `records/memory/audit.jsonl`.
 
 Optional context includes:

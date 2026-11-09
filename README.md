@@ -497,6 +497,8 @@ LLM 可以在 `search` 调用里用 `providers` 指定多个已启用来源的�
 
 记忆采用 [Schema v2 和 Vault Layout v2](docs/vault-v2.md)。每个顶层 Markdown 列表项包含正文、必填 Core 和可选的 Context、Extensions。召回时，选中的原始 Markdown 作为非可信引用交给模型。旧 Vault 必须按指南显式迁移。
 
+手工编辑 Vault 中的记忆 Markdown 时，请以 UTF-8 保存。编码错误会报告 Vault 内的相对路径。
+
 更正会追加新条目，以 `syvrio.supersedes` 关联旧条目，并将旧状态置为 `superseded`；删除使用 `deleted`。审计记录写入 `records/memory/audit.jsonl`。
 
 可选上下文字段包括：

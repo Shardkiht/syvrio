@@ -22,7 +22,7 @@ def make_vault(tmp_path: Path) -> Path:
     (vault / "sessions").mkdir()
     meta = vault / ".quiet-memo"
     meta.mkdir()
-    (meta / "pending.jsonl").write_text('{"id": "p1"}\n', encoding="utf-8")
+    (meta / "pending.jsonl").write_text('{"id": "p1", "text": "合成候选"}\n', encoding="utf-8")
     (meta / "audit.jsonl").write_text('{"event": "a1"}\n', encoding="utf-8")
     (meta / "vectors.npz").write_bytes(b"cache")
     (meta / "vault.lock").write_bytes(b"")
@@ -76,7 +76,8 @@ def test_apply_migrates_metadata_tags_and_config(tmp_path):
     assert "~qm-escaped~" not in text
     assert text.count("~syvrio-escaped~") == 2
     assert "`id=e1`" in text and "`id=e2`" in text
-    assert json.loads((vault / ".syvrio" / "pending.jsonl").read_text())["id"] == "p1"
+    pending = json.loads((vault / ".syvrio" / "pending.jsonl").read_text(encoding="utf-8"))
+    assert pending == {"id": "p1", "text": "合成候选"}
     assert new_config.exists()
     if sys.platform != "win32":
         assert (new_config.stat().st_mode & 0o777) == 0o600
