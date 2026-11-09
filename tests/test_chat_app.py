@@ -2790,7 +2790,7 @@ async def test_startup_catchup_shows_card_for_crashed_session(tmp_path):
 
 @pytest.mark.parametrize("action", ["approve", "reject"])
 async def test_pending_decision_keeps_tui_responsive(tmp_path, monkeypatch, action):
-    from syvrio.app.chat_widgets import PendingPickerScreen, PickScreen
+    from syvrio.app.pending_screen import PendingScreen
     from syvrio.memory.models import Candidate, PendingItem
 
     app = build_app(tmp_path, [])
@@ -2816,27 +2816,26 @@ async def test_pending_decision_keeps_tui_responsive(tmp_path, monkeypatch, acti
         await pilot.press("enter")
         for _ in range(50):
             await pilot.pause()
-            if isinstance(app.screen, PendingPickerScreen):
+            if isinstance(app.screen, PendingScreen):
                 break
-        assert isinstance(app.screen, PendingPickerScreen)
+        assert isinstance(app.screen, PendingScreen)
         assert app.pending_count == 2
-        await pilot.press("up", "enter")
-        await pilot.pause()
-        assert type(app.screen) is PickScreen
-        if action == "reject":
-            await pilot.press("down", "down")
+        screen = app.screen
         try:
-            await pilot.press("enter")
+            await pilot.press("r" if action == "reject" else "c")
             for _ in range(50):
                 if started.is_set():
                     break
                 await pilot.pause()
             assert started.is_set()
             assert app._pending_review_busy
-            widget.value = "/help"
-            await pilot.press("enter")
-            assert any("Commands" in str(card.render()) for card in app.query(".card"))
-            assert app._pending_review_busy
+            assert app.screen is screen
+            if action == "reject":
+                await pilot.press("escape")
+                widget.value = "/help"
+                await pilot.press("enter")
+                assert any("Commands" in str(card.render()) for card in app.query(".card"))
+                assert app._pending_review_busy
         finally:
             release.set()
         for _ in range(100):
@@ -2846,18 +2845,21 @@ async def test_pending_decision_keeps_tui_responsive(tmp_path, monkeypatch, acti
         assert [pending.id for pending in app.service.pending()] == [remaining.id]
         assert app.service.store.has_text(item.text) == (action == "approve")
         assert app.pending_count == 1
-        assert isinstance(app.screen, PendingPickerScreen)
-        assert app.screen._options[0][1].id == remaining.id
-        await pilot.press("escape")
-        cards = [str(w.render()) for w in app.query(".card")]
-        assert any(("Saved" if action == "approve" else "Rejected") in c for c in cards)
+        if action == "approve":
+            assert app.screen is screen
+            assert screen.query_one("#pending-text", Static).content == remaining.text
+            assert "Saved" in str(screen.query_one("#pending-message", Static).content)
+            await pilot.press("escape")
+        else:
+            assert app.screen is app.default_screen
+            assert any("Rejected" in str(card.render()) for card in app.query(".card"))
         assert widget.has_focus
 
 
-async def test_pending_interactive_edit_approves_only_final_text(tmp_path):
-    from textual.widgets import ListView, OptionList
+async def test_pending_interactive_edit_approves_only_final_text(tmp_path, monkeypatch):
+    from textual.widgets import OptionList, TextArea
 
-    from syvrio.app.chat_widgets import PendingPickerScreen, PickScreen, TextInputScreen
+    from syvrio.app.pending_screen import PendingScreen
     from syvrio.memory.models import Candidate, PendingItem
 
     app = build_app(tmp_path, [])
@@ -2875,31 +2877,34 @@ async def test_pending_interactive_edit_approves_only_final_text(tmp_path):
         await pilot.press("enter")
         for _ in range(50):
             await pilot.pause()
-            if isinstance(app.screen, PendingPickerScreen) and app.screen.query_one(OptionList).has_focus:
+            if isinstance(app.screen, PendingScreen) and app.screen.query_one(OptionList).has_focus:
                 break
-        picker = app.screen
-        assert isinstance(picker, PickScreen)
+        screen = app.screen
+        assert isinstance(screen, PendingScreen)
+        await pilot.press("e")
+        field = screen.query_one(TextArea)
+        assert field.text == item.text
+        assert field.has_focus
+        edited = "喜欢中烘咖啡\n冲煮时使用滤纸。"
+        field.load_text(edited)
         await pilot.press("enter")
-        for _ in range(50):
+        assert field.text == "\n" + edited
+        assert app.service.pending() == [item]
+
+        def fail_approval(*args, **kwargs):
+            raise OSError("synthetic write failure")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(app.service, "approve", fail_approval)
+            await pilot.press("ctrl+s")
+            await app.workers.wait_for_complete(worker for worker in app.workers if worker.group == "pending")
             await pilot.pause()
-            if isinstance(app.screen, PickScreen) and app.screen is not picker:
-                if app.screen.query_one(ListView).has_focus:
-                    break
-        assert isinstance(app.screen, PickScreen) and app.screen is not picker
-        await pilot.press("down")
-        listing = app.screen.query_one(ListView)
-        assert listing.highlighted_child.label == "Edit and approve"
-        await pilot.press("enter")
-        for _ in range(50):
-            await pilot.pause()
-            if isinstance(app.screen, TextInputScreen):
-                if app.screen.query_one("#pick-input", Input).has_focus:
-                    break
-        assert isinstance(app.screen, TextInputScreen)
-        field = app.screen.query_one("#pick-input", Input)
-        assert field.value == item.text
-        field.value = "喜欢中烘咖啡"
-        await pilot.press("enter")
+        assert app.screen is screen
+        assert field.text == "\n" + edited
+        assert field.has_focus
+        assert "synthetic write failure" in str(screen.query_one("#pending-message", Static).content)
+        assert app.service.pending() == [item]
+        await pilot.press("ctrl+s")
         for _ in range(100):
             await pilot.pause()
             if not app._pending_review_busy and widget.has_focus and not app.busy:
@@ -2907,7 +2912,7 @@ async def test_pending_interactive_edit_approves_only_final_text(tmp_path):
 
         entries = app.service.store.entries(include_inactive=True)
         assert [(entry.text, entry.status, entry.supersedes) for entry in entries] == [
-            ("喜欢中烘咖啡", "active", None)
+            (edited, "active", None)
         ]
         assert app.service.pending() == []
         assert app.runtime.has_session is False
@@ -2917,7 +2922,7 @@ async def test_pending_interactive_edit_approves_only_final_text(tmp_path):
         assert widget.value == ""
         assert widget.has_focus
         cards = [str(card.render()) for card in app.query(".card")]
-        assert any("Saved" in card and "喜欢中烘咖啡" in card for card in cards)
+        assert any("Saved" in card for card in cards)
 
 
 async def test_topics_command_lists_and_drills(tmp_path):
@@ -4913,103 +4918,53 @@ async def test_escape_closes_palette_before_stopping(tmp_path):
 @pytest.mark.parametrize("size", [(80, 24), (120, 40), (160, 50)])
 async def test_pending_long_text_scrolls_without_hiding_actions(tmp_path, size):
     from textual.containers import VerticalScroll
-    from textual.widgets import ListView
-    from syvrio.app.chat_widgets import PickScreen
+    from textual.widgets import OptionList, TextArea
+
+    from syvrio.app.pending_screen import PendingScreen
     from syvrio.memory.models import Candidate, PendingItem
+
     app = build_app(tmp_path, [])
     text = "Synthetic [bold] literal 中文 \n" * 100 + "END OF FULL PENDING TEXT"
-    item = PendingItem.from_candidate(Candidate(text=text, topic="preferences", confidence=0.5),
-                                      "chat", "low confidence")
-    app.service.queue.add(item)
+    items = [
+        PendingItem.from_candidate(Candidate(text=body, topic="preferences", confidence=0.5),
+                                   "chat", "low confidence")
+        for body in ("Synthetic short candidate", text)
+    ]
     async with app.run_test(size=size) as pilot:
-        await pilot.pause()
-        app._pending_picked(item)
+        await app.push_screen(PendingScreen(items, app._run_pending_review))
         await pilot.pause()
         screen = app.screen
-        assert isinstance(screen, PickScreen)
-        assert str(screen.query_one("#pick-detail-text", Static).content) == text
-        panel = screen.query_one("#pick-detail", VerticalScroll)
-        listing = screen.query_one("#pick-list", ListView)
-        assert panel.max_scroll_y > 0
+        panel = screen.query_one("#pending-detail-body", VerticalScroll)
+        listing = screen.query_one(OptionList)
         assert listing.has_focus
+        assert str(screen.query_one("#pending-text", Static).content) == items[0].text
+        await pilot.press("down")
+        assert str(screen.query_one("#pending-text", Static).content) == text
+        assert panel.max_scroll_y > 0
         await pilot.press("pagedown")
-        await pilot.pause()
-        assert panel.scroll_y > 0 and listing.index == 0
+        assert panel.scroll_y > 0 and listing.highlighted == 1
         await pilot.press("pageup")
-        await pilot.pause()
         assert panel.scroll_y == 0
-        panel.scroll_end(animate=False)
-        await pilot.pause()
-        assert panel.scroll_y == panel.max_scroll_y
-        assert listing.region.bottom <= size[1]
-        assert screen.query_one("#pick-card").size.width > 64
-        assert [child.label for child in listing.children] == ["Approve", "Edit and approve", "Reject"]
+        assert screen.query_one("#pending-actions").region.bottom <= size[1]
+        if size[0] < 92:
+            assert listing.region.bottom <= panel.region.y
+        else:
+            assert listing.region.right <= panel.region.x
+
+        await pilot.click("#pending-edit")
+        editor = screen.query_one(TextArea)
+        assert editor.has_focus
+        assert editor.text == text
+        assert editor.size.height > 1
+        assert screen.query_one("#pending-save").region.bottom <= size[1]
+        editor.load_text("Discard this draft")
         await pilot.press("escape")
-        await pilot.pause()
-        assert app.service.pending()[0].text == text
+        assert app.screen is screen
+        assert listing.has_focus
+        assert not editor.display
+        assert str(screen.query_one("#pending-text", Static).content) == text
+        await pilot.press("escape")
         assert app.query_one("#input", Input).has_focus
-
-
-@pytest.mark.parametrize("action", ["approve", "edit", "reject"])
-async def test_long_pending_review_actions_keep_full_text(tmp_path, action):
-    from textual.containers import VerticalScroll
-    from syvrio.app.chat_widgets import TextInputScreen
-    from syvrio.memory.models import Candidate, PendingItem
-    app = build_app(tmp_path, [])
-    text = "Synthetic [/x] pending full text 中文 \n" * 30 + "LAST LINE"
-    item = PendingItem.from_candidate(Candidate(text=text, confidence=0.5), "chat", "low confidence")
-    app.service.queue.add(item)
-    async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        app._pending_picked(item)
-        await pilot.pause()
-        app.screen.query_one("#pick-detail", VerticalScroll).scroll_end(animate=False)
-        await pilot.pause()
-        if action == "edit":
-            await pilot.press("down", "enter")
-            await pilot.pause()
-            assert isinstance(app.screen, TextInputScreen)
-            assert app.screen.query_one("#pick-input", Input).value == text
-            app.screen.query_one("#pick-input", Input).value = "Synthetic [/x] final edited text"
-            await pilot.press("enter")
-        elif action == "reject":
-            await pilot.press("down", "down", "enter")
-        else:
-            await pilot.press("enter")
-        for _ in range(100):
-            await pilot.pause()
-            if not app._pending_review_busy:
-                break
-        assert not app.service.pending()
-        assert any("[/x]" in str(card.render()) for card in app.query(".card"))
-        entries = app.service.store.entries()
-        if action == "reject":
-            assert not entries
-        else:
-            expected = "Synthetic [/x] final edited text" if action == "edit" else text.strip()
-            assert [entry.text for entry in entries] == [expected]
-
-
-@pytest.mark.parametrize("size", [(80, 24), (120, 40), (160, 50)])
-async def test_short_pending_review_stays_compact(tmp_path, size):
-    from textual.containers import VerticalScroll
-    from syvrio.memory.models import Candidate, PendingItem
-
-    app = build_app(tmp_path, [])
-    item = PendingItem.from_candidate(Candidate(text="Synthetic short confirmation.", confidence=0.5),
-                                      "chat", "low confidence")
-    app.service.queue.add(item)
-    async with app.run_test(size=size) as pilot:
-        await pilot.pause()
-        app._pending_picked(item)
-        await pilot.pause()
-        card = app.screen.query_one("#pick-card")
-        panel = app.screen.query_one("#pick-detail", VerticalScroll)
-        assert card.size.width <= 76
-        assert card.size.height <= 14
-        assert panel.size.height == 1
-        assert panel.max_scroll_y == 0
-        assert app.screen.query_one("#pick-list").region.bottom < card.region.bottom
 
 
 @pytest.mark.parametrize("size", [(80, 24), (120, 40)])

@@ -232,7 +232,7 @@ In-session commands:
 | `/inferences` | Inspect, confirm, reject or edit separate inferences; C Confirm, R Reject, E Edit, with no extra confirmation for routine review |
 | `/profile [refresh [requests]]` | View the generated profile summary (cached, no model call); refresh builds the summary and proposes inferences |
 | `/dream [requests\|status\|cancel\|resume]` | Start, inspect or cancel background reflection; one request by default |
-| `/pending` | Work through pending candidates one by one: approve / reject / edit then write; automatically advances to the next until the queue is empty |
+| `/pending` | Browse candidates and their full scrollable text in one screen. Approve, reject, or edit in place across multiple lines (Ctrl+S saves and approves) |
 | `/topics [name]` | Browse memory topics and entry counts; with a name, drills into that topic's entries |
 | `/exit` | Exit |
 
@@ -532,7 +532,8 @@ src/syvrio/
 ├── app/          cli.py, server.py, tui.py, chat_app.py, chat_commands.py, chat_flow.py,
 │                 chat_widgets.py, chat_input.py, chat_theme.py, command_catalog.py,
 │                 ui.py, session_ui.py, chat_reflection.py, chat_git.py, git_screen.py,
-│                 actions.py                         # CLI / Textual TUI / FastMCP presentation adapters
+│                 inference_screen.py, pending_screen.py, actions.py
+│                                                    # CLI / Textual TUI / FastMCP presentation adapters
 ├── application/  service.py, conversation.py, memory.py, settings.py,
 │                 reflection.py, git.py, contracts.py # frontend-neutral use cases and data contracts
 ├── agent/        runtime.py, prompts.py, context.py, tools.py,

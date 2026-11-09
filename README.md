@@ -233,7 +233,7 @@ Spark 使用 MaaS 的 Bearer API Key；适配层保留服务端采样默认值�
 | `/inferences` | 查看、确认、拒绝或编辑独立推断；C Confirm、R Reject、E Edit，日常审查不额外弹确认 |
 | `/profile [refresh [次数]]` | 查看已生成的画像摘要（只读缓存，不调用模型）；refresh 生成摘要并提炼推断 |
 | `/dream [次数\|status\|cancel\|resume]` | 启动、查看或取消后台增量回顾，默认最多一次请求 |
-| `/pending` | 逐条处理待确认候选：确认写入 / 拒绝 / 改写后写入，队列清空前自动进入下一条 |
+| `/pending` | 在同一界面浏览候选和可滚动的完整正文，确认、拒绝或多行编辑后写入（Ctrl+S 保存并确认） |
 | `/topics [name]` | 浏览记忆主题与条目数，带 name 下钻某主题的条目列表 |
 | `/exit` | 退出 |
 
@@ -528,7 +528,8 @@ src/syvrio/
 ├── app/          cli.py, server.py, tui.py, chat_app.py, chat_commands.py, chat_flow.py,
 │                 chat_widgets.py, chat_input.py, chat_theme.py, command_catalog.py,
 │                 ui.py, session_ui.py, chat_reflection.py, chat_git.py, git_screen.py,
-│                 actions.py                         # CLI / Textual TUI / FastMCP 展示适配
+│                 inference_screen.py, pending_screen.py, actions.py
+│                                                    # CLI / Textual TUI / FastMCP 展示适配
 ├── application/  service.py, conversation.py, memory.py, settings.py,
 │                 reflection.py, git.py, contracts.py # 与前端无关的用例编排与数据契约
 ├── agent/        runtime.py, prompts.py, context.py, tools.py,

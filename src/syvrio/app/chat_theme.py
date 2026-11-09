@@ -177,31 +177,32 @@ APP_CSS = """
     #pick-card.has-detail #pick-list { height: auto; max-height: 6; min-height: 3; }
     .pick-hint { color: $warm; margin-top: 1; }
 
-    /* 推断审查：作用域独立，列表与详情在同一卡片内，不影响其他选择器。 */
-    InferenceScreen { align: center middle; background: #0d0d0d 75%; }
-    #inference-card { width: 96; max-width: 94%; height: 85%; max-height: 90%; background: $panel; border: round #484848; padding: 1 2; }
-    #inference-title { color: $accent; text-style: bold; }
-    #inference-subtitle { color: $faint; margin-bottom: 1; }
-    #inference-filters { height: auto; margin-bottom: 1; color: #8e8e8e; }
+    /* 记忆审查：作用域独立，列表与详情在同一卡片内，不影响其他选择器。 */
+    InferenceScreen, PendingScreen { align: center middle; background: #0d0d0d 75%; }
+    #inference-card, #pending-card { width: 96; max-width: 94%; height: 85%; max-height: 90%; background: $panel; border: round #484848; padding: 1 2; }
+    #inference-title, #pending-title { color: $accent; text-style: bold; }
+    #inference-subtitle, #pending-subtitle { color: $faint; margin-bottom: 1; }
+    #inference-filters, #pending-count { height: auto; margin-bottom: 1; color: #8e8e8e; }
     #inference-empty { color: $muted; height: auto; padding: 1 0; display: none; }
-    #inference-body { height: 1fr; }
+    #inference-body, #pending-body { height: 1fr; }
     /* OptionList 只保留文本选项，数百条推断时挂载成本远低于每项多控件 ListView。 */
-    #inference-list { width: 38%; height: 1fr; background: #191919; border: none; border-right: solid #2a2a2a; padding: 0 1; }
-    #inference-list > .option-list--option { padding: 0 1; }
-    #inference-list > .option-list--option-highlighted { background: #303030; }
-    #inference-detail { width: 1fr; height: 1fr; padding-left: 2; }
-    #inference-detail-body { height: 1fr; }
-    #inference-detail-status { color: $accent; height: auto; margin-bottom: 1; }
+    #inference-list, #pending-list { width: 38%; height: 1fr; background: #191919; border: none; border-right: solid #2a2a2a; padding: 0 1; }
+    #pending-list { text-wrap: nowrap; text-overflow: ellipsis; }
+    #inference-list > .option-list--option, #pending-list > .option-list--option { padding: 0 1; }
+    #inference-list > .option-list--option-highlighted, #pending-list > .option-list--option-highlighted { background: #303030; }
+    #inference-detail, #pending-detail { width: 1fr; height: 1fr; padding-left: 2; }
+    #inference-detail-body, #pending-detail-body { height: 1fr; }
+    #inference-detail-status, #pending-topic { color: $accent; height: auto; margin-bottom: 1; }
     .inference-detail-line { color: #8e8e8e; height: auto; margin-bottom: 1; }
-    #inference-detail-text { color: #dedede; height: auto; margin-bottom: 1; }
+    #inference-detail-text, #pending-text { color: #dedede; height: auto; margin-bottom: 1; }
     #inference-detail-sources { color: #9a9a9a; height: auto; }
-    #inference-editor { height: 1fr; display: none; background: #171717; border: round #414141; }
-    #inference-actions, #inference-edit-actions { height: 1; margin-top: 1; }
-    #inference-actions Button, #inference-edit-actions Button { height: 1; min-width: 0; border: none; background: #242424; color: #d4d4d4; margin-right: 1; padding: 0 2; }
-    #inference-actions Button:hover, #inference-edit-actions Button:hover { background: #303030; color: $accent; }
-    #inference-actions Button:disabled, #inference-edit-actions Button:disabled { color: #5f5f5f; background: #1c1c1c; }
-    #inference-confirm { color: $accent; }
-    #inference-message { height: auto; color: $muted; margin-top: 1; }
-    #inference-message.error { color: #d1a05a; }
-    #inference-hint { color: $warm; height: auto; margin-top: 1; }
+    #inference-editor, #pending-editor { height: 1fr; display: none; background: #171717; border: round #414141; }
+    #inference-actions, #inference-edit-actions, #pending-actions, #pending-edit-actions { height: 1; margin-top: 1; }
+    #inference-actions Button, #inference-edit-actions Button, #pending-actions Button, #pending-edit-actions Button { height: 1; min-width: 0; border: none; background: #242424; color: #d4d4d4; margin-right: 1; padding: 0 2; }
+    #inference-actions Button:hover, #inference-edit-actions Button:hover, #pending-actions Button:hover, #pending-edit-actions Button:hover { background: #303030; color: $accent; }
+    #inference-actions Button:disabled, #inference-edit-actions Button:disabled, #pending-actions Button:disabled, #pending-edit-actions Button:disabled { color: #5f5f5f; background: #1c1c1c; }
+    #inference-confirm, #pending-approve { color: $accent; }
+    #inference-message, #pending-message { height: auto; color: $muted; margin-top: 1; }
+    #inference-message.error, #pending-message.error { color: #d1a05a; }
+    #inference-hint, #pending-hint { color: $warm; height: auto; margin-top: 1; }
     """

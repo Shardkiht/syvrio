@@ -9,9 +9,10 @@ from textual.widgets import Input, Static
 from ..infra.diagnostics import record_event
 from ..infra.tokens import format_tokens
 from ..memory.models import PendingItem
-from .chat_widgets import ModelPickerScreen, PendingPickerScreen, PickScreen, SessionPickerScreen, TextInputScreen
+from .chat_widgets import ModelPickerScreen, PickScreen, SessionPickerScreen, TextInputScreen
 from .command_catalog import SLASH_COMMANDS
 from .inference_screen import InferenceScreen
+from .pending_screen import PendingScreen
 from .session_ui import visible_sessions
 
 
@@ -140,36 +141,6 @@ class ChatCommandsMixin:
     def _open_pending(self) -> None:
         self._run_pending_review()
 
-    def _pending_picked(self, item: PendingItem | None) -> None:
-        if item is None:
-            self.query_one("#input", Input).focus()
-            return
-        options = [
-            ("Approve", "approve"),
-            ("Edit and approve", "edit"),
-            ("Reject", "reject"),
-        ]
-        self.push_screen(PickScreen(escape(f"Pending [{item.topic}]"), options,
-                                    partial(self._pending_action, item), detail=item.text))
-
-    def _pending_action(self, item: PendingItem, action: str | None) -> None:
-        if action is None:
-            self.query_one("#input", Input).focus()
-            return
-        if action == "edit":
-            self.push_screen(
-                TextInputScreen("Full revised text", default=item.text,
-                                on_result=partial(self._pending_edited, item.id))
-            )
-            return
-        self._run_pending_review(action, item.id)
-
-    def _pending_edited(self, item_id: str, text: str | None) -> None:
-        if not text:
-            self.query_one("#input", Input).focus()
-            return
-        self._run_pending_review("approve", item_id, text.strip())
-
     def _run_pending_review(self, action: str | None = None, item_id: str = "",
                             override: str | None = None) -> None:
         if self._pending_review_busy:
@@ -177,57 +148,65 @@ class ChatCommandsMixin:
             return
         self._pending_review_busy = True
         session_id = self.application.conversation.current_id
-        self.run_worker(partial(self._pending_work, session_id, action, item_id, override),
+        screen = self.screen if isinstance(self.screen, PendingScreen) else None
+        self.run_worker(partial(self._pending_work, session_id, screen, action, item_id, override),
                         thread=True, group="pending", exit_on_error=False)
 
-    def _pending_work(self, session_id: str | None, action: str | None, item_id: str,
+    def _pending_work(self, session_id: str | None, screen: PendingScreen | None,
+                      action: str | None, item_id: str,
                       override: str | None) -> None:
-        finish = partial(self._finish_pending, session_id)
+        finish = partial(self._finish_pending, session_id, screen)
         message = None
         try:
             if action == "approve":
                 entry = self.application.memory.approve(item_id, text_override=override)
-                message = f"Saved [{entry.topic}] {entry.text}"
+                message = f"Saved to [{entry.topic}]."
             elif action == "reject":
-                item = self.application.memory.reject(item_id)
-                message = f"Rejected {item.id} {self._truncate(item.text, 40)}"
+                self.application.memory.reject(item_id)
+                message = "Rejected candidate."
         except Exception as exc:
             record_event("command.failed", exc)
-            self.call_from_thread(finish, None, f"Pending decision failed: {exc}")
+            self.call_from_thread(finish, None, None, f"Pending decision failed: {exc}")
             return
         try:
             items = self.application.memory.pending().items
         except Exception as exc:
             record_event("command.failed", exc)
             error = f"Could not load pending items: {exc}"
-            self.call_from_thread(finish, None, f"{message}\n{error}" if message else error)
+            self.call_from_thread(finish, None, message, error)
             return
         self.call_from_thread(finish, items, message)
 
-    def _finish_pending(self, session_id: str | None, items: list[PendingItem] | None,
-                        message: str | None) -> None:
+    def _finish_pending(self, session_id: str | None, screen: PendingScreen | None,
+                        items: list[PendingItem] | None, message: str | None,
+                        error: str | None = None) -> None:
         self._pending_review_busy = False
         if items is not None:
             self.pending_count = len(items)
             self.update_status()
+        if screen is not None and self.screen is screen:
+            if items:
+                screen.set_items(items, message or "")
+                return
+            if error and message is None:
+                screen.show_error(error)
+                return
+            screen.dismiss()
+        feedback = "\n".join(part for part in (message, error) if part)
         if self.screen is not self.default_screen or self.application.conversation.current_id != session_id:
-            if message:
-                self.notify(message, markup=False)
+            if feedback:
+                self.notify(feedback, markup=False)
             return
-        if message:
-            self.add_card(message)
+        if feedback:
+            self.add_card(feedback)
         if items is None:
             return
         widget = self.query_one("#input", Input)
         if not items:
             self.add_card("Pending queue is empty." if message else "No pending items.")
             widget.focus()
-        elif not widget.value.strip() and not self._navigation_busy:
-            options = [
-                (f"{item.id}  [{item.topic}] {self._truncate(item.text, 36)}", item)
-                for item in items
-            ]
-            self.push_screen(PendingPickerScreen(f"Pending items: {len(items)}", options, self._pending_picked))
+        elif screen is None and not widget.value.strip() and not self._navigation_busy:
+            self.push_screen(PendingScreen(items, self._run_pending_review), lambda _: widget.focus())
 
     def _show_topics(self, name: str | None = None) -> None:
         topics = self.application.memory.topics()
