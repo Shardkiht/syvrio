@@ -631,7 +631,7 @@ def test_llm_setup_discovers_models_using_the_entered_workspace_and_key(tmp_path
     assert result["model"] == model
     assert load_config(path).llm.provider_urls["dashscope"] == endpoint
     assert keys == {"DASHSCOPE_API_KEY": "synthetic-key"}
-    assert "synthetic-key" not in path.read_text()
+    assert "synthetic-key" not in path.read_text(encoding="utf-8")
 
 
 def test_search_setup_saves_key_and_enables_search_and_fetch(tmp_path, monkeypatch):

@@ -364,7 +364,11 @@ def test_embedding_cache_rebuilds_changed_short_fact_only(tmp_path):
     assert store.find(short.id).raw_markdown == short.raw_markdown
 
     path = store.topic_path(short.topic)
-    path.write_text(path.read_text().replace("# 合成人物资料", "# 演示身份档案"))
+    path.write_text(
+        path.read_text(encoding="utf-8").replace("# 合成人物资料", "# 演示身份档案"),
+        encoding="utf-8",
+        newline="\n",
+    )
     embedder.passages.clear()
     vector.sync()
     updated = store.find(short.id)
