@@ -549,6 +549,67 @@ def serve(
     build_server(service=service).run()
 
 
+@app.command()
+def web(
+    host: str = typer.Option("127.0.0.1", "--host", help="监听地址；默认仅 loopback"),
+    port: int = typer.Option(8765, "--port", min=1, max=65535, help="服务端口 / 远程访问端口"),
+    domain: str = typer.Option("", "--domain", help="本地域名；写入 hosts 映射并放行 Host/Origin"),
+    domain_ip: str = typer.Option("127.0.0.1", "--domain-ip", help="域名映射目标 IP；远程 Tailscale 填 100.x.y.z"),
+    map_only: bool = typer.Option(False, "--map-only", help="只写 hosts 映射并打印地址，不启动本机服务（远程访问）"),
+    remove_domain: bool = typer.Option(False, "--remove-domain", help="删除该域名的 hosts 映射"),
+    map_hosts: bool = typer.Option(True, "--hosts/--no-hosts", help="是否自动更新系统 hosts 文件"),
+    config: Path | None = CONFIG_OPTION,
+    vault: Path | None = VAULT_OPTION,
+) -> None:
+    """启动私有 Web 客户端，或为本机/远程实例配置本地域名映射。"""
+    import ipaddress
+
+    from .web.hosts import ensure_hosts_mapping, normalize_domain, remove_hosts_mapping
+    from .web.server import run_server
+
+    domains: list[str] = []
+    if domain.strip() or map_only or remove_domain:
+        try:
+            name = normalize_domain(domain)
+            ipaddress.ip_address(domain_ip)
+        except ValueError as exc:
+            fail(str(exc))
+            return
+        domains.append(name)
+        if remove_domain:
+            typer.echo(f"[hosts] {remove_hosts_mapping(name, domain_ip).message}")
+            return
+        if map_hosts:
+            typer.echo(f"[hosts] {ensure_hosts_mapping(name, domain_ip).message}")
+        else:
+            typer.echo(f"[hosts] Add manually: {domain_ip}\t{name}")
+        suffix = "" if port == 80 else f":{port}"
+        typer.echo(f"Web URL: http://{name}{suffix}/")
+        if domain_ip != "127.0.0.1":
+            typer.echo(
+                "Remote note: the remote host must allow this hostname in "
+                "SYVRIO_WEB_ALLOWED_HOSTS. If it uses Tailscale Serve HTTPS, "
+                "open https://<machine>.<tailnet>.ts.net/ instead (a local alias "
+                "will not match the Tailscale certificate)."
+            )
+        if map_only:
+            return
+    try:
+        loopback = ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        loopback = host.lower() == "localhost"
+    if not loopback:
+        typer.echo(
+            "Warning: a non-loopback --host exposes the Web API without authentication. "
+            "Host/Origin checks only block cross-site requests, not direct network access. "
+            "Restrict the network (e.g. Tailscale) or keep --host 127.0.0.1."
+        )
+    try:
+        run_server(host, port, config_path=config, vault_path=vault, domains=domains)
+    except RuntimeError as exc:
+        fail(str(exc))
+
+
 def main() -> None:
     # Windows pipes use the locale code page, which may not encode CLI help.
     # Keep native console handling intact; JSON/MCP and redirected CLI use UTF-8.

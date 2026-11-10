@@ -1,6 +1,12 @@
 # Syvrio configuration example
 # 默认读取顺序：$SYVRIO_CONFIG → ./syvrio.toml → ~/.syvrio/config.toml（旧平台配置文件仍兼容）
 # Unix 为 ~/.config/syvrio/syvrio.toml；Windows 为 %APPDATA%\syvrio\syvrio.toml。
+#
+# 私有网页客户端不在此文件配置：监听地址由 `syvrio web --host/--port` 控制（默认
+# 127.0.0.1:8765）；`syvrio web --domain syvrio.local` 会写 hosts 映射并放行该域名的
+# Host/Origin，远程 Tailscale 实例可用 `--domain-ip 100.x.y.z --map-only` 只做映射；
+# SYVRIO_WEB_ALLOWED_HOSTS 用于额外可信 Host/Origin 白名单（Tailscale Serve 必填），
+# SYVRIO_WEB_STATIC 仅用于调试时覆盖静态资源目录。详见 docs/web.md。
 
 # 记忆库位置（Markdown + Git）。此处配置的 vault 优先；未配置时用 SYVRIO_VAULT，
 # 再缺省 ~/.syvrio/vault；命令行 --vault 可临时覆盖。

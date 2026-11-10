@@ -4,7 +4,7 @@
 
 **A local-first memory agent that remembers you.**
 
-Turn everyday conversations into long-term Markdown memories you can inspect, trace, and roll back. Use the terminal chat or connect an MCP client.
+Turn everyday conversations into long-term Markdown memories you can inspect, trace, and roll back. Use the terminal chat, the private web client, or connect an MCP client.
 
 [![test](https://github.com/Shardkiht/syvrio/actions/workflows/test.yml/badge.svg)](https://github.com/Shardkiht/syvrio/actions/workflows/test.yml)
 [![PyPI](https://img.shields.io/pypi/v/syvrio)](https://pypi.org/project/syvrio/)
@@ -61,6 +61,7 @@ For a Vault still using the v1 layout, follow the separate [v2 migration guide](
 | Local-first | Markdown is the single source of truth; Git handles versioning and audit |
 | Multiple models | DeepSeek, SiliconFlow, DashScope, iFLYTEK Spark, OpenRouter, OpenAI, and custom compatible endpoints |
 | MCP | Let MCP clients use the same local memory vault |
+| Private web client | Single-process REST + SSE web UI, loopback-only by default; reachable inside a private tailnet via Tailscale Serve |
 | Hybrid retrieval | BM25 with optional vectors; falls back to keyword retrieval if the vector backend is unavailable |
 | Web search | Optional local open-websearch integration; external content is treated as reference material |
 
@@ -343,6 +344,13 @@ uv run syvrio sessions
 uv run syvrio status
 uv run syvrio commit --no-push
 uv run syvrio history
+
+# Private web client (loopback 127.0.0.1:8765 by default)
+uv run syvrio web
+uv run syvrio web --host 127.0.0.1 --port 9000
+# Map a local domain: writes the hosts entry and allows its Host/Origin,
+# then open http://syvrio.local/ in the browser
+uv run syvrio web --domain syvrio.local --port 80
 ```
 
 You can also paste or drag an absolute file path into a chat and ask to summarize it or import the conversation into long-term memory. Quote paths containing spaces. `read_file` (paged analysis) and `import_file` (chunked preview/write) are available only for paths supplied in the current user message. They do not grant arbitrary directory access. Tool steps are bounded: unfinished reads/imports must be reported; include the path again to continue in a subsequent turn. Drag-and-drop path insertion depends on the terminal.
@@ -377,6 +385,32 @@ MCP client configuration:
 ```
 
 Exposed tools: `memorize`, `note`, `recall`, `read_topic`, `review_pending`, `approve`, `reject`, `list_topics`, `status`, `evolve`, `profile`; `search` is added when web search is enabled. `read_topic` shares the Agent tool's topic validation, active-entry filtering, and 2000-token limit.
+
+## Web client
+
+`syvrio web` serves a private, single-user web UI at `http://127.0.0.1:8765/`. The web layer is transport only: it reuses the same `ApplicationService` / `AgentRuntime` / `SessionStore` / Vault, adds no database, and does not turn the TUI into an HTTP client.
+
+```bash
+# From source: build the frontend bundle first
+python scripts/build_web.py
+uv run syvrio web
+
+# Frontend-only development: Vite proxies /api to the running backend
+cd web && corepack pnpm install && corepack pnpm dev
+```
+
+The first release supports streamed Markdown replies, a dedicated Thinking area (auto-collapsed when the answer starts, expandable at a fixed height), tool-call status, stop generation, new/switch/restore sessions, error and disconnect states, code-block copy, and a mobile layout (drawer sidebar, soft-keyboard-aware composer, notch safe areas, larger touch targets). Communication uses REST + SSE, not WebSocket.
+
+The Web and TUI share the slash-command catalog in `application/commands.py`. The composer offers `/` prefix and sub-command completion (arrow keys, Tab, Enter, Escape), IME composition protection, and a lightweight command palette. Everyday commands such as `/new`, `/sessions`, `/model`, `/think`, `/context`, `/compact`, `/undo`, and `/help` work; `/import` reports that it is unsupported, side-effecting operations such as Git sync or memory approval stay in the TUI, and dangerous commands require a second confirmation. The header `Settings` button (`Alt+S`, or `/setup`) opens a settings panel for model switching, reasoning effort, context window, provider keys / base URLs, and custom model IDs; keys are write-only and stay in the system credential store. Browser-reserved keys are not hijacked: `Ctrl+P` remains Print, the palette uses `Ctrl+Shift+P` / `Alt+P`, model choices use `Alt+M` or the header model button, `Ctrl+B` toggles the sidebar with `Alt+B` as an alternative, and `/exit` only returns to the entry view instead of stopping the server. See [docs/web.md](docs/web.md) for the full command and shortcut mapping.
+
+Key boundaries:
+
+- One process, one worker, and only one in-flight Turn. A second chat request returns `409 busy`; cancellation must carry the matching `turn_id`, so it cannot cancel an unrelated request.
+- `runtime/locks/client.lock` enforces that **the TUI and Web cannot write the same Vault at once**; the later client receives an explicit error. Close the other client to proceed.
+- Loopback-only by default, with Host and write-request Origin validation and no permissive CORS. For remote access use Tailscale Serve and set `SYVRIO_WEB_ALLOWED_HOSTS`; Funnel is not used and no public port is opened.
+- A PyPI install already contains the static bundle in the wheel, so Node.js is not needed at runtime. From source (and before publishing) run `scripts/build_web.py` first; it verifies the bundle and exits non-zero if assets are missing.
+
+See [docs/web.md](docs/web.md) for the API/SSE contract, WSL + systemd residency, Tailscale configuration, and troubleshooting; the unit template is `docs/syvrio-web.service`. The Web client still does not replace the TUI and does not include a memory-management UI, multi-user support, or file uploads.
 
 ## Web search
 
@@ -538,7 +572,8 @@ src/syvrio/
 │                 chat_widgets.py, chat_input.py, chat_theme.py, command_catalog.py,
 │                 ui.py, session_ui.py, chat_reflection.py, chat_git.py, git_screen.py,
 │                 inference_screen.py, pending_screen.py, thinking_panel.py, actions.py
-│                                                    # CLI / Textual TUI / FastMCP presentation adapters
+│                 └── web/  server.py, backend.py, models.py, static/
+│                                                    # CLI / Textual TUI / FastMCP / FastAPI Web adapters
 ├── application/  service.py, conversation.py, memory.py, settings.py,
 │                 reflection.py, git.py, contracts.py # frontend-neutral use cases and data contracts
 ├── agent/        runtime.py, prompts.py, context.py, tools.py,
@@ -553,9 +588,33 @@ src/syvrio/
 │                                                   # LiteLLM adapter, session/commit summaries
 └── infra/        config.py, providers.py, gitops.py, gitsync.py, locking.py, tokens.py,
                   layout.py, dialogs.py, documents.py, diagnostics.py, latency.py, search/ # Config, Git sync and locks, diagnostics, document conversion, web search
+
+web/
+├── index.html
+├── vite.config.ts
+├── tsconfig.json
+├── package.json
+├── pnpm-workspace.yaml
+├── src/
+│   ├── main.tsx
+│   ├── App.tsx
+│   ├── types.ts
+│   ├── styles.css
+│   ├── api/client.ts
+│   ├── state/chat.ts
+│   ├── hooks/useChat.ts
+│   └── components/
+│       ├── Markdown.tsx
+│       ├── Thinking.tsx
+│       ├── MessageList.tsx
+│       ├── Sidebar.tsx
+│       └── Composer.tsx
+└── dist/
 ```
 
-Dependency direction: `app → application → agent → memory → retrieval → infra`, `application → llm/infra`, `memory/agent → llm → infra`. The `application/` package does not depend on Textual, Rich, Typer, or `app/`; core modules never import back into the application layer.
+The `web/` frontend uses React + TypeScript + Vite, plain CSS, and pnpm: `api/client.ts` handles REST and Fetch-based SSE, `state/chat.ts` owns the ordered-segment reducer and batched stream deltas, `components/` holds the UI, and `dist/` is the uncommitted build output. `docs/syvrio-web.service` is the WSL/systemd unit template; `scripts/build_web.py` builds, stages, and verifies the static assets.
+
+Dependency direction: `app → application → agent → memory → retrieval → infra`, `application → llm/infra`, `memory/agent → llm → infra`. The `application/` package does not depend on Textual, Rich, Typer, or `app/`; core modules never import back into the application layer. The `app/web/` adapter only calls `application/` use cases/contracts and reads `infra/` config; it reimplements no Agent, Memory, or Session logic. The `web/` frontend consumes structured SSE events only.
 `retrieval` reads only `memory`'s `models`, `store`, and `detect` helpers (entries, normalization, and literal coverage); this is the known `memory ↔ retrieval` back-reference. Writes and decisions stay in `memory`.
 Development conventions (code style, storage invariants, testing, and docs sync) are in [AGENTS.md](AGENTS.md).
 
@@ -590,12 +649,24 @@ uv run pytest -m ui
 uv run pytest -m agent
 uv run pytest -m memory
 uv run pytest -m retrieval
+uv run pytest -m web
 uv run pytest -m "cli or config"
 uv run pytest -m "mcp or search"
 uv run pytest
 ```
 
-Categories are `ui` (TUI), `agent` (runtime/sessions/context), `memory` (store/extraction/policy/queue), `retrieval` (local retrieval), `cli`, `config`, `mcp`, and `search` (web search). LLM paths use a fixed extractor and fake models; without real API keys, no online verification is claimed.
+The Web frontend is tested separately with pnpm inside `web/`:
+
+```bash
+cd web
+corepack pnpm install --frozen-lockfile
+corepack pnpm test          # Vitest: reducer, SSE client, component interactions
+corepack pnpm build         # tsc --noEmit + Vite production build
+cd ..
+python scripts/build_web.py --check   # verify the staged static assets
+```
+
+Categories are `ui` (TUI), `agent` (runtime/sessions/context), `memory` (store/extraction/policy/queue), `retrieval` (local retrieval), `web` (Web Adapter API/SSE/concurrency/security), `cli`, `config`, `mcp`, and `search` (web search). LLM paths use a fixed extractor and fake models; without real API keys, no online verification is claimed.
 
 The offline synthetic parsing and write-decision regression also runs through pytest:
 

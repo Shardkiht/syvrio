@@ -24,6 +24,8 @@ _EVENTS = frozenset({
     "queue.failed", "usage.failed", "reflection.failed", "reading.changed",
     "generation.started", "generation.finished", "turn.unbound", "tui.finalize_failed",
     "session.scan_failed", "session.delete_failed",
+    "web.startup_hook_failed", "web.shutdown_distill_failed", "web.history_unreadable",
+    "web.switch_failed", "web.worker_failed", "web.turn_failed", "web.unhandled",
     "command.failed", "cursor.changed", "undo.failed", "retrieval.vector_dimension_failed",
     "git_sync.failed", "git_sync.scheduler_failed", "git_sync.status_failed",
     "reflection.schedule_failed", "reflection.state_failed", "reflection.summary_failed",

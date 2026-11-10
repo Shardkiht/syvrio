@@ -1,55 +1,10 @@
-"""斜杠命令清单：命令、用法和一句话说明，供命令面板与 /help 共用。"""
+"""斜杠命令清单的 TUI 导入入口。
+
+权威定义已下沉到 ``application.commands``，使 Web 与 TUI 共用同一份命令
+名称、用法和能力标记；此处只保留转发，避免改动既有 TUI 调用点。
+"""
 from __future__ import annotations
 
-SLASH_COMMANDS = [
-    ("new", "/new", "New session"),
-    ("sessions", "/sessions", "Browse sessions"),
-    ("compact", "/compact", "Compact context"),
-    ("undo", "/undo", "Undo and edit last message"),
-    ("summary", "/summary", "Show summary"),
-    ("status", "/status", "Session status"),
-    ("git", "/git", "Git status and synchronization"),
-    ("model", "/model [refresh]", "Models & providers"),
-    ("think", "/think", "Reasoning effort"),
-    ("context", "/context", "Context window"),
-    ("setup", "/setup", "Run setup in terminal"),
-    ("rename", "/rename <title>", "Rename session"),
-    ("import", "/import <path> [--apply]", "Import a file or directory (preview by default)"),
-    ("pending", "/pending", "Review pending"),
-    ("inferences", "/inferences", "View and review inferences"),
-    ("profile", "/profile [refresh [n]]", "View or refresh profile"),
-    ("dream", "/dream [n|cancel|resume|status]", "Run reflection, cancel or view status"),
-    ("topics", "/topics [name]", "Browse topics"),
-    ("help", "/help", "Show commands"),
-    ("exit", "/exit", "Quit"),
-    ("quit", "/quit", "Quit"),
-]
+from ..application.commands import SLASH_COMMANDS, SLASH_SUBCOMMANDS, slash_matches
 
-SLASH_SUBCOMMANDS = {
-    "model": (("refresh", "Refresh model list"),),
-    "profile": (
-        ("refresh", "Refresh profile"),
-        ("cancel", "Cancel reflection"),
-        ("resume", "Resume automatic reflection"),
-        ("status", "Show reflection status"),
-    ),
-    "dream": (
-        ("cancel", "Cancel reflection"),
-        ("resume", "Resume automatic reflection"),
-        ("status", "Show reflection status"),
-    ),
-}
-
-
-def slash_matches(prefix: str) -> list[tuple[str, str, str]]:
-    command, space, argument = prefix.lower().partition(" ")
-    if not space:
-        return [row for row in SLASH_COMMANDS if row[0].startswith(command)]
-    argument = argument.lstrip()
-    if " " in argument:
-        return []
-    return [
-        (f"{command} {name}", f"/{command} {name}", description)
-        for name, description in SLASH_SUBCOMMANDS.get(command, ())
-        if name.startswith(argument)
-    ]
+__all__ = ["SLASH_COMMANDS", "SLASH_SUBCOMMANDS", "slash_matches"]

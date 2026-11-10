@@ -18,6 +18,15 @@ from .contracts import (
     TurnResult,
     UndoOutcome,
 )
+from .commands import (
+    CommandResult,
+    CommandUseCases,
+    SLASH_COMMANDS,
+    SLASH_SUBCOMMANDS,
+    WebCapability,
+    WebCommandInfo,
+    web_command_catalog,
+)
 from .conversation import ConversationUseCases, QueuedLine, SAFE_COMMANDS
 from .git import GitUseCases
 from .memory import MemoryUseCases
@@ -27,6 +36,8 @@ from .settings import SettingsUseCases
 
 __all__ = [
     "ApplicationService",
+    "CommandResult",
+    "CommandUseCases",
     "ConversationUseCases",
     "GitUseCases",
     "ImportChunkProgress",
@@ -43,6 +54,8 @@ __all__ = [
     "ReflectionSchedule",
     "ReflectionUseCases",
     "SAFE_COMMANDS",
+    "SLASH_COMMANDS",
+    "SLASH_SUBCOMMANDS",
     "SessionSnapshot",
     "SettingsResult",
     "SettingsUseCases",
@@ -51,4 +64,7 @@ __all__ = [
     "TurnCallbacks",
     "TurnResult",
     "UndoOutcome",
+    "WebCapability",
+    "WebCommandInfo",
+    "web_command_catalog",
 ]

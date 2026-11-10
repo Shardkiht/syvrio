@@ -162,3 +162,13 @@ def vault_write_lock(vault: Path | SyvrioPaths) -> VaultLock:
 def git_operation_lock(vault: Path | SyvrioPaths) -> VaultLock:
     """保护 Stage/Commit/Push 等 Git 操作之间的互斥。"""
     return _shared(_lock_path(vault, "git.lock"))
+
+
+def client_instance_lock(vault: Path | SyvrioPaths) -> VaultLock:
+    """Single-client marker: only one TUI or Web process may write the Vault.
+
+    Unlike vault.lock this is held for the whole client lifetime rather than a
+    single write. The OS releases it when the process exits, so a crash cannot
+    leave a stale lock behind.
+    """
+    return _shared(_lock_path(vault, "client.lock"))

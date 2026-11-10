@@ -16,24 +16,37 @@ def run_chat(service: MemoryService, resume: str | None = None) -> None:
         )
     if not (service.config.vault / ".git").exists():
         service.init_vault()
-    sessions = SessionStore(service.paths)
-    runtime = AgentRuntime(service, LiteLLMChatModel(service.config.llm), sessions)
-    if resume:
-        try:
-            runtime.resume(resume)
-        except KeyError as exc:
-            fail(str(exc))
-            return
-    else:
-        runtime.start()
-    app = ChatApp(runtime, service, sessions)
+    # Web and TUI must not write the same session concurrently. The marker is a
+    # whole-process file lock, released by the OS even after a crash.
+    from ..infra.locking import LockTimeout, client_instance_lock
+
+    client_lock = client_instance_lock(service.paths)
     try:
-        app.run()
+        client_lock.acquire(timeout=0)
+    except (LockTimeout, OSError):
+        fail("另一个 Syvrio 客户端（Web 或 TUI）正在使用此记忆库；请先关闭它。")
+        return
+    try:
+        sessions = SessionStore(service.paths)
+        runtime = AgentRuntime(service, LiteLLMChatModel(service.config.llm), sessions)
+        if resume:
+            try:
+                runtime.resume(resume)
+            except KeyError as exc:
+                fail(str(exc))
+                return
+        else:
+            runtime.start()
+        app = ChatApp(runtime, service, sessions)
+        try:
+            app.run()
+        finally:
+            service.reflection.cancel()
+            # 界面退出后回到普通终端，再执行退出抽取并汇报结果。
+            stats = runtime.close()
+            _print_exit_stats(runtime, stats)
     finally:
-        service.reflection.cancel()
-        # 界面退出后回到普通终端，再执行退出抽取并汇报结果。
-        stats = runtime.close()
-        _print_exit_stats(runtime, stats)
+        client_lock.release()
 
 
 def _print_exit_stats(runtime: AgentRuntime, stats: dict) -> None:

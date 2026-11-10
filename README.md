@@ -4,7 +4,7 @@
 
 **让下一次对话，仍然记得你。**
 
-将日常对话中的事实、偏好和计划沉淀为本地 Markdown 长期记忆，可审阅、可追溯、可回滚。支持终端对话与 MCP。
+将日常对话中的事实、偏好和计划沉淀为本地 Markdown 长期记忆，可审阅、可追溯、可回滚。支持终端对话、私有网页客户端与 MCP。
 
 [![test](https://github.com/Shardkiht/syvrio/actions/workflows/test.yml/badge.svg)](https://github.com/Shardkiht/syvrio/actions/workflows/test.yml)
 [![PyPI](https://img.shields.io/pypi/v/syvrio)](https://pypi.org/project/syvrio/)
@@ -61,6 +61,7 @@ uv run python scripts/migrate_to_syvrio.py --apply
 | 本地优先 | Markdown 是唯一事实来源，Git 负责版本与审计 |
 | 多模型 | 支持 DeepSeek、硅基流动、百炼、讯飞 Spark、OpenRouter、OpenAI 及自定义兼容接口 |
 | MCP | 让支持 MCP 的客户端调用同一个本地记忆库 |
+| 私有 Web | 单进程 REST + SSE 网页客户端，默认仅监听 loopback；可经 Tailscale Serve 在私有 tailnet 内访问 |
 | 混合检索 | BM25 与可选向量检索；向量后端不可用时回退关键词检索 |
 | 联网搜索 | 可选接入本地 open-websearch，外部内容只作资料 |
 
@@ -343,6 +344,12 @@ uv run syvrio sessions
 uv run syvrio status
 uv run syvrio commit --no-push
 uv run syvrio history
+
+# 私有网页客户端（默认只监听 127.0.0.1:8765）
+uv run syvrio web
+uv run syvrio web --host 127.0.0.1 --port 9000
+# 绑定本地域名：自动写 hosts 映射并放行 Host/Origin，浏览器输入 http://syvrio.local/
+uv run syvrio web --domain syvrio.local --port 80
 ```
 
 也可以在会话中粘贴或拖入文件的绝对路径，配一句“总结这份文件”或“把这份聊天记录导入长期记忆”。带空格的路径请加双引号。Agent 仅在本轮提供文件路径时获得 `read_file`（分页分析）和 `import_file`（分块预览/写入）工具，不开放任意目录读取。工具步数有限，文件未读完或未导完时会提示，后续消息需重新附上路径继续。文件拖放是否转成路径取决于终端。
@@ -377,6 +384,32 @@ MCP 客户端配置：
 ```
 
 暴露工具：`memorize`、`note`、`recall`、`read_topic`、`review_pending`、`approve`、`reject`、`list_topics`、`status`、`evolve`、`profile`；启用联网搜索时另有 `search`。`read_topic` 与 Agent 工具共用主题校验、有效条目过滤和 2000-token 上限。
+
+## 网页客户端
+
+`syvrio web` 提供私有单用户网页界面，浏览器打开 `http://127.0.0.1:8765/`。Web 只是传输层：复用同一个 `ApplicationService` / `AgentRuntime` / `SessionStore` / Vault，不新增数据库，也不把 TUI 改成 HTTP 客户端。
+
+```bash
+# 从源码运行：先构建前端静态资源
+python scripts/build_web.py
+uv run syvrio web
+
+# 只开发前端时，Vite 把 /api 代理到已启动的后端
+cd web && corepack pnpm install && corepack pnpm dev
+```
+
+首版支持流式 Markdown 回复、独立 Thinking 区域（正文开始自动折叠、可展开固定高度查看）、Tool Call 状态、停止生成、会话新建/切换/恢复、错误与断线提示、代码块复制与移动端布局（抽屉式侧栏、软键盘自适应、刘海屏安全区、触摸目标加大）。通信为 REST + SSE，不使用 WebSocket。
+
+Web 与 TUI 共用 `application/commands.py` 里的斜杠命令目录，输入框支持 `/` 前缀与子命令补全（`↑ / ↓` 选择、`Tab` 补全、`Enter` 执行、`Escape` 关闭）、中文输入法组字保护，以及轻量命令面板。日常命令如 `/new`、`/sessions`、`/model`、`/think`、`/context`、`/compact`、`/undo`、`/help` 均可使用；`/import` 明确提示未支持，Git 同步、记忆批准等副作用操作仍留在 TUI，危险命令需二次确认。顶栏 `Settings`（或 `Alt+S`、`/setup`）打开设置面板，集中管理模型切换、思考强度、上下文窗口、供应商 Key / Base URL 与自定义模型；Key 只写不读，沿用系统凭据存储。浏览器保留键不强行拦截：`Ctrl+P` 留给打印，命令面板改用 `Ctrl+Shift+P` / `Alt+P`，模型选择用 `Alt+M` 或点击顶栏模型名，`Ctrl+B` 会话栏保留并提供 `Alt+B` 替代，`Ctrl+Q` 不拦截、`/exit` 仅返回入口视图。完整命令与快捷键对照见 [docs/web.md](docs/web.md)。
+
+关键边界：
+
+- 单进程单 Worker，同一时刻只允许一个生成中的 Turn；第二个聊天请求返回 `409 busy`，取消必须带匹配的 `turn_id`，不会误取消其他请求。
+- `runtime/locks/client.lock` 保证 **TUI 与 Web 不能同时写同一个 Vault**；后启动的一方会收到明确错误，关闭另一端即可。
+- 默认只监听 loopback，校验 Host 与写请求的 Origin，不启用宽松 CORS；远程访问请用 Tailscale Serve 并配置 `SYVRIO_WEB_ALLOWED_HOSTS`，不使用 Funnel、不开放公网端口。
+- 通过 PyPI 安装时静态资源已随 wheel 打包，运行时不需要 Node.js；从源码运行或发布前必须先执行 `scripts/build_web.py`，脚本会校验产物完整性，缺失即非零退出。
+
+API 与 SSE 事件、WSL + systemd 常驻、Tailscale 配置及故障排查见 [docs/web.md](docs/web.md)，服务模板见 `docs/syvrio-web.service`。Web 仍不替代 TUI，也未实现 Memory 管理界面、多用户与文件上传。
 
 ## 联网搜索
 
@@ -534,7 +567,8 @@ src/syvrio/
 │                 chat_widgets.py, chat_input.py, chat_theme.py, command_catalog.py,
 │                 ui.py, session_ui.py, chat_reflection.py, chat_git.py, git_screen.py,
 │                 inference_screen.py, pending_screen.py, thinking_panel.py, actions.py
-│                                                    # CLI / Textual TUI / FastMCP 展示适配
+│                 └── web/  server.py, backend.py, models.py, static/
+│                                                    # CLI / Textual TUI / FastMCP / FastAPI Web 展示适配
 ├── application/  service.py, conversation.py, memory.py, settings.py,
 │                 reflection.py, git.py, contracts.py # 与前端无关的用例编排与数据契约
 ├── agent/        runtime.py, prompts.py, context.py, tools.py,
@@ -549,9 +583,33 @@ src/syvrio/
 │                                                   # LiteLLM 适配、会话/提交摘要
 └── infra/        config.py, providers.py, gitops.py, gitsync.py, locking.py, tokens.py,
                   layout.py, dialogs.py, documents.py, diagnostics.py, latency.py, search/ # 配置、Git 同步与锁、诊断、文档转换、联网搜索
+
+web/
+├── index.html
+├── vite.config.ts
+├── tsconfig.json
+├── package.json
+├── pnpm-workspace.yaml
+├── src/
+│   ├── main.tsx
+│   ├── App.tsx
+│   ├── types.ts
+│   ├── styles.css
+│   ├── api/client.ts
+│   ├── state/chat.ts
+│   ├── hooks/useChat.ts
+│   └── components/
+│       ├── Markdown.tsx
+│       ├── Thinking.tsx
+│       ├── MessageList.tsx
+│       ├── Sidebar.tsx
+│       └── Composer.tsx
+└── dist/
 ```
 
-依赖方向：`app → application → agent → memory → retrieval → infra`，`application → llm/infra`，`memory/agent → llm → infra`。`application/` 不依赖 Textual、Rich、Typer 或 `app/`；核心层不反向依赖应用层。
+前端 `web/` 使用 React + TypeScript + Vite、原生 CSS 与 pnpm：`api/client.ts` 负责 REST 与 Fetch-based SSE，`state/chat.ts` 负责有序 Segment 归约与流式增量批处理，`components/` 是界面组件，`dist/` 为不提交的构建产物。`docs/syvrio-web.service` 是 WSL/systemd 服务模板，`scripts/build_web.py` 负责前端构建、静态资源暂存与完整性校验。
+
+依赖方向：`app → application → agent → memory → retrieval → infra`，`application → llm/infra`，`memory/agent → llm → infra`。`application/` 不依赖 Textual、Rich、Typer 或 `app/`；核心层不反向依赖应用层。Web 适配层 `app/web/` 只调用 `application/` 的用例与契约并读取 `infra/` 配置，不重复实现 Agent、Memory 或 Session 逻辑；前端 `web/` 只消费结构化 SSE 事件。
 `retrieval` 会只读 `memory` 的 `models`、`store`、`detect`（条目读取、归一化与字面覆盖判断），这是 `memory ↔ retrieval` 的已知回读；写入与裁决仍只由 `memory` 负责。
 开发约定（代码风格、存储不变量、测试与文档同步）见 [AGENTS.md](AGENTS.md)。
 
@@ -586,12 +644,24 @@ uv run pytest -m ui
 uv run pytest -m agent
 uv run pytest -m memory
 uv run pytest -m retrieval
+uv run pytest -m web
 uv run pytest -m "cli or config"
 uv run pytest -m "mcp or search"
 uv run pytest
 ```
 
-分类为 `ui`（TUI）、`agent`（运行时/会话/上下文）、`memory`（存储/抽取/裁决/队列）、`retrieval`（本地检索）、`cli`、`config`、`mcp`、`search`（联网搜索）。LLM 路径用固定抽取器和假模型测试；未接真实 API Key 时不声称已完成线上验证。
+Web 前端独立于 pytest，用 pnpm 在 `web/` 下运行：
+
+```bash
+cd web
+corepack pnpm install --frozen-lockfile
+corepack pnpm test          # Vitest：状态归约、SSE 客户端、组件交互
+corepack pnpm build         # tsc --noEmit + Vite 生产构建
+cd ..
+python scripts/build_web.py --check   # 校验已暂存的静态资源
+```
+
+分类为 `ui`（TUI）、`agent`（运行时/会话/上下文）、`memory`（存储/抽取/裁决/队列）、`retrieval`（本地检索）、`web`（Web Adapter 的 API/SSE/并发/安全）、`cli`、`config`、`mcp`、`search`（联网搜索）。LLM 路径用固定抽取器和假模型测试；未接真实 API Key 时不声称已完成线上验证。
 
 解析与写入裁决的离线合成回归可单独运行，也随 pytest 执行：
 

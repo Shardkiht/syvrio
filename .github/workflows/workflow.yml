@@ -24,18 +24,39 @@ jobs:
           apt-get install -y --no-install-recommends ca-certificates git libstdc++6
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: "3.12"
 
+      - name: Enable Corepack
+        run: corepack enable
+
       - name: Install
         run: uv sync --frozen
+
+      - name: Build and stage Web assets
+        run: uv run python scripts/build_web.py
+
+      - name: Verify staged Web assets
+        run: uv run python scripts/build_web.py --check
+
+      - name: Frontend tests
+        working-directory: web
+        run: corepack pnpm test
 
       - name: Test
         run: uv run pytest -q
 
       - name: Build
-        run: uv build
+        run: uv build --clear
+
+      # Fail the release before publishing if the wheel would ship without the UI.
+      - name: Verify wheel contains Web assets
+        run: uv run python scripts/build_web.py --wheel dist/*.whl
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1

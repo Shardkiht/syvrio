@@ -16,14 +16,31 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends ca-certificates git libstdc++6
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
           python-version: "3.12"
+      - name: Enable Corepack
+        run: corepack enable
       - run: uv lock --check
       - run: uv sync --frozen
+      # The staged Web bundle is git-ignored. Building it here is mandatory:
+      # hatchling force-includes it into the sdist, and `uv build` builds the
+      # wheel FROM the sdist. Without this step the wheel ships no Web UI.
+      - name: Build and stage Web assets
+        run: uv run python scripts/build_web.py
+      - name: Verify staged Web assets
+        run: uv run python scripts/build_web.py --check
+      - name: Frontend tests
+        working-directory: web
+        run: corepack pnpm test
       - run: uv run pytest -q
-      - run: uv build
+      - run: uv build --clear
+      - name: Verify wheel contains Web assets
+        run: uv run python scripts/build_web.py --wheel dist/*.whl
       - run: uv run syvrio --help
       - run: uv run syvrio --version
       - run: uv run python -m syvrio --version
@@ -35,3 +52,4 @@ jobs:
           /tmp/syvrio-wheel/bin/syvrio --help
           /tmp/syvrio-wheel/bin/syvrio --version
           /tmp/syvrio-wheel/bin/python -m syvrio --version
+          /tmp/syvrio-wheel/bin/python -c "from pathlib import Path; import syvrio.app.web as w; root = Path(w.__file__).parent / 'static'; assert (root / 'index.html').is_file(); assert list((root / 'assets').glob('*.js')); assert list((root / 'assets').glob('*.css'))"

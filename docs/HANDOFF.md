@@ -750,3 +750,78 @@ TUI 改为深蓝灰面板、薄荷绿焦点/当前会话、淡紫角色/模型�
 远程 036fe94 / 0fc4c56 只在中英文 README 新增长期规划 Issue #18“演化认知：纵向用户理解”：跨期证据区分稳定特征、短期波动、阶段变化与长期趋势，可审阅且可重建。它仍是规划，区别于已实现的单条事实时间演化和当前画像；本轮接续这些文档，不宣称实现此功能。
 
 最终提交前验证：日志、完整聊天 UI 与 Markdown 回归 164 passed（284.27 秒）；此前会话、回顾、CLI 相关回归也已通过。未做原生终端人工验收或真实 API 调用。回复语义配色、流式阅读/光标修复与本地诊断一起提交，取代上文的未提交状态；后续仍只在用户明确要求时推送，实际提交与远程状态以 Git 为准。
+
+## Syvrio Web 适配层（2026-11-09，本地未提交）
+
+新增 `src/syvrio/app/web/`（FastAPI + Pydantic）与 `web/`（React + TypeScript + Vite）。Web 只是传输层：`WebBackend` 复用 `ApplicationService.conversation` 的 `begin_turn` / `run_turn` / `end_turn` / `request_cancel`，不重复实现 Agent 循环、Memory、Session 或模型适配；`src/syvrio/app/server.py` 仍是 MCP Server，未被覆盖。CLI 新增 `syvrio web --host/--port`，默认 loopback 单 Worker。
+
+`TurnCallbacks` 由 `EventPump` 转成有序 SSE：每帧带单调递增 `seq` / SSE `id` 与稳定 `type`；`on_progress("Calling tool: X")` 转 `tool_start`，首个工具结果配对 `tool_end`；`on_thinking` 按模型请求维护 `phase`，避免不同工具轮次的思考串线，`record_id is not None` 时转 `reasoning_end` 用完整文本校准；`done` 用完整正文定稿。模型未返回 reasoning 时不产生任何推理事件，前端不解析 Provider 私有协议。前端用有序 `Segment[]` 表达 Thinking / Tool / Result / Answer，16ms 批量合并 delta；Thinking 实时只显示最新三行，正文开始折叠，展开后固定高度内部滚动。Markdown 经 `react-markdown`（不渲染 raw HTML）+ `rehype-sanitize` 双重边界。
+
+并发边界：单进程共享一个 Runtime，同一时刻只允许一个活动 Turn；第二个 `POST /api/chat` 返回 `409 busy` 而非排队，取消必须带匹配 `turn_id`，浏览器断流只释放该 Turn。新增 `infra/locking.client_instance_lock()` 作为整进程独占标记：TUI `run_chat()` 与 Web `startup()` 都持 `runtime/locks/client.lock`，后启动的一方收到明确错误，避免两个客户端同时写同一 Vault；`vault.lock` / `git.lock` 仍只保护单次写入。安全边界为 Host / 写请求 Origin 白名单、忽略代理头、无宽松 CORS、会话 ID 正则校验、通用 500 不泄露堆栈、关闭 access log。
+
+打包链路有一处必须保留的约束：`uv build` 默认先从源码构建 sdist、再**从 sdist 构建 wheel**，而暂存目录 `src/syvrio/app/web/static/` 被 Git 忽略，hatchling 的 VCS 规则会过滤普通 `include`。只配 wheel `artifacts` 会静默产出不含 Web 资源的包，因此 `pyproject.toml` 同时配置 sdist 的 `force-include`。该配置还带来反向保证：未先执行 `scripts/build_web.py` 时 `uv build` 直接报 `Forced include not found`。`scripts/build_web.py` 支持 `--check`（校验暂存产物）与 `--wheel`（校验实际 wheel 内 `index.html` + JS/CSS）；两个 CI 工作流按「构建 → `--check` → 前端测试 → `uv build` → `--wheel`」顺序执行，发布前拦截缺资源的包。PyPI 安装后不需要 Node.js。
+
+验证：后端 Web API/SSE/并发/安全 18 passed；前端 reducer、SSE 客户端、组件交互 21 passed；前端生产构建通过；`uv build` 的 wheel 与 sdist 实测均含静态资源，缺资源反例构建失败符合预期。真实模型在隔离合成 Vault 下完成端到端验收：真实流式 reasoning（分段递增）、`reasoning_end → tool_start(recall) → tool_end → 新 reasoning → content_delta → done` 多阶段链路、会话恢复、停止生成（保留半截正文并标记 cancelled）、取消后 busy 复位；5 路并发实测 1 路正常 + 4 路 `409 busy`，过期 turn_id 取消不误伤。合成配置下也验证了有序 `start → progress → failed` 与不泄露堆栈。
+
+仍未验收：WSL systemd 常驻、Tailscale Serve 远程联机、原生浏览器人工交互与其他 Provider 的 reasoning 协议差异；相关命令与检查清单写在 `docs/web.md`，不能当作已实测。首版不替代 TUI，未实现模型管理后台、Memory 管理界面、多用户与文件上传。README 中英文版、`config.example.toml`、CI 与部署文档已同步。所有改动保留在本地开发分支，未 commit、未 push。
+
+## Web / TUI 命令与快捷键兼容（2026-11-09，本地未提交）
+
+按补充要求，把 TUI `app/command_catalog.py` 的纯数据下沉为 `application/commands.py` 的单一事实来源，TUI 原入口改为薄转发（现有 `chat_app.py` / `chat_commands.py` / `chat_widgets.py` 与 `tests/test_chat_app.py` 调用点不变，`SLASH_COMMANDS` / `SLASH_SUBCOMMANDS` / `slash_matches()` 内容完全等价）。新增 `WebCapability` 能力标记（`server` / `client` / `unsupported` + `confirm` + `note` + `shortcut`）与 `CommandUseCases`，只复用 `ConversationUseCases` / `SettingsUseCases` / `MemoryUseCases` / `ReflectionUseCases` / `GitUseCases`，不含 Textual、Rich 或 HTTP 依赖。`application/__init__.py` 导出共享目录与命令用例。
+
+后端新增 `GET /api/commands`（目录）与 `POST /api/commands`（结构化结果）。`/import`、`/setup` 明确 unsupported，浏览器路径绝不交给服务器读取；`/git`、`/pending`、`/inferences`、`/profile`、`/dream` 只读，同步 / push / 批准 / 任务控制仍留 TUI；`/exit`、`/quit` 是纯客户端「返回入口」，不会停后台 Server；`/undo` 前端二次确认、服务端独立复核 `confirmed`；未知 `/` 命令返回 `unknown`，`POST /api/chat` 也拒绝斜杠开头消息（`422 command_required`），双保险不转发给 LLM。忙期白名单除 `/undo`（生成中兼作取消）外保持为 TUI `SAFE_COMMANDS` 子集，有测试断言。`session_id` 与当前 Runtime 会话不一致返回 `409 session_mismatch`，避免旧标签页串会话。
+
+快捷键映射以 TUI 实际绑定为准，纠了一处重要偏差：**TUI `Ctrl+P` 是命令面板**（`action_model_providers` → `action_command_palette`），不是模型入口；浏览器 `Ctrl+P` 是打印，不拦截。改为 `Ctrl+Shift+P` / `Alt+P` 打开命令面板、`Alt+M` 或点击顶栏模型名进入 `/model`，`Ctrl+B` / `Alt+B` 切侧栏，`Ctrl+Q` 不拦截、`/exit` 只返回入口。映射集中在 `web/src/state/shortcuts.ts`，`RESERVED_KEYS` 明确列出不劫持的浏览器键并在命令面板中展示替代组合键。输入框补全、命令面板、确认弹窗、选项面板分别落在 `Composer.tsx`、`CommandUI.tsx`、`state/commands.ts`，含 IME 组字保护（组字期间不触发 Enter / Tab / 快捷键）。
+
+本轮还修了两个真实缺陷：`state/chat.ts` 的 `withLive()` 原先只看消息列表最后一条，生成中插入命令结果（info 消息）会把后续 delta 挂到新 assistant 气泡、原始流式消息永远不收尾；改为向后查找仍 `streaming` 的 assistant，`done` / `cancelled` / `failed` 也用同一索引收尾。`CommandUseCases._model/_think/_context` 在应用参数时不再返回 `options`，否则前端 `panelFor()` 会在选中模型/推理档位后立即重开面板；`/think` 的空选项以 `default` 别名传递。另修复生成中 slash 命令被 `Composer.submit()` 的 `busy` 判断挡住的问题，并在忙期提供可点击 `Run` 按钮；模型变更后刷新顶栏模型信息。
+
+验证：完整 Python 回归首轮实为 `1 failed, 1477 passed, 5 skipped`（1440 秒），唯一失败是 `test_every_source_event_is_allowlisted`——Web 适配层新增的 7 个 `web.*` 诊断事件（`web.startup_hook_failed` / `web.shutdown_distill_failed` / `web.history_unreadable` / `web.switch_failed` / `web.worker_failed` / `web.turn_failed` / `web.unhandled`）未登记进 `infra/diagnostics.py::_EVENTS`，`record_event()` 会静默丢弃它们，导致 Web 侧异常无法进入诊断日志。已补齐白名单；修复后 `tests/test_diagnostics.py` 9 passed、`-m web` 32 passed、源码 `record_event` 事件集合与白名单差集为空（此前误报的 `1482 passed` 作废）。`-m web` 32 passed（原 18 + 命令目录/分发/安全 14）；前端 `46 passed`（5 个测试文件）、TypeScript `tsc --noEmit` 通过；`scripts/build_web.py` 生产构建与 `--check` 通过；`uv build --clear` 的 wheel 经 `--wheel` 校验确实含最新 `index.html` + JS/CSS。真实 Edge 浏览器端到端（隔离合成配置 + Keyring 打桩，未触碰真实 Vault / API Key / 真实模型）：目录 21 条、`/` 前缀与 `/model refresh` 子命令补全、Tab / Escape、候选框贴近输入框不遮挡、`/help` 列出命令与快捷键说明、`/new` 新建并选中会话、`/sessions` 展开侧栏、`Alt+M` 与顶栏点击均可打开 `/model`、`/undo` 二次确认并恢复焦点、未知命令与 `/import` 明确反馈且不泄露路径、`Ctrl+P` / `Ctrl+Q` 的 `defaultPrevented=false`（不劫持）、`Ctrl+Shift+P` 打开 21 行面板并过滤到 1 行、`Ctrl+B` 切侧栏、IME 组字不发送、390px 手机宽度候选框宽 366px 且侧栏收起；截图 `commands-desktop.png` / `commands-mobile.png` 已人工查看。双标签页实测：另一标签 `/new` 后旧标签收到 `This tab is viewing a different session. Refresh first.`、输入框未禁用、刷新后 `/help` 恢复正常、Server 仍健康。
+
+明确未验收：本轮命令/快捷键验收使用合成模型配置，**没有再用真实 LLM 发起一次带命令的会话**（真实 LLM 的流式 / Reasoning / recall / 停止生成验收是上一轮在同一隔离 Vault 完成的）；WSL systemd 常驻、Tailscale Serve 远程联机、Firefox / Safari 与其他浏览器保留键差异、原生终端 TUI 人工操作仍未实测。本机是开发环境，未安装 systemd unit、未配置 Tailscale、未发布 PyPI、未开放公网端口。所有改动仍只在本地开发分支，未 commit、未 push。
+
+## `/model` 空目录修复（2026-11-09，本地开发态实测后追加）
+
+用户在本机实际测试时发现 `/model` 只输出 `Models:` 后接一大片空白，`/model refresh` 则假称「需要本地终端」。根因链：`SettingsUseCases.model_options()` 默认 `model_catalog(cached_only=True)`，而 `llm/client.py` 的模型目录是**进程内** `_MODEL_CACHE`（非磁盘缓存）；Web 进程刚启动时缓存为空，TUI 会在打开选择器后由后台 Worker 调 `model_catalog(refresh=...)` 补全，Web 没有该后台刷新，于是 `options=[]`，`"\n".join([])` 产出空行。修复在 `application/commands.py::_model()`：① 空目录时把当前配置的 `(provider, model)` 作为兜底选项插入，message 显式写明 `Current model:` 与「无缓存，用 /model refresh」；② `/model refresh` 真正执行 `model_catalog(refresh=True)`（单供应商 5 秒超时、异常返回明确错误），并按拉取结果给出诚实文案；③ 缓存为空时允许 `/model <当前provider>/<模型ID>` 显式切换（沿用 `apply_model()` 自带的 key / 元数据校验），未知供应商仍拒绝，不让提示变成空话。新增 3 项后端测试，`-m web` 35 passed；真实服务重启后复验：`/model` 显示 `Current model: spark/spark-x2.6` + 一行选项，`/model refresh` 返回 `Refreshed the provider catalog: 1 model(s) found.`。
+
+## Web 会话栏排序（2026-11-09，用户实测反馈）
+
+用户要求左侧会话栏只按「会话最后一条消息的发送时间」排序。根因：`Session.updated_at` 取 `self.records` 最后一条**任意**记录的 `at`，而 `title` / `summary` / 沉淀 / `undo` / `recovery` 等控制记录同样 append 带 `at`，重命名或后台沉淀就会把旧空会话顶到最前（实测隔离库里两个 0 消息空会话排在带消息会话之前，当前会话反而垫底）。修复：`Session` 新增 `last_message_at` property，从 `active_records()` 倒序找最后一条 `type == "message"` 的 `at`（undo 投影后），无消息回退 `started_at`；`SessionStore._listing_row()` 输出该字段但**不改** `list()` 的既有排序，TUI / CLI 行为保持；`WebBackend.list_sessions()` 按 `last_message_at` 倒序重排并把字段放进 `SessionInfo`。前端 `Sidebar.tsx` 本就按后端顺序渲染，无需改动。新增 1 项测试（构造 `2999` 年的 title 记录污染 `updated_at`，断言顺序仍按消息时间），`-m web` 36 passed、前端 `tsc --noEmit` 通过。注意 `SessionStore.list()` 的 `limit` 截断发生在旧排序之后，超过 `limit` 的极老会话理论上可能被截掉，当前 `limit=100` 的私有部署可忽略。
+
+## 全量回归复跑结果与时间边界（2026-11-09）
+
+补齐 `_EVENTS` 后启动的第二轮完整 Python 回归结果为 `1 failed, 1477 passed, 5 skipped`（1442 秒）。`test_every_source_event_is_allowlisted` 已不再失败，说明诊断白名单修复在全量套件中生效。唯一失败换成 `tests/test_chat_app.py::test_reasoning_stays_with_background_session`：新建会话后断言 `not app.query(ThinkingPanel)` 时面板仍在。该用例依赖最多 100 次 `pilot.pause()` 的有限等待，与 Web 适配层无调用关系；独立复跑 4 次全部通过（5.37s / 9.57s / 8.51s / 9.79s），`tests/test_chat_app.py -k reasoning` 4 passed，判定为偶发时序抖动，未修改产品代码、未放宽断言。
+
+**时间边界**：这轮全量启动于 diagnostics 白名单修复之后，但早于 `/model` 空目录修复与 Web 会话栏排序修复，因此不覆盖这两处改动。按 AGENTS.md「按影响范围选测」的约定，最新代码以定向回归覆盖：`-m web` 36 passed（67.59s）、`tests/test_diagnostics.py` 9 passed、`tests/test_session.py` + `tests/test_application_conversation.py` 40 passed、TUI reasoning 组 4 passed、前端 `tsc --noEmit` 通过、`/api/health` 正常。如需覆盖最新代码的完整全量数字，须再单独跑一轮（约 24 分钟）；当前未擅自重跑，服务保持运行供用户实测。所有改动仍未 commit、未 push。
+
+## Web 会话删除（2026-11-09，用户实测反馈）
+
+用户问「怎么没删除会话选项」。核对确认：TUI 本来就有 `Ctrl+D` + 二次确认（`chat_widgets.py` 的 `action_delete_session` → `chat_app.py::confirm_delete_session` → `ConversationUseCases.delete_guard/delete_session`），Web 首版只做了新建/切换/恢复，漏了删除入口。接入方式：后端 `DELETE /api/sessions/{id}?confirmed=true` → `WebBackend.delete_session()`（`_validate_session_id` → `_require_idle` → 存在性 → `confirmed` 复核 → `delete_guard` → `delete_session`，OSError 记 `session.delete_failed`），`STATE_MODIFYING` 已含 DELETE 故 Origin 检查自动生效。前端 `Sidebar.tsx` 条目改为 `session-row`（主按钮 + 删除按钮，避免 button 嵌套），复用 `ConfirmDialog`（新增可选 title/confirmLabel/testId），`useChat.ts` 新增 `deleteTarget` / `requestDeleteSession` / `confirmDeleteSession` 并纳入 `handleEscape`；删除当前会话时先 `POST /api/sessions` 切到新空会话再删，等价于 TUI 的先 `/new` 再删，服务端守卫语义不变。新增 4 项后端测试（未确认 409、确认后删除并刷新、当前会话保护、未知/穿越/跨站/生成中 busy）与 4 项前端交互测试（取消不删、确认后刷新、当前会话先新建、拒绝后输入框可用）。验证：`-m web` 40 passed、前端 50 passed、`tsc --noEmit` 通过、`scripts/build_web.py` 生产构建通过；真实服务重启后 `DELETE` 未知 ID 返回 404、静态资源含新 UI，隔离 Vault 中 4 条真实会话一条未动。
+
+## Web 设置面板（2026-11-09，用户反馈「前端添加个设置面板」）
+
+用户要求前端补齐设置面板。此前只有一个仅管理供应商的 `ProvidersDialog`，`/setup` 也已从 `unsupported` 改为 `client`（`intent=open_settings`），但模型、思考强度、上下文窗口仍只能靠斜杠命令。本轮把对话框重构成 `web/src/components/SettingsPanel.tsx`，左侧分区 + 右侧内容：Model / Thinking / Context / Providers / About。
+
+数据与写入口径：面板不保存设置副本，全部通过 `POST /api/commands` 走 `CommandUseCases`（`/model`、`/model refresh`、`/model <provider>/<model>`、`/think`、`/context`），与 TUI 使用同一套 `SettingsUseCases`；供应商分区抽成 `ProvidersSection.tsx`，沿用 `GET/POST /api/settings/providers`，Key 只写不读。Model 分区在目录为空时明确提示「无可缓存目录，可按 ID 切换」，不伪造选项；`/think` 的 `default` 别名双向映射。About 分区只展示 `/api/health` 白名单字段（版本、provider、model、busy、单客户端锁、静态资源）与 `SHORTCUT_HELP`，不渲染任何凭据。
+
+入口：顶栏 `Settings`、`Alt+S`（新增绑定，写进 `KEY_BINDINGS` / `SHORTCUT_HELP`）或 `/setup`；`Escape` 关闭并恢复输入框焦点。`useChat` 新增导出 `refreshHealth`，模型切换后顶栏标签同步。删除当前供应商仍由服务端 `SettingsUseCases.remove_provider` 拒绝，面板把 `ok=false` 的原因原样显示在 `settings-error`。
+
+验证：前端新增 `SettingsPanel.test.tsx` 5 项（模型列表与切换、Thinking、Context、Providers 分区、About 不泄露 `sk-`）与 App 级 2 项（顶栏点击 / `Alt+S` 打开，并确认读取走 `/model`、`/think`、`/context`）；`npx tsc --noEmit` 通过，前端 `56 passed`，`-m web` 59 passed，`scripts/build_web.py` 已把新产物同步到 `src/syvrio/app/web/static/`。文档同步 `docs/web.md`（新增「设置面板」小节，并修正 `/setup` 由 unsupported 变为 client 的旧描述）、README 中英文版（删除「/setup 未支持」「无模型管理后台」的过期说法）。仍未用真实浏览器做视觉验收，也未 commit / push。
+
+## 移动端适配补齐（2026-11-10，用户询问「手机端浏览页面做了适配吗」）
+
+原有实现只有「≤767px 侧栏变抽屉 + 输入框底部 safe-area」两处，其余是桌面布局直接照搬。实测 375px 虽无横向溢出，但存在真实问题：顶栏 4 个按钮把模型名挤到极窄；iOS 聚焦输入框会整页放大（字号 15px < 16px）；弹层用 `vh`，键盘弹出或地址栏收起后会超出可视区；触摸设备删除按钮依赖 hover；横屏安全区未处理。
+
+本轮改动：
+
+- `web/index.html`：viewport 增加 `interactive-widget=resizes-content`，新增 `theme-color=#111318`（暗色地址栏）。
+- `web/src/App.tsx`：监听 `visualViewport.resize`，把可用高度写入 `--app-height`，`.app` 改为 `height: var(--app-height, 100dvh)`，软键盘弹出时输入框不被遮住；`scale !== 1`（双指放大）时跳过，避免缩放时压扁整页。连接状态文案包进 `.connection-label`，窄屏只保留状态圆点。
+- `web/src/styles.css`：`-webkit-text-size-adjust: 100%`；`touch-action: manipulation`；消息区 `overscroll-behavior: contain`；顶栏/输入框/侧栏使用 `env(safe-area-inset-*)`；弹层与设置面板优先 `dvh`（保留 `vh` 回退）；移动端输入框统一 16px 防 iOS 缩放；触摸目标 34–44px；`@media (hover: none)` 让删除按钮常显（不再只靠宽度断点）；设置标签从横向滚动改为 `flex-wrap`，320px 下两行不裁切；新增 `≤380px` 顶栏压缩与 `max-height: 520px` 横屏规则。
+
+验证：类型检查通过、前端 `56 passed`、`build_web.py` 重建 + `--check` 通过。用本机 Edge（Playwright `channel=msedge`，iPhone UA + 3x DPR）对 375×667、320×568、740×360 三种视口实测：`document.scrollWidth === innerWidth`（无横向溢出），顶栏 `scrollWidth === clientWidth`，模型名 375px 下 153px、320px 下 98px 均可见，输入框 `font-size: 16px`，composer 底边等于视口高度，控制台无报错；截图检查主界面、抽屉、设置面板、命令面板与 `/` 补全都未裁切。软键盘本身无法在桌面浏览器真实触发，`--app-height` 逻辑仅验证了初始化与 resize 路径，真机 iOS/Android 仍需人工确认。
+
+文档同步：`docs/web.md` 新增「移动端适配」小节；README 中英文补充抽屉侧栏/软键盘/安全区/触摸目标。仍未 commit / push。
+
+## 目录规范调整（2026-11-10，用户要求）
+
+- **删除项目内 `.workbuddy/`**：用户明确禁止在仓库里单独创建此类目录。此前它只存一份 `memory/2026-11-09.md` 工作日志，内容与本文档 754–822 行重复，核对后直接删除，无信息丢失。工程上下文统一写 `docs/HANDOFF.md`（AGENTS.md 既有约定），不再另建隐藏目录。
+- **`deploy/` 并入 `docs/`**：唯一文件 `syvrio-web.service` 移到 `docs/syvrio-web.service`，仓库根目录不再保留只有一个模板的 `deploy/`。同步更新 `docs/web.md`（3 处）、`README.md`（2 处）、`README.en.md`（2 处）的路径引用；`git grep deploy` 已无残留（仅剩英文 prose 里的普通词）。

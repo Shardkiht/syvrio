@@ -111,6 +111,14 @@ class Session:
         stamps = [record["at"] for record in self.records if record.get("at")]
         return stamps[-1] if stamps else self.started_at
 
+    @property
+    def last_message_at(self) -> str:
+        """最后一条有效消息的时间；重命名/摘要/沉淀等控制记录不得改变会话顺序。"""
+        for record in reversed(self.active_records()):
+            if record.get("type") == "message" and record.get("at"):
+                return str(record["at"])
+        return self.started_at
+
     def user_texts(self) -> list[str]:
         return [
             record["content"]
@@ -393,6 +401,7 @@ class SessionStore:
                 "id": session.id,
                 "started_at": session.started_at,
                 "updated_at": session.updated_at,
+                "last_message_at": session.last_message_at,
                 "messages": len(session.messages),
                 # token 估算要遍历全部记录，按需计算后缓存在同一行里。
                 "tokens": session.estimated_tokens() if with_tokens else None,

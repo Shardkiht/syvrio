@@ -1,0 +1,38 @@
+# Syvrio Web systemd unit template (WSL Debian / Linux).
+#
+# Copy to /etc/systemd/system/syvrio-web.service and replace every REPLACE_*
+# value, then see docs/web.md for the full checklist.
+#
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now syvrio-web
+#   systemctl status syvrio-web
+#   journalctl -u syvrio-web -f
+#
+# Do NOT use this unit for a public endpoint. The service listens on loopback
+# only; Tailscale Serve (never Funnel) provides private tailnet access.
+
+[Unit]
+Description=Syvrio Web private client
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=REPLACE_USER
+WorkingDirectory=REPLACE_REPO
+Environment=PYTHONUTF8=1
+# Tailnet HTTPS origin seen by the browser. Comma-separated if more than one.
+Environment=SYVRIO_WEB_ALLOWED_HOSTS=REPLACE_TAILSCALE_HOST
+# One process only: a single Application/Runtime owns the Vault.
+ExecStart=REPLACE_UV run syvrio web --host 127.0.0.1 --port 8765
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

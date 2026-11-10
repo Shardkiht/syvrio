@@ -19,3 +19,5 @@ demo_vault/
 *.key
 sessions/
 vault/
+web/node_modules/
+src/syvrio/app/web/static/
