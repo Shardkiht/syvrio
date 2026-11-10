@@ -673,21 +673,14 @@ uv run python evals/memory_eval.py
 
 ## 检索评测
 
-`evals/` 提供可复现的合成语料基准（456 条 / 27 例，无任何个人数据）：
+`evals/` 提供可复现的合成记忆检索基准：语料与题库由 LLM 生成后冻结为 JSON，评测时只读文件、不调用模型 API；内容为虚构占位，不含真实个人信息。
 
 ```bash
+uv sync --extra local-embed
 uv run python evals/retrieval_eval.py
 ```
 
-下表属于历史题集，与 main 在 2026-10-30 使用的 456 条合成记忆 / 27 例及 882 条有效事实 / 24 个模型生成问题分别统计，不能直接作优化前后比较。详见[方法说明](evals/README.md)。
-
-| 检索方式 | Recall@3 | Recall@5 | MRR@10 |
-| --- | --- | --- | --- |
-| keyword | 67% | 67% | 0.667 |
-| vector | 89% | 89% | 0.815 |
-| hybrid | **89%** | **89%** | 0.815 |
-
-在一个 797 条的真实个人记忆库上（脱敏，仅汇总指标），修复批量导入的条目 ID 碰撞导致的向量错位后，hybrid 的 MRR@10 从 0.569 升到 0.745，成为三路最佳。方法、修复细节与已知弱点见 [evals/README.md](evals/README.md)。
+基准按目标条目 ID 判命中，对比 keyword / vector / hybrid 三路；指标定义、方法与最新结果见 [evals/README.md](evals/README.md)。
 
 ## Roadmap
 

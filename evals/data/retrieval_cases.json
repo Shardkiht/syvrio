@@ -1,0 +1,279 @@
+[
+  {
+    "category": "entertainment",
+    "query": "我和人物乙周五晚上拼那套城市夜景拼图到几点来着？",
+    "target": 542
+  },
+  {
+    "category": "entertainment",
+    "query": "我那台Roland FP 90X配的什么键盘？",
+    "target": 550
+  },
+  {
+    "category": "learning",
+    "query": "我在线上平台报的那个数据分析课，具体学哪门进阶内容？",
+    "target": 359
+  },
+  {
+    "category": "housing",
+    "query": "我在朝阳区租的那个老小区房子有什么优缺点？",
+    "target": 917
+  },
+  {
+    "category": "learning",
+    "query": "我最近在学用来加速SD边角细节训练的什么模型？",
+    "target": 905
+  },
+  {
+    "category": "finance",
+    "query": "九月账单还清后我打算奖励自己什么？",
+    "target": 394
+  },
+  {
+    "category": "finance",
+    "query": "审计事务所的财报复核要点里要更新哪些财务指标到表格？",
+    "target": 40
+  },
+  {
+    "category": "food",
+    "query": "盒马那款希腊酸奶降价时我还凑单了什么？",
+    "target": 700
+  },
+  {
+    "category": "entertainment",
+    "query": "我家新买的LG C3电视用来做什么体验很好？",
+    "target": 368
+  },
+  {
+    "category": "identity",
+    "query": "我那个社交账号的头像和资料链接有什么特别？",
+    "target": 890
+  },
+  {
+    "category": "finance",
+    "query": "我用那两个工具做的预算表，这季度想存多少钱？",
+    "target": 307
+  },
+  {
+    "category": "career",
+    "query": "研发岗我熟悉哪些编程语言和工具？",
+    "target": 130
+  },
+  {
+    "category": "learning",
+    "query": "我最近在Coursera学的R语言可视化主要用到哪个包？",
+    "target": 938
+  },
+  {
+    "category": "housing",
+    "query": "我找下一个公寓时最看重哪几点？",
+    "target": 863
+  },
+  {
+    "category": "learning",
+    "query": "线下课学D3.js时我还打算参考谁的原则？",
+    "target": 121
+  },
+  {
+    "category": "health",
+    "query": "去社区医院洗牙后医生建议我用哪些工具？",
+    "target": 709
+  },
+  {
+    "category": "schedule",
+    "query": "本月下旬我要去东京休几天假？",
+    "target": 512
+  },
+  {
+    "category": "health",
+    "query": "人物乙因为体重微升跑步时要戴什么监测？",
+    "target": 986
+  },
+  {
+    "category": "devices",
+    "query": "我常用的快捷指令自动化设备都有哪些？",
+    "target": 111
+  },
+  {
+    "category": "relationships",
+    "query": "和人物乙本来今天约看Marvel新片最后改到什么时候？",
+    "target": 695
+  },
+  {
+    "category": "entertainment",
+    "query": "疫情那阵子我反复重看的那部电影是哪部来着？",
+    "target": 213
+  },
+  {
+    "category": "technology",
+    "query": "之前打样 PCB 时把板厚和芯片封装都调整好了，具体参数是多少来着？",
+    "target": 200
+  },
+  {
+    "category": "entertainment",
+    "query": "朋友送的那张海报，我贴在哪儿了？",
+    "target": 556
+  },
+  {
+    "category": "finance",
+    "query": "我每个月工资里固定拿一部分出来理财，用的什么方式？",
+    "target": 519
+  },
+  {
+    "category": "learning",
+    "query": "多邻国德语打卡到 60 天，你觉得单词记忆靠语境真的有用吗？",
+    "target": 271
+  },
+  {
+    "category": "entertainment",
+    "query": "最近买了个游戏机和健身的配件，打算怎么坚持运动？",
+    "target": 942
+  },
+  {
+    "category": "health",
+    "query": "牙线和维生素 D 坚持两个月了，血钙正常、皮肤也好一些？",
+    "target": 253
+  },
+  {
+    "category": "devices",
+    "query": "新买的手机配那副降噪耳机，测降噪效果时用的是哪个系统版本？",
+    "target": 334
+  },
+  {
+    "category": "entertainment",
+    "query": "那个在 Steam 上玩的、挺难的游戏，打完第一个 boss 有什么奖励？",
+    "target": 771
+  },
+  {
+    "category": "housing",
+    "query": "最近要搬家，这周末准备怎么弄来着？",
+    "target": 32
+  },
+  {
+    "category": "food",
+    "query": "天猫超市囤了三盒自热米饭在冰箱，是为谁突然来访而准备的？",
+    "target": 275
+  },
+  {
+    "category": "schedule",
+    "query": "那台车要做常规保养，定在哪天来着？",
+    "target": 823
+  },
+  {
+    "category": "schedule",
+    "query": "下周一项目上线，发布和复盘会议定在什么时候？",
+    "target": 785
+  },
+  {
+    "category": "food",
+    "query": "楼下新开那家咖啡店，我点的那个特调怎么样？",
+    "target": 507
+  },
+  {
+    "category": "relationships",
+    "query": "同事推荐的那个播客，我通勤路上听的是哪一期来着？",
+    "target": 464
+  },
+  {
+    "category": "learning",
+    "query": "最近读的那本书是魔幻现实主义风格，读起来什么感觉？",
+    "target": 922
+  },
+  {
+    "category": "health",
+    "query": "体检结果有点问题，医生给了哪些建议来着？",
+    "target": 473
+  },
+  {
+    "category": "health",
+    "query": "今天下午的体检提醒是几点，要去哪抽血？",
+    "target": 364
+  },
+  {
+    "category": "housing",
+    "query": "租的老破小装了Aqara全屋智能。回家自动亮灯，体验如何？",
+    "target": 205
+  },
+  {
+    "category": "finance",
+    "query": "年终奖到账后我打算怎么分配？",
+    "target": 971
+  },
+  {
+    "category": "identity",
+    "query": "我的邮箱前缀是什么来着？",
+    "target": 54
+  },
+  {
+    "category": "identity",
+    "query": "我平时偏好用什么语言？",
+    "target": 55
+  },
+  {
+    "category": "identity",
+    "query": "我常住哪个城市？",
+    "targets": [
+      56,
+      741
+    ]
+  },
+  {
+    "category": "identity",
+    "query": "我什么血型来着？",
+    "targets": [
+      43,
+      202,
+      501,
+      603,
+      739
+    ]
+  },
+  {
+    "category": "identity",
+    "query": "我今年多大？",
+    "targets": [
+      1,
+      122,
+      257,
+      331,
+      499,
+      553
+    ]
+  },
+  {
+    "category": "identity",
+    "query": "我叫什么名字来着？",
+    "targets": [
+      0,
+      42,
+      53,
+      280,
+      498,
+      546,
+      573
+    ]
+  },
+  {
+    "category": "finance",
+    "query": "我每月定投多少钱？",
+    "targets": [
+      7,
+      519
+    ]
+  },
+  {
+    "category": "health",
+    "query": "体检尿酸值是多少？",
+    "target": 186
+  },
+  {
+    "category": "housing",
+    "query": "半年前搬进来后，哪项花销涨了两成、旧空调还不给换？",
+    "target": 561
+  },
+  {
+    "category": "devices",
+    "query": "我平时随身用的那台手机是什么？还有一台备用的笔记本是哪个型号？",
+    "target": 266
+  }
+]

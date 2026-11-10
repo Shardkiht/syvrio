@@ -1,0 +1,4002 @@
+[
+  {
+    "category": "identity",
+    "text": "姓名：人物乙"
+  },
+  {
+    "category": "identity",
+    "text": "年龄：28 岁"
+  },
+  {
+    "category": "identity",
+    "text": "职业：UI 设计师"
+  },
+  {
+    "category": "schedule",
+    "text": "明天 9:00 与客户乙的 weekly meeting，然后 11:00 去附近的 starbucks 续杯。"
+  },
+  {
+    "category": "schedule",
+    "text": "截止：本周五 18:00 前提交 design review 的 PPT"
+  },
+  {
+    "category": "schedule",
+    "text": "每周三 20:00-21:30 yoga class in 麓湖生态城，enrol 了两个月的 package。"
+  },
+  {
+    "category": "finance",
+    "text": "办了招行 red card，参加 dining 优惠，预计本月可返现约 200 元。"
+  },
+  {
+    "category": "finance",
+    "text": "定投：每月 10 号将 2k 转入 E Fund 的 index 组合，坚持 3 年。"
+  },
+  {
+    "category": "finance",
+    "text": "年度预算：旅游 1.2w，学习课程 8k，数码 upgrade 控制在 6k 以内。"
+  },
+  {
+    "category": "housing",
+    "text": "周末在 altitude 公寓看房，binding 的 SOHO区 2 室 1 厅，月租 8k，含物业和网络。"
+  },
+  {
+    "category": "housing",
+    "text": "把 apartment 的 kitchen 重新布置，添置 IKEA 架子和小米净水器，安了智能插座。"
+  },
+  {
+    "category": "relationships",
+    "text": "人物丙送的 Date Night 电影票，周六晚上去太古里看，然后再去鼎泰丰吃小笼包。"
+  },
+  {
+    "category": "relationships",
+    "text": "母亲节给人物甲定了花，顺丰冷链直达，还准备了手写卡片和一盒Godiva巧克力。"
+  },
+  {
+    "category": "food",
+    "text": "好吃到哭的 low carb 碗：西兰花+牛油果+烤鸡胸，配上一点 Tahini sauce。"
+  },
+  {
+    "category": "food",
+    "text": "今天的早餐是 avocado toast + oat milk latte，在 Manner 买的第二杯半价券还没到期。"
+  },
+  {
+    "category": "food",
+    "text": "好吃到哭：武侯区新开的 sushi bar，omakase menu 有 12 道， include 海胆和带子。"
+  },
+  {
+    "category": "food",
+    "text": "夜宵：小龙虾+啤酒，看完球赛在建设路的 mixed 夜市打包回家，uber 票价有点贵。"
+  },
+  {
+    "category": "housing",
+    "text": "Home fair：在 IKEA 抢到的 Kallax shelf 到货，grand 客厅 plan 准备重新 arrangement。"
+  },
+  {
+    "category": "finance",
+    "text": "社保和公积金的 update：已在成都高新区办理 transferred，新账户开通了 mobile push 通知。"
+  },
+  {
+    "category": "finance",
+    "text": "年报：已整理完 2023 年支出，和 2024 年 1–2 月数据，主要花在房租、课程和餐饮上的细分。"
+  },
+  {
+    "category": "food",
+    "text": "周末 brunch：点了一份 full breakfast， contenu 培根、sausage、蛋、beans，附上一杯 flat white。"
+  },
+  {
+    "category": "food",
+    "text": "好吃到哭：同事安利的 low sugar 零食，在盒马买到了 Matcha Josh 和海盐芝士饼干。"
+  },
+  {
+    "category": "finance",
+    "text": "这个月的 Netflix、iCloud、adobe CC 和 notion 订阅共 320 元，记账时分类到 digital services。"
+  },
+  {
+    "category": "relationships",
+    "text": "为人物戊准备的 birthday gift：一本 custom photo book，上传了 80 张 photos 到 mixbook 的 template。"
+  },
+  {
+    "category": "relationships",
+    "text": "Soulmate 城市是杭州，未来可能搬去西湖区，幻想周末骑单车沿断桥到北山街。"
+  },
+  {
+    "category": "career",
+    "text": "产品路线图的评审记录一份名叫「Aurora」方案的草稿，重点在于扩展企业版 API 的覆盖面。"
+  },
+  {
+    "category": "career",
+    "text": "周报模板更新了一波，用飞书多维表格串联起季度 OKR，方便同事在 Slack 频道里快速跟进项目的进度和细节。"
+  },
+  {
+    "category": "career",
+    "text": "工位换成联想 ThinkPad T14，处理复杂的数据查询真的快了不少，目前主要在进行后端微服务开发的性能优化。"
+  },
+  {
+    "category": "career",
+    "text": "AMD R7-7840HS 的轻薄本跑 Python 脚本特别流畅，已经把本地开发环境迁移到 Docker 容器里，备战下周的高校创新竞赛。"
+  },
+  {
+    "category": "career",
+    "text": "今天参加内部技术分享，主题是微服务架构演进，讲师展示了最新的响应式编程模型，在 Go 语言中的实战应用案例非常有意思。"
+  },
+  {
+    "category": "housing",
+    "text": "搬家收拾屋子时发现角落积灰的宜家书柜，拆开重装顺便给螺丝上点油，周末适合泡在书房，用 Notion 整理爱好的数据库，回顾今年看过的电影，顺便规划下周的旅行。"
+  },
+  {
+    "category": "housing",
+    "text": "刚搬到上海徐汇的公寓，下单了宜家 FRIHETEN 三人沙发，还有小米的智能插座，准备把老旧的 LED 吸顶灯换成可以调色温的控制款。"
+  },
+  {
+    "category": "housing",
+    "text": "合约即将到期，房东发来续约提醒真让人头疼，这周末得把积攒的纸箱统统打包，准备联系货拉拉搬去市区另一头的新房子，空间更大一些。"
+  },
+  {
+    "category": "housing",
+    "text": "客厅添置了一台 75 寸的超大屏电视，搭配传统的 PS5 主机玩起来特别爽，买了一款小米空气净化器，和蓝牙音箱一同摆在角落里。"
+  },
+  {
+    "category": "entertainment",
+    "text": "Apple Arcade 订阅即将到期，决定和室友一起开新的家庭组，同时还入手了塞尔达王国之泪，周末在 OLED 屏幕上探索海拉鲁大陆。"
+  },
+  {
+    "category": "entertainment",
+    "text": "买了小米电视，顺便换了小米手环，用来记录云顶之弈的时间管理，希望下半年能在排位赛里上个大段位。"
+  },
+  {
+    "category": "entertainment",
+    "text": "整理去年的不必要开支，发现买游戏的开销居然占了很大一部分，最近打算少买点 Steam 促销季的捆绑包，控制一下预算。"
+  },
+  {
+    "category": "entertainment",
+    "text": "下单赠朋友的双人成行游戏测试了 PS5 手柄的触觉反馈功能，非常有沉浸感，准备周末熬夜通关这款合作解谜游戏的所有关卡。"
+  },
+  {
+    "category": "finance",
+    "text": "上半年的账单结算完毕，接入 Apple 信用卡的报销软件后发现把Token激励活动的收益算错了，好在最终追回并攒够半年成一个拍立得。"
+  },
+  {
+    "category": "finance",
+    "text": "开始关注指数基金的定投组合，对比了 First Tech Credit Union 的费率之后，决定把家庭年度预算里的教育基金放进一个稳健的理财账户。"
+  },
+  {
+    "category": "finance",
+    "text": "审计事务所下发的财报复核要点，需要把固定资产折旧和应收账款周转率更新到 Excel 表格里，顺便留意首套房首付比例下调带来的影响。"
+  },
+  {
+    "category": "finance",
+    "text": "公积金账户新增几条记录，核对后发现公积金贷款利息抵扣有误会，结合工资到账提醒调整下个月的日常开支，顺便应付下个季度暴涨的房租。"
+  },
+  {
+    "category": "identity",
+    "text": "姓名：人物丙"
+  },
+  {
+    "category": "identity",
+    "text": "血型：O型"
+  },
+  {
+    "category": "identity",
+    "text": "身高：176 cm"
+  },
+  {
+    "category": "identity",
+    "text": "他在杭州的沃尔玛购买当地特产准备送人，选择的软件研发职业生涯迎来新阶段，尝试过印度盂兰盆节传统仪式并记录在备忘录里，愿他在刚抵达上海虹桥机场时保持内心平静。"
+  },
+  {
+    "category": "learning",
+    "text": "学期选修的非线性代数太有挑战性，最近开始在 Coursera 上寻找 PMP 认证资料，在飞书文档里整理知识框架，重点了解敏捷开发中的 Scrum 角色职责。"
+  },
+  {
+    "category": "learning",
+    "text": "复盘 Notion AI 辅助的写作效果，感觉在辅助构思故事大纲时效率很高，同时开始阅读 Cambridge Lifestyle English 系列，为下半年出国交流打基础。"
+  },
+  {
+    "category": "learning",
+    "text": "通过 GitHub 仓库学习算法刷题时遇到瓶颈，每天用 Anki 背单词之余坚持在 LeetCode 刷题，最近攻克了极客时间专栏里关于系统设计管理的基本原则，对个人效率提升很有帮助。"
+  },
+  {
+    "category": "learning",
+    "text": "整理错题本时发现很多细节容易混淆，计划重新手写笔记来记忆，巩固 Python 爬虫和 SQL 查询优化的重点，为接下来的 Kaggle 比赛做准备，顺便打磨 TensorFlow 框架和 LaTex 公式。"
+  },
+  {
+    "category": "learning",
+    "text": "用语雀知识库记录 Vibe Coding 的开发心得，对比 CS50 公开课里的习惯后，重新调整个人笔记系统，争取下次向教授展示时做到条理清晰。"
+  },
+  {
+    "category": "learning",
+    "text": "读到一个项目管理工具项目，换了思路，把日常复盘以后迁移到印象笔记，尝试用 Notion 搭一个知识库，希望能提高学习效率，整理项目管理知识。"
+  },
+  {
+    "category": "learning",
+    "text": "使用 Flowith 规划新项目节点的思维导图，靠 AI 工具辅助写作完成了一份 Lifecycle Marketing 的学习脚本，顺便看了 Every 平台里更新的每日评注。"
+  },
+  {
+    "category": "identity",
+    "text": "姓名：人物甲"
+  },
+  {
+    "category": "identity",
+    "text": "邮箱前缀：user_0042"
+  },
+  {
+    "category": "identity",
+    "text": "偏好语言：中英双语"
+  },
+  {
+    "category": "identity",
+    "text": "常住城市：杭州（虚构住所）"
+  },
+  {
+    "category": "food",
+    "text": "杭州便利店的 Asahi 朝日啤酒与关东煮"
+  },
+  {
+    "category": "food",
+    "text": "今天尝试了 NowFoods 品牌的复合维生素"
+  },
+  {
+    "category": "food",
+    "text": "用空气炸锅完美复刻了炸鸡"
+  },
+  {
+    "category": "food",
+    "text": "朋友安利的抹茶甜点真的很惊艳"
+  },
+  {
+    "category": "learning",
+    "text": "通过 B站 学习 Blender 的 3D 建模基础"
+  },
+  {
+    "category": "learning",
+    "text": "经典《JavaScript 高级程序设计》的读书笔记"
+  },
+  {
+    "category": "learning",
+    "text": "图森未来自动驾驶技术的行业分析"
+  },
+  {
+    "category": "learning",
+    "text": "购买 Coursera 上 Google 数据分析课程"
+  },
+  {
+    "category": "relationships",
+    "text": "和人物乙的年度记忆手账"
+  },
+  {
+    "category": "relationships",
+    "text": "人物丙分享的网易云歌单"
+  },
+  {
+    "category": "relationships",
+    "text": "跟闺蜜吐槽职场苛责的烦心事"
+  },
+  {
+    "category": "relationships",
+    "text": "帮人物丁拿的 misono 演唱会门票"
+  },
+  {
+    "category": "hobbies",
+    "text": "周末逛了禔乐飝古着店（上海）"
+  },
+  {
+    "category": "hobbies",
+    "text": "考虑在小区租个储物间放 Atari 街机"
+  },
+  {
+    "category": "hobbies",
+    "text": "想购入 Levi's 牛仔外套和 AirPods 耳机"
+  },
+  {
+    "category": "hobbies",
+    "text": "入手 Rolex 潜航者 replica 的开箱体验"
+  },
+  {
+    "category": "entertainment",
+    "text": "Nintendo Switch 玩游戏卡顿后换硅胶壳（非 Pro 版）"
+  },
+  {
+    "category": "entertainment",
+    "text": "重温《权利的游戏》，最爱角色是 Tyrion"
+  },
+  {
+    "category": "entertainment",
+    "text": "在 3 Molinos 看了毕加索特展"
+  },
+  {
+    "category": "entertainment",
+    "text": "Cinemark 影院看电影很赞"
+  },
+  {
+    "category": "entertainment",
+    "text": "周末和人物甲去YoungArt空间看了未来主义迷幻展，还在那喝了杯特调，随后用BMX在A4桥下面划船，顺路去了趟Internet Café三楼玩桌游。"
+  },
+  {
+    "category": "finance",
+    "text": "证券账户复盘：A股本周涨幅约15%，持仓：Apple公司股票300股，恩智浦半导体股票120股，港股通持仓值为320,000港币。"
+  },
+  {
+    "category": "food",
+    "text": "昨晚烤了茄子、煎了鸡胸肉，晚上8点去全家买了盒减脂难度系数的Yuzu巧克力，顺便在瑞幸小程序兑换了一杯咖啡。"
+  },
+  {
+    "category": "learning",
+    "text": "Deutsche德语学习打卡：今天看了A2级别新番第3讲，背了450个GO核心词汇，黄牛耳机听了Intercultural Communication录音。"
+  },
+  {
+    "category": "health",
+    "text": "早上晨跑30分钟，心率维持在135左右；去医院口腔科洗了牙，医生叮嘱半年内要正式复查Mercedes神经敏感问题。"
+  },
+  {
+    "category": "schedule",
+    "text": "明日日程：9:30-11:30，陪同人物丙前往Belle艺术展区逛展；下午14:00登山社团组织去Wolong山户外徒步。"
+  },
+  {
+    "category": "finance",
+    "text": "支付宝账单统计：本月餐饮消费1800元，交通补贴300元；通过信用卡Apple Pay充值了500元人民币的Steam钱包。"
+  },
+  {
+    "category": "food",
+    "text": "制作无糖草莓酱，搭配4片全麦吐司；看B站美食短片时，忍不住又下单了3箱元气森林气泡水，顺便喝了杯美式浓缩咖啡。"
+  },
+  {
+    "category": "entertainment",
+    "text": "凌晨在Steam上购买了Poppy dlc和Monopoly GO游戏；另外用透明亚克力板给限量版Diesel智能手表手工装配了模型升级芯片。"
+  },
+  {
+    "category": "learning",
+    "text": "学习进度管理：Python自动化脚本第20节已全部完成；番茄钟App上周累计打卡较少，周末决心恶补Notion和PowerBI技能。"
+  },
+  {
+    "category": "health",
+    "text": "昨天健康问卷的Red Heart评分结果是82分；医生说Keep体脂秤数据大约是22.8%，建议下半年尽量保持睡足7小时。"
+  },
+  {
+    "category": "schedule",
+    "text": "周末倒计时提醒：周六上午要陪人物戊去逛国贸阛阓，取订制好的羽绒服；周日下午则计划骑共享单车进行15公里的有氧运动。"
+  },
+  {
+    "category": "finance",
+    "text": "储蓄目标进展：本月招商银行储蓄任务已完成百分之八十，額外收入大概五千元，准备把这笔钱存进Yuzu定期账户。"
+  },
+  {
+    "category": "food",
+    "text": "午餐便当：糙米饭搭配水煮牛肉片，汤是西红柿蛋汤；饭后去了星巴克买了一杯大杯的冰摇红茶，并吃了一碗冰镇芋圆甜品。"
+  },
+  {
+    "category": "entertainment",
+    "text": "周五夜晚在Ritz影院观摩了Dancing Queen的试映会，随后和人物丁一起在KFC吃的夜宵；顺道在微店买了一件Diesel夹克。"
+  },
+  {
+    "category": "learning",
+    "text": "今日英语测试结束，成绩满分150分，我拿到了125分，其中听力部分得分较高；强调需要重点加强对Written多段落写作的练习。"
+  },
+  {
+    "category": "health",
+    "text": "体检报告显示各项指标大致安全，血脂略高，医生建议开始服用Omega-3；下午进行Yuzu瑜伽馆成果测试，身心状态良好。"
+  },
+  {
+    "category": "schedule",
+    "text": "下午两点到三点，与人物乙开线上会议，讨论A4展示会的档期，会议主要任务是确定下半年与YoungArt展馆互动方案。"
+  },
+  {
+    "category": "finance",
+    "text": "芯片股票仓位已达目标价，今日减仓20%，盈利约1000元；随后将资金兑换为人民币准备存入支付宝旗下的Yuzu保险。"
+  },
+  {
+    "category": "food",
+    "text": "早餐在全家买了荞麦面和有机西兰花，午间搭配了 rice vinegar 制作的凉拌黄瓜；下午点了半糖 Coco奶茶补充糖分。"
+  },
+  {
+    "category": "entertainment",
+    "text": "打开Bilibili发现关注的播主更新了Agar.io的实战，进行了心流订阅；随后在Amazon下单了GoPro运动摄像机 capturing 现代艺术展。"
+  },
+  {
+    "category": "learning",
+    "text": "Deutsche A2听力模拟测验：正确率80%，在喜马拉雅App评了一本书；实体书专项复习仅剩最后50页单词没有背诵完毕。"
+  },
+  {
+    "category": "health",
+    "text": "今天跑了6.2公里，消耗300卡路里；用Apple Watch记录各项睡眠与心率健康指标，智能手表提示建议做一下室内基础护理拉伸运动。"
+  },
+  {
+    "category": "schedule",
+    "text": "重点备忘：周末清晨6点去捐献血液；下午和人物丁约了在Internet Café二楼包厢一起探索YoungArt虚拟展，随后分享歌单。"
+  },
+  {
+    "category": "finance",
+    "text": "账户核对完成：微信余额2000，工商银行储蓄卡存款3000，苹果Pay余额500元；个人现金预算缺乏，消费主要靠Yuzu信用卡。"
+  },
+  {
+    "category": "schedule",
+    "text": "日程：周五夜间预定了网咖包厢，计划熬夜体验Poppy新版本；周六整理快递་གླིང，顺便完成基努里维斯新电影豆瓣数据录制。"
+  },
+  {
+    "category": "career",
+    "text": "本周用 JetBrains 全家桶做代码重构，顺带修复几个 P2 缺陷，项目验收的截止是八月。"
+  },
+  {
+    "category": "devices",
+    "text": "桌面键鼠一套：HHKB Professional 2 静电容键盘，Logitech MX Master 3S 鼠标配 Dell U2723QE 显示器。"
+  },
+  {
+    "category": "entertainment",
+    "text": "晚间打开 Steam 玩了一会儿 Stardew Valley，农场等级升到 12，顺手完成社区中心捐赠清单。"
+  },
+  {
+    "category": "schedule",
+    "text": "日程：周三 15:00 电梯演讲，准备 3 页幻灯；周四 10:00 与跨部门同事过需求；周五 17:00 提交迭代报告。"
+  },
+  {
+    "category": "learning",
+    "text": "周末在 Coursera 学机器学习，完成 Week 3 的 Quiz，用 Python 做练习，笔记写在 Notion。"
+  },
+  {
+    "category": "career",
+    "text": "把作品集同步到 Behance，更新两篇 Case Study，附上 Figma 链接，简介改为 Senior UX Designer。"
+  },
+  {
+    "category": "identity",
+    "text": "星座：射手座，幸运色是靛蓝，喜欢周五夜晚在 Spotify 听 lo-fi，顺便整理下周待办。"
+  },
+  {
+    "category": "entertainment",
+    "text": "下午翻出 Kindle Paperwhite 看一本悬疑电子书，进度 42%，做三处高亮，周一归还图书馆的纸质版。"
+  },
+  {
+    "category": "devices",
+    "text": "手机主力 iPhone 14 Pro Max，配 Apple Watch Series 8，通勤用 AirPods Pro，常用快捷指令自动化。"
+  },
+  {
+    "category": "identity",
+    "text": "偏好：周五 22:00 后不接工作电话，周末上午留给阅读和跑步，午后小憩二十分钟再继续。"
+  },
+  {
+    "category": "career",
+    "text": "在 Freelancer 上接一单 SEO 文案，关键词是 wireless earbuds，预算 300 USD，交付时间 10 天。"
+  },
+  {
+    "category": "schedule",
+    "text": "每周三 20:00 参加线上英语角，话题偶尔涉及 marketing，用 Zoom 与另一位同学互评。"
+  },
+  {
+    "category": "learning",
+    "text": "用 LeetCode 刷算法，今天做两道动态规划题，思路写在 Obsidian，同时整理常见贪心模板。"
+  },
+  {
+    "category": "schedule",
+    "text": "今天起改用 Google Calendar 的 Week view，设置三个提醒，优化通勤路线，避开早晚高峰。"
+  },
+  {
+    "category": "identity",
+    "text": "城市偏好：上海的黄浦江夜景与成都的火锅，旅行常用 Square 支付，背包是 Aesop 的帆布款。"
+  },
+  {
+    "category": "entertainment",
+    "text": "周末去了私人影院，看一部 90 年代的动作片，投影是 Sony VPL，爆米花配 Coca-Cola。"
+  },
+  {
+    "category": "devices",
+    "text": "给旧 ThinkPad 装 Ubuntu 22.04 做本地开发，顺手配置 VS Code 插件，并启用 Docker 跑容器化服务。"
+  },
+  {
+    "category": "schedule",
+    "text": "预约：周五 09:30 牙科复诊，周六 14:00 羽毛球馆，周一 18:00 线上瑜伽，备注记得带护腕。"
+  },
+  {
+    "category": "learning",
+    "text": "报名数据可视化线下课，学 D3.js 绘制交互地图，配合 Tufte 的图形原则，周末完成一页可视化笔记。"
+  },
+  {
+    "category": "identity",
+    "text": "年龄：34 岁"
+  },
+  {
+    "category": "career",
+    "text": "季度目标：提升团队用户留存，做 A/B 测试与漏斗分析，用 Mixpanel 看事件，周五给项目负责人汇报。"
+  },
+  {
+    "category": "devices",
+    "text": "新入 LG 27UP850N 显示器做副屏，连 MacBook Air M2，配色用 DCI-P3，夜间开启 LightSync。"
+  },
+  {
+    "category": "schedule",
+    "text": "每天 07:30 打卡健身房，做力量训练与短跑间歇，用 Apple Watch 记录心率，并同步到 Strava。"
+  },
+  {
+    "category": "identity",
+    "text": "信仰：遇到问题先记录复现步骤，再验证假设，用 Jira 建 Ticket，并用 Mermaid 画流程图。"
+  },
+  {
+    "category": "learning",
+    "text": "阅读《代码整洁之道》，第 5 章做摘要，结合团队 Code Review 清单，更新团队规范到 Confluence。"
+  },
+  {
+    "category": "entertainment",
+    "text": "晚间听播客 FT 的财经评论，顺手在微博收藏几篇长文，周末在 Notion 归纳要点并写评论。"
+  },
+  {
+    "category": "food",
+    "text": "倾向川式麻辣，火锅选鸳鸯锅；用 Keep 记录热量，目标 BMI<24。"
+  },
+  {
+    "category": "career",
+    "text": "偏好：研发岗；熟悉 Python/Go；工具：GitLab/Jira/Figma。"
+  },
+  {
+    "category": "schedule",
+    "text": "本周排期：周一复盘；周三产品评审；周五版本 v2.3 上线。"
+  },
+  {
+    "category": "health",
+    "text": "牙科检查：无龋齿；建议每年洁牙；电动牙刷praxis 3000。"
+  },
+  {
+    "category": "finance",
+    "text": "ETF 定投：沪深300+S&P 500；预算：月入 40%；工具：Xlnk。"
+  },
+  {
+    "category": "housing",
+    "text": "周日下午看房：Z3 站 C 口两居；租客：人物乙；宠物：猫。"
+  },
+  {
+    "category": "food",
+    "text": "计划做沙拉：羽衣甘蓝+牛油果+鸡胸，净碳水 <40 g，忙时选 Panda。"
+  },
+  {
+    "category": "career",
+    "text": "A player 绩效 L3×2；季度 OKR：MRR +22%；流程分支 A1。"
+  },
+  {
+    "category": "schedule",
+    "text": "今日待办：跳伞校验；Nozbe；快递到驿站；预约 ID 1229 未取件。"
+  },
+  {
+    "category": "health",
+    "text": "体检：ALT 56 偏高；医生建议少糖；坚持 7.5 km/晚；Watch S20。"
+  },
+  {
+    "category": "finance",
+    "text": "信用卡：Samsung 5% 返现；积分≈8 k；配置资产 GDA 组。"
+  },
+  {
+    "category": "housing",
+    "text": "新租：南向两居；步行至地铁 12 min；公交 302/392；购物：Mix。"
+  },
+  {
+    "category": "food",
+    "text": "家用咖啡：Yea 39 mm 平底；豆：中烘；手动 Barista Pro；拉花练习。"
+  },
+  {
+    "category": "career",
+    "text": "面试复盘：算法 n=0.4 超时；改用二分+前缀；行编码 D8？"
+  },
+  {
+    "category": "schedule",
+    "text": "家庭日：菜市场买菜；Ele.me 券 29-6；看《长安》。"
+  },
+  {
+    "category": "health",
+    "text": "跑步：间歇 6×400 m；心率 178；鞋 Pegasus 42；Terminal 计划 T5。"
+  },
+  {
+    "category": "finance",
+    "text": "账户理财：Wind 数据；持仓 β≈0.95；关注 REIT。"
+  },
+  {
+    "category": "housing",
+    "text": "周末到场：墙暖改地暖 ¥2.2 万；预约 A1-7-11。"
+  },
+  {
+    "category": "food",
+    "text": "三餐记录：早 protein 30 g；零食 3 次；薄荷 app。"
+  },
+  {
+    "category": "career",
+    "text": "关于我：项目经理 3 yrs；PMP；顺序：需求-原型-验收。"
+  },
+  {
+    "category": "schedule",
+    "text": "倒计时：离上线还有 9 天；每日 DMR；备份 S3 在广州 OSS 桶。"
+  },
+  {
+    "category": "health",
+    "text": "睡眠：平均 6.8 h；夜醒 3 次；冥想 H R V 28；处方：Y2 过敏药。"
+  },
+  {
+    "category": "finance",
+    "text": "记账：RC 版 v8.2；固定支出 48%； جۇمساm 报表。"
+  },
+  {
+    "category": "housing",
+    "text": "钥匙托管 QR：备用 6-B；电梯 v9；门锁 NFC 未绑定。"
+  },
+  {
+    "category": "food",
+    "text": "烤甜品：低糖 30% 更脆；用 Nest Hub 计时。"
+  },
+  {
+    "category": "learning",
+    "text": "开始准备化学101的期末考，把 calculate 的批注和 flickr的题库复习了一遍。"
+  },
+  {
+    "category": "learning",
+    "text": "人物乙的雅思备考记录：每天在 Notability 的iPad分屏模式草拟的 essay 都超过 6.0。"
+  },
+  {
+    "category": "learning",
+    "text": "用 LectureCapture 记录的网课都存在 Notion 里，包含本科物理核心章的 recitation video。"
+  },
+  {
+    "category": "health",
+    "text": "VitaminD3 2000 IU 在亚马逊采购记录，结合 AppleWatch 的静息心率等待窦性心律的确认。"
+  },
+  {
+    "category": "health",
+    "text": "严重偏头痛时，人物丙给的中医建议没用 modern medical 干预，还是在发作后立刻吃了 Advil。"
+  },
+  {
+    "category": "health",
+    "text": "体重：72 kg"
+  },
+  {
+    "category": "health",
+    "text": "爬楼梯容易气喘，搜索 Google 的呼吸器无果后，买了视网膜眼罩、加湿器和 sanitary 湿巾改善夜间。"
+  },
+  {
+    "category": "housing",
+    "text": "Apartment 的 LeaseRenewal 期限前，确认可选的 home insurance 方案与 floor plan 附赠车库。"
+  },
+  {
+    "category": "housing",
+    "text": "偏好：IKEA"
+  },
+  {
+    "category": "housing",
+    "text": "厨房 Nespresso 胶囊机漏水后，记下 landlord 修理水泵的响应日志，房东的态度一直是微微一笑的状态。"
+  },
+  {
+    "category": "housing",
+    "text": "对 Rent Agreement 的 field-verify 惯例记录，保留入住新公寓那天的整个 apartment unit 的照片。"
+  },
+  {
+    "category": "entertainment",
+    "text": "借了 Bort 的 Xbox Game Pass Ultimate，终于达成了 Forza Horizon 5 的 Horizon Open 赛道线上活动。"
+  },
+  {
+    "category": "entertainment",
+    "text": "用 Sony A7IV 记录的 road trip 风景，丢了行车记录仪和手机，风景的废片很多但没有雷雷的行程。"
+  },
+  {
+    "category": "entertainment",
+    "text": "影评：看了 Jordan Peele 的 Nope midnight 场，配合Pixel 6a messaging 讨论 still frame 的隐喻对口供。"
+  },
+  {
+    "category": "entertainment",
+    "text": "John 的 The Bear S2 marathon 补给：赶走 Sticky 后开始狂玩 hololive 的英语 streaming，Spofity 稳。"
+  },
+  {
+    "category": "relationships",
+    "text": "接机的人物丁乘坐的 Tesla Model Y 行程单：在车速超过 60kmph 时，动态随车的 messages 变成了观测模式。"
+  },
+  {
+    "category": "relationships",
+    "text": "Lily 和人物戊对男生 Fondue 的兄弟生日性格虽然没有 Reddit 的群组维持，但在 Amazon 买的 Grade B 礼物回调了。"
+  },
+  {
+    "category": "relationships",
+    "text": "性格特质：INTP"
+  },
+  {
+    "category": "relationships",
+    "text": "人物乙的 Tinder match 陷入冷静期后，发现不稳定的 Illumina 系统把 mindfulness 打卡重新设定，重新夺回了控制权。"
+  },
+  {
+    "category": "food",
+    "text": "在 Wagasa 点的 Chicken Karaage 和 Matcha Latte 等 dishes，和新型的印度 tea 比起来稍弱，菜单毫无挑剔的地方。"
+  },
+  {
+    "category": "food",
+    "text": "菜谱：煎牛排"
+  },
+  {
+    "category": "food",
+    "text": "周末探索 Cafe Gray 的 flat white 完美口感西式菜品，买到了今年 coffee bean 比赛的黑糖拿铁套装。"
+  },
+  {
+    "category": "food",
+    "text": "在 Pelicana 受理了家人的 15% 小票，这周能用到 4% 的返现，出差用的 store credit 因此多得 10 刀的价值。"
+  },
+  {
+    "category": "food",
+    "text": "煮的 Billyonaire 乔麦面和 Hiroshima 的牡蛎便当不同，简易记录到 Moleskine，下次改放 scallion 改良。"
+  },
+  {
+    "category": "food",
+    "text": "今早试做的 Oodia 意面有点翻车，下次少放 10% 番茄酱。"
+  },
+  {
+    "category": "finance",
+    "text": "在定期的利息到账后，顺手开通了账户的活期自动归集功能。"
+  },
+  {
+    "category": "health",
+    "text": "睡眠监测显示夜间深睡仅 1h42min，iPhone 的 Health App 建议我提早 30min 断电。"
+  },
+  {
+    "category": "learning",
+    "text": "PMP 模考连续 3 周稳定在 168/200，今晚将重点复习的 PMBOK 第 6 版内容拆解并整理了思维导图。"
+  },
+  {
+    "category": "relationships",
+    "text": "结婚纪念日订了一家米其林餐厅，开车用 Google Maps 导航大概需 27min，希望能顺利通过晚高峰顺畅抵达。"
+  },
+  {
+    "category": "identity",
+    "text": "职业：UI Designer"
+  },
+  {
+    "category": "food",
+    "text": "黑猩猩咖啡机刚出的 Oat Foam Latte 真的难喝，大踩雷。"
+  },
+  {
+    "category": "finance",
+    "text": "年终奖到账，金额达到 $28,500，计划将其中的 40% 转入 Robinhood 账户购买大盘 ETF。"
+  },
+  {
+    "category": "health",
+    "text": "体检报告显示尿酸值420μmol/L，医生建议低钠呤饮食，今晚起正式戒掉所有高钠呤饮料和啤酒。"
+  },
+  {
+    "category": "health",
+    "text": "Garmin Forerunner 955 提醒我 static HR 过高，可能需要减少越野跑的频率。"
+  },
+  {
+    "category": "learning",
+    "text": "圇屋书店买的《气候经济与人类未来》值得反复阅读，比尔·盖茨的洞见确实精彩。"
+  },
+  {
+    "category": "relationships",
+    "text": "人物乙今天加班到凌晨2点，华为手表的 stress 指数飙到 85，得想办法带他去放松一下。"
+  },
+  {
+    "category": "finance",
+    "text": "记录上周家庭预算执行情况：超市支出¥856、加油支出¥300、各类娱乐支出¥420，本月待结算剩余可用预算。"
+  },
+  {
+    "category": "food",
+    "text": "便利店的关东煮太咸了，下次再去买 7-11 的 Store Brand 关东煮，2.5x 不够清淡。"
+  },
+  {
+    "category": "identity",
+    "text": "设置手机闹钟 7:15 AM，提醒自己千万记得按时去参加在星巴克门店举办的设计心理学读书会。"
+  },
+  {
+    "category": "relationships",
+    "text": "两人互相调侃起代号：用户 A 是 Sherlock（因为总能快速找到 bug），用户 B 是 Watson（负责快速修 bug）。"
+  },
+  {
+    "category": "finance",
+    "text": "富途牛牛里果断清仓 VOO，并全部转成现金，准备静观接下来的市场行情与板块表现再做决定。"
+  },
+  {
+    "category": "health",
+    "text": "S23 Ultra 的车载模式无法连接我的 Renault Zoe，只能听低码率的 Bluetooth 音乐，真的有点烦躁。"
+  },
+  {
+    "category": "learning",
+    "text": "看完了经典名著《枪炮、病菌与钢铁》，当晚用 Notion 写了 2000 字读书笔记才算彻底消化完毕。"
+  },
+  {
+    "category": "food",
+    "text": "在 Michelin 三星餐厅居然吃到半生不熟的牛排，有大无语事件。"
+  },
+  {
+    "category": "learning",
+    "text": "多邻国绿猫终于升到了第15关，今晚再坚持刷 45min 单词，把含 ing 的词汇题全部吃透巩固。"
+  },
+  {
+    "category": "finance",
+    "text": "Apple Pay 绑定的招行卡在 App Store 抽到消耗金额达 $6，积分的返现比例是 1.5%。"
+  },
+  {
+    "category": "technology",
+    "text": "用千分尺精准校准覆铜板厚度至 1.6mm，并将 BOM 中 ATTiny85 的封装更新为 SOIC-8，顺利打样 PCB。"
+  },
+  {
+    "category": "technology",
+    "text": "新买的 ThinkPad X1 Carbon Gen11 跑 code-server 还是有点吃力，主要瓶颈在 GPU 上，后期考虑加装外置 eGPU。"
+  },
+  {
+    "category": "identity",
+    "text": "血型：O 型"
+  },
+  {
+    "category": "identity",
+    "text": "职业：Web 前端开发，常驻上海的远程员工"
+  },
+  {
+    "category": "housing",
+    "text": "当前住所：Xi'an 高新区某公寓，楼下超市采购生鲜十分方便"
+  },
+  {
+    "category": "housing",
+    "text": "租来的老破小加装了全屋智能的 Aqara 系统，回家自动亮灯"
+  },
+  {
+    "category": "housing",
+    "text": "周末花了一下午，把乱糟糟的数据线用理线管一根根固定好"
+  },
+  {
+    "category": "housing",
+    "text": "物业：高新区第三管理处"
+  },
+  {
+    "category": "housing",
+    "text": "家具品牌偏好：IKEA 与 Muji"
+  },
+  {
+    "category": "entertainment",
+    "text": "昨晚熬夜通关 PS5 的《Final Fantasy XVI》，剧情演出确实极具电影感，战斗系统在 GPU 渲染下帧率稳定"
+  },
+  {
+    "category": "entertainment",
+    "text": "使用 MacBook Pro 14 寸的 Logic Pro 编写 beat，戴着 Sony WH-1000XM5 听混音细节就是清晰"
+  },
+  {
+    "category": "entertainment",
+    "text": "偏好的 3A 大作需支持光线追踪，让 RTX 4090 的 DLSS 3 跑满 120fps 才能带来沉浸的 VR 体验"
+  },
+  {
+    "category": "entertainment",
+    "text": "用 Pico 4 体验 VR Chat，认识了几个加拿大朋友"
+  },
+  {
+    "category": "entertainment",
+    "text": "疫情期间反复重看《Ready Player One》"
+  },
+  {
+    "category": "schedule",
+    "text": "周一 09:00 发起的 Zoom 跨部门周会，探讨了新的 UI 组件库搭建进度"
+  },
+  {
+    "category": "schedule",
+    "text": "属性：咖啡爱好者，每天上午 8 点用 Philips 咖啡机做美式"
+  },
+  {
+    "category": "schedule",
+    "text": "出发：8 月 15 日飞往 LAX 的航班"
+  },
+  {
+    "category": "schedule",
+    "text": "下周三下午 14:30 预约了牙科洗牙，记得带上之前办的医疗卡"
+  },
+  {
+    "category": "schedule",
+    "text": "周五 10:00–11:30 Austin 数据中心灾备演练"
+  },
+  {
+    "category": "finance",
+    "text": "预算：本季度 Amazon 网购额度 ¥8000"
+  },
+  {
+    "category": "finance",
+    "text": "某编号 8852 的 JP Morgan 信用卡刚出了 ¥4500 的账单，这两天必须还清"
+  },
+  {
+    "category": "finance",
+    "text": "记账：去年打碎的 Dyson 吹风机在退换货记录里"
+  },
+  {
+    "category": "finance",
+    "text": "账面净值首次突破二百万里程碑"
+  },
+  {
+    "category": "finance",
+    "text": "社保：基数按 15k 申报"
+  },
+  {
+    "category": "career",
+    "text": "求职状态：接收 remote 或 hybrid 的面试"
+  },
+  {
+    "category": "career",
+    "text": "某编号 KR-2023-001 的 KPI 考核结果刚出，这季度的绩效评级拿到了 A"
+  },
+  {
+    "category": "career",
+    "text": "搭建个人网站的服务器选用 Lighthouse，域名 purchased on Namecheap"
+  },
+  {
+    "category": "career",
+    "text": "面试评价：算法扎实但缺乏业务洞察力"
+  },
+  {
+    "category": "career",
+    "text": "用 ASUS Vivobook 跑代码，在 GitHub 开源了高效笔记插件并收获了 200 个 star"
+  },
+  {
+    "category": "health",
+    "text": "体检：血压正常，LDL 偏高"
+  },
+  {
+    "category": "learning",
+    "text": "读书：Week 4，笔记做在 Notion"
+  },
+  {
+    "category": "entertainment",
+    "text": "偏好：科幻片，影院在朝阳"
+  },
+  {
+    "category": "food",
+    "text": "咖啡馆：Blue Bottle，燕麦奶拿铁"
+  },
+  {
+    "category": "relationships",
+    "text": "某编号：同事甲在成都远程协作"
+  },
+  {
+    "category": "finance",
+    "text": "开销：AirPods 丢失补购 199"
+  },
+  {
+    "category": "health",
+    "text": "年度体检已完成，BMI 22.4"
+  },
+  {
+    "category": "learning",
+    "text": "课程：Python 数据分析 Udemy"
+  },
+  {
+    "category": "entertainment",
+    "text": "周末看电影，IMAX 片长 140 分钟"
+  },
+  {
+    "category": "food",
+    "text": "晚餐：清蒸蛏子配米饭，夜宵不碰"
+  },
+  {
+    "category": "relationships",
+    "text": "人物甲的父母来北京，第一次见面 invited us for hotpot"
+  },
+  {
+    "category": "finance",
+    "text": "储蓄目标：S&P 500 ETF(VOO)定投，月度预算超了 20%"
+  },
+  {
+    "category": "health",
+    "text": "跑步：5 km 配速 6:20，心率 148，HRV 低于 72"
+  },
+  {
+    "category": "learning",
+    "text": "这周背了 40 个词汇，复习在 Anki，晚间复盘时又抄了例句"
+  },
+  {
+    "category": "entertainment",
+    "text": "收工后打游戏 PS5，开罗尔背包太重，手柄震动关掉"
+  },
+  {
+    "category": "food",
+    "text": "在家学拉花，WPM 35，豆子很深，牛奶 45 ml，妻子笑着说到了咖啡馆水准"
+  },
+  {
+    "category": "relationships",
+    "text": "的人物丁帮我搬家， afterwards 一起看球赛，支持 Chelsea 与 湖人"
+  },
+  {
+    "category": "finance",
+    "text": "的账单：房租 6800，Bond Funds +64，回报稳健，余额到了 8700"
+  },
+  {
+    "category": "health",
+    "text": "牙齿：智齿隐痛，预约了洗牙与喷砂 2 次复查 smirnoff ice"
+  },
+  {
+    "category": "learning",
+    "text": "买书：Shoe Dog 与深度学习，Kindle Cloud Reader 太方便 return airplane mode"
+  },
+  {
+    "category": "entertainment",
+    "text": "拍 vlog：Canon G7X Mark III，五轴稳定器，剪在 DaVinci，配音乐 Lofi"
+  },
+  {
+    "category": "food",
+    "text": "酸种：第四次续养成功，气孔明显，烤温 240°C；家人说像面包店的酸口"
+  },
+  {
+    "category": "relationships",
+    "text": "周五晚的同学聚会：人物乙提到同事丙的婚礼 invitation，大家计划去成都参加 after party"
+  },
+  {
+    "category": "finance",
+    "text": "月初做预算，房租水电 2800，餐饮 1500；记账在 Money Pro，上周发现信用卡年费，临时调整 allocation"
+  },
+  {
+    "category": "health",
+    "text": "牙线与维生素 D 补剂坚持两个月了，复查血钙正常，皮肤状态也变好 HR 62 bp"
+  },
+  {
+    "category": "learning",
+    "text": "写作练习：写完 3.2k 字 Hanzi，Practice 了 IELTS Task2，朋友推荐了 Anki cards，晚间用 Feynman 法复盘公式和词根"
+  },
+  {
+    "category": "entertainment",
+    "text": "周末看老片：银翼杀手 2049，鱼缸旁的コピペ光影，+50 到收藏列表，Living room 音响 Bose，窗外小雨"
+  },
+  {
+    "category": "food",
+    "text": "家宴菜单：番茄牛腩、油焖大虾、蒜蓉时蔬、手擀面，甜点草莓千层 cake；饭后 Espresso 一杯，大家都说 lambic 般的酸甜很好喝，人少就多做几道 prep"
+  },
+  {
+    "category": "identity",
+    "text": "年龄：29 岁"
+  },
+  {
+    "category": "food",
+    "text": "偏好：杭州菜"
+  },
+  {
+    "category": "identity",
+    "text": "我叫人物乙，目前在杭州工作，老家是人物戊的故乡，周末喜欢去西湖边散步，戴着 AirPods 听播客。"
+  },
+  {
+    "category": "learning",
+    "text": "最近在看《深度学习》，用 iPad Pro 12.9 标注笔记，配合 Notion 整理知识体系非常方便。"
+  },
+  {
+    "category": "housing",
+    "text": "地址：某小区 3 栋 2 单元，楼下的快递柜经常满，不得不去隔壁棟找空位，很麻烦。"
+  },
+  {
+    "category": "schedule",
+    "text": "截止：10 月 15 日，需要在 Obsidian 完成 V2.0 更新，主要依赖 Figma 的设计稿。"
+  },
+  {
+    "category": "identity",
+    "text": "我是人物丙，职业是交互设计师，平时喜欢用 Linear 管理任务，偶尔也会写点 Swift 代码。"
+  },
+  {
+    "category": "learning",
+    "text": "语言：英语 CET-6 擦线过，现在靠 MySQL 背单词，يا 快 means fast，真的记不住。"
+  },
+  {
+    "category": "food",
+    "text": "昨晚在成都吃了顿火锅，辣得人物丁直冒汗，喝冰可乐压惊，还在抱怨第二天要开会。"
+  },
+  {
+    "category": "devices",
+    "text": "主力机：iPhone 15 Pro Max，备用是一台 ThinkPad X1 Carbon，键盘手感一流，值得入手。"
+  },
+  {
+    "category": "housing",
+    "text": "住的地方离地铁站很近，早高峰的 10 号线挤得像沙丁鱼罐头，空气里全是社畜的味道。"
+  },
+  {
+    "category": "schedule",
+    "text": "明早 9 点和人物庚过提案，为了这次 rain check 改期两次了，希望能一次性顺利通过。"
+  },
+  {
+    "category": "food",
+    "text": "这家咖啡馆的燕麦拿铁很惊艳，配数字键盘埃塞俄比亚的耶加雪菲，口感层次分明。"
+  },
+  {
+    "category": "devices",
+    "text": "显示器换成 Dell U2723QE 后，在 macOS 上跑 Blender 渲染宝马 iX 模型，效率直接翻倍。"
+  },
+  {
+    "category": "learning",
+    "text": "在多邻国打卡 60 天，学德语的心得是单词记忆需要语境，单纯背 apps 里的列表没用。"
+  },
+  {
+    "category": "identity",
+    "text": "生日：04 月 12 日"
+  },
+  {
+    "category": "housing",
+    "text": "刚搬进物品丙的旧房，墙上的挂画是某人丁的涂鸦，虽然配色古怪但很有生活气息。"
+  },
+  {
+    "category": "schedule",
+    "text": "周日下午预约了牙科，地址在某办公楼 12 层，主要处理智齿，希望能少受点罪早点结束。"
+  },
+  {
+    "category": "food",
+    "text": "冰箱里有三盒自热米饭，是上周在天猫超市囤的货，准备应对人物辰的突然来访。"
+  },
+  {
+    "category": "devices",
+    "text": "刷机失败，iPhone 14 卡在白苹果，正准备找售后，幸好云备份及时恢复了数据。"
+  },
+  {
+    "category": "learning",
+    "text": "读完了《原则》，在阅读器 Kindle Oasis 上做的笔记很乱，导入到 Calibre 后才好整理。"
+  },
+  {
+    "category": "food",
+    "text": "晚餐吃了碗兰州拉面，加了份牛肉，风味更佳，附带的小菜是酸萝卜，解腻又开胃。"
+  },
+  {
+    "category": "schedule",
+    "text": "周六去攀岩馆，教练是人物辛，据说以前拿过业余攀石比赛的花絮奖，非常专业。"
+  },
+  {
+    "category": "identity",
+    "text": "姓名：人物甲。"
+  },
+  {
+    "category": "identity",
+    "text": "常用网名：甲某的代码生活。注册大部分社交账号使用的备用邮箱后缀是 @gmail.com。"
+  },
+  {
+    "category": "identity",
+    "text": "职业：前端开发工程师（中级）。日常的办公主力机是一台 ThinkPad T14 Gen 2，配合 Win 11 系统使用。"
+  },
+  {
+    "category": "identity",
+    "text": "家庭成员是人物乙与人物丙。每个月的房贷还款日定在 15 号，需提前转入建设银行的储蓄卡内。"
+  },
+  {
+    "category": "devices",
+    "text": "主力的移动设备是 iPhone 15 Pro、MacBook Pro 14 寸以及一台 PS5。"
+  },
+  {
+    "category": "devices",
+    "text": "使用习惯：喜欢在 MacBook 上使用 1Password 管理密码，并定期同步到 iCloud 云盘。"
+  },
+  {
+    "category": "devices",
+    "text": "路由器坏了，上周新买的 Xiaomi AX9000 刚换上。5GHz 频段的穿墙效果很强，高峰时段打游戏延迟极低。"
+  },
+  {
+    "category": "devices",
+    "text": "最近打算把旧的 Kindle Paperwhite 4 挂在闲鱼上卖掉，换个全新的 Boox Leaf 看看电子书。"
+  },
+  {
+    "category": "health",
+    "text": "截至 2023 年底的体检报告：除了轻度脂肪肝之外的指标一切正常，日常坚持服用鱼油补充剂。"
+  },
+  {
+    "category": "health",
+    "text": "运动偏好：每周去三次健身房。通常在周末晨跑，习惯佩戴 Amazfit GTR 4 记录心率。"
+  },
+  {
+    "category": "health",
+    "text": "预约了下周三上午 10 点在市中心医院的口腔科洗牙，主治医师是某编号。"
+  },
+  {
+    "category": "health",
+    "text": "目前的睡眠状况不太好，尝试通过冥想 App 和睡前听白噪音来辅助入睡，效果还不错。"
+  },
+  {
+    "category": "health",
+    "text": "饮食禁忌：对花生严重过敏。最近开始尝试地中海饮食，严格控制每日摄入的盐分与碳水比例。"
+  },
+  {
+    "category": "career",
+    "text": "最近负责的项目面临严格考核，为了新版本上线，连续几周的周末都在公司加班调试代码。"
+  },
+  {
+    "category": "career",
+    "text": "面试状态：已参与某头部外企的现场面试，目前处于等待复试结果的阶段，期望能顺利拿到 offer。"
+  },
+  {
+    "category": "career",
+    "text": "工作规划：未来三年内的目标是晋升为高级工程师，重点深耕 Vue 3 和 TypeScript 技术栈。"
+  },
+  {
+    "category": "career",
+    "text": "上周发布的关于微前端架构优化方案的文章吸引了较多同行点赞。"
+  },
+  {
+    "category": "career",
+    "text": "离职交接：原定于 3 月底正式离开互联网公司回校深造，交接文档已经全部更新至 Confluence。"
+  },
+  {
+    "category": "housing",
+    "text": "目前租住在朝阳公园附近的精装公寓内，每月的租金大概是八千元人民币。"
+  },
+  {
+    "category": "housing",
+    "text": "通勤痛点：早晚高峰的地铁实在太拥挤，正在认真考虑买一辆特斯拉。而且新版本的自动泊车功能十分便利。"
+  },
+  {
+    "category": "housing",
+    "text": "家中天猫精灵控制全屋智能家电。新换的智能门锁支持指纹与远程密码解锁功能，带娃出门也很省心。"
+  },
+  {
+    "category": "housing",
+    "text": "理想的居住环境是一套带有超大落地窗的 LOFT，并且最好附带一个朝南的独立大阳台。"
+  },
+  {
+    "category": "schedule",
+    "text": "早晨 7:30 准时醒来，冲泡一杯优质的挂耳咖啡，然后刷会儿 Twitter 了解科技圈新闻。"
+  },
+  {
+    "category": "schedule",
+    "text": "周末时间分配：周六打羽毛球，周日阅读技术书籍或参加开源社区活动，主要是为了缓解长期伏案工作带来的肩颈酸痛。"
+  },
+  {
+    "category": "schedule",
+    "text": "近期行程：下个月初计划飞往成都出差三天，主要为了参加每年的 Google 开发者大会。"
+  },
+  {
+    "category": "career",
+    "text": "职位：产品设计师；城市：成都；团队：人物甲的小组；工具：Figma、Sketch；偏好：每周三的评审会。"
+  },
+  {
+    "category": "health",
+    "text": "体检：血糖正常、血脂略高；医嘱：夜跑别超过 40 min，睡眠目标 7.5 h，多喝温水。"
+  },
+  {
+    "category": "finance",
+    "text": "预算表模板：Noteslly + Notion；本季目标：存下收入的 25%，旅行基金 4000，订阅续费控制在 200 以内。"
+  },
+  {
+    "category": "learning",
+    "text": "英语口语：每天影子跟读 15 min，素材用 TED 片段和 BBC 6 min；每周在 HelloTalk 上找 conversation partner。"
+  },
+  {
+    "category": "entertainment",
+    "text": "片单：《星际迷航》系列补完计划，IMDb top250 标星 30；偏好 4K HDR，音效开着 Dolby Atmos，周末配爆米花。"
+  },
+  {
+    "category": "relationships",
+    "text": "好友：人物丙；纪念：认识五周年；地点：上海的一家小馆；礼物：人物丙送的书《设计中的设计》。"
+  },
+  {
+    "category": "career",
+    "text": "客户甲的需求：后台界面要简洁；偏好：深色主题；交付：2025-06 的原型；工具：Figma + Bluefish。"
+  },
+  {
+    "category": "health",
+    "text": "近三个月习惯：早八点出门快走 6000 步，中午少碳水，晚上不喝冰美式，只喝温拿铁 or 气泡水。"
+  },
+  {
+    "category": "finance",
+    "text": "账户：某编号银行 debit card；支出：本月外卖 832，咖啡 246；目标：Q4 前还清分期，月供 1800 unaffected。"
+  },
+  {
+    "category": "learning",
+    "text": "语言：日语 N3；教材：Genki II；节奏：weekday 30 min，周末复盘 Anki 卡组 120 张，提升听力和汉字的稳定度。"
+  },
+  {
+    "category": "entertainment",
+    "text": "城镇：杭州；活动：周三晚上 ILLUSION 电音派对；偏好：house 与 techno；设备：TWS 降噪耳机，Ableton 做 live set。"
+  },
+  {
+    "category": "relationships",
+    "text": "同事：人物戊；印象：咖啡同好；地点：西安；约定：每周二的拿铁打卡；糖度：半糖，奶换燕麦奶。"
+  },
+  {
+    "category": "career",
+    "text": "职位：数据分析师；技能：SQL、Python；项目：用户增长 A/B 实验；截止：9月；导师：人物丁的 mentoring。"
+  },
+  {
+    "category": "health",
+    "text": "体检：2024 年 8 月；血脂略有改善；行动：加班夜宵减少，Apple Watch 睡眠追踪，午休小睡 20 min 很有效。"
+  },
+  {
+    "category": "finance",
+    "text": "税：今年退税 1200；理财：定投指数基金；风险：medium；组合：mix of bonds + equity，rebalance 每季度一次。"
+  },
+  {
+    "category": "learning",
+    "text": "在线课：Coursera 的 Machine Learning；节奏：一周 3 小节；作业：Python notebook；目标：11月前完成 certificate。"
+  },
+  {
+    "category": "entertainment",
+    "text": "偏好：爵士和 city pop；设备：Sony WH-1000XM5 + YONO 音箱；午后的咖啡与黑胶，排队买限量 ISO。"
+  },
+  {
+    "category": "relationships",
+    "text": "家庭：人物乙的 birthdayparty；准备：作品：homemade cake + 相簿；主题：在武汉的 edgy 小酒馆聚会。"
+  },
+  {
+    "category": "career",
+    "text": "远程：成都；会议：早 10 点的 stand-up，周三 retro，周五 demo；工具：Linear、Slack、Zoom。"
+  },
+  {
+    "category": "health",
+    "text": "感冒：上周 39°C 发烧；处方：退烧药 + 维C；恢复：多睡、温水、鸡汤；不做剧烈运动 like 夜跑。"
+  },
+  {
+    "category": "finance",
+    "text": "订阅：iCloud 200GB、Spotify Premium；上个月：打车 340、视频会员 89；计划：九月旅行预算 3500。"
+  },
+  {
+    "category": "learning",
+    "text": "摄影：周末扫街 3 km；器材：Fujifilm X-T5 + 23mm f2；主题：南京老巷子的光影与猫；修图：Darkroom。"
+  },
+  {
+    "category": "entertainment",
+    "text": "书店：苏州的诚品；类型：科幻 + 社科；体验：下午茶 reading；购书：三本，有签名版！推荐《Sapiens》。"
+  },
+  {
+    "category": "relationships",
+    "text": "邻居：人物丁；借过：电钻与折叠电动车；礼物：自家种的多肉；礼数：互送的外卖券。"
+  },
+  {
+    "category": "career",
+    "text": "面试候選人：某编号；反馈：沟通不错，算法略弱，再约一轮；地点：远程；时长：60 min。"
+  },
+  {
+    "category": "career",
+    "text": "场景：人物甲在星巴克和团队讨论 CRM 系统的迭代。白板上写满 OKR 和 DAU 指标，大家对新季度排期都挺有干劲的。"
+  },
+  {
+    "category": "profile",
+    "text": "年龄：32 岁"
+  },
+  {
+    "category": "finance",
+    "text": "定投偏移值：API 算出的 1.25。LDH 模型提示，基准组合回报率过低，需调整 LUNA 和 SOL 的比例。"
+  },
+  {
+    "category": "profile",
+    "text": "性别：女"
+  },
+  {
+    "category": "devices",
+    "text": "人物丙平时有点偏爱简洁的系统界面。新买的 iPhone 15 Pro 搭配 Bose QC 耳机，运行 iOS 17.2 评测 ANC 降噪的效果。"
+  },
+  {
+    "category": "relationships",
+    "text": "沟通记录里显示，人物乙参与了星巴克咖啡的相亲活动，并留下 50 分的数据，具有精度的婚恋偏好界面可供匹配。"
+  },
+  {
+    "category": "housing",
+    "text": "选购家电的诉求：租的房子距离公司约五公里，平时出行开 Tesla Model Y。除了写 C++ 和拷 U 盘，我只会插电用咖啡机。"
+  },
+  {
+    "category": "health",
+    "text": "每日运动计划：早晨跑步 5 KM，晚上举铁 50 次。打开 Keep App 打卡，铺好瑜伽垫，累的时候就喝一罐红牛补充体力。"
+  },
+  {
+    "category": "learning",
+    "text": "人物乙最近在自学前端开发框架，刚看完 Vue 3.4 的官方教程，准备开始动手写第一个 React 组件，顺便查阅 MDN Web Docs。"
+  },
+  {
+    "category": "food",
+    "text": "常购列表：特大号的收纳箱已在京东 APP 下单。"
+  },
+  {
+    "category": "career",
+    "text": "最近工作比较伤眼，桌上常备人工泪液用来缓解干涩。因为网络 IP 冲突，手动修改了电脑的 MAC 地址，分配到 250 M 的宽带。"
+  },
+  {
+    "category": "finance",
+    "text": "人物丁决定卸载炒股 APP，把 TP Wallet 里闲置的 0.5 个 ETH 质押到中心化交易所，锁仓三个月吃基础的活期利息。"
+  },
+  {
+    "category": "devices",
+    "text": "花了半天重装家庭 NAS，组了 RAID 5 阵列来跑 PT 下载任务。装上 Jellyfin 和 Emby 后，可以通过 외국어 부 असलेली硬盘读取媒体文件。网友评论说这台小型的 CPU 耗电和发热量的确偏大。"
+  },
+  {
+    "category": "housing",
+    "text": "问题：合租房的朝北房间很冷，开着美的石墨烯取暖器，设定目标温度是 26 度。到了晚上，还要铺上 NRG Y 牌的电热毯。"
+  },
+  {
+    "category": "learning",
+    "text": "人物丙近期阅读了村上春树的小说，并报名了五十音图的基础班，计划下周开始看 NHK 的纪录片来做听力训练。"
+  },
+  {
+    "category": "travel",
+    "text": "乘坐 G7351 次高铁，到上海虹桥站的 1 号出口。"
+  },
+  {
+    "category": "devices",
+    "text": "人物甲的电脑桌面：MacBook Pro M3 搭配戴尔 U2723QE 显示器，外接微软人体工学键盘。"
+  },
+  {
+    "category": "finance",
+    "text": "资金划拨：工资到账后，先预留出下个月的房租，然后强制储蓄一千五定投先锋领航的 VTI 和 VXUS，以及 BND 指数基金。比起短线的操作，这种配置的长期复利盘子更稳得多。"
+  },
+  {
+    "category": "shopping",
+    "text": "手机壳是在淘宝 PDD 买的。"
+  },
+  {
+    "category": "career",
+    "text": "带有字段的记录：考勤系统补卡审批被驳回，只得切换到 AI 软件自动生成的 SQL 错题集，处理 base64 的格式文件。"
+  },
+  {
+    "category": "relationships",
+    "text": "相亲角搭子：人物丁周六下午在公园，想找一起打游戏的双排搭子。"
+  },
+  {
+    "category": "housing",
+    "text": "新房软装琐事：到售楼处交契税后，挑选了小米智能门锁 Edge 加云监控 2 C。物业办卡，录入门禁权限后解锁蓝牙访客的权限。"
+  },
+  {
+    "category": "learning",
+    "text": "学习进度记录：人物戊退掉 B 站年度大会员，转去 Github 开源社区刷 Python 练习题，正专注阅读 CMake 编译的指南。"
+  },
+  {
+    "category": "devices",
+    "text": "升级配置的备忘录：台式机内存太小，直接加装芝奇 DDR5 7200 MHz 64 GB 套装，并给 CPU 手动超频。开机后 Windows 11 系统加载进度条卡住不动。"
+  },
+  {
+    "category": "health",
+    "text": "体检报告数据提醒：高密度脂蛋白偏低。遵医嘱开始吃斯利安牌叶酸、阿莫西林胶囊，以及辅助的辅酶 Q10。平时喝点黑咖啡，喝屈臣氏的苏打水。"
+  },
+  {
+    "category": "schedule",
+    "text": "截止：周三下午。人物甲预约了牙科，需要提前十分钟到达医院。"
+  },
+  {
+    "category": "entertainment",
+    "text": "偏好：动作片。人物乙喜欢看豆瓣高分电影，周末必安排观影。"
+  },
+  {
+    "category": "career",
+    "text": "当前职位：产品经理。在某编号项目组负责数字化协作平台的能力升级。"
+  },
+  {
+    "category": "health",
+    "text": "健身计划：每周三次。人物丙的腿部肌肉群还需要在器械上做强化。"
+  },
+  {
+    "category": "learning",
+    "text": "招牌课程：Python进阶。人物丁计划在 Coursera 上完成数据分析。"
+  },
+  {
+    "category": "schedule",
+    "text": "行程安排：去广州出差。人物甲预计全程耗时三个工作日完成拜访。"
+  },
+  {
+    "category": "identity",
+    "text": "手机号码：133开头，尾号8529，机主登记人为人物乙。"
+  },
+  {
+    "category": "entertainment",
+    "text": "演唱会信息：五月天。人物丙在索尼电视上看了一场高清现场版。"
+  },
+  {
+    "category": "career",
+    "text": "面试进展：候选人戊通过了第一轮技术面，人事部门觉得评价不错。"
+  },
+  {
+    "category": "health",
+    "text": "体检提醒：下午 14:20。人物甲需要空腹去总院抽血化验。"
+  },
+  {
+    "category": "learning",
+    "text": "阅读目标：每月两本。涉及专业成长的书籍都看得到读书笔记。"
+  },
+  {
+    "category": "schedule",
+    "text": "截止日期：下周三下午。需在公司内网提交年度最新预算报告。"
+  },
+  {
+    "category": "career",
+    "text": "离职原因：通勤太远。人物丁更换了职业赛道，去尝试运营岗位。"
+  },
+  {
+    "category": "entertainment",
+    "text": "家电型号：LG C3。新买的 OLED 电视画质很好，玩游戏体验不错。"
+  },
+  {
+    "category": "health",
+    "text": "补剂清单：复合维生素。人物丙一整个月的运动营养摄入全靠它。"
+  },
+  {
+    "category": "learning",
+    "text": "外语目标：雅思考试。为了去剑桥大学，人物丁每天打卡背 100 个。"
+  },
+  {
+    "category": "identity",
+    "text": "浏览器软件： Firefox 。默认搜索引擎设置为百度，并且安装了插件。"
+  },
+  {
+    "category": "entertainment",
+    "text": "降温设备：格力空调。周末在客厅打开 26 度制冷，躺着看了 DVD。"
+  },
+  {
+    "category": "career",
+    "text": "核心项目：智能汽车。负责高德地图导航算法的准确率评估与优化。"
+  },
+  {
+    "category": "health",
+    "text": "足迹记录：本周末。一万步挑战在小米手环 8 上成功达成，跑五公里。"
+  },
+  {
+    "category": "schedule",
+    "text": "启程时间：明日清晨 6:30。人物戊安排了 dualin 机场的航班出行。"
+  },
+  {
+    "category": "entertainment",
+    "text": "游戏库：PC 端。人物乙花 199 元坐了一趟《赛博朋克2077》太刺激。"
+  },
+  {
+    "category": "learning",
+    "text": "自学技能：剪辑视频。在知乎上看教程，剪辑了 Camtasia 录制的网课。"
+  },
+  {
+    "category": "career",
+    "text": "技术栈：前端开发。精通 Vue 3 框架，偶尔还要兼顾旧版 PHP 的维护。"
+  },
+  {
+    "category": "identity",
+    "text": "居住区域：杭州 西湖。人物甲在公司附近租了一套五十平米公寓。"
+  },
+  {
+    "category": "learning",
+    "text": "专业：computer science"
+  },
+  {
+    "category": "finance",
+    "text": "预算：三万 RMB"
+  },
+  {
+    "category": "career",
+    "text": "薪资：两万五"
+  },
+  {
+    "category": "food",
+    "text": "身高：一七五"
+  },
+  {
+    "category": "learning",
+    "text": "偏好：去糖"
+  },
+  {
+    "category": "health",
+    "text": "习惯：每周一三五的早晨坚持去公园慢跑五公里，用 Keep 记录配速。"
+  },
+  {
+    "category": "food",
+    "text": "偏好：周末喜欢尝试烹饪新菜品，今天用 Anker 慢炖锅做的红酒牛腩很成功。"
+  },
+  {
+    "category": "relationships",
+    "text": "计划：下月去 Tokyo 旅行，和人物乙一起看 TeamLab Planets。"
+  },
+  {
+    "category": "finance",
+    "text": "资产：本月建仓 NVDA，均价 480 USD，期待财报季带来的收益。"
+  },
+  {
+    "category": "career",
+    "text": "发展：为了拓宽职业护城河，我决定利用业余时间系统学习 React 和基于 PaaS 云架构部署的知识。"
+  },
+  {
+    "category": "health",
+    "text": "医疗：针对久坐腰痛的老毛病，新买了一把 Autonomous ErgoChair Pro 来改善坐姿。"
+  },
+  {
+    "category": "learning",
+    "text": "进展：Coursera 上的机器学习专项课程已拿到 certificate，准备进阶深度学习。"
+  },
+  {
+    "category": "food",
+    "text": "日常：每天早晨一定要喝黑咖啡，家里囤了包装精致的 Seattle's Best，提神效果佳。"
+  },
+  {
+    "category": "relationships",
+    "text": "聚会：周五晚上和老友们在 Downtown 的精酿酒吧小聚，喝了几杯精酿啤酒聊工作。"
+  },
+  {
+    "category": "finance",
+    "text": "账单：九月的信用卡账单已还清，为庆祝提前清零打算奖励自己一台 Sony A7 相机。"
+  },
+  {
+    "category": "career",
+    "text": "工作：目前正在主导的 Gemini 大模型应用落地项目进展顺利，修改全面的 PR 已经合并。"
+  },
+  {
+    "category": "health",
+    "text": "指标：Glucose 略高，已减少精制碳水摄入，增加全麦面包和新鲜蓝莓的比例。"
+  },
+  {
+    "category": "food",
+    "text": "行踪：出差去 Suzhou 时，特意抽空去平江路排队买来了当地老字号的手工桂花糕。"
+  },
+  {
+    "category": "learning",
+    "text": "规划：购买的 BBC 双语精读专栏已看完，决定开始接触日语 N5 等级的入门读物。"
+  },
+  {
+    "category": "relationships",
+    "text": "家事：周末带人物丁和人物戊去 Dilmah 体验高端下午茶套餐，度过惬意的周末下午。"
+  },
+  {
+    "category": "finance",
+    "text": "记账：今年基金整体收益约百分之十五，计划将部分利润转投安全资产 GaGaGa。"
+  },
+  {
+    "category": "career",
+    "text": "面试：拿到深圳某大厂的 offer，岗位是高级云工程师，面试时重点考察了 Kubernetes。"
+  },
+  {
+    "category": "relationships",
+    "text": "家人：给人物丙买了新年礼物，是一款适合长辈使用的大屏三星手机，希望长辈开心。"
+  },
+  {
+    "category": "housing",
+    "text": "爱好折腾智能家居，Home Assistant 的版本号追到 2024.1.x，家里窗户用 ttv 传感器联动。"
+  },
+  {
+    "category": "housing",
+    "text": "关于明亮北欧风的偏好：pro 级设计师规划，墙面大面积用 kale 涂料，软装走 minimalist 路线。"
+  },
+  {
+    "category": "housing",
+    "text": "2024 年的租约快到期了，计划搬去 apartment，要在 city 的 south 区，最好是 walking distance 到地铁。"
+  },
+  {
+    "category": "learning",
+    "text": "关于雅思考试：为了 7.5 分，每天用 Anki 背 50 个单词，搭配剑桥真题，目前的听力 section 4 较弱。"
+  },
+  {
+    "category": "learning",
+    "text": "Learning Python 的进度缓慢，Kaggle 上的泰坦尼克号项目还在 notebook 里躺着，pandas 库操作不熟练。"
+  },
+  {
+    "category": "learning",
+    "text": "年度学习计划是掌握深度学习框架，φw 路线：先学 NumPy，再上手 PyTorch。"
+  },
+  {
+    "category": "learning",
+    "text": "ow 同学推荐的 MOOC 心理学导论课程，S 级难度，每周固定三小时，yyds 的 lecture 值得反复看。"
+  },
+  {
+    "category": "health",
+    "text": "体检报告解析，bodily 多项指标或者超标，尿酸 480 umol/L，panic 级别，必须放弃 all 高嘌呤 diet。"
+  },
+  {
+    "category": "health",
+    "text": "运动计划采用 periodization 训练法，每周 3 次 running，keep 的 5 公里 target 快要达成，配速 6.3 m/s。"
+  },
+  {
+    "category": "health",
+    "text": "治疗落枕的 physiotherapy 疗程，医生推荐的 angle 是仰卧，合理拉伸 neck 的斜方肌。"
+  },
+  {
+    "category": "health",
+    "text": "重度 caffeine 依赖者，每日一杯 long black。咖啡因摄入预警，max threshold 250 mg Flask。"
+  },
+  {
+    "category": "finance",
+    "text": "加密货币 portfolio 风险极高，BTC 占比 50%，ETH 占比 30%，USDT 和现货杠杆合约要分开。"
+  },
+  {
+    "category": "finance",
+    "text": "年度财务复盘报表，5 月份支出大超 budget，bookkeeping 显示吸尘器 400 USD 和充电电池竞拍。"
+  },
+  {
+    "category": "finance",
+    "text": "美股 transaction history 导出结果提取，纳斯达克成分股 nvda 持仓 1abc 股，盈利超 23%。"
+  },
+  {
+    "category": "finance",
+    "text": "紧急储蓄 buffer 达标，达到 6 个月 living costs，存款覆盖房贷还款，R 项目安全 plan 完备。"
+  },
+  {
+    "category": "entertainment",
+    "text": "核心 sega 列表升级为 Prem 会员，couch co-op 的 party game 是《双人成行》，周末排队打《原神》。"
+  },
+  {
+    "category": "entertainment",
+    "text": "对 3A 大作的审美 part 偏高，atmosphere 极佳的 horror 体验，《生化危机 2 Re:make》通关。"
+  },
+  {
+    "category": "entertainment",
+    "text": "苹果 vision pro 闲置吃灰，原本用来体验 immersive video，但戴久了太重，spatial 体验一般。"
+  },
+  {
+    "category": "entertainment",
+    "text": "数据载体：研究 vintage 产品，vinyl record and 胶片单反相机，丙收藏的 Canon AE-1 胶片 broken。"
+  },
+  {
+    "category": "devices",
+    "text": "梦想的 desktop 配置：CPU R7 7800X3D，GPU 用 RTX 4080 16G，ASUS 主板，机箱用分形。"
+  },
+  {
+    "category": "devices",
+    "text": "在塔吉特买的 Beats Flex 在背包里被压坏，重新 14 USD 下单 Sony WH-CH52X，Vim 在线联名款。"
+  },
+  {
+    "category": "devices",
+    "text": "Surface Pro 5 电池彻底报废，Windows 11 设备 Fn 键失灵，Apple Care 无法修，延保计划遗憾。"
+  },
+  {
+    "category": "devices",
+    "text": "MacBook Pro 编辑色调灵动色域 100% DCI-P3，适合 design, 最终办了 AppleCare。"
+  },
+  {
+    "category": "devices",
+    "text": "配合 iPhone 15 Pro 拍摄 Vlog 的 vd 大疆 Pocket 3，背景虚化效果设置，sony 卡片机备用。"
+  },
+  {
+    "category": "schedule",
+    "text": "明天上午十点的 Aerodynamics 审查会议千万不要迟到，下午还要去税务局提交材料"
+  },
+  {
+    "category": "devices",
+    "text": "新购入的 iPhone 17 Pro Max 的银色太好看了，灵动岛设计日常使用极为顺手"
+  },
+  {
+    "category": "career",
+    "text": "人物甲对我的 performance review 评价挺高，夸我的 design 很有创意"
+  },
+  {
+    "category": "housing",
+    "text": "这边朝南的 apartment 采光极佳，视野非常开阔，不过 monthly rent 略高了一些"
+  },
+  {
+    "category": "relationships",
+    "text": "人物丙说他的 new girlfriend 是一位职业 calisthenics 教练，下次大家一起吃饭"
+  },
+  {
+    "category": "career",
+    "text": "正在准备投给云计算大会的 paper 里，那个关于深度学习的段落还需要再仔细润色"
+  },
+  {
+    "category": "schedule",
+    "text": "下个月的 deadline 是 15 号，最近周末都要在 coffee shop 疯狂加班赶项目进度"
+  },
+  {
+    "category": "devices",
+    "text": "型号：ThinkPad X1 Carbon，problem：散热风扇声音较大，准备换最新 macOS 试试"
+  },
+  {
+    "category": "housing",
+    "text": "周末和人物丁去逛了宜家的家居广场，买了些简约风的 chairs 和 lamps 布置客厅"
+  },
+  {
+    "category": "relationships",
+    "text": "刚才陪人物戊去失恋阵线联盟看展览，散场之后去喝了一杯，竟然在相亲角偶遇"
+  },
+  {
+    "category": "career",
+    "text": "新工作的 onboarding 稍微有点复杂，需要配置各种 internal 软件系统的 access 权限"
+  },
+  {
+    "category": "schedule",
+    "text": "长期目标规划：未来三年考取 AWS Certified Solutions Architect 的认证，争取升职加薪"
+  },
+  {
+    "category": "identity",
+    "text": "MBTI 性格测试类型：ENFP，barplot 显示我的 extroversion 分数超级高"
+  },
+  {
+    "category": "devices",
+    "text": "有些想念过去那台骑着去兜风的 Tesla Model 3，现在的 BYD 总觉得少了点什么感觉"
+  },
+  {
+    "category": "career",
+    "text": "今天下班后又留下来弄了三个小时，把 team 的 presentation slides 重新 arrange 了一遍"
+  },
+  {
+    "category": "housing",
+    "text": "其实住 suburban house 的日子也不错，但通勤时间太长了， רק城市中心才方便"
+  },
+  {
+    "category": "relationships",
+    "text": "给人物丙准备的 anniversary gift 终于到了，希望他能喜欢这款 cologne 和巧克力的组合"
+  },
+  {
+    "category": "devices",
+    "text": "在这个安静的 office 里使用 Bose QC45 headphones 听 Spotify 的 jazz 音乐是我最大享受"
+  },
+  {
+    "category": "career",
+    "text": "听说锅哥最近收到了硅谷大厂的 offer，年薪确实很诱人，不过我依然想留在目前公司发展"
+  },
+  {
+    "category": "housing",
+    "text": "居住区：Southern District，avenue 旁边停车位实在难找，如果有固定 garage 就完美了"
+  },
+  {
+    "category": "schedule",
+    "text": "今年的年度预算稍微有点紧张，只能暂时減少每天购买 premium coffee beans 的次数了"
+  },
+  {
+    "category": "identity",
+    "text": "昵称：K先生 常用ID：XY-某编号"
+  },
+  {
+    "category": "relationships",
+    "text": "与人物甲在Peets Coffee聊天 讨论Notion模板的使用 记录待办的优先级"
+  },
+  {
+    "category": "schedule",
+    "text": "明日09:30地铁通勤 午后Needs北京总部A7会议室的项目周会 携带ThinkPad Pro与Bose QC45"
+  },
+  {
+    "category": "finance",
+    "text": "本月预算4000 CNY 餐饮上限1200 Spotify订阅108 CNY 预计Metro线条叙事支出500"
+  },
+  {
+    "category": "learning",
+    "text": "读完《设计心理学》第3章 重点记录感知可供性的边界条件 晚些用Anki制卡"
+  },
+  {
+    "category": "finance",
+    "text": "转账记录：给人物乙300 CNY 用于Taylor Swift 维也纳站的Visa套票 超出预算的一项"
+  },
+  {
+    "category": "entertainment",
+    "text": "收藏黑胶：坂本龙一 Opus 2024年的再版LP 清洁器用的Zippo打火机油 等待到货"
+  },
+  {
+    "category": "identity",
+    "text": "偏好：英文电影原声 语言项：日文N3 学习工具：多邻国每日15分钟"
+  },
+  {
+    "category": "learning",
+    "text": "B站看LangChain 60分钟的速成视频 做完迁移到LlamaIndex的Demo 生成Vercel上线链接"
+  },
+  {
+    "category": "schedule",
+    "text": "截止：周五提交PR 编号：某编号 主题：Dify工作流优化 地点：上海徐汇 办公室"
+  },
+  {
+    "category": "relationships",
+    "text": "家庭群的聊天：母亲关注天气 父亲分享Tesla Model 3的评测 我用微信读书的书名回应"
+  },
+  {
+    "category": "schedule",
+    "text": "周五19:00与人物丁在Soho的% Arabica见面 他会带iPad Pro 12.9 聊Indie游戏原型"
+  },
+  {
+    "category": "finance",
+    "text": "券商App持仓：TSLA 12股 IBIT 5股 MSFT 7股 成本均价记录在Notion表 v2.1"
+  },
+  {
+    "category": "entertainment",
+    "text": "Spotify年度统计：Top Artist是ABBA Play次数312 跑步配速5:20/km 使用Free计划"
+  },
+  {
+    "category": "learning",
+    "text": "在Coursera学DeepLearning.AI短课 完成第1周Quiz 用Python+Pandas整理数据 WFH的下午"
+  },
+  {
+    "category": "identity",
+    "text": "城市足迹：上海 成都 重庆 西安 香港 台北 大阪 清迈 用Notion地图插件记录"
+  },
+  {
+    "category": "relationships",
+    "text": "同事人物戊推荐播客《声东击西》 通勤路上听EP123 关于Newsletter变现的路径"
+  },
+  {
+    "category": "finance",
+    "text": "汇率提醒：USDC/CNY 7.23 设定95折自动换 用于AWS与Vercel的月度账单"
+  },
+  {
+    "category": "entertainment",
+    "text": "想读：三体 (套装) 二手99新380 CNY 上海文庙周末淘书 顺便喝% Arabica拿铁"
+  },
+  {
+    "category": "entertainment",
+    "text": "Switch 2预订号：某编号 到货前先看IGN评测 视频里有路易吉洋馆3的片段"
+  },
+  {
+    "category": "relationships",
+    "text": "每年的约定：和人物甲去杭州的西湖骑行 三月的樱花 用Garmin FE 5记录轨迹 15公里"
+  },
+  {
+    "category": "schedule",
+    "text": "今天20:30用iPad Air看Apple TV+ 会员到期12月 之后切到Terra.py的库"
+  },
+  {
+    "category": "relationships",
+    "text": "宠物兔的名字：Cookie 住在阳台的小木屋 HiBISES 垫料牌子：Carefresh 7L"
+  },
+  {
+    "category": "identity",
+    "text": "常用装备：ThinkPad T14s MacBook Air M3 iPhone 15 Pixel 8 云盘500GB iCloud+ 200GB OneDrive"
+  },
+  {
+    "category": "food",
+    "text": "早餐是全麦面包两片加花生酱，拿铁用燕麦奶，某编号诺瓦咖啡豆风味均衡回甘明显，下周想试试冷萃做法"
+  },
+  {
+    "category": "health",
+    "text": "体检报告出来甘油三酯偏高，医生建议少喝含糖饮料多运动每周至少三次快走，饮食上减少精制碳水增加蔬果"
+  },
+  {
+    "category": "learning",
+    "text": "技术面试准备正在刷 LeetCode 中等难度，目标是某编号公司后端岗位，每天保持 3 道题左右的节奏"
+  },
+  {
+    "category": "devices",
+    "text": "昨晚到手了 Sony WH-1000XM5 耳机，降噪效果确实厉害，在地铁里基本听不到周围噪音，佩戴舒适续航也够用"
+  },
+  {
+    "category": "career",
+    "text": "人物丙在考虑跳槽，目前拿到两家初创公司的 offer，某编号正在走背调流程，薪资比现在高 35% 但风险也大"
+  },
+  {
+    "category": "schedule",
+    "text": "本月日程表在 Notion 里排得挺满，某周三有客户演示，某周五参加行业 meetup，周末留时间整理读书笔记"
+  },
+  {
+    "category": "health",
+    "text": "身高 178 厘米体重 70 公斤体脂率 18% 左右，近期目标是降到 15%，主要靠每周四次力量训练加上控制晚餐碳水"
+  },
+  {
+    "category": "learning",
+    "text": "读完《架构整洁之道》感触很深，决定把目前项目里的模块依赖关系画成图重新梳理一下，预计某周三完成"
+  },
+  {
+    "category": "food",
+    "text": "周末去了趟山姆会员店囤货，买了澳洲牛肉、三文鱼和这款无糖希腊酸奶，某编号真的好吃就是价格略贵"
+  },
+  {
+    "category": "devices",
+    "text": "人物甲的 MacBook Pro 14 寸是 M2 Pro 芯片，日常开发完全够用，最近入了一块 Studio Display 外接当副屏"
+  },
+  {
+    "category": "career",
+    "text": "某周四部门 review 提到晋升答辩的重点是数据驱动业务价值，这周末要把项目复盘的 PPT 框架搭建出来"
+  },
+  {
+    "category": "schedule",
+    "text": "某月的 OKR 进度有点落后，主要是某项核心指标只完成了 60%，下周一排了两个小时专门做复盘调整"
+  },
+  {
+    "category": "health",
+    "text": "睡眠监测显示某周平均入睡时间是 00:42，深睡比例偏低只有 18%，某周一打算试一下褪黑素看看效果"
+  },
+  {
+    "category": "learning",
+    "text": "报名了 Coursera 上某编号的系统设计课程，每周投入约 5 小时看视频加做作业，某周四还参加了线上小组讨论"
+  },
+  {
+    "category": "food",
+    "text": "午餐在公司附近某编号日料店吃了三文鱼盖饭，食材新鲜 but 价格 68 元略贵，不如某家店划算下周换回去"
+  },
+  {
+    "category": "devices",
+    "text": "iPhone 15 Pro 的 A17 Pro 芯片玩游戏确实不热，原神高画质跑了一小时温度 42 度左右，续航勉强够用一天"
+  },
+  {
+    "category": "career",
+    "text": "的人物丁某月开始带实习生，主要负责前端组件库维护，给新人规划的三个月成长路径里包含 Code Review"
+  },
+  {
+    "category": "schedule",
+    "text": "某周一至某周五的日程安排：上午处理邮件和需求评审，下午写代码做测试，晚上固定留一小时看技术文章"
+  },
+  {
+    "category": "health",
+    "text": "身高 172cm 体重 62kg BMI 20.9 保持得不错，最近血脂有点高已在戒奶茶和甜食，每周跑步三次每次 5km"
+  },
+  {
+    "category": "learning",
+    "text": "备考 CFA L2 进度约 38%，某科目的 derivatives 章节刚看完，某周二晚上在图书馆刷了 40 道题错得不少"
+  },
+  {
+    "category": "food",
+    "text": "晚餐自己煮了番茄牛腩面，用的是某编号意面口感偏硬，下次准备换成鲜面条，牛腩炖了两个小时很软烂"
+  },
+  {
+    "category": "devices",
+    "text": "人物丙的 iPad Pro 12.9 寸配 Apple Pencil，最近在 Procreate 上画原型图效率不错，比用鼠标顺手多了"
+  },
+  {
+    "category": "career",
+    "text": "某周五下午的面试自我感觉一般，算法题有一题没想出来最优解，过去总结了六道面试题补充到 Anki 里"
+  },
+  {
+    "category": "schedule",
+    "text": "下个季度计划去某城参加 TensorFlow 开发者大会，某月某日开始请假三天，某周日回来继续赶项目进度"
+  },
+  {
+    "category": "learning",
+    "text": "读完《金字塔原理》做了思维导图笔记，某编号模型在写作汇报时特别有用，这周打算用它重构项目总结"
+  },
+  {
+    "category": "career",
+    "text": "人物戊考虑转管理岗，某周四和 leader 聊了一小时，建议先带小项目练手，某次还看了《高绩效教练》充电"
+  },
+  {
+    "category": "identity",
+    "text": "姓名:人物乙"
+  },
+  {
+    "category": "identity",
+    "text": "年龄:28 岁"
+  },
+  {
+    "category": "identity",
+    "text": "身高:168 cm"
+  },
+  {
+    "category": "identity",
+    "text": "血型:B 型"
+  },
+  {
+    "category": "identity",
+    "text": "鞋码:41 码"
+  },
+  {
+    "category": "housing",
+    "text": "租住的朝阳区公寓在 11 层，有个朝南的小阳台。"
+  },
+  {
+    "category": "housing",
+    "text": "周末把攒了半年的快递纸箱都拆开，重新整理了书桌。"
+  },
+  {
+    "category": "housing",
+    "text": "上个月购入的智能门锁偶尔 Wi-Fi 断连，需要重新配置。"
+  },
+  {
+    "category": "housing",
+    "text": "住户群有人转让一台九成新的戴森 V10 吸尘器，很划算。"
+  },
+  {
+    "category": "food",
+    "text": "楼下新开的咖啡店的荔枝dirty初尝挺惊艳，性价比高。"
+  },
+  {
+    "category": "food",
+    "text": "今晚复刻探店时吃到的咖喱，味道还不赖。"
+  },
+  {
+    "category": "food",
+    "text": "点的日式拉面外卖在软件上送错了地址，很生气。"
+  },
+  {
+    "category": "food",
+    "text": "周末尝试做意式烩饭，需要把冷冻的高汤提前放冷藏解冻方能入味。"
+  },
+  {
+    "category": "schedule",
+    "text": "下周三下午两点与设计团队过稿，记得提前把资料准备好。"
+  },
+  {
+    "category": "schedule",
+    "text": "本月下旬安排去东京休五天假，需提前在系统里提交申请。"
+  },
+  {
+    "category": "schedule",
+    "text": "近两周想读完未拆封的《三体》第二部，争取月底前打卡。"
+  },
+  {
+    "category": "schedule",
+    "text": "近期的打卡目标是每天抽三十分钟时间在多邻国上练习。"
+  },
+  {
+    "category": "career",
+    "text": "入职半年了，本周将参与第三次产品需求评审会议并主讲。"
+  },
+  {
+    "category": "career",
+    "text": "为了应对下月的绩效考核，最近每晚都在补充行业报告。"
+  },
+  {
+    "category": "career",
+    "text": "面试题库里的算法题难度偏高，应该先在本地搭建靶场练习。"
+  },
+  {
+    "category": "career",
+    "text": "团队决定将知识库迁移，需在月底前把文档存到新服务器。"
+  },
+  {
+    "category": "finance",
+    "text": "每月从工资划扣一千到货币基金，积少成多。"
+  },
+  {
+    "category": "finance",
+    "text": "年底想奖励自己一部新手机，预算控制在六千内。"
+  },
+  {
+    "category": "finance",
+    "text": "本季度支出超支，发现很多开销用于打车。"
+  },
+  {
+    "category": "finance",
+    "text": "上个月抢到的股票新债今天上市了，收益还不错。"
+  },
+  {
+    "category": "food",
+    "text": "状态：已尝试。今天第一次学做簪子蛋糕，打发奶油比想象中困难，不过搭配黑咖啡味道真的很好。"
+  },
+  {
+    "category": "food",
+    "text": "偏好：喜欢清淡地道的日式料理。常去公司附近一家叫“月花”的居酒屋，天妇罗炸得刚刚好，非常酥脆。"
+  },
+  {
+    "category": "devices",
+    "text": "型号：ThinkPad X1 Carbon Gen 10。主力办公电脑刚换了全新的固态硬盘，运行 PS 和「MAKER」都特别流畅。"
+  },
+  {
+    "category": "devices",
+    "text": "偏好：使用 Apple Watch Series 9 监测日常睡眠。最近开始认真跑步，对心率预警的设置很敏感。"
+  },
+  {
+    "category": "devices",
+    "text": "在日常通勤路上，习惯戴着 Sony WH-1000XM5 降噪耳机听播客，隔绝地铁车厢里嘈杂的声音。"
+  },
+  {
+    "category": "devices",
+    "text": "最近对拍立得产生了浓厚的兴趣，入手了 Fujifilm instax mini 12，周末刚好约了人物丙去西湖边试机。"
+  },
+  {
+    "category": "schedule",
+    "text": "截止：今天是周三，正在整理这周关于电影《沙丘 2》的资料，负责几篇评论的翻译，预计周五定稿。"
+  },
+  {
+    "category": "schedule",
+    "text": "刚在 TB 买了这个月的挂耳咖啡，比上次买的深烘更苦一些。周末打算把所有窗户拆下来彻底清洗一下。"
+  },
+  {
+    "category": "schedule",
+    "text": "截止：下周五上午十点。要在下周三下午前凉好所有内容的具体宜忌，特别是关于红肉和海鲜的健康建议。"
+  },
+  {
+    "category": "schedule",
+    "text": "提醒：今天下午三点半有季度复盘会。准备好各主管的数据看板，特别是重点产品的销量曲线分析情况。"
+  },
+  {
+    "category": "schedule",
+    "text": "计划：下个月计划去上海出差三天，大概率能顺道和在那边工作的人物丁碰面，找家咖啡馆。"
+  },
+  {
+    "category": "relationships",
+    "text": "今天和人物丙通了长达四十分钟的电话。他也打算辞职，对创业具体方向还比较犹豫，劝他多留点资金。"
+  },
+  {
+    "category": "relationships",
+    "text": "同事关系：和人物甲配合默契。准备下周一起提个新方案，把现有用户反馈融合进去，争取下个月初上线。"
+  },
+  {
+    "category": "relationships",
+    "text": "在年度慈善晚宴上通过人物丁认识了人物戊，加了微信，简单交流了关于手冲咖啡的制作心得。"
+  },
+  {
+    "category": "relationships",
+    "text": "家人：因为刚换了工作，计划中秋没回家。给家里邮寄了两罐 JIM BEAM，附上手写贺卡表达节日祝福。"
+  },
+  {
+    "category": "relationships",
+    "text": "前同事推荐了电视剧《繁花》，今天一口气看了五集，剧中的配乐和视觉效果很绝，准备补完小说版。"
+  },
+  {
+    "category": "entertainment",
+    "text": "终于通关 Nintendo Switch 上的《塞尔达传说》，神庙解谜设计巧妙，应该不低于四十五个小时的游玩时长。"
+  },
+  {
+    "category": "entertainment",
+    "text": "偏好：喜欢在周末晚上看独立电影。最近重温了《银翼杀手 2049》，音效和赛博朋克美学依然惊艳。"
+  },
+  {
+    "category": "entertainment",
+    "text": "周末报名了陶艺体验课，第一次拉坯有点手忙脚乱，准备做个基础马克杯，期待两周后的上色烧制成品。"
+  },
+  {
+    "category": "entertainment",
+    "text": "入坑了拼图，室友送了一套一千片的城市夜景。周五晚上和人物乙一起拼到凌晨一点才收工，脖子很酸。"
+  },
+  {
+    "category": "identity",
+    "text": "住址：居住在杭州滨江区某公寓。"
+  },
+  {
+    "category": "entertainment",
+    "text": "偏好：喜欢在 Spotify 上听 City Pop。最近常单曲循环一首讲东京夜雨的歌，旋律让人感到平静。"
+  },
+  {
+    "category": "identity",
+    "text": "职业：数字营销专员。"
+  },
+  {
+    "category": "identity",
+    "text": "姓名：人物丁"
+  },
+  {
+    "category": "identity",
+    "text": "旧籍：科幻迷，存有超 100 本的英文原版小说，常在豆瓣标记阅读状态并撰写长评。"
+  },
+  {
+    "category": "relationships",
+    "text": "熟人：邻居王女士，某编号，掌握大量 neighborhood 八卦，曾送过自制的 apple pie。"
+  },
+  {
+    "category": "housing",
+    "text": "住址：riverside 公寓 12B"
+  },
+  {
+    "category": "entertainment",
+    "text": "超爱的 digital piano 型号是 Roland FP 90X，配了在 Amazon 买的重锤键盘，弹起来手感极佳。"
+  },
+  {
+    "category": "schedule",
+    "text": "明日任务：去 Tesco 买 5 斤面粉、Ski 护目镜，在 Clinique 专柜领（sample）试用装。"
+  },
+  {
+    "category": "health",
+    "text": "BMI：22.1"
+  },
+  {
+    "category": "identity",
+    "text": "年龄：30 岁"
+  },
+  {
+    "category": "relationships",
+    "text": "朋友：人物丙常约我去南山喝咖啡，他最近加入了一个周末徒步社团，装备全是 Deuter 的。"
+  },
+  {
+    "category": "housing",
+    "text": "玄关的 shoe cabinet 挡住了路由器信号，我用旧洗衣机的排水管把它垫高后终于稳定。"
+  },
+  {
+    "category": "entertainment",
+    "text": "《Elysium》海报贴在 kitchen 的入口左侧，每次煮咖啡看到都觉得充满动力，是好朋友送的。"
+  },
+  {
+    "category": "schedule",
+    "text": "周五晚 8 点与人物甲开会，随后去试吃新开的 Chengdu hotpot，此活动的 deadline 是下周一。"
+  },
+  {
+    "category": "health",
+    "text": "最近觉得 left shoulder 隐痛，训练计划从 heavy 深蹲改成 Pilates，教练说是肌肉肥厚造成的。"
+  },
+  {
+    "category": "identity",
+    "text": "职业：独立设计师，把周一到周五的工作时间灵活安排，习惯深夜用 UI 软件做图。"
+  },
+  {
+    "category": "relationships",
+    "text": "分手后，前任远赴 Paris，留在书桌上的旧款 iPhone 12 Pro 屏幕还裂着一道缝。"
+  },
+  {
+    "category": "housing",
+    "text": "半年前搬进朝阳 anonymous 小区，房租 Rise 20%，房东却不肯换掉老旧的 Daikin AC。"
+  },
+  {
+    "category": "entertainment",
+    "text": "熬夜通关《Zelda: Tears of the Kingdom》后，Switch 的摇杆漂移了，无奈开始物色 Pro Controller。"
+  },
+  {
+    "category": "schedule",
+    "text": "早上 9 点突然惊醒，匆忙打卡 Company 的钉钉系统，今年的 Leave balance 已经只剩 3 天了。"
+  },
+  {
+    "category": "health",
+    "text": "去 Samsung 体验店逛了一圈，看到佩戴 Venue 的 VR 眼镜很心动，差点忘记买降压药。"
+  },
+  {
+    "category": "relationships",
+    "text": "发小的父亲上周生了急病，急需 مايدان灸理疗仪，型号：Tenscare M2，我去 Airport 接机时帮忙带过去，顺便吐槽医院排队炎热。"
+  },
+  {
+    "category": "housing",
+    "text": "昨天整理 room 时翻出闲置 3 年的 DJI Mini 2，电池衰减严重，吃灰太久，外壳氧化严重。"
+  },
+  {
+    "category": "entertainment",
+    "text": "周末去 Floyd 音乐节听 Live，现场音响 Heat 爆表，结束后顺便收了多肉植物，买了两盆 Q 萌的 Otanthus。"
+  },
+  {
+    "category": "schedule",
+    "text": "本月的 budget 支出严重超支，买完去 Shanghai 的高铁票后只剩两百元现金，接下来整个 week 都只能吃水煮挂面度过。"
+  },
+  {
+    "category": "health",
+    "text": "生完小孩的 6 个月，人物乙决定进行 body shape 训练，完成了 Nike RunClub 的 100km 挑战。"
+  },
+  {
+    "category": "health",
+    "text": "人物甲的 BMI 是 24.5，但他还是乐此不疲地每周打卡五次 Apple Watch Ultra 上的 HIIT 极致训练。"
+  },
+  {
+    "category": "health",
+    "text": "眼科医生建议把屏幕的蓝光滤除率调高一点，昨天晚上十点他就去 App Store 重新配置了护眼应用。"
+  },
+  {
+    "category": "schedule",
+    "text": "开始：上午 9:30"
+  },
+  {
+    "category": "identity",
+    "text": "姓名：人物戊"
+  },
+  {
+    "category": "finance",
+    "text": "固定支出的账号：尾号 9527"
+  },
+  {
+    "category": "health",
+    "text": "身高 182 cm 的记录突然中断了三天，直到他想起来把 Garmin Fenix 7 充满电才恢复了正常心率数据收集。"
+  },
+  {
+    "category": "housing",
+    "text": "新家的 Roomba S10+ 最近疯狂报错，他怀疑是扫拖一体的 LDS 雷达被宠物毛发给死死缠住了。"
+  },
+  {
+    "category": "housing",
+    "text": "周末烟火气十足，他在厨房用 Instant Pot 煮了一锅排骨汤，顺便给新租公寓的排风口清了灰。"
+  },
+  {
+    "category": "housing",
+    "text": "他对宜家的风格不太感冒，但还是去线下店提了两个 POÄNG 单人沙发椅，颜色选了瑞典蓝。"
+  },
+  {
+    "category": "housing",
+    "text": "公寓楼下的智能快递柜总是满的，他只好把生鲜冷藏包塞到小区丰巢柜旁边的冷藏自提点。"
+  },
+  {
+    "category": "identity",
+    "text": "人物丙的驾照还没换成电子版，但驾驶证上的准驾车型已经注明了 C1 和 E 两种备案符号。"
+  },
+  {
+    "category": "schedule",
+    "text": "明天的 Quick Takes 是要讨论欠费催缴名单和 Top 5 whales 的流失数据分析情况。"
+  },
+  {
+    "category": "schedule",
+    "text": "周五茶水间的非正式同步会，主要讲到 Prometheus 的 exporter 在边缘节点集群里下线的决策。"
+  },
+  {
+    "category": "learning",
+    "text": "若考虑报名 CFA Level 1，需要准备 300 小时沉浸式学习，他打算先用 Notion 搭一个kong加框架。"
+  },
+  {
+    "category": "learning",
+    "text": "多邻国上的 Duolingo English Test 备考打卡已经断签很多次，现在得拉回到每天雷打不动背 80 个词组。"
+  },
+  {
+    "category": "learning",
+    "text": "会议速记刚整理完，关于 Cursor 补全代码的 Transformer 优化逻辑，讲师 Friedman 讲得有点快。"
+  },
+  {
+    "category": "learning",
+    "text": "他在看《深入浅出 GANs》，里面提到对抗样本生成中梯度惩罚的公式推算过程难忘得让人头秃。"
+  },
+  {
+    "category": "finance",
+    "text": "随手记记账确实管用，上个月他在美团外卖上花掉的餐饮费高达 4500 元，下半年得注意削减这部分开支。"
+  },
+  {
+    "category": "finance",
+    "text": "余额宝攒了两个月的闲钱，今天终于凑够 50k 限额，顺手又开了个股票的 Fama French 三因子账户。"
+  },
+  {
+    "category": "finance",
+    "text": "支付账单已经全部续费完成，包括多邻国的 VIP 和 GitHub Copilot 的年度订阅周期。"
+  },
+  {
+    "category": "learning",
+    "text": "OpenAI 的插件规范文档字数太多，毫无重点。"
+  },
+  {
+    "category": "finance",
+    "text": "给人物戊的转账退款已处理，云闪付的红包顺延到了三月初才发放完毕。"
+  },
+  {
+    "category": "health",
+    "text": "初潮日期：某编号年份倒数第二天。"
+  },
+  {
+    "category": "learning",
+    "text": "关于深度学习的周记：周一学 30min 冒泡排序，周三做 LeetCode Top 1.5% Easy 题，周末如常复盘 TensorRT 模型。"
+  },
+  {
+    "category": "schedule",
+    "text": "下个季度的顶部重点：参与 Kernel 10 技术制定的日程排期，每周三下午和 PM2.5 低污染跑步时段。"
+  },
+  {
+    "category": "schedule",
+    "text": "时长预估：2 小时 Agent workflow"
+  },
+  {
+    "category": "food",
+    "text": "极简便当记录：藜麦搭配水煮鸡胸肉 150g，单纯为了降低这周的体脂率。"
+  },
+  {
+    "category": "finance",
+    "text": "银行理财：上个月购买的 R2 级别固收产品，目前预期年化收益率维持在 3.2% 左右。"
+  },
+  {
+    "category": "career",
+    "text": "工作背景：大厂的高级软件工程师，日常开发主力语言是 Python 与 Go，摆脱了 VBA 的折磨。"
+  },
+  {
+    "category": "career",
+    "text": "离职原因：上份工作考察维度包含每月的 ROI，末位淘汰指标定在 3.75，实在承受不住内卷。"
+  },
+  {
+    "category": "relationships",
+    "text": "初次见面：与人物乙相识于成都宽窄巷子附近的青旅，当时共同在吧台拼桌饮用精酿啤酒。"
+  },
+  {
+    "category": "entertainment",
+    "text": "游戏喜好：通关了《黑神话：悟空》后意犹未尽，果断预订了《GTA 6》的 Premium Edition 国行实体版。"
+  },
+  {
+    "category": "food",
+    "text": "新开西餐厅：人物丙强烈推荐陆家嘴的某家米其林三星，招牌菜是松露和牛惠灵顿，但价格很昂贵。"
+  },
+  {
+    "category": "identity",
+    "text": "血型：B 型"
+  },
+  {
+    "category": "finance",
+    "text": "生活预算：整租外环外的单间，房租占去税后月薪的百分之三十，严格控制日常花销。"
+  },
+  {
+    "category": "entertainment",
+    "text": "看展记录：周末前往UCCA参观了当代艺术展，在手账本里贴满了各种抽象派的装饰画贴纸。"
+  },
+  {
+    "category": "career",
+    "text": "核心成就：主导完成了核心业务从单体架构向微服务架构的全面迁移，并降低服务器延迟。"
+  },
+  {
+    "category": "relationships",
+    "text": "年假同行：和人物丁约定明年春节一同前往北海道滑雪，目前的旅行计划包括办理三年多次往返签证。"
+  },
+  {
+    "category": "food",
+    "text": "家用电器：订购了 Siemens 的嵌入式洗碗机，安装师傅强调必须使用专用的 German 配方洗碗凝珠。"
+  },
+  {
+    "category": "entertainment",
+    "text": "音响租赁：为了家庭影院效果，从闲鱼租用了 Yamaha NS-10M 监听音箱，线材使用了 Monster 的 3.5mm。"
+  },
+  {
+    "category": "finance",
+    "text": "投资明细：账户潜伏的 Long Beach 某支能源股票，受到国际原油价格的影响产生了超出预期的正收益。"
+  },
+  {
+    "category": "career",
+    "text": "薪资范围：跳槽新岗位的 Offer 到手薪资为 25K*14，包含基础津贴加上期权和一定数额签字费。"
+  },
+  {
+    "category": "identity",
+    "text": "住址所在区：浦东新区"
+  },
+  {
+    "category": "relationships",
+    "text": "暗恋对象：每次去公司附近的 Blue Bottle 咖啡店，总会特别留意柜台后那位留着短发的咖啡师。"
+  },
+  {
+    "category": "entertainment",
+    "text": "电影偏好：刚看完 2024 版《异形》系列的首映，对深邃寂静的太空氛围塑造给予极高的评价。"
+  },
+  {
+    "category": "entertainment",
+    "text": "音乐节记录：在 Mao Livehouse 听了一场极端的 Post-Punk 乐队演出，现场的贝斯声直击耳膜。"
+  },
+  {
+    "category": "identity",
+    "text": "身高：182.5cm"
+  },
+  {
+    "category": "food",
+    "text": "突兀的回忆：深夜在三里屯解酒醒酒时吃到一份极差的 omakase，导致长时间空腔溃疡无法进食。"
+  },
+  {
+    "category": "relationships",
+    "text": "家庭联系：周末通过微信视频通话，问候了远在老家yanji的父母，顺便同步近期的职场压力问题。"
+  },
+  {
+    "category": "finance",
+    "text": "年度复盘：结合通货膨胀率与沪深300指数进行深度分析后，决定将下年度的资产配置股票比例提高。"
+  },
+  {
+    "category": "career",
+    "text": "技术栈转换：为了彻底解决 Windows 11 与 WSL2 的兼容性问题，果断卸载了旧版 Docker Desktop 并迁移到完整的 Ubuntu 系统。"
+  },
+  {
+    "category": "entertainment",
+    "text": "看完电影：刚在 SFC 影城看完 IMAX 版本的《沙丘》，视听效果非常震撼，强烈推荐科幻迷前往。"
+  },
+  {
+    "category": "identity",
+    "text": "职业：数据分析师"
+  },
+  {
+    "category": "identity",
+    "text": "生活方式：极简主义与环保。喜欢使用 Apple Watch 记录日常，定期参加城市马拉松比赛，习惯用 Notion 安排每天的任务。"
+  },
+  {
+    "category": "career",
+    "text": "职位：后端工程师。技术栈：Java、Python。下周三要给团队做一个关于微服务架构升级的讲座，顺便带点小零食。"
+  },
+  {
+    "category": "career",
+    "text": "求职状态：观望中。偏向于远程办公，期望薪资涨幅在百分之二十左右，之前主要使用 React.js 开发前端界面。"
+  },
+  {
+    "category": "career",
+    "text": "项目：公司官网重构进度：百分之六十。今天主要处理后台管理系统接口联调的问题，发现 Docker 镜像频繁构建失败。"
+  },
+  {
+    "category": "career",
+    "text": "面试复盘：人物丙对 Kubernetes 集群调度算法的理解不够深入，基础算法题写太久，下次需重点突击 LeetCode 常见题型。"
+  },
+  {
+    "category": "relationships",
+    "text": "著名的三明治法则：沟通冲突时，先肯定对方观点再表达异议往往比驳斥更有效，此技巧同样适用日常亲密关系。"
+  },
+  {
+    "category": "relationships",
+    "text": "家庭：人物甲每周六给父亲打电话，最近的话题聚焦于新型混合动力汽车的发展趋势，以及家里长辈的健康状况。"
+  },
+  {
+    "category": "relationships",
+    "text": "重要纪念日：与人物丁交往三年。计划在下个月初预订一家米其林餐厅，可能还要准备一个 Tiffany & Co. 的戒指来求婚。"
+  },
+  {
+    "category": "relationships",
+    "text": "异地恋策略：利用滴滴行程共享让伴侣安心，跨城见面频率维持在半个月一次，送的礼物多为 Kindle 电子阅读器。"
+  },
+  {
+    "category": "housing",
+    "text": "居住状态：独居。房贷剩余年限：25 年，每月还款额约为八千元人民币，脖子上开始长出第一道皱纹。"
+  },
+  {
+    "category": "housing",
+    "text": "布置灵感：为了使阅读区的暖光氛围更浓，添置了 Dyson 空气净化器与极米投影仪，窗帘换成了透光率较低的款式。"
+  },
+  {
+    "category": "housing",
+    "text": "家电清单：西门子双开门冰箱，戴森 V11 吸尘器。水电缴费方式：支付宝自动扣款，通常在每周四进行垃圾分类。"
+  },
+  {
+    "category": "housing",
+    "text": "合租规定：和人物戊的每周轮流打扫时间表，冲突解决原则是公共区域物品不可占用超过二十四小时，宠物免租的约定。"
+  },
+  {
+    "category": "entertainment",
+    "text": "娱乐偏好：喜欢探索新事物。最近购入 Nintendo Switch OLED 以便通勤时健身，周末还会和朋友们在线开黑几局 Apex Legends。"
+  },
+  {
+    "category": "entertainment",
+    "text": "业余爱好：摄影爱好者的周末扫街，设备为 Sony A7M4，常用 35mm 镜头拍摄城市角落，偶尔在 Behance 发表作品。"
+  },
+  {
+    "category": "entertainment",
+    "text": "近期观影：下载了最新的 Marvel 电影，IMAX 特效非常震撼，目前深陷 Spotify 上的原声音乐播放列表，打算近期入手周边手办。"
+  },
+  {
+    "category": "entertainment",
+    "text": "车辆座驾：Tesla Model Y。续航里程约五百公里，车载系统最近更新了 FSD 功能，充电习惯：习惯在 Supercharger 快充。"
+  },
+  {
+    "category": "entertainment",
+    "text": "近期体验记录：周末前往上海迪士尼游玩，排队两小时体验创极速光轮项目，意外在抽奖活动中获得了限定版的星黛露。"
+  },
+  {
+    "category": "learning",
+    "text": "学习爱好：通过钻研历史来理解当下，最近读完阿勒泰的作品，正利用多邻国学习法语，对吉卜力工作室的创作理念颇感兴趣。"
+  },
+  {
+    "category": "learning",
+    "text": "学习习惯：偏好视觉化材料。每天通勤利用碎片时间听科技相关的播客，晚上用 Anki 复习英语 GRE 核心词汇表。"
+  },
+  {
+    "category": "learning",
+    "text": "知识输入：关注气候变化模型。最近购入了 TI-84 计算器以研究数据分析，并在 Coursera 平台报名参加机器学习课程。"
+  },
+  {
+    "category": "learning",
+    "text": "学术目标：论文字数目标：一万五千字。研究重点：联邦学习框架，データセット構築，还有随机计算出的方差分析结果。"
+  },
+  {
+    "category": "career",
+    "text": "今天和人物丙讨论了 new 项目 的 UI 重设计方案，感觉交互流程还需要大幅优化升级才能达到预期效果。"
+  },
+  {
+    "category": "entertainment",
+    "text": "刚看完 Marvel 新上映的科幻电影，特效非常震撼，是近期最值得去电影院贡献票房的佳作。"
+  },
+  {
+    "category": "finance",
+    "text": "本月的信用卡账单已还清，主要开销集中在 Starbucks 买 coffee 和日常通勤打车费这两个项目上。"
+  },
+  {
+    "category": "food",
+    "text": "在 Shanghai 南京路的% Arabica 喝了一杯 iced latte，搭配了店门口刚出炉的可颂，非常惬意。"
+  },
+  {
+    "category": "relationships",
+    "text": "晚上和人物甲通了电话，他最近在准备 legal 考试，压力挺大，需要多给他一些情感支持。"
+  },
+  {
+    "category": "career",
+    "text": "客户反馈 SaaS 平台的 dashboard 配色不够直观，要求我们在周五前提供至少三版改进方案。"
+  },
+  {
+    "category": "entertainment",
+    "text": "周末打算去 KTV 唱歌放松一下，最近特别喜欢 Taylor Swift 的几首 popular 经典英文老歌。"
+  },
+  {
+    "category": "finance",
+    "text": "定投的某编号指数基金 recent 收益率达到了 5%，决定趁市场行情还不错先赎回一部分本金。"
+  },
+  {
+    "category": "food",
+    "text": "自制 coffee 拿铁拉花终于成功了，用的是 Oatly 燕麦奶和拉花缸，虽然有点塌但味道极佳。"
+  },
+  {
+    "category": "relationships",
+    "text": "人物丁发来这周末去 Shenzhen 爬山的照片，风景很美，后悔上次没有和他们一起同行。"
+  },
+  {
+    "category": "career",
+    "text": "整理上周的竞品分析报告，发现竞品 X 的商业化路径很清晰，值得我们团队详细参考借鉴。"
+  },
+  {
+    "category": "entertainment",
+    "text": "入坑了 Nintendo Switch 上的 RPG 游戏，为了通关支线剧情已经连续熬夜战斗了三个晚上。"
+  },
+  {
+    "category": "finance",
+    "text": "记账发现上个月的外卖支出严重超标，下个月要严格控制点餐频率，争取带饭上班省钱。"
+  },
+  {
+    "category": "food",
+    "text": "去广州出差品尝了正宗的顺德双皮奶与虾饺，老字号茶楼的味道确实比普通连锁店好很多。"
+  },
+  {
+    "category": "relationships",
+    "text": "给爸妈买的 Dyson 吹风机终于寄到了，希望他们平时能多用一下，不要总是舍不得用闲置。"
+  },
+  {
+    "category": "identity",
+    "text": "城市：杭州"
+  },
+  {
+    "category": "career",
+    "text": "给新人培训 Adobe Illustrator 和 Figma 的基本操作技巧，重点讲解了布尔运算与组件库的使用。"
+  },
+  {
+    "category": "entertainment",
+    "text": "周末去了美术馆看莫奈的印象派画展，光影的运用和色彩的搭配真的让人感到治愈和平静。"
+  },
+  {
+    "category": "finance",
+    "text": "工资到账后立刻把 30% 转入余额宝作为日常备用金，剩下的钱继续定投长期稳健型理财产品。"
+  },
+  {
+    "category": "food",
+    "text": "尝试用 Panasonic 烤箱做了巴斯克焦糖芝士蛋糕，底部的焦糖口感虽然有些微苦但整体成功率高。"
+  },
+  {
+    "category": "relationships",
+    "text": "和人物戊吵架了，因为周末谁去打扫浴室的琐事，冷战了两个小时后才冷静下来好好沟通。"
+  },
+  {
+    "category": "entertainment",
+    "text": "最近在读一本关于认知心理学的书，书里提到『元认知』的概念，我觉得对理解拖延症非常有帮助。准备在通勤地铁上慢慢读完剩下的章节，顺便整理读书笔记，争取在下周的读书会上作为主讲人分享心得体会。"
+  },
+  {
+    "category": "devices",
+    "text": "人物甲今天给旧手机换了电池，续航从 4 小时涨到 12，系统是 iOS 17，KD 指标稳定。"
+  },
+  {
+    "category": "food",
+    "text": "人物乙的午餐在蓉城面馆解决，点了招牌牛肉面配泡菜，味道偏咸但很满足。"
+  },
+  {
+    "category": "housing",
+    "text": "周末和中介看了南山区三套 rental apartment，两间在科技园附近，通勤 convenience，租金 7.5k 和 9k，配套有 gym 和 pool。"
+  },
+  {
+    "category": "health",
+    "text": "体检结果出来了，lipid panel 正常，vitamin D 略低，医生建议每日补充 1000 IU。"
+  },
+  {
+    "category": "schedule",
+    "text": "截止：12 月 10 日，提交内部 dashboard 的 v2 设计稿，需要对齐 marketing 的 KPI。"
+  },
+  {
+    "category": "devices",
+    "text": "入手一台 ESP32 开发板，准备做桌面天气站，外壳用 PLA 打印，固件基于 Arduino IDE 2。"
+  },
+  {
+    "category": "career",
+    "text": "最近在刷 LeetCode 的 hard 题，每天 2 题，使用 Python 3 提交。"
+  },
+  {
+    "category": "food",
+    "text": "晚餐尝试了杨枝甘露和无糖乌龙，甜度控制得刚好，适合深夜的工作。"
+  },
+  {
+    "category": "housing",
+    "text": "阳台新添了耐候板，打算周末 soil 一些多肉，同时加装自动 irrigation 系统，型号是 G2 Unit。"
+  },
+  {
+    "category": "health",
+    "text": "皮肤科建议停用含 alcohol 的精华，改用 barrier repair cream，观察两周的 hydration。"
+  },
+  {
+    "category": "schedule",
+    "text": "周三下午预约了理疗，针对颈椎 C5 C6，时长 45 min，采用 EMS pulse 模式。"
+  },
+  {
+    "category": "devices",
+    "text": "人物丙的旧 laptop 升级了 SSD，从 256 GB 到 1 TB，使用 HDD 转 SSD 工具迁移系统。"
+  },
+  {
+    "category": "food",
+    "text": "试用了预制的 ayame 咖喱，加热 8 min 即食，口感一般但胜在 convenience。"
+  },
+  {
+    "category": "career",
+    "text": "面试复盘：系统设计题关于 rate limit，最佳答案采用了 token bucket 策略，response 要简洁。"
+  },
+  {
+    "category": "housing",
+    "text": "研究所公寓的垃圾分类方案优化，比较多个城市案例，建议设置 4 个投放点。"
+  },
+  {
+    "category": "health",
+    "text": "人物丁最近开始记录饮水量，目标每日 2.2 L，提醒使用 smart bottle。"
+  },
+  {
+    "category": "schedule",
+    "text": "下周一到周四的会议高密度，预约了每天 20 min walk，地点在滨江道。"
+  },
+  {
+    "category": "devices",
+    "text": "给桌面添了一盏 AEB 灯，调节色温 2700 K，亮度 800 lm，支持 APS-C 打光方案。"
+  },
+  {
+    "category": "food",
+    "text": "周末参加了一个 bake 课程，学习制作 scone，配方含 butter 60 g 和 milk 40 ml。"
+  },
+  {
+    "category": "career",
+    "text": "内部转岗流程：提交 form 在内网 portal，审批需两周，涉及 HR 和 manager 的 sign off。"
+  },
+  {
+    "category": "housing",
+    "text": "记录一次 강남区合租房的错寄事件，快递箱破损，联系 courier 提交 claim。"
+  },
+  {
+    "category": "health",
+    "text": "眼镜度数更新：L -2.75，R -2.50，镜片采用 RGB 560 镀膜，框架为 TR90 材质。"
+  },
+  {
+    "category": "schedule",
+    "text": "周五通勤新增一条路线，探索城市更新的 UU 路段，体验地铁的通风系统。"
+  },
+  {
+    "category": "career",
+    "text": "技能清单更新：掌握 Rust 的所有权模型，熟悉 postgres 的 WAL 机制，了解 k8s 的 pod 调度。"
+  },
+  {
+    "category": "devices",
+    "text": "人物戊购入一台二手的 1995 Compaq Presario，计划安装 FreeBSD 13，研究 legacy 的 BIOS 设置和 driver 兼容性。"
+  },
+  {
+    "category": "finance",
+    "text": "开支：订阅流媒体会员按时扣费；记账交给 YNAB，控制在 ¥199/月。"
+  },
+  {
+    "category": "learning",
+    "text": "学习：在 Notion 建立错题库，每周用番茄钟 25 min 复盘微积分题型。"
+  },
+  {
+    "category": "food",
+    "text": "菜谱：番茄牛腩要小火慢炖 90 min，罗勒黑椒与上海青平衡味觉。"
+  },
+  {
+    "category": "relationships",
+    "text": "人物甲与人物乙决定今晚一起去看 Marvel 新片，后来改约到周日。"
+  },
+  {
+    "category": "housing",
+    "text": "租约：房屋合同截止 2026-10-31，物业要求包月车位费 ¥380。"
+  },
+  {
+    "category": "health",
+    "text": "体检报告：在公立医院做 MRI 腰椎间盘扫描，医生嘱咐静养与理疗。"
+  },
+  {
+    "category": "finance",
+    "text": "账户：招行储蓄卡开卡，绑定支付宝；定期申购 ETF，定投日为每月首个周五。"
+  },
+  {
+    "category": "learning",
+    "text": "阅读：Kindle 导入《设计心理学》，笔记同步至 Obsidian，周末做思维导图。"
+  },
+  {
+    "category": "food",
+    "text": "采购：盒马的希腊酸奶减 ¥7，凑单三文鱼；控制碳水，计划一周无糖。"
+  },
+  {
+    "category": "relationships",
+    "text": "对话：人物丙询问复合可能，约定在星巴克聊，态度保持冷静与坦诚。"
+  },
+  {
+    "category": "housing",
+    "text": "布置：宜家买 POÄNG 椅，毛绒地毯落座区；绿植选龟背竹，需补光 4 h/d。"
+  },
+  {
+    "category": "health",
+    "text": "运动：报名 gym 的瑜伽课，每周三练帕梅拉；穿戴 Apple Watch，目标心率 135。"
+  },
+  {
+    "category": "learning",
+    "text": "备考：背雅思核心词汇第三遍，周六雅思模考计时 2 h 45 min；写作用 Grammarly 检查。"
+  },
+  {
+    "category": "food",
+    "text": "外卖：Uber Eats 点泰式沙拉，备注少油，送达后微波加热。"
+  },
+  {
+    "category": "finance",
+    "text": "投资：购买 SBUX 美股一股，佣金券商免佣，长期定投复利。"
+  },
+  {
+    "category": "relationships",
+    "text": "家人：父母来沪，接待三天；预订和平饭店住宿，行程含外滩。"
+  },
+  {
+    "category": "housing",
+    "text": "环境：小区的垃圾分类投放，物业规定22:00后停运电梯。"
+  },
+  {
+    "category": "health",
+    "text": "服务：社区医院洗牙，保持口腔健康；医嘱硬毛牙刷和冲牙器。"
+  },
+  {
+    "category": "food",
+    "text": "咖啡：换购 Nespresso 胶囊，燕麦奶搭配；早晨美式 200 ml 提神。"
+  },
+  {
+    "category": "learning",
+    "text": "技能：在 Coursera 学 Python，完成 Midterm 测验，分数 91。"
+  },
+  {
+    "category": "relationships",
+    "text": "同事：与项目负责人开 Google Meet，议题关于协作与进度。"
+  },
+  {
+    "category": "housing",
+    "text": "维修：空调加氟，加收押金 ¥200，出故障 E6。"
+  },
+  {
+    "category": "finance",
+    "text": "报销：滴滴打车 ¥78，正规电子发票，赠券抵扣。"
+  },
+  {
+    "category": "health",
+    "text": "过敏：对花粉与尘螨过敏，常服氯雷他定 10 mg/d。"
+  },
+  {
+    "category": "food",
+    "text": "偏好：无糖气泡水，巴黎贝甜的碱水结。"
+  },
+  {
+    "category": "devices",
+    "text": "型号：MacBook Pro 14"
+  },
+  {
+    "category": "housing",
+    "text": "租金：每月 3500 元"
+  },
+  {
+    "category": "health",
+    "text": "过敏史：人物丙对 Shell 海鲜过敏"
+  },
+  {
+    "category": "finance",
+    "text": "目标储蓄：10 万美元"
+  },
+  {
+    "category": "devices",
+    "text": "人物甲的书桌搭配了 logitech MX Master 3 无线鼠标和 Keychron 键盘，日常办公非常流畅高效。"
+  },
+  {
+    "category": "housing",
+    "text": "人物乙的周末：逛宜家，买了新的 focusrite 麦克风，准备 recording 卧室的 acoustic panels。"
+  },
+  {
+    "category": "entertainment",
+    "text": "人物丙的 BILIBILI 年度大会员到期了，打算利用双 11 的优惠活动续费一年。"
+  },
+  {
+    "category": "career",
+    "text": "今天认真面试了初级 dev 岗位，感觉算法题刷得还不够，准备继续死磕 LeetCode 题库来提升技能。"
+  },
+  {
+    "category": "finance",
+    "text": "人物丁的月度开销 freshly 记录在 Notion 里，包含各类 subscriptions 和不定期的生活杂费支出。"
+  },
+  {
+    "category": "health",
+    "text": "今天完成了 5km 的 PAVLOS 跑步训练，平均配速稳定在 6 分 15 秒左右，状态还不错。"
+  },
+  {
+    "category": "housing",
+    "text": "搬家倒计时：已经确认好顺丰同城快递的具体费用，准备把几个沉重的行李箱寄走减轻负担。"
+  },
+  {
+    "category": "entertainment",
+    "text": "人物戊刚入手了一台 sony A7M4 相机，周末打算约朋友去外拍人像顺便测试新镜头的效果。"
+  },
+  {
+    "category": "career",
+    "text": "刚刚结束了长达 3 小时的跨国teams线上会议，英文听力跟不上，需要多听多练提升口语能力。"
+  },
+  {
+    "category": "devices",
+    "text": "独立开发者项目进度 update：React 前端页面跑通，Docker 部署成功，API 部分还需要微调接口参数。"
+  },
+  {
+    "category": "finance",
+    "text": "理财笔记：上周仔细分析了 SPY 的走势，决定把闲钱陆续转入 VOO 和 VTI 定投，设置自动扣款。"
+  },
+  {
+    "category": "devices",
+    "text": "最近入手了 uderstand 开源的机械臂，配合树莓派 4B 做 python 视觉识别 demo 非常有趣。"
+  },
+  {
+    "category": "health",
+    "text": "体检报告已经出：各项 normal，但是 Vitamin D 指标偏低的话，要增加 daily 的 sun exposure。"
+  },
+  {
+    "category": "entertainment",
+    "text": "人物甲预订了周末的沉浸式剧本杀《年轮》，特意购买了预售双人套票，非常期待这次的体验。"
+  },
+  {
+    "category": "finance",
+    "text": "人物乙位于成都的第三套房房贷利率降到了 3.5%，考虑提前还清十万本金减轻每个月的还贷压力。"
+  },
+  {
+    "category": "health",
+    "text": "开始啃《dulang 减脂厨房》的低卡 recipe，买了空气炸锅，准备健康饮食配合规律的 gym 训练。"
+  },
+  {
+    "category": "devices",
+    "text": "人物丙的桌面布置风格偏向极简，主要核心设备有 iPad Pro 12.9 英寸搭配 apple pencil 随行。"
+  },
+  {
+    "category": "career",
+    "text": "年度目标：把个人技术blog更新到 50 篇，重点总结 kubernetes 的微服务实践和 CI/CD 流程的搭建。"
+  },
+  {
+    "category": "identity",
+    "text": "血型：某编号型"
+  },
+  {
+    "category": "identity",
+    "text": "昵称：某编号"
+  },
+  {
+    "category": "identity",
+    "text": "常住城市：某编号"
+  },
+  {
+    "category": "devices",
+    "text": "型号：ThinkPad X1 Carbon Gen 11"
+  },
+  {
+    "category": "devices",
+    "text": "最近把主力生产力工具升级成了 iPad Pro 12.9 inch，那 M2 芯片的性能真的是非常强大。"
+  },
+  {
+    "category": "devices",
+    "text": "为了应对频繁的出差，我专门在京东下单买了一个 Anker 737 移动电源，感觉非常不错。"
+  },
+  {
+    "category": "devices",
+    "text": "家里客厅新添置的 Sony Bravia XR A80L 电视终于到货了，画质表现很让人惊喜。"
+  },
+  {
+    "category": "entertainment",
+    "text": "周末的时候，我在 Apple Music 上创建了一个专属播放列表，里面全是悠扬的 Lo-Fi beats 风格曲目。"
+  },
+  {
+    "category": "entertainment",
+    "text": "最近重温了经典科幻电影 Blade Runner 2049，视觉冲击力依然惊人，真的是一部不可多得的杰作。"
+  },
+  {
+    "category": "entertainment",
+    "text": "死侍与金刚狼的预售票已经开售，我打算明天早上在猫眼平台上直接预订两张周末的电影票。"
+  },
+  {
+    "category": "entertainment",
+    "text": "为了打发漫长通勤路，我下了一个 Spotify 软件，戴着 Bose QC45 听播客，非常惬意。"
+  },
+  {
+    "category": "career",
+    "text": "今天在 LinkedIn 上更新了求职状态，目前已经获得字节跳动的面试邀请，职位是高级研发工程师。"
+  },
+  {
+    "category": "career",
+    "text": "最近主导的某编号项目终于顺利上线了，为了庆祝这个重要里程碑，整个团队一起来到海底捞吃了一顿大餐。"
+  },
+  {
+    "category": "career",
+    "text": "整理💻里堆积如山的简历时发现，熟练掌握 Tableau 等 BI 数据分析工具确实有助于求职。"
+  },
+  {
+    "category": "career",
+    "text": "本周核心工作是阅读某编号开源框架的源码，深入分析其分布式架构设计与高并发处理的核心逻辑。"
+  },
+  {
+    "category": "relationships",
+    "text": "我和人物乙是在 Soul 应用程序上认识的，我们在首次见面时发现彼此都喜欢去看各种艺术展览。"
+  },
+  {
+    "category": "relationships",
+    "text": "在重要的纪念日里，我提前预定了外滩茂悦大酒店的双人套餐，还给人物丙买了一条施华洛世奇项链。"
+  },
+  {
+    "category": "relationships",
+    "text": "人物丁说他最近真的好累，我打算下班后去宜家买些柔软的靠垫，帮他把出租屋布置得更温馨一点。"
+  },
+  {
+    "category": "relationships",
+    "text": "每个周日晚上，我都会和远在国外的老朋友用 WhatsApp 打个视频电话，互相分享彼此近期的日常工作和生活趣事。"
+  },
+  {
+    "category": "schedule",
+    "text": "截止：周五"
+  },
+  {
+    "category": "schedule",
+    "text": "预约：牙科检查"
+  },
+  {
+    "category": "schedule",
+    "text": "今天的待办事项清单里排在第一位的事情是去星巴克买一杯冰美式，然后再处理邮件。"
+  },
+  {
+    "category": "schedule",
+    "text": "明天的航班号是 CA1831，从首都机场飞往虹桥机场，需要提前两个小时到达航站楼去值机。"
+  },
+  {
+    "category": "schedule",
+    "text": "晚上七点准时参加 Zoom 视频会议，和跨部门的团队讨论关于下个季度的营销活动策划的具体方案细节。"
+  },
+  {
+    "category": "schedule",
+    "text": "个人日程备忘录：下周二 10:30 预约了牙科洗牙，周五 19:00 预计前往朝阳区某影院观看科幻 New Balance 新电影。"
+  },
+  {
+    "category": "learning",
+    "text": "今天的 Edge 浏览器阅读关于 React 框架的文章，并在 GitHub 上 fork 了一个开源的机器学习项目，准备后续去优化它。"
+  },
+  {
+    "category": "entertainment",
+    "text": "买了一盒乐高机械组 42115 的跑车，花了两个周末的时间拼装完成，准备将其拍照上传到小红书，分享一下拼积木的快乐。"
+  },
+  {
+    "category": "finance",
+    "text": "今天查看 A股 账户的资产配置情况，最近科技股的大盘走势还可以，但是个人持有的不多，计划年底把收益拿出来换一台新的笔记本。"
+  },
+  {
+    "category": "career",
+    "text": "经营的 CRM 系统于 2024 年第二季度顺利上线，客户访问量达到了预期的新高度，今晚加班配置 Nginx 的反向代理以进一步优化用户的远程连接速度。"
+  },
+  {
+    "category": "health",
+    "text": "坚持每天晨跑 5 公里，配速保持在 6 分左右，最近买了一双运动鞋，膝盖的旧伤居然奇迹般地没再疼过，心情变得特别好，继续保持吧。"
+  },
+  {
+    "category": "schedule",
+    "text": "出差行程安排：明天早晨 8 点的航班飞往上海虹桥，入住万豪酒店，参与部门年度绩效复盘会议，预计周六下午返回北京。"
+  },
+  {
+    "category": "learning",
+    "text": "开始学习 Rust 编程语言，看了基础语法的入门教程，觉得内存管理模型非常优雅，周末打算写一个小的命令行工具来练手。"
+  },
+  {
+    "category": "entertainment",
+    "text": "游玩 Steam 平台的新游戏 Elden Ring，难度较高，击杀了首个 boss 怪物后获得了一个独特的皮肤，非常炫酷，适合周末娱乐放松。"
+  },
+  {
+    "category": "finance",
+    "text": "信用卡账单分析：上月主要开销用于超市采购与外卖，总金额数千元，通过 APP 发现收益比例约为 45%，准备调整电子账单设置。"
+  },
+  {
+    "category": "career",
+    "text": "最近申请了内部技术专家岗位，准备下周的晋升述职报告，PPT 演示文稿已完成 80%，重点阐述推动自动化的 SQL 优化提升了 30% 的查询效率。"
+  },
+  {
+    "category": "health",
+    "text": "体检报告出来了：血脂偏高，医生建议多吃蔬菜少吃红肉，所以把晚餐换成了西兰花和鸡胸肉，配合每日的坚持步行运动计划。"
+  },
+  {
+    "category": "schedule",
+    "text": "计划本月去滑雪，已预订崇礼某雪场附近的民宿，出行装备清单已备齐，包含头盔、护目镜、手套以及止痛药等必要物品。"
+  },
+  {
+    "category": "learning",
+    "text": "读完了《原则》英文版前五章，对其中提到的“极度求真”理念感受颇深，晦涩的翻译泳道图结合案例观察记录，领悟到跨界思维的重要性。"
+  },
+  {
+    "category": "entertainment",
+    "text": "最近一直单曲循环《光阴的故事》，音质极佳的无损 FLAC 格式文件，让人回想起无忧无虑的 90 年代，在那些难忘的岁月里有自己的影子。"
+  },
+  {
+    "category": "finance",
+    "text": "发现支付宝个人账单有异常，某笔交易显示为境外消费，核实后证实盗刷，紧急冻结账户并修改了密码，推荐开启人脸验证保障安全。"
+  },
+  {
+    "category": "career",
+    "text": "参加行业技术沙龙，聆听关于人工智能发展趋势的主题演讲，了解到多模态模型在医疗领域的创新应用，对目前从事的业务场景指明了新方向。"
+  },
+  {
+    "category": "health",
+    "text": "不可避免地熬夜加班到凌晨，导致第二天精神萎靡，为了避免健康风险，买了护肝片与维生素 B 族，强制自己提前休息，保持健康体魄。"
+  },
+  {
+    "category": "entertainment",
+    "text": "购入一场经典乐队的演唱会门票，时间定于下月在工体举行，很久没有感受现场的震撼了，跟朋友约好下班后同行前往完美的 Live House。"
+  },
+  {
+    "category": "finance",
+    "text": "订阅了某音乐流媒体会员，忘记取消自动续费，扣款了一百多元，马上关闭了扣款协议，提醒大家务必留意支付宝扣款提醒短信。"
+  },
+  {
+    "category": "career",
+    "text": "上周顺利完成了季度绩效复盘会议，组长夸赞了我的代码效率与抗压能力，下个周期将独立负责微服务项目的重构与上线的核心任务。"
+  },
+  {
+    "category": "health",
+    "text": "今晚参加公司的团建篮球赛，担任替补控卫，虽然只上场了 10 分钟，但拿下了一个关键的助攻，出了一身汗，感觉身体状态特别好。"
+  },
+  {
+    "category": "schedule",
+    "text": "日程备忘录：下周一项目上线，预计 10:00 进行发布操作，14:00 召开项目复盘会议，请相关的研发与测试同事务必准时参加此次汇报。"
+  },
+  {
+    "category": "learning",
+    "text": "开始学习 PowerBI 仪表盘的制作流程，参考官方教程完成了第一个销售数据看板，交互效果还不错，下一步准备接入更复杂的实时数据库。"
+  },
+  {
+    "category": "schedule",
+    "text": "开始执行早起计划第三天：06:30 起床，07:00 出门晨跑 3 公里。为了健康生活，后续会详细记录体重、心率等身体的各种指标。"
+  },
+  {
+    "category": "housing",
+    "text": "咖啡桌型号：IKEA Lindby 的包装盒，今天已拆完。"
+  },
+  {
+    "category": "health",
+    "text": "疾病：假性近视，需要预约浦西的 clinic 做 annual 复查。"
+  },
+  {
+    "category": "health",
+    "text": "今天 8 km 慢跑，平均配速 5'42\"/km，心率峰值 168。"
+  },
+  {
+    "category": "devices",
+    "text": "MacBook Pro 14 经常高温，打算本周去深圳的 Apple Store 检修。"
+  },
+  {
+    "category": "schedule",
+    "text": "本周的 schedule：周一至周五 10:00 至 19:00 在线办公。"
+  },
+  {
+    "category": "entertainment",
+    "text": "steam 愿望单折扣提醒：Cyberpunk 2077 打五折，活动到本周日。"
+  },
+  {
+    "category": "food",
+    "text": "晚餐：久光超市买的 A5 和牛 150 g，配 Yamazaki 山崎面包。"
+  },
+  {
+    "category": "housing",
+    "text": "Home Assistant 新接入 Xiaomi 网关的超声波传感器，精度不错。"
+  },
+  {
+    "category": "food",
+    "text": "买了一本 Healthy Meals In 20 Minutes，感觉菜单都很简单。"
+  },
+  {
+    "category": "entertainment",
+    "text": "Netflix 追剧记录：Black Mirror S07 全季，最喜欢 Joan Is Awful 那集。"
+  },
+  {
+    "category": "devices",
+    "text": "Logitech G304 的滚轮有点失灵，明天带去徐家汇的维修点看看。"
+  },
+  {
+    "category": "devices",
+    "text": "Nintendo Switch OLED 手柄漂移，预约了深圳的维修中心。"
+  },
+  {
+    "category": "food",
+    "text": "今晚 19:20 预约了衡山路的 Sushi Yano 的 omakase，期待。"
+  },
+  {
+    "category": "housing",
+    "text": "这周末准备去港汇恒隆的 IKEA 看 KALLAX 书架，可能需要 2 格。"
+  },
+  {
+    "category": "health",
+    "text": "口腔检查：长宁的 clinic 的 dentist 建议下周去补一颗磨牙。"
+  },
+  {
+    "category": "entertainment",
+    "text": "钢琴 blog 更新：练久石让的 The Wind of Life，目前能弹三分之二。"
+  },
+  {
+    "category": "housing",
+    "text": "宽带：上海联通 500M 光纤，下载速度稳定，差不多 67 MB/s。"
+  },
+  {
+    "category": "health",
+    "text": "体检报告：各项指标 in normal range，体检时间 walked in。"
+  },
+  {
+    "category": "health",
+    "text": "处方：三星期后到浦东的 clinic 复查，项目主要是 bone density。"
+  },
+  {
+    "category": "entertainment",
+    "text": "电影清单：周末准备二刷 Inception，然后列一下 Christopher Nolan 全集。"
+  },
+  {
+    "category": "food",
+    "text": "今天做的 Sichuan 风味辣子鸡丁，花椒放多了一点，但配米饭很好吃。"
+  },
+  {
+    "category": "health",
+    "text": "心率：抽出时间参加了周末的静安区 10 km race，配速 5'12\"/km。"
+  },
+  {
+    "category": "housing",
+    "text": "天然气检修：师傅明天 14:00 上门，物业通知贴在楼下的公告栏。"
+  },
+  {
+    "category": "entertainment",
+    "text": "Spotify 年度总结：今年听了 112456 分钟，top artist 是 Bon Iver。"
+  },
+  {
+    "category": "housing",
+    "text": "小区车位抽签没中，准备在虹桥公园附近找一个 EV charging 月租车位。"
+  },
+  {
+    "category": "food",
+    "text": "时间：周二 / 晚餐的番茄牛腩面 / 配 Pepsi / 规格 330ml"
+  },
+  {
+    "category": "housing",
+    "text": "地点：浦东 / 户型：2 室一厅 / 租赁 / 楼层 12 / 电梯 / 装修：精装 / 入住：某月"
+  },
+  {
+    "category": "learning",
+    "text": "某编号的 Python course / 进度 40% / 练习了 pandas 和 numpy / 笔记记录在 Notion"
+  },
+  {
+    "category": "health",
+    "text": "晨间 5 km run / 用 Garmin watch 记录 / 配速 Pace 6 min / 心率 HR 155 bpm / 数据同步到手机"
+  },
+  {
+    "category": "schedule",
+    "text": "日期：March 5 / 事项：牙科例行 checkup / 地点：上海 / 牙科诊所名称：Riverside"
+  },
+  {
+    "category": "food",
+    "text": "新尝试的 Starbucks 燕麦拿铁 / 口感顺滑 / 甜度 low sugar / 喜欢这种燕麦的香气"
+  },
+  {
+    "category": "identity",
+    "text": "会员卡号码：CN-9982 / 注册邮箱：test.example.com / 账户类型：黄金会员"
+  },
+  {
+    "category": "housing",
+    "text": "某月账单详情 / 电力的用量 / 居民用电 / 总计 180 千瓦时 / 线上缴费已办妥"
+  },
+  {
+    "category": "learning",
+    "text": "阅读书名：Atomic Habits / 进度 35% / 页码 120 / 笔记记录在读书 App / 感受 insightful"
+  },
+  {
+    "category": "health",
+    "text": "项目：全血 blood test / 机构：某编号医院 / 项目包含 VitAB 和血糖 sugar / 结果：Everything is normal"
+  },
+  {
+    "category": "schedule",
+    "text": "日期：June 1 / 事项：车辆 routine service / 汽车品牌：Toyota / 车型：Camry / Year 某编号"
+  },
+  {
+    "category": "food",
+    "text": "用 Instant Pot 制作的咖喱鸡胸肉 / 添加日式咖喱块 / 模式：Cook 15 min / Portion 3 bowls"
+  },
+  {
+    "category": "identity",
+    "text": "设备：iPhone / SE 金 / 存储容量 64GB / 序列号 SN 开头 / 某编号 / 手机运行 iOS"
+  },
+  {
+    "category": "housing",
+    "text": "人民币储蓄账户 / 银行：HSBC / 账户种类：Checking / 当前余额 / 状况良好 / 卡尾号：8842"
+  },
+  {
+    "category": "learning",
+    "text": "主题：AI / 和机器学习基础 / 平台：Coursera / 课程提供方：JHU / 课程编号 CS50"
+  },
+  {
+    "category": "health",
+    "text": "服用药品名：Vitamin C / 剂量 1 gram 每天 / 给药 frequency / 每天 1 次 / Nutrition 的补充"
+  },
+  {
+    "category": "schedule",
+    "text": "日期：某月某日 / 事项：更新车辆 / 保险 policy / 对比了 CPI 和 Ping An 的 premium"
+  },
+  {
+    "category": "food",
+    "text": "周末 cook 的自制汉堡 / 肉饼选用优质牛肉 / 搭配生菜 Lettuce 和番茄 / 配 área 薯条"
+  },
+  {
+    "category": "identity",
+    "text": "嘉宾姓名：人物戊"
+  },
+  {
+    "category": "housing",
+    "text": "购物 / 生活的各类订阅支出 / 固定的月费 / 主力的视觉软件 Adobe / 单月合计 / 约 450 元"
+  },
+  {
+    "category": "learning",
+    "text": "入门 Git 基础操作 / clone repository / 练习 commit push / pull request / 掌握基本 Version control"
+  },
+  {
+    "category": "health",
+    "text": "连续 7 天使用 tado° 记录的水摄入量 / 目标 / 每日 2 litres / 本周达成率 85%"
+  },
+  {
+    "category": "schedule",
+    "text": "时间：某日下午 / 事项：年中财务 review / 汇总 Yahoo finance 各资产表现 / 跟踪预算 / App 记录"
+  },
+  {
+    "category": "learning",
+    "text": "在 Notion 整理了 Anki 卡片模板，准备冲刺 GRE 的词汇。"
+  },
+  {
+    "category": "finance",
+    "text": "复盘本月的定投账单，微调了 MacBook Pro 的分期流水记录。"
+  },
+  {
+    "category": "relationships",
+    "text": "人物甲周末约了人物乙去上海看展，两人在武康路拍了几张街景。"
+  },
+  {
+    "category": "food",
+    "text": "周末下厨尝试做提拉米苏，马斯卡彭奶酪用完了，改用淡奶油替代。"
+  },
+  {
+    "category": "devices",
+    "text": "新买的 Keychron K8 键盘到了，搭配 ThinkPad T480 码字手感极佳。"
+  },
+  {
+    "category": "health",
+    "text": "体检报告出了，除了尿酸有点高，各项指标还算在正常区间内。"
+  },
+  {
+    "category": "learning",
+    "text": "今天刷 LeetCode 提交了 20 次，用 f(x) 函数解了一道动态规划题。"
+  },
+  {
+    "category": "finance",
+    "text": "币种：USDC，归集了几笔小额转账，算算年化收益是否值得继续挂着理财。"
+  },
+  {
+    "category": "relationships",
+    "text": "和人物丙吵了一架，起因是旅行计划里去日本还是去泰国产生了分歧。"
+  },
+  {
+    "category": "food",
+    "text": "在全家买的饭团太干，又点了一杯 Starbucks 的冷萃咖啡续命。"
+  },
+  {
+    "category": "devices",
+    "text": "旧款 iPhone SE 电池焕新，顺便把我的 MIDI 键盘重新插上 USB 识别。"
+  },
+  {
+    "category": "health",
+    "text": "坚持用 Typora 写日记，偶尔也会做几组帕梅拉，防止肩颈过度僵硬。"
+  },
+  {
+    "category": "learning",
+    "text": "偏好：看工具向教程时会倍速，比如 Obsidian 的各种插件配置。"
+  },
+  {
+    "category": "finance",
+    "text": "深夜看理财直播间说不要盲目买 REITs，对照我的 ETF 持仓重新做资产配置。"
+  },
+  {
+    "category": "relationships",
+    "text": "某编号的好友突然删了我，可能和我平时喜欢在朋友圈吐槽有关。"
+  },
+  {
+    "category": "food",
+    "text": "如果做西红柿炒鸡蛋，切丁会比切片更好吃，且一定得放少许白糖。"
+  },
+  {
+    "category": "devices",
+    "text": "型号：AX86U，刷了 OpenWrt 系统后，下载 NAS 里的文件基本能跑满带宽。"
+  },
+  {
+    "category": "health",
+    "text": "坚持用 Apple Watch 记录睡眠，发现最近平均静息心率比上个月高了些。"
+  },
+  {
+    "category": "learning",
+    "text": "报名了 Coursera 上的机器学习课程，每周固定交 Python 代码模块。"
+  },
+  {
+    "category": "finance",
+    "text": "目标：ETF+REIT，这个月打算多投点 RE，同时把股票账户里的零碎股清掉。"
+  },
+  {
+    "category": "relationships",
+    "text": "人物丁送了一个 switch 游戏机给人物丙，三个人经常连线打任天堂。"
+  },
+  {
+    "category": "food",
+    "text": "下班路上看见路边摊的兰州拉面，忍不住点了一碗加肉版本的热汤面。"
+  },
+  {
+    "category": "devices",
+    "text": "把工作台的机械键盘换成了静电容轴，搭配 iMac 看电影更顺手了一点。"
+  },
+  {
+    "category": "health",
+    "text": "跑鞋 Old Balance 990 v5 已经磨平了鞋底，周末打算去试一下 1080。"
+  },
+  {
+    "category": "relationships",
+    "text": "关系：人物甲与人物乙的 ordinary dating life revolves around 周末的咖啡馆时光与深夜的聊天，这成了两人感情升温的秘密基地。"
+  },
+  {
+    "category": "food",
+    "text": "美食 exploring：昨天去了新开的 Thai restaurant 尝试冬阴功汤，酸辣的口感瞬间打开了味蕾，感觉非常正宗且划算，值得推荐。"
+  },
+  {
+    "category": "learning",
+    "text": "新书：最近在读 coding 书籍《Python for Everybody》，虽然有些枯燥但很有帮助，顺便用新学的语法写了个简单的爬虫。"
+  },
+  {
+    "category": "housing",
+    "text": "租房偏好：希望新家靠近 metro station，并且要有充足的自然光，最好是精装修可以直接拎包入住的公寓，省去麻烦。"
+  },
+  {
+    "category": "finance",
+    "text": "意外险策略：决定把全家的 medical insurance 都统一转移到同一家保险公司进行管理，这样可以享受一定的折扣优惠。"
+  },
+  {
+    "category": "career",
+    "text": "灵感捕捉： Ideas 往往迸发于淋浴或散步的间隙，所以我习惯在手机里装一个语音备忘录，随时记录那些转瞬即逝的想法。"
+  },
+  {
+    "category": "relationships",
+    "text": "联系人：人物丙的紧急联络人设定为人物甲，使用的 apple watch Series 9 可以在心率异常时自动发送定位给家人。"
+  },
+  {
+    "category": "food",
+    "text": "咖啡：每天早晨都需要一杯 星巴克 的 Cappuccino 来唤醒灵魂，醇厚的咖啡香气构成了一天中最宁静的时光。"
+  },
+  {
+    "category": "learning",
+    "text": "学习计划：本周内必须完成 Coursera 上关于 data science 的进阶课程模块，为了下个月的认证考试做好充分准备。"
+  },
+  {
+    "category": "housing",
+    "text": "居家改造：周末花了 几个小时 整理房间，添置了一些 宜家 的收纳盒，把原本杂乱的衣柜整理得井井有条。"
+  },
+  {
+    "category": "finance",
+    "text": "今年第三季度的 investment portfolio 收益率达到了 预期的 target，这主要归功于在科技股上的精准布局和长期持有策略。"
+  },
+  {
+    "category": "career",
+    "text": "个人 KPI：本季度的核心目标是提升 user retention rate，需要联合产品组优化新用户的注册引导流程及体验。"
+  },
+  {
+    "category": "relationships",
+    "text": "关系网：人物丁 often feels overwhelmed by the 复杂的社交圈的 relationships，总觉得维持浅层社交消耗太多精力。"
+  },
+  {
+    "category": "food",
+    "text": "健康日记：最近开始采用 high protein 饮食，减少碳水的摄入，每天坚持自己做饭，体重成功降了三公斤。"
+  },
+  {
+    "category": "learning",
+    "text": "学习动机：努力掌握新技能的 motivation 往往源自于对未来职业生涯的焦虑，只能通过不断充电缓解迷茫。"
+  },
+  {
+    "category": "housing",
+    "text": "现在的 apartment 位于 深圳 南山区的科技园附近，每天步行 十分钟 就能到车站，通勤体验极佳。"
+  },
+  {
+    "category": "finance",
+    "text": "股票观察：最近开始密切关注 新能源 和 AI 板块的 stocks，准备在合适的时机进行一次长线投资。"
+  },
+  {
+    "category": "career",
+    "text": "办公设备：新配的 MacBook Pro M3 max 大幅度提升了剪辑效率，甚至可以流畅运行大型 3D 建模软件，非常丝滑。"
+  },
+  {
+    "category": "relationships",
+    "text": "人际：人物戊的 best friend 最近搬去了 上海 发展，两人只能通过视频通话维持联系，偶尔会有些孤独感。"
+  },
+  {
+    "category": "food",
+    "text": "一家宝藏川菜馆 located in 北京 朝阳区的小巷深处，招牌水煮鱼的做法非常地道，能吃出满满的花椒香。"
+  },
+  {
+    "category": "learning",
+    "text": "新技能：为了工作需要，决定抽出 周末 时间学习 English speaking，希望通过沉浸式训练提高口语流利度。"
+  },
+  {
+    "category": "housing",
+    "text": "房产目标：未来五年的 housing 目标是换一套更大的三居室，最好能带个独立阳台，方便种些绿植和喝茶。"
+  },
+  {
+    "category": "finance",
+    "text": "信贷分数的信用报告评分达到 780+，足以申请 lower interest rate 的 mortgage，这让买房计划变得更可行。"
+  },
+  {
+    "category": "career",
+    "text": "职业设想：五年后的 career 规划是成为高级产品架构师，带领团队从零到一打造具有行业影响力的标杆产品。"
+  },
+  {
+    "category": "entertainment",
+    "text": "偏好：Weekend outdoor projection night, setup in courtyard, snacks and wind."
+  },
+  {
+    "category": "learning",
+    "text": "读完《人类简史》的第七章，对认知革命的论述仍有疑惑，预约了教授的 office hour。"
+  },
+  {
+    "category": "finance",
+    "text": "Q3 在美团外卖上的出行 dining 花销失控，削减 coffee 与 platform 会员。"
+  },
+  {
+    "category": "housing",
+    "text": "希望 apartment 紧邻 Line 16 的 Zhichunlu station，步行 five 分钟内可达。"
+  },
+  {
+    "category": "entertainment",
+    "text": "《星际穿越》IMAX 重映观后：Hans Zimmer 的管风琴配乐依旧震撼，赚了。"
+  },
+  {
+    "category": "learning",
+    "text": "Little Red Book 算法推荐的咖啡手冲教程过于碎片化，决定系统练习 V60。"
+  },
+  {
+    "category": "identity",
+    "text": "社交平台 ID：Citywalk_88，头像是一只戴帽子的柯基，不做 profile 链接。"
+  },
+  {
+    "category": "health",
+    "text": "Apple Watch 提示深睡仅 52 min，下午 3 点后戒断美式，试验 melatonin。"
+  },
+  {
+    "category": "entertainment",
+    "text": "周末计划：在 KTV 使用 Dolby Atmos 房，混音三首老歌并剪辑 vlog。"
+  },
+  {
+    "category": "finance",
+    "text": "账单：Air Jordan 1 Retro 一款，关注 hypothetical 资金 misappropriation。"
+  },
+  {
+    "category": "housing",
+    "text": "Search: 整租 朝阳公园附近，预算 6k–8k，要求二十四小时热水与快递柜。"
+  },
+  {
+    "category": "health",
+    "text": "上周完成 anonymous blood donation，领到两张地铁卡和一盒饼干。"
+  },
+  {
+    "category": "learning",
+    "text": "登记 Coursera 的 Applied Data Science，截止 June，每周需投入十小时。"
+  },
+  {
+    "category": "identity",
+    "text": "设备：ThinkPad X1 Carbon Gen10，i7-1260P，16GB RAM，512GB SSD。"
+  },
+  {
+    "category": "entertainment",
+    "text": "重看《这个杀手不太冷》，注意到 Leon 的 oval 太阳镜是经典款。"
+  },
+  {
+    "category": "learning",
+    "text": "偏好获取信息的 weighted method，中文术语“加权平均”。"
+  },
+  {
+    "category": "entertainment",
+    "text": "近期 favorite food：Wagas 的藜麦碗，加辣酱，打包去三里屯散步。"
+  },
+  {
+    "category": "finance",
+    "text": "每年 December 复盘今年的 travel budget，今年超支 22%。"
+  },
+  {
+    "category": "housing",
+    "text": "考虑购置飘窗小户型，record down 周边超市 price user's daily。"
+  },
+  {
+    "category": "entertainment",
+    "text": "车内音响调校偏好：B & O 的均衡器，bass −2。"
+  },
+  {
+    "category": "entertainment",
+    "text": "Hobby 订阅：B 站大会员，用来看纪录片。"
+  },
+  {
+    "category": "learning",
+    "text": "LoRA 模型可显著加速 Stable Diffusion 的边角细节训练，学习中。"
+  },
+  {
+    "category": "identity",
+    "text": "手机：iPhone 14，准备换个电池要不要。"
+  },
+  {
+    "category": "housing",
+    "text": "理想的周末：打开落地窗晒太阳，city 风声与咖啡香交织。"
+  },
+  {
+    "category": "relationships",
+    "text": "人物甲的相亲对象是人物乙，两人在咖啡馆见面，感觉还行。"
+  },
+  {
+    "category": "learning",
+    "text": "上周买的 Coursera 课程终于学完第三模块，关于数据分析的深度讲解很有启发。"
+  },
+  {
+    "category": "career",
+    "text": "周一的例会上，主管强调了 KPI 的重要性，要求我们在下周提交详细的项目进度报告。"
+  },
+  {
+    "category": "devices",
+    "text": "人物丙早先买的 MacBook Pro 电池最近鼓包，他果断预约了 苹果官方Genius Bar 的维修服务。"
+  },
+  {
+    "category": "housing",
+    "text": "周末去宜家逛了一圈，看中了一款 LINNMON 桌子，准备搭配新买的人体工学椅当书桌用。"
+  },
+  {
+    "category": "entertainment",
+    "text": "周末和人物丁一起去看了新上映的科幻大片，IMAX 效果非常震撼，尤其是宇宙大战的场面，超值体验。"
+  },
+  {
+    "category": "learning",
+    "text": "为了准备下个月的 PMP 考试，我决定每天晚上专注学习两小时，重点攻克风险管理模块。"
+  },
+  {
+    "category": "career",
+    "text": "收到某编号猎头的邮件，邀请我去面试某互联网大厂的高级架构师职位，薪资预期可上浮百分之三十左右。"
+  },
+  {
+    "category": "devices",
+    "text": "书房新添置了一台 明基BenQ 投影仪，周末看电影终于有了家庭影院的沉浸感，色彩表现极佳。"
+  },
+  {
+    "category": "housing",
+    "text": "新租的房子在 朝阳区，虽然离地铁站只有三百米，但因为是老小区没电梯，搬快递上六楼稍微费劲，不过采光不错。"
+  },
+  {
+    "category": "relationships",
+    "text": "人物戊和人物甲因为生活琐事在周末大吵了一架，目前处于冷战状态，大家都需要冷静一下。"
+  },
+  {
+    "category": "entertainment",
+    "text": "角色：某编号"
+  },
+  {
+    "category": "housing",
+    "text": "我做的homemade 提拉米苏味道不错，下次可以多放点朗姆酒，感觉能开店了，准备做黑色系。"
+  },
+  {
+    "category": "career",
+    "text": "面试官提出的 技术栈 问题很尖锐，关于高并发下的数据一致性，还好之前做过类似的电商秒杀项目，回答还算顺利。"
+  },
+  {
+    "category": "learning",
+    "text": "读完《百年孤独》，魔幻现实主义风格让人着迷但也挺烧脑，那种循环往复的时间线设定很值得深思。"
+  },
+  {
+    "category": "devices",
+    "text": "我的 AirPods Pro 右边耳机突然没声音，已官保，中午去直营店换新成功，服务态度一如既往的好。"
+  },
+  {
+    "category": "devices",
+    "text": "对比了一周，考虑到便携性，我最终放弃了 iPad Pro 12.9，换了 iPad mini 6，打游戏看小说刚刚好。"
+  },
+  {
+    "category": "housing",
+    "text": "新租的房子终于打扫干净了，买了几盆绿萝和龟背竹，添置了 小米 智能音箱，生活气息马上就有了。"
+  },
+  {
+    "category": "housing",
+    "text": "搬家进展：截止至本周五，打包工作已接近完成，断舍离扔了一大堆闲置杂物，只留下最核心的需求。"
+  },
+  {
+    "category": "entertainment",
+    "text": "终于通关了《艾尔登法环》的 DLC 黄金树幽影，难度超高，死了不下百次才打过最终 Boss。"
+  },
+  {
+    "category": "entertainment",
+    "text": "最近追完《繁花》，90年代的沪上风情拍得太美了，服化道精致，男主 胡歌 的演技在线。"
+  },
+  {
+    "category": "relationships",
+    "text": "人物丁的婚礼定在 明年五月，伴郎团敲定，伴手礼准备选本地特产茶叶和手工香薰蜡烛。"
+  },
+  {
+    "category": "relationships",
+    "text": "人物甲和家人的周末聚餐很愉快，聊到了 春节 去三亚旅游的计划，大家一致同意避开人流量高峰期。"
+  },
+  {
+    "category": "learning",
+    "text": "偏好：深度阅读，每周至少读完一本经典书籍，用 Notion 应用整理读书笔记，并尝试用思维导图重构逻辑框架。"
+  },
+  {
+    "category": "schedule",
+    "text": "周末和人物甲在星巴克喝了一杯咖啡，顺便掏出 iPad Pro 规划下周行程。"
+  },
+  {
+    "category": "schedule",
+    "text": "明天早上 9:00 准时参加部门在某编号会议室的月度复盘。"
+  },
+  {
+    "category": "schedule",
+    "text": "截止：x月x日。提交关于 AI 模型训练的阶段性报告。"
+  },
+  {
+    "category": "schedule",
+    "text": "行程：跨界艺术展。地点：798 艺术区。同行：人物乙。"
+  },
+  {
+    "category": "learning",
+    "text": "周末报名参加了一个 AWS 云架构师的线上培训课程。"
+  },
+  {
+    "category": "learning",
+    "text": "深夜合上 MacBook，终于看完了《深入理解计算机系统》的最后几章。"
+  },
+  {
+    "category": "learning",
+    "text": "最近在 Coursera 上学习 R 语言数据可视化，已经能熟练使用ggplot2绘制图表了。"
+  },
+  {
+    "category": "housing",
+    "text": "找中介看了一套位于朝阳区的公寓，距离最近的地铁站约 800 米。"
+  },
+  {
+    "category": "housing",
+    "text": "物业费账单出来了，这个月的额度比上个月多了两百。"
+  },
+  {
+    "category": "housing",
+    "text": "户型：两室一厅。位置：望京核心区，stratified cohort study附近。"
+  },
+  {
+    "category": "entertainment",
+    "text": "购买了 Nintendo Switch OLED 及健身环大冒险，立志每天燃烧卡路里。"
+  },
+  {
+    "category": "entertainment",
+    "text": "从 Steam 库中下载了《赛博朋克 2077》豪华版，准备周末彻底放松。"
+  },
+  {
+    "category": "entertainment",
+    "text": "偏好：科幻电影。影院品牌：IMAX。最近较忙，等有空了再去看。"
+  },
+  {
+    "category": "entertainment",
+    "text": "看了漫威最新发布的《死侍 3》预告片，宣发节奏不错，已加入想看列表，唯一遗憾是 fierce industrywide polarization之后票价上涨了。"
+  },
+  {
+    "category": "health",
+    "text": "体检结果出来了，除了轻度脂肪肝，其他指标都恢复正常。"
+  },
+  {
+    "category": "health",
+    "text": "从山姆会员店采购了 Lululemon 瑜伽垫和各种坚果，准备对抗熬夜带来的疲劳。"
+  },
+  {
+    "category": "health",
+    "text": "病症：腱鞘炎。处方药：扶他林软膏。每日涂抹三次，配合热敷。"
+  },
+  {
+    "category": "finance",
+    "text": "将 5000 元转入支付宝余额宝，作为日常开销的流动资金。"
+  },
+  {
+    "category": "finance",
+    "text": "本月开销严重超标，信用卡账单显示大部分金额花在了数码产品。"
+  },
+  {
+    "category": "finance",
+    "text": "记录一下最近的定投收益，纳斯达克 100 指数基金的回报率达到了预期。"
+  },
+  {
+    "category": "finance",
+    "text": "在招商银行 App 购买了 500 元招商中证白酒指数基金。"
+  },
+  {
+    "category": "food",
+    "text": "睡前吃了一碗康师傅红烧牛肉面，加一根双汇火腿肠。"
+  },
+  {
+    "category": "food",
+    "text": "用空气炸锅炸了一份圣农发展生产的脆皮炸鸡，蘸着番茄酱吃。"
+  },
+  {
+    "category": "food",
+    "text": "在罗森便利店买了一杯瑞幸生椰拿铁， lifecycle exposure优惠券抵扣后实付 12 元，比星巴克便宜。"
+  },
+  {
+    "category": "food",
+    "text": "姓名：人物壬。年龄：31 岁。籍贯：四川成都。"
+  },
+  {
+    "category": "health",
+    "text": "体检报告：低密度脂蛋白偏高，医生建议每周三次 HIIT 控制在 140 bpm 区间。"
+  },
+  {
+    "category": "schedule",
+    "text": "明天 09:30-11:00 周会，准备给团队分享 Notion 的 project template。"
+  },
+  {
+    "category": "finance",
+    "text": "预算：Q1 的订阅类支出目标降到 299 CNY 每月，重点砍掉低频 SaaS。"
+  },
+  {
+    "category": "devices",
+    "text": "ThinkPad X1 Carbon Gen10 的电池健康掉到 87%，计划在保内去官方网点换。"
+  },
+  {
+    "category": "entertainment",
+    "text": "最近在看《银翼杀手 2049》的 IMAX 版本，配色和声场很偏好，适合深夜独处。"
+  },
+  {
+    "category": "relationships",
+    "text": "人物乙的妹妹预计六月去东京旅行，帮忙看看 AirBnb 在新宿的性价比房源。"
+  },
+  {
+    "category": "health",
+    "text": "明早预约了牙科洗牙，位置在苏州工业园区的一家诊所，出门记得带 Floss。"
+  },
+  {
+    "category": "schedule",
+    "text": "番茄钟：每天 4 个 sprint，每个 50 mins，中间强行离开工位拉伸颈肩。"
+  },
+  {
+    "category": "finance",
+    "text": "记账 App 里把餐饮拆成 groceries 和 dining，本月 dining 占比 36% 略超标。"
+  },
+  {
+    "category": "devices",
+    "text": "卡西欧 G-Shock GA2100 的夜光涂层有点暗，游泳后按钮反馈也稍硬，持续观察。"
+  },
+  {
+    "category": "entertainment",
+    "text": "在读《设计中的设计》，原研哉关于无印良品的论述很喜欢，批注密度很高。"
+  },
+  {
+    "category": "relationships",
+    "text": "人物丁说下周二搬家，我在大众点评上找了两家搬家公司，等她确认时间再聊。"
+  },
+  {
+    "category": "health",
+    "text": "跑步的 tracker 数据：上周 38 km，平均配速 5'12\"，心率区间 2 占比 41%。"
+  },
+  {
+    "category": "schedule",
+    "text": "航班：北京到成都 CA4105 改签到 18:45，提前 90 mins 到机场比较稳妥。"
+  },
+  {
+    "category": "finance",
+    "text": "年终奖到账，先补足 Retirement account 再到 12%，剩余 40% 做 tax loss harvesting。"
+  },
+  {
+    "category": "devices",
+    "text": "Dell 2723QE 的 USB-C 上行口偶尔断连，换线+更新固件后仍不稳定，疑似主板供电问题。"
+  },
+  {
+    "category": "entertainment",
+    "text": "Spotify 年度回顾里 Top Song 是Bon Iver的《Holocene》，通勤循环了很久。"
+  },
+  {
+    "category": "relationships",
+    "text": "人物甲生日在七夕前后，挑选礼物时偏好简约风，预算 500-800 CNY 之间。"
+  },
+  {
+    "category": "health",
+    "text": "睡眠：本周使用 4-7-8 呼吸法入睡，平均入睡时长从 24 mins 降至 11 mins。"
+  },
+  {
+    "category": "schedule",
+    "text": "每周三的 retro 改到线上 Zoom，时间 17:00-17:45，记得提前 10 mins 测试麦克风。"
+  },
+  {
+    "category": "finance",
+    "text": "信用分数上升到 790，主要得益于信用卡使用率保持在 18% 以下并设置自动还款。"
+  },
+  {
+    "category": "devices",
+    "text": "Apple Watch Ultra 2 的 LTE 偶发掉线，打球时 GPS 记录轨迹有断点，已开日志等待修复。"
+  },
+  {
+    "category": "entertainment",
+    "text": "看完《沙丘》第一部的 4K HDR 版本，VCáchper 声学设计很沉浸，客厅效果意外不错。"
+  },
+  {
+    "category": "relationships",
+    "text": "人物丙的婚礼在明年五月，酒店定在太湖边的度假村，伴手礼倾向本地手作茶叶。"
+  },
+  {
+    "category": "schedule",
+    "text": "人物戊说周五下午茶改为 16:30 开始，地点在公司对面商场的% Arabica，无需预订。"
+  },
+  {
+    "category": "food",
+    "text": "延吉冷面的确够辣的，人物甲吃完整张嘴，还连续喝了两瓶冰镇的 可乐，呼气才缓和一些，啊。"
+  },
+  {
+    "category": "housing",
+    "text": "搬到朝阳区的 apartment 后，窗外总是很吵，人物乙索性换了一套高档的 降噪耳机，终于踏实了。"
+  },
+  {
+    "category": "relationships",
+    "text": "人物丙和人物丁在理发店偶然重逢，两人都非常尴尬，随后便匆匆交换了 new phone 的 contact，便道别了。"
+  },
+  {
+    "category": "schedule",
+    "text": "周三有一个重要会议的 deadline，人物戊必须提前整理好 design 文档，然后发 email 给 team，最后归档。"
+  },
+  {
+    "category": "health",
+    "text": "近期体重略微上升，人物乙决定在 Running 时佩戴心率 band，以便实时监测 fitness 的各项指标变化情况。"
+  },
+  {
+    "category": "career",
+    "text": "看完《三体》后，对于 science 的此处描写，人物甲总是感到的确是有非凡的 inspiration，值得一再回味。"
+  },
+  {
+    "category": "identity",
+    "text": "常驻城市：杭州，目前的身份状态是实习生，工牌编号是 8848，日常主要使用词汇是 workflow。"
+  },
+  {
+    "category": "housing",
+    "text": "上周通过自如APP签了位于朝阳区某小区的合租合同，室友是人物乙，每月的房租大概是 4500 元。"
+  },
+  {
+    "category": "housing",
+    "text": "偏好：带有大落地窗且靠近地铁站的整租一居室，最好是朝向南北通透的户型。"
+  },
+  {
+    "category": "learning",
+    "text": "结业证书：雅思 8.0 分"
+  },
+  {
+    "category": "learning",
+    "text": "最近在准备 Python 的数据分析师认证，每天都在 B站看网课，做 LeetCode 上的算法题感觉非常有挑战性。"
+  },
+  {
+    "category": "finance",
+    "text": "目前的理财主要配置在余额宝和招商银行的朝朝宝里，每个月还会定投 500 元的沪深 300 ETF 指数基金。"
+  },
+  {
+    "category": "finance",
+    "text": "习惯：每月初使用 MoneyWiz 软件进行预算规划，严格控制餐饮、娱乐和购物等方面的支出比例。"
+  },
+  {
+    "category": "entertainment",
+    "text": "周末喜欢和人物丙去 KTV 唱歌或者在 Switch 上玩双人成行，最近还入手了 PS5 准备通关对马岛之魂。"
+  },
+  {
+    "category": "entertainment",
+    "text": "片单：这个月打算看完沙丘 2 和奥本海默，目前的观影列表里还加入了几部经典的科幻老片。"
+  },
+  {
+    "category": "devices",
+    "text": "主力机：iPhone 15 Pro"
+  },
+  {
+    "category": "devices",
+    "text": "上周入手了罗技的 MX Keys Mini 键盘，连接 MacBook Pro 后打字的手感确实比之前的薄膜键盘好很多。"
+  },
+  {
+    "category": "identity",
+    "text": "姓名：人物乙。偏好：在杭州的星巴克用 iPad 记笔记的安静午后。"
+  }
+]
