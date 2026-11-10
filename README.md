@@ -463,29 +463,14 @@ uv run python evals/memory_eval.py
 
 ## 检索评测
 
-`evals/` 提供可复现的合成语料基准（456 条 / 27 例，无任何个人数据）：
+`evals/` 提供可复现的合成记忆检索基准：语料与题库由 LLM 生成后冻结为 JSON，评测时只读文件、不调用模型 API；内容为虚构占位，不含真实个人信息。
 
 ```bash
+uv sync --extra local-embed
 uv run python evals/retrieval_eval.py
 ```
 
-2026-10-30 重跑，合成库 456 条记忆 / 27 例：
-
-| 检索方式 | Hit@3 | Hit@5 | MRR@10 |
-| --- | --- | --- | --- |
-| keyword | 74.1% | 74.1% | 0.722 |
-| vector | 92.6% | 92.6% | 0.913 |
-| hybrid | **92.6%** | **92.6%** | **0.913** |
-
-真实库 882 条有效事实 / 24 个模型生成问题：
-
-| 检索方式 | Hit@3 | Hit@5 | MRR@10 |
-| --- | --- | --- | --- |
-| keyword | 95.8% | 95.8% | 0.889 |
-| vector | 91.7% | 95.8% | 0.814 |
-| hybrid | 91.7% | 95.8% | 0.842 |
-
-真实题集由模型从随机事实生成，不是人工标注金标准。历史 797 条题集结果、方法、耗时与已知弱点见 [evals/README.md](evals/README.md)。
+基准按目标条目 ID 判命中，对比 keyword / vector / hybrid 三路；指标定义、方法与最新结果见 [evals/README.md](evals/README.md)。
 
 ## Roadmap
 
