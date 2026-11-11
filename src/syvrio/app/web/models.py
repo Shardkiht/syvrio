@@ -61,8 +61,11 @@ class SessionListResponse(BaseModel):
 
 
 class CreateSessionResponse(BaseModel):
-    session_id: str
-    title: str
+    """A fresh conversation. ``session_id`` stays null until the first message."""
+
+    session_id: str | None = None
+    title: str = ""
+    draft: bool = True
 
 
 class SwitchSessionResponse(BaseModel):
@@ -163,6 +166,8 @@ class StreamEvent(BaseModel):
     steps: int | None = None
     estimated_tokens: int | None = None
     message: str | None = None
+    # Tool outcome on ``tool_end``: False means the call failed, None unknown.
+    ok: bool | None = None
 
 
 class CommandInfo(BaseModel):

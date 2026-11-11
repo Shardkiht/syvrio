@@ -6,8 +6,21 @@
       name="viewport"
       content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content"
     />
-    <meta name="color-scheme" content="dark" />
-    <meta name="theme-color" content="#111318" />
+    <meta name="color-scheme" content="light dark" />
+    <!-- Updated by state/theme.ts so the mobile address bar matches the UI. -->
+    <meta name="theme-color" content="#f6f7f9" />
+    <script>
+      // Set an explicit preference before the stylesheet paints. "auto" needs
+      // no attribute because the CSS media query already follows the browser.
+      try {
+        const theme = localStorage.getItem('syvrio.theme');
+        if (theme === 'light' || theme === 'dark') {
+          document.documentElement.dataset.theme = theme;
+        }
+      } catch {
+        // Storage may be blocked; the system theme remains the fallback.
+      }
+    </script>
     <title>Syvrio</title>
   </head>
   <body>

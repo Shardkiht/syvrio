@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import rehypeSanitize from 'rehype-sanitize';
 
 function CodeBlock({ language, content }: { language: string; content: string }) {
@@ -29,6 +30,7 @@ export function Markdown({ text }: { text: string }) {
   return (
     <div className="markdown">
       <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
         rehypePlugins={[rehypeSanitize]}
         components={{
           code({ className, children }) {
@@ -37,6 +39,13 @@ export function Markdown({ text }: { text: string }) {
             const block = Boolean(language) || content.includes('\n');
             if (!block) return <code className={className}>{children}</code>;
             return <CodeBlock language={language} content={content} />;
+          },
+          table({ children }) {
+            return (
+              <div className="table-wrap">
+                <table>{children}</table>
+              </div>
+            );
           },
         }}
       >

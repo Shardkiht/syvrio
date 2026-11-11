@@ -173,8 +173,8 @@ def test_help_lists_commands_and_browser_shortcut_notes(client):
 
 
 def test_session_mismatch_rejects_a_stale_tab(client, backend):
-    created = client.post("/api/sessions").json()["session_id"]
-    assert created
+    current = backend._sessions.create().id
+    client.post(f"/api/sessions/{current}/switch")
     response = run(client, "/status", session_id="another-session")
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "session_mismatch"
@@ -282,10 +282,14 @@ def test_explicit_model_id_is_switchable_without_a_catalog(client, monkeypatch):
     assert "options" not in (body["data"] or {})
 
 
-def test_new_session_command_returns_a_fresh_session(client):
+def test_new_session_command_only_opens_the_empty_view(client, backend):
+    backend._sessions.create()
+    before = len(backend._sessions.list())
     body = run(client, "/new").json()
     assert body["status"] == "ok"
-    assert body["session_id"]
+    # Reuses the runtime's lazy start: nothing is written to disk here.
+    assert body["session_id"] is None
     assert body["refresh_sessions"] is True
     assert body["refresh_history"] is True
-    assert any(item["current"] for item in client.get("/api/sessions").json()["items"])
+    assert len(backend._sessions.list()) == before
+    assert not any(item["current"] for item in client.get("/api/sessions").json()["items"])

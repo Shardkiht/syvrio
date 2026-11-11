@@ -1,12 +1,14 @@
 import { useEffect, useRef } from 'react';
 import type { Segment } from '../state/chat';
+import { Collapsible } from './Collapsible';
 
 type ThinkingSegment = Extract<Segment, { kind: 'thinking' }>;
 
 /**
- * Live thinking shows only the newest three lines. Once the answer starts the
- * pane collapses to one summary row; expanding uses a fixed-height scroll area
- * so a long reasoning trace never stretches the chat layout.
+ * Reasoning is never shown inline, not even while it streams: the summary row
+ * carries the only signal ("Thinking…" → "Thought for 3.2s") and expanding is
+ * an explicit opt-in. A long trace lives in a fixed-height scroll area so it
+ * can never stretch the chat layout.
  */
 export function Thinking({
   segment,
@@ -16,43 +18,28 @@ export function Thinking({
   onToggle: () => void;
 }) {
   const bodyRef = useRef<HTMLDivElement>(null);
-  const preview = !segment.done && !segment.collapsed && !segment.expanded;
-  const showBody = !segment.collapsed || segment.expanded;
-  const body = preview
-    ? segment.text.split('\n').slice(-3).join('\n')
-    : segment.text;
 
   useEffect(() => {
-    if (preview && bodyRef.current) {
-      bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
-    }
-  }, [segment.text, preview]);
+    if (segment.expanded && bodyRef.current) bodyRef.current.scrollTop = 0;
+  }, [segment.expanded]);
 
   const label = segment.done
     ? segment.seconds != null
       ? `Thought for ${segment.seconds.toFixed(1)}s`
-      : 'Thinking'
+      : 'Thought'
     : 'Thinking...';
 
   return (
-    <div
-      className={`thinking${preview ? ' thinking-live' : ''}${segment.expanded ? ' thinking-expanded' : ''}`}
-      data-testid="thinking"
+    <Collapsible
+      label={label}
+      meta={!segment.done ? <span className="fold-pulse" aria-hidden="true" /> : undefined}
+      expanded={segment.expanded}
+      onToggle={onToggle}
+      className={`thinking${segment.expanded ? ' thinking-expanded' : ''}`}
+      testId="thinking"
+      bodyTestId="thinking-body"
     >
-      <button
-        type="button"
-        className="thinking-toggle"
-        onClick={onToggle}
-        aria-expanded={showBody}
-      >
-        <span>{label}</span>
-        <span className="thinking-hint">{segment.expanded ? 'Collapse' : 'Expand'}</span>
-      </button>
-      {showBody && (
-        <div className="thinking-body" ref={bodyRef} data-testid="thinking-body">
-          {body}
-        </div>
-      )}
-    </div>
+      <div className="thinking-text" ref={bodyRef}>{segment.text}</div>
+    </Collapsible>
   );
 }

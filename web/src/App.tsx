@@ -1,11 +1,13 @@
-import { useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { CommandPalette, CommandPanelDialog, ConfirmDialog } from './components/CommandUI';
 import { Composer } from './components/Composer';
+import { CommandsIcon, PanelIcon, SettingsIcon } from './components/Icons';
 import { MessageList } from './components/MessageList';
 import { SettingsPanel } from './components/SettingsPanel';
 import { Sidebar } from './components/Sidebar';
 import { useChat } from './hooks/useChat';
 import { isComposing, matchShortcut } from './state/shortcuts';
+import { applyTheme, readTheme, watchSystemTheme, type ThemeMode } from './state/theme';
 
 export default function App() {
   const {
@@ -46,6 +48,20 @@ export default function App() {
   } = useChat();
 
   const model = health ? `${health.provider}/${health.model}` : 'Loading...';
+  const empty = chat.messages.length === 0;
+  const title = sessions.find((session) => session.id === chat.sessionId)?.title || 'New chat';
+
+  const [theme, setTheme] = useState<ThemeMode>(readTheme);
+  const themeBooted = useRef(false);
+  useEffect(() => {
+    // The first run only restores what was stored; persisting starts on a real
+    // choice, so an untouched profile keeps no theme key at all.
+    applyTheme(theme, themeBooted.current);
+    themeBooted.current = true;
+    // On "auto" a live OS switch must repaint the chrome without a reload.
+    if (theme !== 'auto') return;
+    return watchSystemTheme(() => applyTheme('auto', false));
+  }, [theme]);
 
   // iOS Safari overlays the keyboard on the layout viewport, so `vh`/`dvh`
   // alone leaves the composer hidden behind it. Track the visual viewport and
@@ -103,61 +119,68 @@ export default function App() {
   const closePanel = () => { setPanel(null); focusComposer(); };
 
   return (
-    <div className="app">
+    <div className={`app${sidebarOpen ? '' : ' sidebar-collapsed'}`}>
       <Sidebar
         sessions={sessions}
         currentId={chat.sessionId}
         open={sidebarOpen}
         model={model}
+        online={online}
         onNew={() => void newSession()}
         onSelect={(id) => void selectSession(id)}
         onDelete={requestDeleteSession}
         onClose={() => setSidebarOpen(false)}
       />
-      <main className="main">
+      <main className={`main${empty ? ' is-empty' : ''}`}>
         <header className="topbar">
           <button
             type="button"
-            className="sessions-toggle"
+            className="icon-button sessions-toggle"
             onClick={() => setSidebarOpen(true)}
             aria-label="Open sessions"
+            title="Show sidebar (Ctrl+B)"
           >
-            Sessions
+            <PanelIcon size={20} />
           </button>
-          <button
-            type="button"
-            className="commands-toggle"
-            onClick={() => setPaletteOpen(true)}
-            aria-label="Open commands"
-            data-testid="commands-toggle"
-          >
-            Commands
-          </button>
-          <button
-            type="button"
-            className="commands-toggle"
-            onClick={() => setSettingsOpen(true)}
-            aria-label="Open settings"
-            data-testid="settings-toggle"
-          >
-            Settings
-          </button>
-          <button
-            type="button"
-            className="model-info"
-            data-testid="model-info"
-            title="Open model choices (/model, Alt+M)"
-            onClick={() => void runCommand('/model')}
-          >
-            {model}
-          </button>
-          <div
-            className={`connection ${online ? 'online' : 'offline'}`}
-            data-testid="connection"
-            title={online ? 'Connected' : 'Offline'}
-          >
-            <span className="dot" />
-            <span className="connection-label">{online ? 'Connected' : 'Offline'}</span>
+          <div className="topbar-title" title={title}>{title}</div>
+          <div className="topbar-actions">
+            <button
+              type="button"
+              className="model-info"
+              data-testid="model-info"
+              title="Open model choices (/model, Alt+M)"
+              onClick={() => void runCommand('/model')}
+            >
+              {model}
+            </button>
+            <button
+              type="button"
+              className="icon-button commands-toggle"
+              onClick={() => setPaletteOpen(true)}
+              aria-label="Open commands"
+              title="Commands (Alt+P)"
+              data-testid="commands-toggle"
+            >
+              <CommandsIcon size={20} />
+            </button>
+            <button
+              type="button"
+              className="icon-button commands-toggle"
+              onClick={() => setSettingsOpen(true)}
+              aria-label="Open settings"
+              title="Settings (Alt+S)"
+              data-testid="settings-toggle"
+            >
+              <SettingsIcon size={20} />
+            </button>
+            <div
+              className={`connection ${online ? 'online' : 'offline'}`}
+              data-testid="connection"
+              title={online ? 'Connected' : 'Offline'}
+            >
+              <span className="dot" />
+              <span className="connection-label">{online ? 'Connected' : 'Offline'}</span>
+            </div>
           </div>
         </header>
         {chat.error && (
@@ -166,15 +189,19 @@ export default function App() {
             <button type="button" onClick={dismissError}>Dismiss</button>
           </div>
         )}
-        <MessageList messages={chat.messages} onToggle={toggle} />
-        <Composer
-          busy={chat.busy}
-          progress={chat.progress}
-          onSend={(text) => void send(text)}
-          onStop={() => void stop()}
-          catalog={catalog}
-          focusSignal={focusSignal}
-        />
+        <div className="thread">
+          <MessageList messages={chat.messages} sessionId={chat.sessionId} onToggle={toggle} />
+          <Composer
+            busy={chat.busy}
+            progress={chat.progress}
+            onSend={(text) => void send(text)}
+            onStop={() => void stop()}
+            catalog={catalog}
+            focusSignal={focusSignal}
+            hero={empty}
+            onOpenCommands={() => setPaletteOpen(true)}
+          />
+        </div>
       </main>
 
       {paletteOpen && (
@@ -213,6 +240,8 @@ export default function App() {
       {settingsOpen && (
         <SettingsPanel
           health={health}
+          theme={theme}
+          onTheme={setTheme}
           onClose={closeSettings}
           onChanged={() => { void refreshHealth(); }}
           onNotice={notice}

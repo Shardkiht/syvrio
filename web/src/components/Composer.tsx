@@ -1,8 +1,12 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { isCommandLine, suggestionsFor, type Suggestion } from '../state/commands';
 import { isComposing } from '../state/shortcuts';
 import type { CommandInfo } from '../types';
 import { CommandSuggestions } from './CommandUI';
+import { ArrowUpIcon, PlusIcon, StopIcon } from './Icons';
+
+/** Starter commands shown under the home composer, in display order. */
+const STARTER_COMMANDS = ['model', 'status', 'help', 'sessions'];
 
 export function Composer({
   busy,
@@ -11,6 +15,8 @@ export function Composer({
   onStop,
   catalog = [],
   focusSignal = 0,
+  hero = false,
+  onOpenCommands,
 }: {
   busy: boolean;
   progress: string;
@@ -18,17 +24,47 @@ export function Composer({
   onStop: () => void;
   catalog?: CommandInfo[];
   focusSignal?: number;
+  /** Centred home layout: narrower card plus a row of starter commands. */
+  hero?: boolean;
+  onOpenCommands?: () => void;
 }) {
   const [value, setValue] = useState('');
   const [index, setIndex] = useState(0);
   const [dismissed, setDismissed] = useState(false);
   const ref = useRef<HTMLTextAreaElement>(null);
 
-  useEffect(() => {
+  // `rows={3}` gives the textarea its intrinsic three-line height; this effect
+  // only grows it past that. `overflow-y` is driven by the same measurement so
+  // an idle composer never shows a scrollbar: with border-box, setting
+  // height = scrollHeight drops the padding and leaves a 1-2px overflow, which
+  // is what produced the permanent scrollbar track.
+  useLayoutEffect(() => {
     const element = ref.current;
     if (!element) return;
-    element.style.height = 'auto';
-    element.style.height = `${Math.min(element.scrollHeight, 200)}px`;
+    const fit = () => {
+      element.style.height = '';
+      const borders = element.offsetHeight - element.clientHeight;
+      const needed = element.scrollHeight + borders;
+      const style = window.getComputedStyle(element);
+      const max = Number.parseFloat(style.maxHeight) || 200;
+      // +1 absorbs sub-pixel line-height rounding; without it the box would
+      // creep one pixel taller on every keystroke.
+      if (needed > element.offsetHeight + 1) {
+        element.style.height = `${Math.min(needed, max)}px`;
+      }
+      element.style.overflowY = needed > max ? 'auto' : 'hidden';
+    };
+    fit();
+    // Wrapping changes when the pane width changes (sidebar toggle, rotation),
+    // but our own height writes must not re-trigger the observer.
+    let width = element.clientWidth;
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => {
+      if (element.clientWidth === width) return;
+      width = element.clientWidth;
+      fit();
+    });
+    observer?.observe(element);
+    return () => observer?.disconnect();
   }, [value]);
 
   useEffect(() => {
@@ -99,8 +135,22 @@ export function Composer({
     }
   };
 
+  const starters = hero
+    ? STARTER_COMMANDS.flatMap((name) => {
+        const found = catalog.find((item) => item.name === name);
+        return found ? [found] : [];
+      })
+    : [];
+
+  const fillCommand = (name: string) => {
+    setValue(`/${name} `);
+    setDismissed(false);
+    setIndex(0);
+    ref.current?.focus();
+  };
+
   return (
-    <div className="composer">
+    <div className={`composer${hero ? ' composer-hero' : ''}`}>
       <CommandSuggestions
         suggestions={showSuggestions ? suggestions : []}
         index={Math.min(index, Math.max(0, suggestions.length - 1))}
@@ -108,11 +158,11 @@ export function Composer({
         onPick={applyCompletion}
       />
       {busy && <div className="progress" data-testid="progress">{progress || 'Working...'}</div>}
-      <div className="composer-row">
+      <div className="composer-card">
         <textarea
           ref={ref}
           value={value}
-          rows={1}
+          rows={3}
           aria-label="Message"
           data-testid="composer-input"
           placeholder="Message Syvrio"
@@ -123,17 +173,51 @@ export function Composer({
           }}
           onKeyDown={onKeyDown}
         />
-        {busy ? (
-          <>
-            {isCommandLine(value) && (
-              <button type="button" className="send run-command" onClick={submit}>Run</button>
+        <div className="composer-bar">
+          {onOpenCommands && (
+            <button
+              type="button"
+              className="icon-button composer-plus"
+              onClick={onOpenCommands}
+              aria-label="Insert command"
+              title="Commands (Alt+P)"
+            >
+              <PlusIcon size={17} />
+            </button>
+          )}
+          <div className="composer-actions">
+            {busy ? (
+              <>
+                {isCommandLine(value) && (
+                  <button type="button" className="send run-command" onClick={submit}>Run</button>
+                )}
+                <button type="button" className="stop" onClick={onStop} aria-label="Stop">
+                  <StopIcon size={16} />
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                className="send"
+                onClick={submit}
+                disabled={!value.trim()}
+                aria-label="Send"
+              >
+                <ArrowUpIcon size={18} />
+              </button>
             )}
-            <button type="button" className="stop" onClick={onStop}>Stop</button>
-          </>
-        ) : (
-          <button type="button" className="send" onClick={submit} disabled={!value.trim()}>Send</button>
-        )}
+          </div>
+        </div>
       </div>
+      {starters.length > 0 && (
+        <div className="composer-chips">
+          {starters.map((item) => (
+            <button key={item.name} type="button" onClick={() => fillCommand(item.name)}>
+              /{item.name}
+            </button>
+          ))}
+        </div>
+      )}
       <div className="composer-hint">Enter to send · Shift+Enter for a new line · / for commands</div>
     </div>
   );

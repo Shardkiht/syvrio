@@ -26,6 +26,8 @@ export interface StreamEvent {
   estimated_tokens?: number | null;
   message?: string | null;
   interrupted?: boolean;
+  /** Tool outcome: false marks a failed call, null when unknown. */
+  ok?: boolean | null;
 }
 
 export interface HealthResponse {
@@ -86,8 +88,10 @@ export interface ActionResponse {
 }
 
 export interface CreateSessionResponse {
-  session_id: string;
+  // Null until the first message: a new chat only opens the empty view.
+  session_id: string | null;
   title: string;
+  draft?: boolean;
 }
 
 export interface SwitchSessionResponse {

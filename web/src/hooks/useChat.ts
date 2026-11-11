@@ -6,7 +6,7 @@ import {
   loadHistory,
   reduceChat,
   startTurn,
-  toggleThinking,
+  toggleSegment,
   type ChatState,
 } from '../state/chat';
 import { commandMessage, isCommandLine, panelFor, type CommandPanel } from '../state/commands';
@@ -21,7 +21,26 @@ export function useChat() {
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [online, setOnline] = useState(true);
-  const [sidebarOpen, setSidebarOpen] = useState(() => window.innerWidth >= 768);
+  const [sidebarOpen, setSidebarOpen] = useState(() => {
+    // Desktop honours the last choice; the mobile drawer always starts closed.
+    if (window.innerWidth < 768) return false;
+    try {
+      const stored = window.localStorage.getItem('syvrio.sidebar');
+      if (stored === 'open') return true;
+      if (stored === 'closed') return false;
+    } catch {
+      // Blocked storage: fall back to the width default.
+    }
+    return true;
+  });
+  useEffect(() => {
+    if (window.innerWidth < 768) return;
+    try {
+      window.localStorage.setItem('syvrio.sidebar', sidebarOpen ? 'open' : 'closed');
+    } catch {
+      // Best effort only.
+    }
+  }, [sidebarOpen]);
   const [catalog, setCatalog] = useState<CommandInfo[]>([]);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [confirm, setConfirm] = useState<{ line: string; message: string } | null>(null);
@@ -127,13 +146,16 @@ export function useChat() {
       // header label in sync without a full page reload.
       if (result.data?.model_changed === true) void refreshHealth();
       if (result.refresh_sessions) await refreshSessions();
-      if (result.refresh_history) {
-        if (chatRef.current.busy) pendingHistoryRef.current = true;
-        else await reloadHistory(result.session_id ?? chatRef.current.sessionId);
-      }
-      if (result.intent === 'new_session' && result.session_id) {
-        update(() => ({ ...initialChatState, sessionId: result.session_id }));
-      } else if (result.intent !== 'new_session') {
+      if (result.intent === 'new_session') {
+        // The file appears with the first message; until then this is just the
+        // empty home view, so no session id is expected and there is no history
+        // to reload (reading the old one would only flash before this reset).
+        update(() => ({ ...initialChatState }));
+      } else {
+        if (result.refresh_history) {
+          if (chatRef.current.busy) pendingHistoryRef.current = true;
+          else await reloadHistory(result.session_id ?? chatRef.current.sessionId);
+        }
         update((prev) => addInfo(prev, commandMessage(result)));
       }
     } catch (error) {
@@ -216,12 +238,10 @@ export function useChat() {
       return;
     }
     try {
-      const created = await api.createSession();
-      update(() => ({
-        ...initialChatState,
-        sessionId: created.session_id,
-        messages: [],
-      }));
+      // Detach only: the runtime writes the session file with the first
+      // message, so an abandoned "new" must not leave an empty one behind.
+      await api.createSession();
+      update(() => ({ ...initialChatState }));
       await refreshSessions();
       if (window.innerWidth < 768) setSidebarOpen(false);
     } catch (error) {
@@ -265,11 +285,11 @@ export function useChat() {
     setDeleteTarget(null);
     try {
       // The Application guard (same as TUI) refuses to delete the live
-      // session. Detach into a fresh empty chat first so the Web action stays
-      // one click, then remove the old JSONL file.
+      // session. Detach to the empty view first (no file is created), then
+      // remove the old JSONL file.
       if (target.current) {
-        const created = await api.createSession();
-        update(() => ({ ...initialChatState, sessionId: created.session_id }));
+        await api.createSession();
+        update(() => ({ ...initialChatState }));
       }
       await api.deleteSession(target.id);
       await refreshSessions();
@@ -380,7 +400,7 @@ export function useChat() {
     handleEscape,
     focusSignal,
     focusComposer,
-    toggle: (segmentId: string) => update((prev) => toggleThinking(prev, segmentId)),
+    toggle: (segmentId: string) => update((prev) => toggleSegment(prev, segmentId)),
     dismissError: () => update((prev) => ({ ...prev, error: null })),
   };
 }

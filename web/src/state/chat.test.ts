@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { HistoryResponse, StreamEvent } from '../types';
-import { addInfo, initialChatState, loadHistory, reduceChat, startTurn, toggleThinking } from './chat';
+import { addInfo, initialChatState, loadHistory, reduceChat, startTurn, toggleSegment } from './chat';
 
 const event = (type: StreamEvent['type'], fields: Partial<StreamEvent> = {}): StreamEvent => ({
   seq: 1,
@@ -83,10 +83,10 @@ describe('chat reducer', () => {
     expect(tools[1]).toMatchObject({ done: true, display: 'second result' });
   });
 
-  it('folds live thinking as soon as body text arrives', () => {
+  it('keeps live thinking folded while it streams', () => {
     let state = startTurn(initialChatState, 'hi', null);
     state = reduceChat(state, event('reasoning_delta', { text: 'thinking', phase: 1 }));
-    expect(segmentsOf(state)[0]).toMatchObject({ collapsed: false });
+    expect(segmentsOf(state)[0]).toMatchObject({ collapsed: true, expanded: false });
     state = reduceChat(state, event('content_delta', { text: 'answer' }));
     expect(segmentsOf(state)[0]).toMatchObject({ collapsed: true });
   });
@@ -95,10 +95,27 @@ describe('chat reducer', () => {
     let state = startTurn(initialChatState, 'hi', null);
     state = reduceChat(state, event('reasoning_end', { text: 'full text', phase: 1 }));
     const id = segmentsOf(state)[0].id;
-    state = toggleThinking(state, id);
+    state = toggleSegment(state, id);
     expect(segmentsOf(state)[0]).toMatchObject({ expanded: true });
-    state = toggleThinking(state, id);
+    state = toggleSegment(state, id);
     expect(segmentsOf(state)[0]).toMatchObject({ expanded: false });
+  });
+
+  it('labels a failed tool call from the stream', () => {
+    let state = startTurn(initialChatState, 'hi', null);
+    state = reduceChat(state, event('tool_start', { name: 'fetch_web' }));
+    state = reduceChat(state, event('tool_end', { name: 'fetch_web', text: 'timeout', ok: false }));
+    const [tool] = segmentsOf(state);
+    expect(tool).toMatchObject({
+      kind: 'tool',
+      done: true,
+      ok: false,
+      display: 'timeout',
+      expanded: false,
+    });
+    // Tool rows share the same fold path as reasoning.
+    state = toggleSegment(state, tool.id);
+    expect(segmentsOf(state)[0]).toMatchObject({ expanded: true });
   });
 
   it('marks cancelled and failed turns without losing partial output', () => {
@@ -142,6 +159,81 @@ describe('chat reducer', () => {
       expect(assistant.segments[1]).toMatchObject({ kind: 'tool', name: 'recall', done: true });
       expect(assistant.segments[2]).toMatchObject({ kind: 'text', content: 'answer' });
     }
+  });
+
+  it('attaches a tool result to its call instead of a duplicate row', () => {
+    const state = loadHistory(initialChatState, {
+      session_id: 's-3',
+      title: 'Tools',
+      has_earlier: false,
+      summary: null,
+      current: true,
+      items: [
+        { id: 'a1', role: 'assistant', content: 'answer', at: '', reasoning: null,
+          tool_calls: [{ id: 'c1', name: 'fetch_web' }], tool_name: null, tool_ok: null,
+          interrupted: false },
+        { id: 't1', role: 'tool', content: 'page text', at: '', reasoning: null,
+          tool_calls: [], tool_name: 'fetch_web', tool_ok: true, interrupted: false },
+      ],
+    });
+    expect(state.messages).toHaveLength(1);
+    const assistant = state.messages[0];
+    expect(assistant.role).toBe('assistant');
+    if (assistant.role === 'assistant') {
+      expect(assistant.segments[0]).toMatchObject({
+        kind: 'tool',
+        name: 'fetch_web',
+        display: 'page text',
+        ok: true,
+      });
+      expect(assistant.segments[1]).toMatchObject({ kind: 'text', content: 'answer' });
+    }
+  });
+
+  it('matches tool results by name when the journal order differs', () => {
+    const state = loadHistory(initialChatState, {
+      session_id: 's-4',
+      title: 'Tools',
+      has_earlier: false,
+      summary: null,
+      current: true,
+      items: [
+        { id: 'a1', role: 'assistant', content: 'answer', at: '', reasoning: null,
+          tool_calls: [{ id: 'c1', name: 'search' }, { id: 'c2', name: 'fetch_web' }],
+          tool_name: null, tool_ok: null, interrupted: false },
+        { id: 't1', role: 'tool', content: 'page text', at: '', reasoning: null,
+          tool_calls: [], tool_name: 'fetch_web', tool_ok: true, interrupted: false },
+        { id: 't2', role: 'tool', content: 'hits', at: '', reasoning: null,
+          tool_calls: [], tool_name: 'search', tool_ok: false, interrupted: false },
+      ],
+    });
+    const assistant = state.messages[0];
+    if (assistant.role !== 'assistant') throw new Error('expected an assistant turn');
+    expect(assistant.segments.filter((segment) => segment.kind === 'tool')).toMatchObject([
+      { name: 'search', display: 'hits', ok: false },
+      { name: 'fetch_web', display: 'page text', ok: true },
+    ]);
+  });
+
+  it('marks a compacted summary as folded so it stays collapsed', () => {
+    const state = loadHistory(initialChatState, {
+      session_id: 's-2',
+      title: 'Long chat',
+      has_earlier: true,
+      summary: 'user asked about tea; assistant explained oxidation',
+      current: true,
+      items: [],
+    });
+    const folded = state.messages.filter(
+      (message) => message.role === 'info' && message.folded,
+    );
+    expect(folded).toHaveLength(1);
+    expect(folded[0]).toMatchObject({
+      role: 'info',
+      folded: true,
+      title: 'Summarized context',
+      content: 'user asked about tea; assistant explained oxidation',
+    });
   });
 
   it('never mutates segment objects shared with a previous state', () => {

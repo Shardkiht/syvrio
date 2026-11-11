@@ -88,6 +88,9 @@ class EventPump:
         self._phase = 0
         self._session_id = turn.session_id
         self._pending_tools: list[str] = []
+        # Outcomes line up with ``_pending_tools``: the runtime reports a tool's
+        # result right before the event text that belongs to it.
+        self._pending_ok: list[bool] = []
 
     def send(self, event_type: str, **fields: Any) -> None:
         self._seq += 1
@@ -125,10 +128,14 @@ class EventPump:
             self._phase += 1
         self.send("progress", text=text)
 
+    def on_tool(self, ok: bool) -> None:
+        self._pending_ok.append(ok)
+
     def on_event(self, text: str) -> None:
         if self._pending_tools:
             name = self._pending_tools.pop(0)
-            self.send("tool_end", name=name, text=text)
+            ok = self._pending_ok.pop(0) if self._pending_ok else None
+            self.send("tool_end", name=name, text=text, ok=ok)
             return
         self.send("event", text=text)
 
@@ -148,6 +155,9 @@ class EventPump:
     def _flush_tools(self) -> None:
         while self._pending_tools:
             self.send("tool_end", name=self._pending_tools.pop(0))
+        # Any outcome left here belongs to a call that never emitted text; drop
+        # it so the next tool cannot inherit the wrong state.
+        self._pending_ok.clear()
 
     def finish(self, event_type: str, **fields: Any) -> None:
         self._flush_tools()
@@ -295,8 +305,9 @@ class WebBackend:
 
     def _check_session_match(self, session_id: str | None) -> None:
         current = self._conversation.current_id
-        # A stale tab must not act on another tab's session.
-        if session_id and current and session_id != current:
+        # A stale tab must not act on another tab's session. A null current means
+        # the backend sits on an unstarted "new" view, so any concrete id is stale.
+        if session_id is not None and session_id != current:
             raise WebError("session_mismatch",
                            "This tab is viewing a different session. Refresh first.", 409)
 
@@ -426,11 +437,16 @@ class WebBackend:
     # ---------- session lifecycle ----------
 
     def create_session(self) -> CreateSessionResponse:
+        """Detach to a fresh conversation without touching the disk.
+
+        The runtime already defers ``sessions.create()`` to the first message
+        (``AgentRuntime.start``), so creating a file here would only produce an
+        empty session — the exact behaviour users see as clutter in the sidebar.
+        """
         with self._operation_scope("new"):
             self._runtime.close(distill=True)
             self._conversation.switch(None)
-            session = self._runtime.ensure_session()
-        return CreateSessionResponse(session_id=session.id, title=session.title())
+        return CreateSessionResponse(session_id=None, title="")
 
     def switch_session(self, session_id: str) -> SwitchSessionResponse:
         self._validate_session_id(session_id)
@@ -582,6 +598,7 @@ class WebBackend:
             on_delta=pump.on_delta,
             on_progress=pump.on_progress,
             on_thinking=pump.on_thinking,
+            on_tool=pump.on_tool,
             on_session=lambda session: pump.on_session(session.id),
             on_user_message=pump.on_user_message,
         )

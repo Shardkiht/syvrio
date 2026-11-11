@@ -126,22 +126,42 @@ def test_health_and_openapi(client, backend):
 
 
 def test_session_lifecycle(client, backend):
+    before = len(backend._sessions.list())
     created = client.post("/api/sessions")
     assert created.status_code == 201
-    session_id = created.json()["session_id"]
-    assert session_id.startswith("s-")
+    body = created.json()
+    # A new chat only opens the empty view; the file appears with message one.
+    assert body["session_id"] is None
+    assert body["draft"] is True
+    assert len(backend._sessions.list()) == before
 
+    session = backend._sessions.create()
     listing = client.get("/api/sessions").json()
-    assert any(item["id"] == session_id for item in listing["items"])
+    assert any(item["id"] == session.id for item in listing["items"])
 
-    history = client.get(f"/api/sessions/{session_id}").json()
-    assert history["session_id"] == session_id
+    history = client.get(f"/api/sessions/{session.id}").json()
+    assert history["session_id"] == session.id
     assert history["items"] == []
 
-    switched = client.post(f"/api/sessions/{session_id}/switch")
+    switched = client.post(f"/api/sessions/{session.id}/switch")
     assert switched.status_code == 200
-    assert switched.json()["session_id"] == session_id
-    assert client.get(f"/api/sessions/{session_id}").json()["current"] is True
+    assert switched.json()["session_id"] == session.id
+    assert client.get(f"/api/sessions/{session.id}").json()["current"] is True
+
+
+def test_first_message_persists_the_session(client, backend):
+    backend._runtime.model = FakeModel([AssistantTurn(content="hello")])
+    before = len(backend._sessions.list())
+    events = collect(client)
+    assert len(backend._sessions.list()) == before + 1
+    # ``start`` is emitted before the worker creates the file, so the id shows
+    # up on the following frames; the client adopts it from there.
+    ids = {event["session_id"] for event in events if event.get("session_id")}
+    assert len(ids) == 1
+    session_id = ids.pop()
+    assert backend._sessions.exists(session_id)
+    rows = client.get("/api/sessions").json()["items"]
+    assert [row["id"] for row in rows if row["current"]] == [session_id]
 
 
 # ---------- session deletion ----------
@@ -169,7 +189,8 @@ def test_delete_session_requires_confirmation_then_removes_file(client, backend)
 
 
 def test_current_session_is_protected_from_deletion(client, backend):
-    session_id = client.post("/api/sessions").json()["session_id"]
+    session_id = backend._sessions.create().id
+    client.post(f"/api/sessions/{session_id}/switch")
     response = client.delete(
         f"/api/sessions/{session_id}", params={"confirmed": "true"}
     )
@@ -302,6 +323,11 @@ def test_tool_call_rounds_keep_reasoning_phases_apart(client, backend):
     events = collect(client, "check my note")
     assert "tool_start" in types(events)
     assert "tool_end" in types(events)
+    # The outcome rides along so the client can label a failure without
+    # waiting for a history reload.
+    tool_end = next(event for event in events if event["type"] == "tool_end")
+    assert tool_end["name"] == "recall"
+    assert tool_end["ok"] is True
     tool_index = types(events).index("tool_start")
     phases = [event["phase"] for event in events if event["type"] == "reasoning_delta"]
     assert len(phases) == 2 and phases[1] > phases[0]
@@ -310,6 +336,21 @@ def test_tool_call_rounds_keep_reasoning_phases_apart(client, backend):
                for event in events[tool_index:])
     assert events[-1]["type"] == "done"
     assert events[-1]["text"] == "final answer"
+
+
+def test_tool_failure_is_reported_on_the_stream(client, backend):
+    backend._runtime.model = FakeModel([
+        AssistantTurn(
+            content="", reasoning_content="",
+            tool_calls=[ToolCall(id="call-1", name="no_such_tool", arguments={})],
+        ),
+        AssistantTurn(content="done"),
+    ])
+    events = collect(client, "try something odd")
+    ends = [event for event in events if event["type"] == "tool_end"]
+    assert ends, "a failed call must still close its tool row"
+    assert ends[0]["name"] == "no_such_tool"
+    assert ends[0]["ok"] is False
 
 
 def test_failed_turn_reports_error_and_recovers(client, backend):
@@ -399,7 +440,8 @@ def test_switch_rejected_while_generating(backend):
     app = create_app(backend, autostart=False)
     streamer = TestClient(app, base_url=BASE_URL)
     controller = TestClient(app, base_url=BASE_URL)
-    created = controller.post("/api/sessions").json()["session_id"]
+    created = backend._sessions.create().id
+    controller.post(f"/api/sessions/{created}/switch")
     with ThreadPoolExecutor(max_workers=1) as pool:
         future = pool.submit(collect, streamer, "first")
         wait_active(backend)
@@ -547,7 +589,8 @@ def test_long_command_keeps_health_and_cancel_responsive(backend, monkeypatch):
 
 
 def test_chat_rejects_a_stale_session_id(client, backend):
-    client.post("/api/sessions")
+    current = backend._sessions.create().id
+    client.post(f"/api/sessions/{current}/switch")
     other = backend._sessions.create().id
     response = client.post("/api/chat", json={"message": "hi", "session_id": other})
     assert response.status_code == 409

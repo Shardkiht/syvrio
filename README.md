@@ -398,9 +398,9 @@ uv run syvrio web
 cd web && corepack pnpm install && corepack pnpm dev
 ```
 
-首版支持流式 Markdown 回复、独立 Thinking 区域（正文开始自动折叠、可展开固定高度查看）、Tool Call 状态、停止生成、会话新建/切换/恢复、错误与断线提示、代码块复制与移动端布局（抽屉式侧栏、软键盘自适应、刘海屏安全区、触摸目标加大）。通信为 REST + SSE，不使用 WebSocket。
+首版支持流式 Markdown 回复、独立 Thinking 区域（正文开始自动折叠、可展开固定高度查看）、Tool Call 状态、停止生成、会话新建/切换/恢复、错误与断线提示、代码块复制与移动端布局（抽屉式侧栏、软键盘自适应、刘海屏安全区、触摸目标加大）。新建对话先回到首页，首条消息才写入会话文件；恢复历史直接定位到最新消息。界面默认跟随浏览器明暗主题，也可固定亮色或暗色。通信为 REST + SSE，不使用 WebSocket。
 
-Web 与 TUI 共用 `application/commands.py` 里的斜杠命令目录，输入框支持 `/` 前缀与子命令补全（`↑ / ↓` 选择、`Tab` 补全、`Enter` 执行、`Escape` 关闭）、中文输入法组字保护，以及轻量命令面板。日常命令如 `/new`、`/sessions`、`/model`、`/think`、`/context`、`/compact`、`/undo`、`/help` 均可使用；`/import` 明确提示未支持，Git 同步、记忆批准等副作用操作仍留在 TUI，危险命令需二次确认。顶栏 `Settings`（或 `Alt+S`、`/setup`）打开设置面板，集中管理模型切换、思考强度、上下文窗口、供应商 Key / Base URL 与自定义模型；Key 只写不读，沿用系统凭据存储。浏览器保留键不强行拦截：`Ctrl+P` 留给打印，命令面板改用 `Ctrl+Shift+P` / `Alt+P`，模型选择用 `Alt+M` 或点击顶栏模型名，`Ctrl+B` 会话栏保留并提供 `Alt+B` 替代，`Ctrl+Q` 不拦截、`/exit` 仅返回入口视图。完整命令与快捷键对照见 [docs/web.md](docs/web.md)。
+Web 与 TUI 共用 `application/commands.py` 里的斜杠命令目录，输入框支持 `/` 前缀与子命令补全（`↑ / ↓` 选择、`Tab` 补全、`Enter` 执行、`Escape` 关闭）、中文输入法组字保护，以及轻量命令面板。日常命令如 `/new`、`/sessions`、`/model`、`/think`、`/context`、`/compact`、`/undo`、`/help` 均可使用；`/import` 明确提示未支持，Git 同步、记忆批准等副作用操作仍留在 TUI，危险命令需二次确认。顶栏 `Settings`（或 `Alt+S`、`/setup`）打开设置面板，集中管理外观主题、模型切换、思考强度、上下文窗口、供应商 Key / Base URL 与自定义模型；Key 只写不读，沿用系统凭据存储。浏览器保留键不强行拦截：`Ctrl+P` 留给打印，命令面板改用 `Ctrl+Shift+P` / `Alt+P`，模型选择用 `Alt+M` 或点击顶栏模型名，`Ctrl+B` / `Alt+B` 切换会话栏（侧栏收起后顶栏左侧出现同款图标按钮），`Ctrl+Q` 不拦截、`/exit` 仅返回入口视图。完整命令与快捷键对照见 [docs/web.md](docs/web.md)。
 
 关键边界：
 

@@ -310,11 +310,12 @@ class CommandUseCases:
             return CommandResult("ok", name, "help", "\n".join(lines))
 
         if name == "new":
+            # Reuse the runtime's lazy start: the session file is written with the
+            # first message, so an abandoned "new" leaves nothing on disk.
             conversation.runtime.close(distill=True)
             conversation.switch(None)
-            session = conversation.runtime.ensure_session()
-            return CommandResult("ok", name, "new_session", "Started a new session.",
-                                 session_id=session.id,
+            return CommandResult("ok", name, "new_session",
+                                 "Started a new session. It is saved with your first message.",
                                  refresh_sessions=True, refresh_history=True)
 
         if name == "status":

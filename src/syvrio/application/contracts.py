@@ -54,6 +54,9 @@ class TurnCallbacks:
     on_session: Callable[[Session], None] | None = None
     on_user_message: Callable[[str], None] | None = None
     on_thinking: Callable[[ThinkingUpdate], None] | None = None
+    # Outcome of the tool call whose display text arrives through ``on_event``
+    # next; the Web stream needs it to label failures without a history reload.
+    on_tool: Callable[[bool], None] | None = None
 
 
 @dataclass

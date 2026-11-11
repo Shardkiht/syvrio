@@ -1,17 +1,25 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api/client';
 import { SHORTCUT_HELP } from '../state/shortcuts';
+import type { ThemeMode } from '../state/theme';
 import type { CommandResponse, HealthResponse } from '../types';
 import { ProvidersSection } from './ProvidersSection';
 
-type SectionKey = 'model' | 'thinking' | 'context' | 'providers' | 'about';
+type SectionKey = 'model' | 'appearance' | 'thinking' | 'context' | 'providers' | 'about';
 
 const SECTIONS: { key: SectionKey; label: string; description: string }[] = [
   { key: 'model', label: 'Model', description: 'Active provider and model' },
+  { key: 'appearance', label: 'Appearance', description: 'Colour theme' },
   { key: 'thinking', label: 'Thinking', description: 'Reasoning effort' },
   { key: 'context', label: 'Context', description: 'Context window size' },
   { key: 'providers', label: 'Providers', description: 'API keys and endpoints' },
   { key: 'about', label: 'About', description: 'Version, status and shortcuts' },
+];
+
+const THEMES: { key: ThemeMode; label: string; description: string }[] = [
+  { key: 'auto', label: 'Follow system', description: 'Match the browser setting' },
+  { key: 'light', label: 'Light', description: 'Paper background, dark text' },
+  { key: 'dark', label: 'Dark', description: 'Dim background, light text' },
 ];
 
 interface ModelOption {
@@ -76,11 +84,15 @@ function readContext(result: CommandResponse): ContextState | null {
  */
 export function SettingsPanel({
   health,
+  theme,
+  onTheme,
   onClose,
   onChanged,
   onNotice,
 }: {
   health: HealthResponse | null;
+  theme: ThemeMode;
+  onTheme: (mode: ThemeMode) => void;
   onClose: () => void;
   onChanged: () => void;
   onNotice: (message: string) => void;
@@ -187,6 +199,32 @@ export function SettingsPanel({
             ))}
           </nav>
           <div className="settings-content">
+            {section === 'appearance' && (
+              <div className="settings-section" data-testid="settings-appearance">
+                <div className="settings-section-title">Appearance</div>
+                <p className="settings-hint">
+                  The interface follows your browser unless you pin a theme. The
+                  choice is stored in this browser only.
+                </p>
+                <div className="theme-options" role="radiogroup" aria-label="Colour theme">
+                  {THEMES.map((item) => (
+                    <button
+                      key={item.key}
+                      type="button"
+                      role="radio"
+                      aria-checked={theme === item.key}
+                      className={theme === item.key ? 'active' : ''}
+                      data-testid={`theme-${item.key}`}
+                      onClick={() => onTheme(item.key)}
+                    >
+                      <span className={`theme-swatch theme-swatch-${item.key}`} aria-hidden="true" />
+                      <span className="theme-label">{item.label}</span>
+                      <small>{item.description}</small>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
             {section === 'model' && (
               <div className="settings-section" data-testid="settings-model">
                 <div className="settings-section-title">Model</div>

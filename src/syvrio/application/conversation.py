@@ -341,6 +341,7 @@ class ConversationUseCases:
                 on_delta=callbacks.on_delta,
                 on_thinking=callbacks.on_thinking,
                 on_progress=callbacks.on_progress,
+                on_tool=callbacks.on_tool,
                 cancel=cancel,
             )
             content = reply.content
@@ -485,9 +486,6 @@ class ConversationUseCases:
 
     def list_sessions(self, limit: int = 100) -> list[dict]:
         return self.sessions.list(limit, with_tokens=False)
-
-    def ensure_session(self) -> Session:
-        return self.runtime.ensure_session()
 
     # ---------- 查询与压缩 ----------
 

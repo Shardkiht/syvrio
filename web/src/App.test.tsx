@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
 import { Markdown } from './components/Markdown';
@@ -128,6 +128,8 @@ const send = (text: string) => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  window.localStorage.clear();
+  document.documentElement.removeAttribute('data-theme');
   Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 1024 });
 });
 
@@ -171,7 +173,7 @@ describe('Web client interactions', () => {
     expect(screen.queryByTestId('thinking-body')).toBeNull();
   });
 
-  it('renders tool call status and its result', async () => {
+  it('folds a tool call and reveals its result on demand', async () => {
     installFetch({
       '/api/chat': () => sse(
         frame({ seq: 1, type: 'start', turn_id: 9 }),
@@ -185,8 +187,42 @@ describe('Web client interactions', () => {
     await ready();
     send('recall something');
     await waitFor(() => expect(screen.getByTestId('tool-event').textContent).toContain('recall'));
+    // The summary row carries name and state; the result stays collapsed.
     expect(screen.getByTestId('tool-event').textContent).toContain('Done');
-    expect(screen.getByTestId('tool-event').textContent).toContain('1 fact');
+    expect(screen.getByTestId('tool-event').textContent).not.toContain('1 fact');
+    expect(screen.queryByTestId('tool-body')).toBeNull();
+    fireEvent.click(within(screen.getByTestId('tool-event')).getByRole('button'));
+    expect(screen.getByTestId('tool-body').textContent).toContain('1 fact');
+    fireEvent.click(within(screen.getByTestId('tool-event')).getByRole('button'));
+    expect(screen.queryByTestId('tool-body')).toBeNull();
+  });
+
+  it('folds back-to-back tool calls into one collapsed group', async () => {
+    installFetch({
+      '/api/chat': () => sse(
+        frame({ seq: 1, type: 'start', turn_id: 10 }),
+        frame({ seq: 2, type: 'tool_start', name: 'recall' }),
+        frame({ seq: 3, type: 'tool_end', name: 'recall', text: 'one fact' }),
+        frame({ seq: 4, type: 'tool_start', name: 'search' }),
+        frame({ seq: 5, type: 'tool_end', name: 'search', text: 'two hits' }),
+        frame({ seq: 6, type: 'content_delta', text: 'done' }),
+        frame({ seq: 7, type: 'done', text: 'done' }),
+      ),
+    });
+    render(<App />);
+    await ready();
+    send('look around');
+    await waitFor(() => expect(screen.getByTestId('tool-group')).toBeTruthy());
+    const group = screen.getByTestId('tool-group');
+    expect(group.textContent).toContain('2 tool calls');
+    expect(group.textContent).not.toContain('one fact');
+    expect(screen.queryByTestId('tool-group-body')).toBeNull();
+    fireEvent.click(within(group).getByRole('button'));
+    const body = screen.getByTestId('tool-group-body');
+    expect(body.textContent).toContain('recall');
+    expect(body.textContent).toContain('one fact');
+    expect(body.textContent).toContain('search');
+    expect(body.textContent).toContain('two hits');
   });
 
   it('stops generation by cancelling the active turn', async () => {
@@ -282,6 +318,21 @@ describe('Web client interactions', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Open sessions' }));
     expect(screen.getByTestId('sidebar').className).toContain('open');
     expect(screen.getByTestId('sidebar-scrim')).toBeTruthy();
+  });
+
+  it('collapses and reopens the desktop sidebar with the visible controls', async () => {
+    installFetch();
+    render(<App />);
+    await ready();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close sessions' }));
+    await waitFor(() => expect(document.querySelector('.app')?.className).toContain('sidebar-collapsed'));
+    expect(screen.getByTestId('sidebar').className).not.toContain('open');
+    await waitFor(() => expect(window.localStorage.getItem('syvrio.sidebar')).toBe('closed'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open sessions' }));
+    await waitFor(() => expect(document.querySelector('.app')?.className).not.toContain('sidebar-collapsed'));
+    expect(screen.getByTestId('sidebar').className).toContain('open');
   });
 
   it('folds the sidebar when a desktop window crosses into phone width', async () => {
@@ -549,6 +600,20 @@ describe('Session deletion', () => {
     expect(screen.queryByTestId('delete-overlay')).toBeNull();
   });
 
+  it('opens the empty view on New chat without writing a session', async () => {
+    const calls = installFetch({
+      'POST /api/sessions': () => json({ session_id: null, title: '', draft: true }),
+    });
+    render(<App />);
+    await ready();
+
+    fireEvent.click(screen.getByRole('button', { name: 'New chat' }));
+    await waitFor(() => expect(calls).toContain('POST /api/sessions'));
+    expect(screen.getByTestId('message-list').textContent).toContain('Syvrio');
+    // No extra row: the session file only appears with the first message.
+    expect(document.querySelectorAll('.session-row').length).toBe(SESSIONS.length);
+  });
+
   it('detaches the current session into a new chat before deleting it', async () => {
     const current = { ...SESSIONS[0], id: 's-cur', title: 'Current chat', current: true };
     const history = {
@@ -557,7 +622,7 @@ describe('Session deletion', () => {
     };
     const calls = installFetch({
       '/api/sessions': () => json({ items: [current] }),
-      'POST /api/sessions': () => json({ session_id: 's-new', title: 'New chat' }),
+      'POST /api/sessions': () => json({ session_id: null, title: '', draft: true }),
       '/api/sessions/s-cur': () => json(history),
       'DELETE /api/sessions/s-cur': () => json({ session_id: 's-cur', deleted: true }),
     });

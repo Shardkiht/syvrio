@@ -232,6 +232,7 @@ class AgentRuntime:
         on_delta: Callable[[str], None] | None = None,
         on_thinking: Callable[[ThinkingUpdate], None] | None = None,
         on_progress: Callable[[str], None] | None = None,
+        on_tool: Callable[[bool], None] | None = None,
         cancel: Event | None = None,
     ) -> AgentReply:
         """执行一轮对话。
@@ -251,7 +252,7 @@ class AgentRuntime:
             with track_turn(cancel) as latency:
                 return self._run_ask(
                     session, text, on_event, on_delta, on_progress, cancel,
-                    latency, on_user_message, on_thinking,
+                    latency, on_user_message, on_thinking, on_tool,
                 )
         except GenerationCancelled as exc:
             partial = getattr(exc, "partial_content", "")
@@ -282,6 +283,7 @@ class AgentRuntime:
         latency: TurnLatency,
         on_user_message: Callable[[str], None] | None = None,
         on_thinking: Callable[[ThinkingUpdate], None] | None = None,
+        on_tool: Callable[[bool], None] | None = None,
     ) -> AgentReply:
         # Settings can change while this turn waits on a model or tool.
         model = self.model
@@ -409,6 +411,10 @@ class AgentRuntime:
                 messages.append(
                     {"role": "tool", "tool_call_id": call.id, "content": content}
                 )
+                # Report the outcome just before its text so the UI can pair
+                # the two without parsing the payload.
+                if on_tool is not None:
+                    on_tool(outcome.ok)
                 emit(outcome.display)
             # 工具结果预算随上下文窗口走；200K 窗口下 8K 会过早丢证据。
             compact_tool_outputs(messages, max_tokens=max(8000, config.context_window // 4))

@@ -77,7 +77,7 @@ python scripts/build_web.py --wheel dist/*.whl  # 校验实际 wheel 内含静�
 | --- | --- | --- |
 | GET | `/api/health` | 状态、模型、busy、活动 turn、静态资源是否就绪 |
 | GET | `/api/sessions?limit=100` | 会话列表 |
-| POST | `/api/sessions` | 新建会话（立即创建空会话并返回 ID） |
+| POST | `/api/sessions` | 回到新对话首页（返回 `draft=true`、`session_id=null`，不写文件；首条消息才创建会话） |
 | POST | `/api/sessions/{id}/switch` | 切换/恢复会话 |
 | DELETE | `/api/sessions/{id}?confirmed=true` | 删除会话（需二次确认；当前/生成中会话受守卫保护） |
 | GET | `/api/sessions/{id}` | 结构化历史（含已落盘的 Reasoning，默认折叠） |
@@ -88,7 +88,7 @@ python scripts/build_web.py --wheel dist/*.whl  # 校验实际 wheel 内含静�
 
 会话栏排序口径：`GET /api/sessions` 按**会话最后一条有效消息的发送时间**倒序（`SessionInfo.last_message_at`），没有消息的空会话回退到创建时间 `started_at`。共享的 `SessionStore.list()` 仍按 `updated_at` 排序供 TUI / CLI 使用，但 `updated_at` 会被重命名（`title`）、摘要、沉淀、`undo` 等控制记录刷新，因此 Web 侧栏在 `WebBackend.list_sessions()` 里单独重排；这些写入不会再把旧会话顶到最前。被 `undo` 撤销的消息不计入有效消息。
 
-**删除会话**：侧栏每条会话悬停（或键盘聚焦）时出现 `×`，移动端常显。确认弹窗在浏览器侧提示「不可撤销」，服务端仍独立校验 `confirmed=true`、会话 ID 合法性、会话存在、`_require_idle()` 以及 `ConversationUseCases.delete_guard()`（与 TUI 同一守卫：当前会话、生成中、队列引用不可删），通过后由 `SessionStore.delete()` 删除 JSONL 与 Reasoning 附件。删除当前会话时 Web 先新建空会话再删旧文件，等价于 TUI 的「先 `/new` 再 `Ctrl+D`」，服务端语义不变。删除失败返回稳定的 `delete_failed` 错误并保留文件。
+**删除会话**：侧栏每条会话悬停（或键盘聚焦）时出现 `×`，移动端常显。确认弹窗在浏览器侧提示「不可撤销」，服务端仍独立校验 `confirmed=true`、会话 ID 合法性、会话存在、`_require_idle()` 以及 `ConversationUseCases.delete_guard()`（与 TUI 同一守卫：当前会话、生成中、队列引用不可删），通过后由 `SessionStore.delete()` 删除 JSONL 与 Reasoning 附件。删除当前会话时 Web 先切到未落盘的新对话再删旧文件，等价于 TUI 的「先 `/new` 再 `Ctrl+D`」，服务端语义不变。删除失败返回稳定的 `delete_failed` 错误并保留文件。
 
 FastAPI 自动提供 `/openapi.json` 与 `/docs`。
 
@@ -101,7 +101,7 @@ FastAPI 自动提供 `/openapi.json` 与 `/docs`。
 | `reasoning_end` | `text`, `seconds`, `phase` | 该阶段思考定稿，使用完整文本校准 |
 | `content_delta` | `text` | 正文增量；前端收到后折叠 Thinking |
 | `tool_start` | `name` | 工具调用开始 |
-| `tool_end` | `name`, `text` | 工具结果展示，与 `tool_start` 按调用顺序配对 |
+| `tool_end` | `name`, `text`, `ok` | 工具结果展示，与 `tool_start` 按调用顺序配对；`ok=false` 表示调用失败，前端当场显示 `Failed` |
 | `event` | `text` | 其他事件（召回、沉淀提示等） |
 | `progress` | `text` | 阶段文案 |
 | `done` | `text`, `steps`, `estimated_tokens` | 正常完成，正文以完整文本定稿 |
@@ -145,17 +145,24 @@ Web 单 Turn 模型下，`CommandUseCases.BUSY_READ_ONLY` 与 `BUSY_NO_ARGUMENT`
 
 ### 设置面板
 
-顶栏 `Settings` 按钮、`Alt+S` 或 `/setup` 打开同一个设置面板（`web/src/components/SettingsPanel.tsx`）。所有读写仍走 `POST /api/commands` 与 `GET /api/providers`，复用 TUI 相同的 Application 用例，React 端不保存设置副本：
+顶栏 `Settings` 按钮、`Alt+S` 或 `/setup` 打开同一个设置面板（`web/src/components/SettingsPanel.tsx`）。模型相关读写仍走 `POST /api/commands`，供应商管理走 `GET/POST /api/settings/providers`，复用 TUI 相同的 Application 用例，React 端不保存设置副本：
 
 | 分区 | 数据来源 | 说明 |
 | --- | --- | --- |
 | Model | `/model`、`/model refresh`、`/model <provider>/<model>` | 列出目录中的模型并标记当前项；目录为空时明确提示，可按模型 ID 切换 |
+| Appearance | 浏览器 `localStorage` | 默认跟随系统 / 浏览器明暗主题，也可固定亮色或暗色；只保存在当前浏览器 |
 | Thinking | `/think` | 仅展示模型真实支持的 reasoning 取值，`default` 表示不覆盖供应商默认 |
 | Context | `/context` | 上下文窗口候选与当前值 |
 | Providers | `GET/POST /api/settings/providers/{provider}` | 添加/更新 Key、修改 Base URL、删除供应商、自定义模型；**保存的 Key 永不回传浏览器** |
 | About | `/api/health` | 版本、当前 provider/model、是否生成中、单客户端锁、静态资源状态与快捷键 |
 
 面板本身不执行任何副作用：删除供应商仍需二次确认，服务端复用 `SettingsUseCases` 的「当前供应商不可删」等守卫，失败原因以 `provider-error` 原样展示。
+
+### 主题、侧栏与消息滚动
+
+- 界面使用同一套 CSS 变量生成亮色与暗色主题。默认 `Follow system` 响应 `prefers-color-scheme` 的实时变化，也可在 Appearance 中固定 Light / Dark；选择只写入当前浏览器的 `syvrio.theme`，移动端地址栏 `theme-color` 同步切换。显式主题在样式加载前恢复，避免刷新时黑白闪烁。
+- 桌面端点击侧栏头部的面板图标会收起整列（`display: none`，宽度让给对话区），顶栏左侧同一图标或 `Ctrl+B` / `Alt+B` 重新展开；桌面选择保存在 `syvrio.sidebar`。手机端仍使用默认收起的抽屉与蒙层，跨断点时自动折叠。
+- 恢复或切换会话时，消息区在绘制前以 `instant` 直接定位到最新一条，不播放从顶部滑到底部的长动画；同一会话的流式更新保留平滑跟随，用户向上翻阅后暂停跟随，回到底部附近后恢复。
 
 ### 快捷键与浏览器冲突
 
@@ -166,7 +173,7 @@ Web 单 Turn 模型下，`CommandUseCases.BUSY_READ_ONLY` 与 `BUSY_NO_ARGUMENT`
 | `Ctrl+P`（命令面板） | `Ctrl+Shift+P` / `Alt+P` | `Ctrl+P` 是浏览器打印，不拦截；Firefox 的 `Ctrl+Shift+P` 是隐私窗口，`Alt+P` 是跨浏览器可靠替代 |
 | `Ctrl+P`（`/model` 内供应商入口） | `Alt+M`，或点击顶栏模型名，或 `/model` | 不占用浏览器打印键 |
 | TUI `/setup` | `Alt+S`、顶栏 `Settings` 或 `/setup` | 设置面板：模型、思考强度、上下文、供应商 Key 与端点 |
-| `Ctrl+B`（会话栏） | `Ctrl+B` / `Alt+B` | 可稳定拦截，另有可点击 `Sessions` 按钮 |
+| `Ctrl+B`（会话栏） | `Ctrl+B` / `Alt+B` | 可稳定拦截，另有顶栏侧栏图标按钮 |
 | `Ctrl+Q`（退出） | 不拦截 | 浏览器保留；`/exit` 只返回入口视图 |
 | `Escape` | `Escape` | 关闭弹层 / 关闭补全 / 停止生成 |
 | `↑ / ↓`、`Tab`、`Enter`、`Shift+Enter` | 同 TUI 语义 | 在输入框内处理，`Shift+Enter` 换行 |
@@ -190,7 +197,7 @@ Web 单 Turn 模型下，`CommandUseCases.BUSY_READ_ONLY` 与 `BUSY_NO_ARGUMENT`
 - **软键盘**：`index.html` 使用 `viewport-fit=cover` 与 `interactive-widget=resizes-content`；`App.tsx` 监听 `visualViewport` 把可用高度写入 `--app-height`，`.app` 优先使用该值，iOS Safari 弹出键盘时输入框不会被遮住。
 - **输入缩放**：移动端 `textarea` / 命令面板输入 / 设置与供应商输入统一 `font-size: 16px`，避免 iOS 聚焦时整页放大；`touch-action: manipulation` 去掉双击缩放的点击延迟。
 - **弹层高度**：命令面板、确认框、选项面板与设置面板优先使用 `dvh`（不支持时退回 `vh`），手机键盘弹出或地址栏收起后仍可见；设置面板在手机上为顶部横向标签 + 纵向内容，窄屏自动换行。
-- **安全区**：顶栏、侧栏与输入框使用 `env(safe-area-inset-*)`，适配刘海屏横屏与底部 Home 指示条；`index.html` 提供 `theme-color` 让地址栏与暗色界面一致。
+- **安全区**：顶栏、侧栏与输入框使用 `env(safe-area-inset-*)`，适配刘海屏横屏与底部 Home 指示条；`index.html` 提供 `theme-color`，由主题控制逻辑同步为当前亮色或暗色背景。
 - **触摸可用性**：`hover: none` 设备上删除按钮常显（宽度断点之外再按能力判断），会话行、关闭按钮、设置选项与供应商按钮最小高度 36–44px；消息区 `overscroll-behavior: contain`，滚动不会带动整页回弹。
 
 ## 安全边界

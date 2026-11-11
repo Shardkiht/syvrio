@@ -67,7 +67,7 @@ describe('settings panel', () => {
     const onChanged = vi.fn();
     const onNotice = vi.fn();
     render(
-      <SettingsPanel health={HEALTH} onClose={() => {}} onChanged={onChanged} onNotice={onNotice} />,
+      <SettingsPanel health={HEALTH} theme="auto" onTheme={() => {}} onClose={() => {}} onChanged={onChanged} onNotice={onNotice} />,
     );
 
     await waitFor(() => expect(screen.getByTestId('settings-models').textContent).toContain('deepseek-pro'));
@@ -82,7 +82,7 @@ describe('settings panel', () => {
   it('shows reasoning options and applies one', async () => {
     const lines = installFetch();
     render(
-      <SettingsPanel health={HEALTH} onClose={() => {}} onChanged={() => {}} onNotice={() => {}} />,
+      <SettingsPanel health={HEALTH} theme="auto" onTheme={() => {}} onClose={() => {}} onChanged={() => {}} onNotice={() => {}} />,
     );
     fireEvent.click(screen.getByTestId('settings-tab-thinking'));
     await waitFor(() => expect(screen.getByTestId('settings-thinking').textContent).toContain('default'));
@@ -93,7 +93,7 @@ describe('settings panel', () => {
   it('applies a context window choice', async () => {
     const lines = installFetch();
     render(
-      <SettingsPanel health={HEALTH} onClose={() => {}} onChanged={() => {}} onNotice={() => {}} />,
+      <SettingsPanel health={HEALTH} theme="auto" onTheme={() => {}} onClose={() => {}} onChanged={() => {}} onNotice={() => {}} />,
     );
     fireEvent.click(screen.getByTestId('settings-tab-context'));
     await waitFor(() => expect(screen.getByTestId('context-64000')).toBeTruthy());
@@ -104,17 +104,36 @@ describe('settings panel', () => {
   it('reuses provider management under the providers tab', async () => {
     installFetch();
     render(
-      <SettingsPanel health={HEALTH} onClose={() => {}} onChanged={() => {}} onNotice={() => {}} />,
+      <SettingsPanel health={HEALTH} theme="auto" onTheme={() => {}} onClose={() => {}} onChanged={() => {}} onNotice={() => {}} />,
     );
     fireEvent.click(screen.getByTestId('settings-tab-providers'));
     await waitFor(() => expect(screen.getByTestId('provider-deepseek').textContent).toContain('DeepSeek'));
     expect(screen.getByTestId('provider-deepseek').textContent).toContain('configured');
   });
 
+  it('offers automatic, light and dark appearance choices', async () => {
+    installFetch();
+    const onTheme = vi.fn();
+    render(
+      <SettingsPanel
+        health={HEALTH}
+        theme="auto"
+        onTheme={onTheme}
+        onClose={() => {}}
+        onChanged={() => {}}
+        onNotice={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('settings-tab-appearance'));
+    expect(screen.getByTestId('theme-auto').getAttribute('aria-checked')).toBe('true');
+    fireEvent.click(screen.getByTestId('theme-dark'));
+    expect(onTheme).toHaveBeenCalledWith('dark');
+  });
+
   it('reports the build info without exposing any secret', async () => {
     installFetch();
     render(
-      <SettingsPanel health={HEALTH} onClose={() => {}} onChanged={() => {}} onNotice={() => {}} />,
+      <SettingsPanel health={HEALTH} theme="auto" onTheme={() => {}} onClose={() => {}} onChanged={() => {}} onNotice={() => {}} />,
     );
     fireEvent.click(screen.getByTestId('settings-tab-about'));
     const about = screen.getByTestId('settings-about');

@@ -13,7 +13,16 @@ export type Segment =
       expanded: boolean;
       seconds: number | null;
     }
-  | { kind: 'tool'; id: string; name: string; done: boolean; display: string }
+  | {
+      kind: 'tool';
+      id: string;
+      name: string;
+      done: boolean;
+      display: string;
+      /** null while the call is still running or when the backend sent no state. */
+      ok: boolean | null;
+      expanded: boolean;
+    }
   | { kind: 'event'; id: string; text: string };
 
 export type ChatMessage =
@@ -26,7 +35,7 @@ export type ChatMessage =
       interrupted: boolean;
       at?: string;
     }
-  | { id: string; role: 'info'; content: string; at?: string };
+  | { id: string; role: 'info'; content: string; at?: string; folded?: boolean; title?: string };
 
 export interface ChatState {
   messages: ChatMessage[];
@@ -144,7 +153,9 @@ export function reduceChat(state: ChatState, event: StreamEvent): ChatState {
             phase,
             text: '',
             done: false,
-            collapsed: false,
+            // Reasoning never streams into view; the summary row is the only
+            // signal until the user chooses to expand it.
+            collapsed: true,
             expanded: false,
             seconds: null,
           };
@@ -198,7 +209,15 @@ export function reduceChat(state: ChatState, event: StreamEvent): ChatState {
     case 'tool_start':
       return patchLive(base, (segments) => [
         ...segments,
-        { kind: 'tool', id: nextId('tool'), name: event.name || 'tool', done: false, display: '' },
+        {
+          kind: 'tool',
+          id: nextId('tool'),
+          name: event.name || 'tool',
+          done: false,
+          display: '',
+          ok: null,
+          expanded: false,
+        },
       ]);
 
     case 'tool_end':
@@ -213,6 +232,9 @@ export function reduceChat(state: ChatState, event: StreamEvent): ChatState {
             ...(segments[target] as Extract<Segment, { kind: 'tool' }>),
             done: true,
             display: event.text || '',
+            // The stream carries the outcome so a failure reads as Failed right
+            // away instead of waiting for a history reload.
+            ok: event.ok ?? null,
           };
         }
         return segments;
@@ -255,18 +277,20 @@ export function reduceChat(state: ChatState, event: StreamEvent): ChatState {
   }
 }
 
-export function toggleThinking(state: ChatState, segmentId: string): ChatState {
+/** Fold state lives on the segment itself, so tool rows and reasoning share one path. */
+export function toggleSegment(state: ChatState, segmentId: string): ChatState {
   return {
     ...state,
     messages: state.messages.map((message) => {
       if (message.role !== 'assistant') return message;
       return {
         ...message,
-        segments: message.segments.map((segment) =>
-          segment.kind === 'thinking' && segment.id === segmentId
-            ? { ...segment, expanded: !segment.expanded }
-            : segment,
-        ),
+        segments: message.segments.map((segment) => {
+          if (segment.id !== segmentId) return segment;
+          if (segment.kind === 'thinking') return { ...segment, expanded: !segment.expanded };
+          if (segment.kind === 'tool') return { ...segment, expanded: !segment.expanded };
+          return segment;
+        }),
       };
     }),
   };
@@ -286,12 +310,29 @@ export function loadHistory(state: ChatState, history: HistoryResponse): ChatSta
     messages.push({ id: nextId('i'), role: 'info', content: '更早的记录已省略' });
   }
   if (history.summary) {
-    messages.push({ id: nextId('i'), role: 'info', content: `此前摘要：${history.summary}` });
+    messages.push({
+      id: nextId('i'),
+      role: 'info',
+      content: history.summary,
+      folded: true,
+      title: 'Summarized context',
+    });
   }
-  for (const item of history.items) {
+  for (let index = 0; index < history.items.length; index += 1) {
+    const item = history.items[index];
     if (item.role === 'user') {
       messages.push({ id: item.id || nextId('u'), role: 'user', content: item.content, at: item.at });
     } else if (item.role === 'assistant') {
+      // Tool results are separate journal records that follow their call. Fold
+      // them back into the call so the transcript shows one entry per call
+      // instead of a pill plus a duplicate "name ok" line.
+      const results: (typeof history.items)[number][] = [];
+      let look = index + 1;
+      while (look < history.items.length && history.items[look].role === 'tool') {
+        results.push(history.items[look]);
+        look += 1;
+      }
+      index = look - 1;
       const segments: Segment[] = [];
       if (item.reasoning?.text) {
         segments.push({
@@ -305,15 +346,30 @@ export function loadHistory(state: ChatState, history: HistoryResponse): ChatSta
           seconds: item.reasoning.seconds,
         });
       }
-      for (const call of item.tool_calls) {
+      // Match by tool name first: a missing or extra record must not shift
+      // every later result onto the wrong call. Order is only the fallback.
+      const used = new Set<number>();
+      const takeResult = (name: string) => {
+        const named = results.findIndex(
+          (row, at) => !used.has(at) && (row.tool_name || '') === name,
+        );
+        const chosen = named >= 0 ? named : results.findIndex((_, at) => !used.has(at));
+        if (chosen < 0) return null;
+        used.add(chosen);
+        return results[chosen];
+      };
+      item.tool_calls.forEach((call) => {
+        const result = takeResult(call.name);
         segments.push({
           kind: 'tool',
           id: nextId('tool'),
           name: call.name,
           done: true,
-          display: '',
+          display: result?.content || '',
+          ok: result ? Boolean(result.tool_ok) : null,
+          expanded: false,
         });
-      }
+      });
       if (item.content) {
         segments.push({ kind: 'text', id: nextId('c'), content: item.content });
       }
@@ -326,17 +382,22 @@ export function loadHistory(state: ChatState, history: HistoryResponse): ChatSta
         at: item.at,
       });
     } else if (item.role === 'tool') {
+      // A tool record with no preceding assistant turn: keep it, folded.
       messages.push({
         id: item.id || nextId('i'),
         role: 'info',
-        content: `${item.tool_name || 'tool'} ${item.tool_ok ? 'ok' : 'failed'}`,
+        content: item.content || `${item.tool_name || 'tool'} ${item.tool_ok ? 'ok' : 'failed'}`,
+        folded: true,
+        title: `${item.tool_name || 'tool'} ${item.tool_ok ? 'ok' : 'failed'}`,
         at: item.at,
       });
     } else {
       messages.push({
         id: item.id || nextId('i'),
         role: 'info',
-        content: `此前摘要：${item.content}`,
+        content: item.content,
+        folded: true,
+        title: 'Summarized context',
         at: item.at,
       });
     }
