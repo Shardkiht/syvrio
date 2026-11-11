@@ -1171,9 +1171,15 @@ def test_spawn_daemon_hides_console_window(tmp_path, monkeypatch):
     assert captured["startupinfo"].wShowWindow == daemon_module.subprocess.SW_HIDE
 
 
-@pytest.mark.parametrize("configured", [None, "", "203.0.113.0/24"])
+@pytest.mark.parametrize(
+    "configured",
+    [None, "", "203.0.113.0/24", "198.18.0.0/15,2001:2::/48", "2001:2::/48, 198.18.0.0/15"],
+)
 def test_spawn_daemon_shares_fake_dns_policy(tmp_path, monkeypatch, configured):
-    from syvrio.infra.search.base import DEFAULT_FAKE_IP_CIDRS
+    from syvrio.infra.search.base import (
+        DEFAULT_FAKE_IP_CIDRS,
+        order_fake_ip_cidrs,
+    )
 
     captured = {}
     if configured is None:
@@ -1185,9 +1191,21 @@ def test_spawn_daemon_shares_fake_dns_policy(tmp_path, monkeypatch, configured):
         lambda command, **kwargs: captured.update(kwargs),
     )
     daemon_module._spawn_daemon(["unused"], tmp_path / "daemon.log")
-    assert captured["env"]["FAKE_IP_CIDRS"] == (
-        DEFAULT_FAKE_IP_CIDRS if configured is None else configured
+    expected = (
+        order_fake_ip_cidrs(configured) if configured is not None else DEFAULT_FAKE_IP_CIDRS
     )
+    assert captured["env"]["FAKE_IP_CIDRS"] == expected
+
+
+def test_order_fake_ip_cidrs_puts_ipv6_first():
+    """open-websearch 2.2.0 的 some() 遇到 IPv4 段会抛错并吞掉，IPv6 必须先匹配。"""
+    from syvrio.infra.search.base import DEFAULT_FAKE_IP_CIDRS, order_fake_ip_cidrs
+
+    assert order_fake_ip_cidrs("198.18.0.0/15,2001:2::/48") == "2001:2::/48,198.18.0.0/15"
+    assert order_fake_ip_cidrs(" 198.18.0.0/15 , ,2001:2::/48 ") == (
+        "2001:2::/48,198.18.0.0/15"
+    )
+    assert DEFAULT_FAKE_IP_CIDRS.startswith("2001:2::/48")
 
 
 def test_disabled_search_does_not_register_tool(tmp_path):

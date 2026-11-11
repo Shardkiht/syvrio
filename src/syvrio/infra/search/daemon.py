@@ -10,7 +10,12 @@ from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
-from .base import DEFAULT_FAKE_IP_CIDRS, ProviderError, ProviderErrorKind
+from .base import (
+    DEFAULT_FAKE_IP_CIDRS,
+    ProviderError,
+    ProviderErrorKind,
+    order_fake_ip_cidrs,
+)
 from .open_websearch import NAME, npx_command
 
 START_TIMEOUT = 20.0
@@ -101,7 +106,11 @@ def _spawn_daemon(command: list[str], log_path: Path) -> None:
     try:
         env = {**os.environ, "OPEN_WEBSEARCH_QUIET_STARTUP": "true"}
         # 两层校验必须共用合成 DNS 段，否则本地通过后仍会被 daemon 拒绝。
-        env.setdefault("FAKE_IP_CIDRS", DEFAULT_FAKE_IP_CIDRS)
+        # 这里不只是补齐默认值：daemon 的豁免判定对顺序敏感（IPv4 段在前会让
+        # IPv6 地址直接失败），所以无论用户是否自定义都重新排一次序。
+        env["FAKE_IP_CIDRS"] = order_fake_ip_cidrs(
+            env.get("FAKE_IP_CIDRS", DEFAULT_FAKE_IP_CIDRS)
+        )
         with open(log_path, "ab") as log:
             subprocess.Popen(
                 command,
