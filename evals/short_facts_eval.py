@@ -8,7 +8,7 @@ from statistics import median
 from tempfile import TemporaryDirectory
 from time import perf_counter
 
-from evals.retrieval_eval import CASES, build_corpus
+from evals.retrieval_eval import load_data
 
 from syvrio.infra.config import Config
 from syvrio.memory.schema import Core, render_record
@@ -35,10 +35,37 @@ SHORT_CASES = (
 )
 
 
+SHORT_FIELD_MARKERS = tuple(text.split("：")[0] for _, _, _, text in SHORT_FACTS)
+
+
+def corpus_entries() -> list[tuple[int, str, str]]:
+    """冻结语料里本身就埋了同类短字段（姓名/年龄/职业…），会直接挤占 top3。
+
+    本评测要验证的是「长文本干扰下短字段仍在前三」，所以先剔除同字段的竞品，只留下
+    无关长文。返回值带原始下标，`legacy-NNNN` 仍按冻结语料顺序编号，用例的 target 不变。
+    """
+    corpus, _ = load_data()
+    return [
+        (index, item["category"], item["text"])
+        for index, item in enumerate(corpus)
+        if not any(marker in item["text"] for marker in SHORT_FIELD_MARKERS)
+    ]
+
+
+def legacy_cases() -> list[tuple[str, str, str]]:
+    """冻结用例的 target 是语料下标，换成 seed_vault 生成的 legacy-NNNN 记录 ID。"""
+    _, cases = load_data()
+    rows: list[tuple[str, str, str]] = []
+    for case in cases:
+        for target in case.get("targets") or [case["target"]]:
+            rows.append((case["category"], case["query"], f"legacy-{target:04d}"))
+    return rows
+
+
 def seed_vault(vault: Path) -> int:
     topics = defaultdict(list)
     titles = {}
-    for index, (topic, text) in enumerate(build_corpus()):
+    for index, topic, text in corpus_entries():
         topics["legacy-" + topic].append((f"legacy-{index:04}", text))
     for label, topic, title, text in SHORT_FACTS:
         topics[topic].append((f"short-{label}", text))
@@ -102,7 +129,7 @@ def main() -> None:
         rows = defaultdict(list)
         checks = [
             ("short", query, f"short-{key}", []) for key, query in SHORT_CASES
-        ] + [("legacy", query, None, subs) for _, query, subs in CASES]
+        ] + [("legacy", query, ident, []) for _, query, ident in legacy_cases()]
         for group, query, ident, subs in checks:
             start = perf_counter()
             hits = service.recall(query, 10)
