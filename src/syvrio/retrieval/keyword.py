@@ -38,9 +38,7 @@ def tokenize(text: str) -> tuple[str, ...]:
     else:
         lowered = text.lower()
         tokens = [lowered[index : index + 2] for index in range(max(1, len(lowered) - 1))]
-    return tuple(
-        token for token in tokens if token and _is_word(token) and token not in STOPWORDS
-    )
+    return tuple(token for token in tokens if token and _is_word(token) and token not in STOPWORDS)
 
 
 def _field_key(text: str) -> str:
@@ -74,8 +72,9 @@ def _query_field_labels(query: str, fields: dict[str, list[int]]) -> set[str]:
     return selected
 
 
-def _lookup_fields(query: str, labels: set[str], fields: dict[str, list[int]],
-                   entries: list[Entry]) -> dict[int, str]:
+def _lookup_fields(
+    query: str, labels: set[str], fields: dict[str, list[int]], entries: list[Entry]
+) -> dict[int, str]:
     """Give exact priority to field lookups, with evidence for contextual qualifiers."""
     query = _field_key(query).rstrip("?.!。！？")
     if not labels:
@@ -92,14 +91,21 @@ def _lookup_fields(query: str, labels: set[str], fields: dict[str, list[int]],
     for label in labels:
         lookup = rf"(?:请问\s*)?(?:我的?|我用的|我指的是|用户|本人|find my |what is my )?{re.escape(label)}"
         lookup += r"(?:是什么|是啥|是多少|是哪个|是哪里|叫什么|有多少)?"
-        if re.fullmatch(lookup, query) or re.fullmatch(lookup, first) or (personal_question and label in rest):
+        if (
+            re.fullmatch(lookup, query)
+            or re.fullmatch(lookup, first)
+            or (personal_question and label in rest)
+        ):
             result.update((index, label) for index in fields[label])
             continue
         suffix = f"的{label}"
         if query.endswith(suffix):
-            qualifier = query[:-len(suffix)]
-            result.update((index, label) for index in fields[label]
-                          if qualifier and qualifier in _field_key(entries[index].index_text))
+            qualifier = query[: -len(suffix)]
+            result.update(
+                (index, label)
+                for index in fields[label]
+                if qualifier and qualifier in _field_key(entries[index].index_text)
+            )
     return result
 
 
@@ -153,9 +159,12 @@ class KeywordRetriever:
         lowered = query.lower()
         ranked = sorted(
             (
-                (index in fields,
-                 score + (2.0 if lowered in entry.index_text.lower() else 0.0), index)
-                for index, (entry, score) in enumerate(zip(entries, scores))
+                (
+                    index in fields,
+                    score + (2.0 if lowered in entry.index_text.lower() else 0.0),
+                    index,
+                )
+                for index, (entry, score) in enumerate(zip(entries, scores, strict=True))
             ),
             reverse=True,
         )

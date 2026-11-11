@@ -1,4 +1,5 @@
 """Application Memory 用例：Pending、推断、导入与画像读取。"""
+
 from __future__ import annotations
 
 import pytest
@@ -68,7 +69,10 @@ def test_inference_review_keeps_facts_separate(config):
 
     edited = memory.review_inference(item.id, "correct", "修正后的假设")
     assert edited.feedback == "Edit saved as a new pending hypothesis."
-    assert any(entry.text == "修正后的假设" and entry.status == "hypothesis" for entry in service.list_inferences())
+    assert any(
+        entry.text == "修正后的假设" and entry.status == "hypothesis"
+        for entry in service.list_inferences()
+    )
 
 
 def test_import_preview_then_apply(config, tmp_path):
@@ -77,7 +81,9 @@ def test_import_preview_then_apply(config, tmp_path):
     document = tmp_path / "notes.md"
     document.write_text("我喜欢清淡饮食，也喜欢散步。" * 20, encoding="utf-8")
 
-    extractor = StaticExtractor(ExtractionResult(memories=[Candidate(topic="preference", text="喜欢清淡饮食")]))
+    extractor = StaticExtractor(
+        ExtractionResult(memories=[Candidate(topic="preference", text="喜欢清淡饮食")])
+    )
     preview = memory.import_path(document, apply=False, extractor=extractor)
     assert preview.files == 1 and preview.chunks >= 1
     assert preview.saved >= 1
@@ -103,7 +109,9 @@ def test_import_continues_after_chunk_failure(config, tmp_path, monkeypatch):
         return original(chunk, **kwargs)
 
     monkeypatch.setattr(service, "import_text", fail_first)
-    extractor = StaticExtractor(ExtractionResult(memories=[Candidate(topic="preference", text="合成内容")]))
+    extractor = StaticExtractor(
+        ExtractionResult(memories=[Candidate(topic="preference", text="合成内容")])
+    )
     result = memory.import_path(document, apply=True, extractor=extractor)
 
     assert result.errors and "synthetic chunk failure" in result.errors[0]

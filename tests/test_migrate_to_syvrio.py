@@ -45,8 +45,12 @@ def make_config(tmp_path: Path) -> Path:
 
 def run(vault: Path, config: Path, new_config: Path, *, apply: bool, keyring: bool = False):
     return migrate_mod.migrate(
-        vault, config, new_config, apply=apply,
-        backup_root=vault.parent, keyring=keyring,
+        vault,
+        config,
+        new_config,
+        apply=apply,
+        backup_root=vault.parent,
+        keyring=keyring,
     )
 
 
@@ -204,9 +208,7 @@ def test_validation_failure_restores_tags_metadata_and_config(tmp_path, monkeypa
     memory_path = vault / "memories" / "01-test.md"
     memory_before = memory_path.read_bytes()
     meta_before = {
-        path.name: path.read_bytes()
-        for path in (vault / ".quiet-memo").iterdir()
-        if path.is_file()
+        path.name: path.read_bytes() for path in (vault / ".quiet-memo").iterdir() if path.is_file()
     }
     real = migrate_mod._memory_fingerprint
     calls = {"count": 0}
@@ -225,15 +227,15 @@ def test_validation_failure_restores_tags_metadata_and_config(tmp_path, monkeypa
     assert memory_path.read_bytes() == memory_before
     assert (vault / ".quiet-memo").exists()
     assert {
-        path.name: path.read_bytes()
-        for path in (vault / ".quiet-memo").iterdir()
-        if path.is_file()
+        path.name: path.read_bytes() for path in (vault / ".quiet-memo").iterdir() if path.is_file()
     } == meta_before
     assert not (vault / ".syvrio").exists()
     assert not new_config.exists()
     backups = _backups(tmp_path)
     assert len(backups) == 1
-    assert (backups[0] / ".quiet-memo" / "pending.jsonl").read_bytes() == meta_before["pending.jsonl"]
+    assert (backups[0] / ".quiet-memo" / "pending.jsonl").read_bytes() == meta_before[
+        "pending.jsonl"
+    ]
 
 
 def test_config_failure_after_metadata_removal_restores_source(tmp_path, monkeypatch):
@@ -289,18 +291,22 @@ def test_keyring_partial_failure_keeps_file_migration_and_reports(tmp_path, monk
 
 
 def _cli(vault: Path, config: Path, new_config: Path, backup_dir: Path, *options: str) -> int:
-    return migrate_mod.main([
-        "--vault", str(vault),
-        "--config", str(config),
-        "--new-config", str(new_config),
-        "--backup-dir", str(backup_dir),
-        *options,
-    ])
+    return migrate_mod.main(
+        [
+            "--vault",
+            str(vault),
+            "--config",
+            str(config),
+            "--new-config",
+            str(new_config),
+            "--backup-dir",
+            str(backup_dir),
+            *options,
+        ]
+    )
 
 
-def test_cli_partial_keyring_failure_returns_nonzero_and_keeps_files(
-    tmp_path, monkeypatch, capsys
-):
+def test_cli_partial_keyring_failure_returns_nonzero_and_keeps_files(tmp_path, monkeypatch, capsys):
     fake = fake_keyring(monkeypatch)
     fake.store[("quiet-memo", "SILICONFLOW_API_KEY")] = "second-synthetic"
     real_delete = fake.delete_password

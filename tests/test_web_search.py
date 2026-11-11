@@ -7,12 +7,17 @@ import socket
 import httpx
 import pytest
 
-pytestmark = pytest.mark.search
-
 from syvrio.agent.session import SessionStore
 from syvrio.agent.tools import SEARCH_NOTICE, build_tools
 from syvrio.app.server import build_server
-from syvrio.infra.config import ChatConfig, Config, FetchConfig, LLMConfig, SearchConfig, load_config
+from syvrio.infra.config import (
+    ChatConfig,
+    Config,
+    FetchConfig,
+    LLMConfig,
+    SearchConfig,
+    load_config,
+)
 from syvrio.infra.search import (
     FetchQuery,
     FetchResult,
@@ -25,13 +30,15 @@ from syvrio.infra.search import (
     build_fetch_router,
     build_search_router,
 )
-from syvrio.infra.search.base import assert_public_fetch_url
 from syvrio.infra.search import daemon as daemon_module
+from syvrio.infra.search.base import assert_public_fetch_url
 from syvrio.infra.search.cache import SearchCache
 from syvrio.infra.search.daemon import ensure_daemon
 from syvrio.infra.search.open_websearch import OpenWebSearchProvider
 from syvrio.infra.search.router import normalize_url
 from syvrio.memory.service import MemoryService
+
+pytestmark = pytest.mark.search
 
 
 def envelope(results: list[dict]) -> dict:
@@ -167,10 +174,17 @@ def test_router_fetch_allows_default_dual_stack_fake_dns(monkeypatch, final_url)
 
     monkeypatch.delenv("FAKE_IP_CIDRS", raising=False)
     monkeypatch.setattr(
-        search_base.socket, "getaddrinfo",
+        search_base.socket,
+        "getaddrinfo",
         lambda host, port, **kwargs: [
             (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("198.18.0.15", port)),
-            (socket.AF_INET6, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("2001:2::12", port, 0, 0)),
+            (
+                socket.AF_INET6,
+                socket.SOCK_STREAM,
+                socket.IPPROTO_TCP,
+                "",
+                ("2001:2::12", port, 0, 0),
+            ),
         ],
     )
 
@@ -188,7 +202,8 @@ def test_router_fetch_allows_default_dual_stack_fake_dns(monkeypatch, final_url)
 def test_explicit_fake_ip_ranges_replace_defaults(monkeypatch, configured):
     monkeypatch.setenv("FAKE_IP_CIDRS", configured)
     monkeypatch.setattr(
-        socket, "getaddrinfo",
+        socket,
+        "getaddrinfo",
         lambda host, port, **kwargs: [
             (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("198.18.0.15", port))
         ],
@@ -201,7 +216,8 @@ def test_explicit_fake_ip_ranges_replace_defaults(monkeypatch, configured):
 def test_fake_dns_does_not_hide_private_answer(monkeypatch, address):
     monkeypatch.delenv("FAKE_IP_CIDRS", raising=False)
     monkeypatch.setattr(
-        socket, "getaddrinfo",
+        socket,
+        "getaddrinfo",
         lambda host, port, **kwargs: [
             (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", (ip, port))
             for ip in ("198.18.0.15", address)
@@ -321,12 +337,8 @@ def test_fetch_router_falls_back_to_second_provider(public_dns):
 
 
 def test_fetch_router_all_failed_reports_fetch_error(public_dns):
-    first = _FetchOnly(
-        "first", error=ProviderError("first", ProviderErrorKind.TIMEOUT, "slow")
-    )
-    second = _FetchOnly(
-        "second", error=ProviderError("second", ProviderErrorKind.NETWORK, "reset")
-    )
+    first = _FetchOnly("first", error=ProviderError("first", ProviderErrorKind.TIMEOUT, "slow"))
+    second = _FetchOnly("second", error=ProviderError("second", ProviderErrorKind.NETWORK, "reset"))
     router = FetchRouter({"first": first, "second": second}, order=["first", "second"])
 
     with pytest.raises(ProviderError) as caught:
@@ -593,7 +605,12 @@ def test_connection_error_mentions_daemon_command():
 def test_bad_envelope_is_bad_response():
     provider = mock_provider(
         lambda request: httpx.Response(
-            200, json={"status": "error", "data": None, "error": {"code": "engine_error", "message": "boom"}}
+            200,
+            json={
+                "status": "error",
+                "data": None,
+                "error": {"code": "engine_error", "message": "boom"},
+            },
         )
     )
     with pytest.raises(ProviderError) as caught:
@@ -621,7 +638,10 @@ def test_url_normalization_and_dedupe_limit():
 
 def test_router_falls_back_to_next_provider():
     router = SearchRouter(
-        {"bad": FailingProvider(), "fake": FakeProvider([SearchResult("ok", "https://example.com", "")])},
+        {
+            "bad": FailingProvider(),
+            "fake": FakeProvider([SearchResult("ok", "https://example.com", "")]),
+        },
         order=["bad", "fake"],
     )
     outcome = router.search(SearchQuery("q"))
@@ -676,7 +696,9 @@ def test_slow_preferred_provider_overlaps_candidates_and_early_stop_releases_cal
         def search(self, query):
             assert started.is_set()
             assert not finished.is_set()
-            return [SearchResult("Tibo roadmap", "https://example.com/tibo", "details", provider="fast")]
+            return [
+                SearchResult("Tibo roadmap", "https://example.com/tibo", "details", provider="fast")
+            ]
 
     router = SearchRouter({"slow": SlowProvider(), "fast": FastProvider()})
     try:
@@ -725,7 +747,9 @@ def test_parallel_deadline_does_not_wait_for_an_unresponsive_provider(tmp_path):
         def search(self, query):
             try:
                 assert release.wait(4)
-                return [SearchResult("Tibo", "https://example.com/tibo", "details", provider="fake")]
+                return [
+                    SearchResult("Tibo", "https://example.com/tibo", "details", provider="fake")
+                ]
             finally:
                 finished.set()
 
@@ -857,9 +881,7 @@ def test_high_quality_result_returned_after_timeout_is_not_cached(tmp_path, monk
             self.calls += 1
             clock[0] += 12.0
             return [
-                SearchResult(
-                    "Tibo roadmap", "https://example.com/tibo", "details", None, "slow"
-                )
+                SearchResult("Tibo roadmap", "https://example.com/tibo", "details", None, "slow")
             ]
 
     provider = SlowStrongProvider()
@@ -898,11 +920,7 @@ def test_provider_timeout_after_partial_candidates_is_not_cached(tmp_path, monke
 
         def search(self, query):
             self.calls += 1
-            return [
-                SearchResult(
-                    "Unrelated page", "https://example.com/w", "tibo", None, "weak"
-                )
-            ]
+            return [SearchResult("Unrelated page", "https://example.com/w", "tibo", None, "weak")]
 
     class TimeoutProvider:
         name = "slow"
@@ -928,10 +946,7 @@ def test_provider_timeout_after_partial_candidates_is_not_cached(tmp_path, monke
 
     first = router.search(SearchQuery("tibo codex"))
     assert first.results
-    assert any(
-        failure.provider == "slow" and failure.kind == "timeout"
-        for failure in first.failed
-    )
+    assert any(failure.provider == "slow" and failure.kind == "timeout" for failure in first.failed)
     assert "超时预算已用尽" in first.hint
     assert first.cached is False
 
@@ -960,9 +975,7 @@ def test_normal_quality_early_stop_is_cached(tmp_path):
     assert provider.calls == 1
 
 
-def test_compare_timeout_keeps_actual_verification_and_skips_cache(
-    tmp_path, monkeypatch
-):
+def test_compare_timeout_keeps_actual_verification_and_skips_cache(tmp_path, monkeypatch):
     """compare 第二家耗尽预算：验证状态按实际贡献来源，截断结果不缓存。"""
     from syvrio.infra.search import attempts as attempts_module
 
@@ -993,9 +1006,7 @@ def test_compare_timeout_keeps_actual_verification_and_skips_cache(
         timeout_budget=10.0,
     )
 
-    outcome = router.search(
-        SearchQuery("tibo", providers=("first", "second"), strategy="compare")
-    )
+    outcome = router.search(SearchQuery("tibo", providers=("first", "second"), strategy="compare"))
     assert outcome.verification == "complete"
     assert "已合并 2 家" in outcome.hint and "超时预算已用尽" in outcome.hint
     assert outcome.cached is False
@@ -1020,9 +1031,7 @@ def test_cache_expires(tmp_path):
 def test_cache_key_separates_search_engines(tmp_path):
     provider = FakeProvider([SearchResult("ok", "https://example.com", "")])
     cache = SearchCache(tmp_path / "cache.json", ttl=60)
-    router = SearchRouter(
-        {"fake": provider}, order=["fake"], cache=cache, engines=["bing"]
-    )
+    router = SearchRouter({"fake": provider}, order=["fake"], cache=cache, engines=["bing"])
 
     router.search(SearchQuery("q"))
     router.search(SearchQuery("q", engines=("baidu",)))
@@ -1050,11 +1059,18 @@ def test_ensure_daemon_prefers_installed_service(monkeypatch, tmp_path, installe
     commands = []
     monkeypatch.setattr(daemon_module.shutil, "which", lambda name: installed)
     monkeypatch.setattr(daemon_module, "npx_command", lambda command, args: [command, *args])
-    monkeypatch.setattr(daemon_module, "_spawn_daemon", lambda command, log: commands.append(command))
-    assert ensure_daemon(
-        "http://127.0.0.1:3000", health_check=lambda: next(checks),
-        sleep=lambda _: None, log_path=tmp_path / "daemon.log",
-    ) == "started"
+    monkeypatch.setattr(
+        daemon_module, "_spawn_daemon", lambda command, log: commands.append(command)
+    )
+    assert (
+        ensure_daemon(
+            "http://127.0.0.1:3000",
+            health_check=lambda: next(checks),
+            sleep=lambda _: None,
+            log_path=tmp_path / "daemon.log",
+        )
+        == "started"
+    )
     expected = [installed] if installed else ["npx", "-y", "open-websearch@latest"]
     assert commands == [expected + ["serve", "--port", "3000"]]
 
@@ -1187,13 +1203,12 @@ def test_spawn_daemon_shares_fake_dns_policy(tmp_path, monkeypatch, configured):
     else:
         monkeypatch.setenv("FAKE_IP_CIDRS", configured)
     monkeypatch.setattr(
-        daemon_module.subprocess, "Popen",
+        daemon_module.subprocess,
+        "Popen",
         lambda command, **kwargs: captured.update(kwargs),
     )
     daemon_module._spawn_daemon(["unused"], tmp_path / "daemon.log")
-    expected = (
-        order_fake_ip_cidrs(configured) if configured is not None else DEFAULT_FAKE_IP_CIDRS
-    )
+    expected = order_fake_ip_cidrs(configured) if configured is not None else DEFAULT_FAKE_IP_CIDRS
     assert captured["env"]["FAKE_IP_CIDRS"] == expected
 
 
@@ -1202,9 +1217,7 @@ def test_order_fake_ip_cidrs_puts_ipv6_first():
     from syvrio.infra.search.base import DEFAULT_FAKE_IP_CIDRS, order_fake_ip_cidrs
 
     assert order_fake_ip_cidrs("198.18.0.0/15,2001:2::/48") == "2001:2::/48,198.18.0.0/15"
-    assert order_fake_ip_cidrs(" 198.18.0.0/15 , ,2001:2::/48 ") == (
-        "2001:2::/48,198.18.0.0/15"
-    )
+    assert order_fake_ip_cidrs(" 198.18.0.0/15 , ,2001:2::/48 ") == ("2001:2::/48,198.18.0.0/15")
     assert DEFAULT_FAKE_IP_CIDRS.startswith("2001:2::/48")
 
 
@@ -1261,9 +1274,7 @@ def test_agent_search_tool_passes_search_engine(tmp_path):
     session = SessionStore(config.vault).create()
     tools = build_tools(service, session, search_router=router)
 
-    outcome = tools.execute(
-        "search", {"query": "智谱 GLM 最新消息", "search_engine": "baidu"}
-    )
+    outcome = tools.execute("search", {"query": "智谱 GLM 最新消息", "search_engine": "baidu"})
 
     assert outcome.ok is True
     assert provider.queries[-1].engines == ("baidu",)
@@ -1390,7 +1401,6 @@ def test_agent_fetch_tool_returns_page_content(tmp_path):
         def fetch(self, url, max_chars=4000):
             return FetchResult(url, url, "Page", "发布日期 2026-09-21", False, "Example")
 
-
     config = Config(
         vault=tmp_path / "vault",
         llm=LLMConfig(),
@@ -1440,13 +1450,9 @@ async def test_mcp_exposes_search_when_enabled(tmp_path):
         assert "search" in {tool.name for tool in tools}
         result = await client.call_tool("search", {"query": "查询"})
         assert result.data["results"][0]["url"] == "https://example.com"
-        await client.call_tool(
-            "search", {"query": "智谱 GLM", "search_engine": "baidu"}
-        )
+        await client.call_tool("search", {"query": "智谱 GLM", "search_engine": "baidu"})
         assert provider.queries[-1].engines == ("baidu",)
-        await client.call_tool(
-            "search", {"query": "智谱 GLM", "search_engine": ["baidu", "bing"]}
-        )
+        await client.call_tool("search", {"query": "智谱 GLM", "search_engine": ["baidu", "bing"]})
         assert provider.queries[-1].engines == ("baidu", "bing")
 
 
@@ -1463,50 +1469,64 @@ async def test_mcp_omits_search_when_disabled(tmp_path):
         assert "search" not in {tool.name for tool in tools}
 
 
-@pytest.mark.parametrize("value, expected", [
-    ('["bing"]', ("bing",)),
-    ('["baidu", "bing", "baidu"]', ("baidu", "bing")),
-])
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        ('["bing"]', ("bing",)),
+        ('["baidu", "bing", "baidu"]', ("baidu", "bing")),
+    ],
+)
 def test_engine_argument_accepts_json_array_string(value, expected):
     from syvrio.infra.search.base import normalize_search_engines
+
     assert normalize_search_engines(value, ["bing", "baidu"]) == expected
 
 
-@pytest.mark.parametrize("value", ['[1]', '["notreal"]', '["bing"'])
+@pytest.mark.parametrize("value", ["[1]", '["notreal"]', '["bing"'])
 def test_engine_argument_rejects_invalid_json_array_string(value):
     from syvrio.infra.search.base import normalize_search_engines
+
     with pytest.raises(ValueError):
         normalize_search_engines(value, ["bing", "baidu"])
 
 
-@pytest.mark.parametrize("value, expected", [
-    (['["baidu"]'], ("baidu",)),
-    (['["baidu"]', '["bing"]'], ("baidu", "bing")),
-    (['baidu', '["bing", "baidu"]'], ("baidu", "bing")),
-])
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        (['["baidu"]'], ("baidu",)),
+        (['["baidu"]', '["bing"]'], ("baidu", "bing")),
+        (["baidu", '["bing", "baidu"]'], ("baidu", "bing")),
+    ],
+)
 def test_engine_argument_accepts_nested_json_array_items(value, expected):
     # 有的 provider 把数组参数双重序列化成元素级 JSON 字符串。
     from syvrio.infra.search.base import normalize_search_engines
+
     assert normalize_search_engines(value, ["bing", "baidu"]) == expected
 
 
-@pytest.mark.parametrize("value", [['[1]'], ['["notreal"]'], ['["bing"'], ['[1]', 'bing']])
+@pytest.mark.parametrize("value", [["[1]"], ['["notreal"]'], ['["bing"'], ["[1]", "bing"]])
 def test_engine_argument_rejects_invalid_nested_json_array_items(value):
     from syvrio.infra.search.base import normalize_search_engines
+
     with pytest.raises(ValueError):
         normalize_search_engines(value, ["bing", "baidu"])
 
 
 def test_default_engine_failure_falls_back_once():
     requests = []
+
     def handler(request):
         body = json.loads(request.content)
         requests.append(body)
         if body["engines"] == ["bing"]:
             payload = envelope([])
-            payload["data"]["partialFailures"] = [{"engine": "bing", "code": "ECONNRESET", "message": "TLS connection failed"}]
+            payload["data"]["partialFailures"] = [
+                {"engine": "bing", "code": "ECONNRESET", "message": "TLS connection failed"}
+            ]
             return httpx.Response(200, json=payload)
         return httpx.Response(200, json=envelope([raw_result("Synthetic", "https://example.com")]))
+
     provider = mock_provider(handler, engines=["bing"])
     router = SearchRouter({"open_websearch": provider}, order=["open_websearch"], engines=["bing"])
     results = router.search(SearchQuery("synthetic"))
@@ -1582,9 +1602,7 @@ def test_context_terms_generate_variant_queries():
             return httpx.Response(200, json=envelope([]))
         return httpx.Response(
             200,
-            json=envelope(
-                [raw_result("Tibo (Thibault Sottiaux)", "https://example.com/tibo")]
-            ),
+            json=envelope([raw_result("Tibo (Thibault Sottiaux)", "https://example.com/tibo")]),
         )
 
     router = SearchRouter({"open_websearch": mock_provider(handler)}, engines=["bing"])
@@ -1681,9 +1699,7 @@ def test_results_ranked_title_before_snippet():
             200,
             json=envelope(
                 [
-                    raw_result(
-                        "无关标题", "https://example.com/1", "这里提到 tibo codex 的转述"
-                    ),
+                    raw_result("无关标题", "https://example.com/1", "这里提到 tibo codex 的转述"),
                     raw_result("Tibo Codex 指南", "https://example.com/2"),
                 ]
             ),
@@ -1725,9 +1741,7 @@ def test_cache_key_distinguishes_context_strategy_and_fallback(tmp_path):
         )
 
     cache = SearchCache(tmp_path / "cache.json", ttl=3600)
-    router = SearchRouter(
-        {"open_websearch": mock_provider(handler)}, engines=["bing"], cache=cache
-    )
+    router = SearchRouter({"open_websearch": mock_provider(handler)}, engines=["bing"], cache=cache)
     # context 参与键且保留顺序：换序即视为新查询，重新消歧。
     router.search(SearchQuery("tibo", context_terms=("Codex", "OpenAI")))
     assert len(calls) == 2  # 空结果 + 变体
@@ -1757,18 +1771,14 @@ def test_cached_results_match_first_request_order(tmp_path):
             200,
             json=envelope(
                 [
-                    raw_result(
-                        "无关标题A", "https://example.com/1", "这里提到 tibo codex 转述"
-                    ),
+                    raw_result("无关标题A", "https://example.com/1", "这里提到 tibo codex 转述"),
                     raw_result("Tibo Codex 指南", "https://example.com/2"),
                 ]
             ),
         )
 
     cache = SearchCache(tmp_path / "cache.json", ttl=3600)
-    router = SearchRouter(
-        {"open_websearch": mock_provider(handler)}, engines=["bing"], cache=cache
-    )
+    router = SearchRouter({"open_websearch": mock_provider(handler)}, engines=["bing"], cache=cache)
     first = router.search(SearchQuery("tibo codex"))
     second = router.search(SearchQuery("tibo codex"))
     assert second.cached
@@ -1780,13 +1790,21 @@ def test_cached_results_match_first_request_order(tmp_path):
 
 def test_explicit_engine_failure_is_not_cached_as_empty(tmp_path):
     calls = []
+
     def handler(request):
         calls.append(request)
         payload = envelope([])
-        payload["data"]["partialFailures"] = [{"engine": "bing", "code": "ETIMEDOUT", "message": "request timed out"}]
+        payload["data"]["partialFailures"] = [
+            {"engine": "bing", "code": "ETIMEDOUT", "message": "request timed out"}
+        ]
         return httpx.Response(200, json=payload)
+
     provider = mock_provider(handler)
-    router = SearchRouter({"open_websearch": provider}, order=["open_websearch"], cache=SearchCache(tmp_path / "cache.json", ttl=300))
+    router = SearchRouter(
+        {"open_websearch": provider},
+        order=["open_websearch"],
+        cache=SearchCache(tmp_path / "cache.json", ttl=300),
+    )
     for _ in range(2):
         result = router.search(SearchQuery("synthetic", engines=("bing",)))
         assert not result.results
@@ -1797,9 +1815,12 @@ def test_explicit_engine_failure_is_not_cached_as_empty(tmp_path):
 
 def test_legacy_empty_search_cache_is_not_reused(tmp_path):
     import hashlib
+
     provider = FakeProvider([SearchResult("ok", "https://example.com", "")])
     cache = SearchCache(tmp_path / "cache.json", ttl=60)
-    legacy_key = hashlib.sha256("\x1f".join(["q", "5", "auto", "", "", "fake"]).encode()).hexdigest()
+    legacy_key = hashlib.sha256(
+        "\x1f".join(["q", "5", "auto", "", "", "fake"]).encode()
+    ).hexdigest()
     cache.set(legacy_key, [], "fake")
     router = SearchRouter({"fake": provider}, order=["fake"], cache=cache)
     result = router.search(SearchQuery("q"))

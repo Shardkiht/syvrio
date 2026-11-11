@@ -46,36 +46,47 @@ def test_rejected_inference_cannot_be_revived(service):
 
 def test_external_source_change_invalidates_on_read(service):
     source = service.note("合成事实")
-    item = service.propose_inference("合成假设", [source.id])
+    service.propose_inference("合成假设", [source.id])
     service.store.set_status(source.id, "deleted")
     assert service.list_inferences()[0].status == "superseded"
 
 
-@pytest.mark.parametrize("text,anchor,expected", [
-    ("昨天", "2024-03-01T00:10:00+08:00", "2024-02-29"),
-    ("昨天", "2024-03-01T23:10:00-08:00", "2024-02-29"),
-    ("去年", "2024-03-01T00:10:00+08:00", "2023"),
-    ("上个月", "2024-01-01T00:10:00+08:00", "2023-12"),
-    ("最近", "2024-01-01T00:10:00+08:00", None),
-    ("昨天", "2024-01-01T00:10:00", None),
-    ("昨天", None, None),
-])
+@pytest.mark.parametrize(
+    "text,anchor,expected",
+    [
+        ("昨天", "2024-03-01T00:10:00+08:00", "2024-02-29"),
+        ("昨天", "2024-03-01T23:10:00-08:00", "2024-02-29"),
+        ("去年", "2024-03-01T00:10:00+08:00", "2023"),
+        ("上个月", "2024-01-01T00:10:00+08:00", "2023-12"),
+        ("最近", "2024-01-01T00:10:00+08:00", None),
+        ("昨天", None, None),
+    ],
+)
 def test_relative_dates(text, anchor, expected):
     assert resolve_relative(text, anchor) == expected
 
 
 def test_memorize_resolves_original_anchor(service):
-    service.extractor = StaticExtractor(ExtractionResult(memories=[Candidate(
-        text="昨天参加合成展览", confidence=1, context=MemoryContext(time_text="昨天"))]))
+    service.extractor = StaticExtractor(
+        ExtractionResult(
+            memories=[
+                Candidate(
+                    text="昨天参加合成展览", confidence=1, context=MemoryContext(time_text="昨天")
+                )
+            ]
+        )
+    )
     result = service.memorize("昨天参加合成展览", observed_at="2024-03-01T00:10:00+08:00")
     assert result.admitted[0].context.event_time == "2024-02-29"
 
 
-def test_message_anchor_preserves_legacy_unknown():
-    assert dated_message({"content": "昨天", "at": "2024-03-01T00:00:00"}) == "昨天"
-    assert "+08:00" in dated_message({"content": "昨天", "at": "2024-03-01T00:00:00+08:00"})
-    from datetime import datetime
-    assert datetime.fromisoformat(now_iso()).utcoffset() is not None
+def test_message_anchor_rejects_missing_timezone():
+    with pytest.raises(ValueError, match="explicit UTC offset"):
+        resolve_relative("昨天", "2024-01-01T00:10:00")
+    with pytest.raises(ValueError, match="explicit UTC offset"):
+        dated_message({"content": "昨天", "at": "2024-03-01T00:00:00"})
+    assert dated_message({"content": "昨天"}) == "昨天"
+    assert now_iso().endswith("+00:00")
 
 
 def test_context_range_and_missing_metadata():
@@ -89,30 +100,52 @@ def test_context_range_and_missing_metadata():
 
 def test_filtered_recall_filters_before_limit(service):
     from syvrio.retrieval.base import SearchHit
+
     first = service.note("合成展览旧记录")
-    service.extractor = StaticExtractor(ExtractionResult(memories=[Candidate(
-        text="合成展览新记录", confidence=1, context=MemoryContext(event_time="2024-06"))]))
+    service.extractor = StaticExtractor(
+        ExtractionResult(
+            memories=[
+                Candidate(
+                    text="合成展览新记录", confidence=1, context=MemoryContext(event_time="2024-06")
+                )
+            ]
+        )
+    )
     second = service.memorize("合成展览新记录").admitted[0]
+
     class Ranked:
         def search(self, query, limit=10):
             return [SearchHit(id=e.id, text=e.text, topic=e.topic) for e in (first, second)][:limit]
+
     service.retriever = Ranked()
     assert [h.id for h in service.recall("展览", 1, date_from="2024")] == [second.id]
     assert [h.id for h in service.recall("展览", 1)] == [first.id]
 
 
 def test_keyword_context_retrieval_keeps_old_memories_without_filters(service):
-    from datetime import datetime
+    from datetime import UTC, datetime
 
-    old = service.store.append("events", "合成展览旧记录", when=datetime(2024, 6, 1))
-    wanted = service.store.append("events", "合成展览新记录", context=MemoryContext(
-        event_time="2024-06", location="合成展馆", location_kind="event",
-        emotion="期待", emotion_source="explicit"))
+    old = service.store.append("events", "合成展览旧记录", when=datetime(2024, 6, 1, tzinfo=UTC))
+    wanted = service.store.append(
+        "events",
+        "合成展览新记录",
+        context=MemoryContext(
+            event_time="2024-06",
+            location="合成展馆",
+            location_kind="event",
+            emotion="期待",
+            emotion_source="explicit",
+        ),
+    )
     service.store.append("events", "合成展览另一记录", context=MemoryContext(event_time="2025"))
-    hits = service.recall("合成展览", date_from="2024", date_to="2024", location="展馆", emotion="期待")
+    hits = service.recall(
+        "合成展览", date_from="2024", date_to="2024", location="展馆", emotion="期待"
+    )
     assert [hit.id for hit in hits] == [wanted.id]
     assert old.id in {hit.id for hit in service.recall("合成展览")}
-    assert old.id not in {hit.id for hit in service.recall("合成展览", date_from="2024", date_to="2024")}
+    assert old.id not in {
+        hit.id for hit in service.recall("合成展览", date_from="2024", date_to="2024")
+    }
 
 
 def test_inference_cli(service, monkeypatch):
@@ -179,15 +212,21 @@ def test_source_audit_survives_inference_append_failure(service, monkeypatch, ac
     source = service.note("合成事实")
     service.propose_inference("合成假设", [source.id])
     original = service.inferences.record
+
     def fail(*items):
         raise OSError("合成写入失败")
+
     monkeypatch.setattr(service.inferences, "record", fail)
     with pytest.raises(OSError):
         if action == "forget":
             service.forget(source.id)
         else:
             service.correct(source.id, "合成更正事实")
-    lines = (service.config.vault / "records" / "memory" / "audit.jsonl").read_text(encoding="utf-8").splitlines()
+    lines = (
+        (service.config.vault / "records" / "memory" / "audit.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    )
     assert any(json.loads(line)["action"] == action for line in lines)
     assert service.store.find(source.id).status != "active"
     assert len(service.store.entries()) == (1 if action == "correct" else 0)
@@ -260,13 +299,16 @@ def test_evolve_rolls_back_every_write_stage(service, monkeypatch, stage):
 
 @pytest.mark.agent
 def test_agent_recall_passes_context_filters(service):
-    from syvrio.agent.tools import build_tools
     from syvrio.agent.session import SessionStore
+    from syvrio.agent.tools import build_tools
+
     service.config.search.enabled = False
     captured = {}
+
     def recall(query, limit, **filters):
         captured.update(filters)
         return []
+
     service.recall = recall
     tools = build_tools(service, SessionStore(service.config.vault).create())
     result = tools.execute("recall", {"query": "展览", "date_from": "2024", "location": "合成展馆"})
@@ -277,15 +319,21 @@ def test_agent_recall_passes_context_filters(service):
 @pytest.mark.mcp
 async def test_mcp_recall_passes_context_filters(service):
     from fastmcp import Client
+
     from syvrio.app.server import build_server
+
     service.config.search.enabled = False
     captured = {}
+
     def recall(query, limit, **filters):
         captured.update(filters)
         return []
+
     service.recall = recall
     async with Client(build_server(service=service)) as client:
-        result = await client.call_tool("recall", {"query": "展览", "date_from": "2024", "location": "合成展馆"})
+        result = await client.call_tool(
+            "recall", {"query": "展览", "date_from": "2024", "location": "合成展馆"}
+        )
         assert result.data == []
     assert captured["date_from"] == "2024"
     assert captured["location"] == "合成展馆"

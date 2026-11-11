@@ -1,4 +1,5 @@
 """请求生命周期：Worker 完成与 UI 终态确认分离、过期回调、异常与取消。"""
+
 from __future__ import annotations
 
 import threading
@@ -114,7 +115,9 @@ def test_stale_finish_callback_cannot_clear_newer_turn(tmp_path):
 def test_session_load_failure_returns_turn_result_and_releases_on_ack(tmp_path, monkeypatch):
     runtime, conv = build(tmp_path, [])
     logged: list[tuple] = []
-    monkeypatch.setattr(conversation_module, "record_event", lambda *args, **kwargs: logged.append(args))
+    monkeypatch.setattr(
+        conversation_module, "record_event", lambda *args, **kwargs: logged.append(args)
+    )
     token = conv.begin_turn("missing-session")
 
     def fail_load(session_id):
@@ -137,20 +140,27 @@ def test_session_load_failure_returns_turn_result_and_releases_on_ack(tmp_path, 
 @pytest.mark.parametrize("model_fails", [False, True])
 def test_switch_cancel_and_undo_are_bound_to_original_session(tmp_path, monkeypatch, model_fails):
     from queue import Queue
+
     from syvrio.infra import diagnostics
 
     runtime, conv = build(tmp_path, [])
     monkeypatch.setattr(diagnostics, "_queue", Queue())
-    response = RuntimeError("Synthetic model failure") if model_fails else AssistantTurn(content="reply A")
+    response = (
+        RuntimeError("Synthetic model failure") if model_fails else AssistantTurn(content="reply A")
+    )
     model = GatedModel([response])
     runtime.model = model
     a = runtime.ensure_session()
-    runtime.sessions.append(a, {"type": "message", "id": "old", "role": "user", "content": "earlier"})
+    runtime.sessions.append(
+        a, {"type": "message", "id": "old", "role": "user", "content": "earlier"}
+    )
     b = runtime.sessions.create()
     token = conv.begin_turn(a.id)
     outcome = {}
     thread = threading.Thread(
-        target=lambda: outcome.setdefault("result", conv.run_turn("question A", TurnCallbacks(), token, a.id)),
+        target=lambda: outcome.setdefault(
+            "result", conv.run_turn("question A", TurnCallbacks(), token, a.id)
+        ),
         daemon=True,
     )
     thread.start()
@@ -176,7 +186,7 @@ def test_switch_cancel_and_undo_are_bound_to_original_session(tmp_path, monkeypa
 def test_fast_submissions_keep_order_and_single_active_turn(tmp_path):
     runtime, conv = build(tmp_path, [AssistantTurn(content=f"reply {i}") for i in range(3)])
     runtime.ensure_session()
-    token = conv.begin_turn()
+    conv.begin_turn()
     first_turn = conv.active_turn_id
     for line in ("m1", "m2", "m3"):
         assert conv.submit_during_ask(line).kind == "queued"
@@ -193,6 +203,7 @@ def test_fast_submissions_keep_order_and_single_active_turn(tmp_path):
         assert conv.end_turn(result.turn_id) is True
     assert conv.ask_active is False
     assert conv.queue_snapshot().count == 0
+
 
 def test_end_turn_requires_matching_turn_id(tmp_path):
     runtime, conv = build(tmp_path, [AssistantTurn(content="reply")])

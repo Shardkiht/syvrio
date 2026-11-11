@@ -1,4 +1,5 @@
 """多厂商 Search/Fetch 集成回归（卡 13）：全部走假件与 Mock，不联网。"""
+
 from __future__ import annotations
 
 import importlib.util
@@ -9,21 +10,17 @@ from pathlib import Path
 
 import pytest
 
-pytestmark = pytest.mark.search
-
 from syvrio.infra.config import Config, FetchConfig, LLMConfig, SearchConfig
 from syvrio.infra.search.base import (
     FetchResult,
-    ProviderError,
-    ProviderErrorKind,
-    SearchQuery,
     SearchResult,
 )
 from syvrio.infra.search.fetch_router import (
-    _EXTERNAL_FETCH_PROVIDERS,
     build_fetch_registry,
 )
 from syvrio.infra.search.router import _EXTERNAL_PROVIDERS, build_registry
+
+pytestmark = pytest.mark.search
 
 KEY = "test-key-placeholder"
 
@@ -32,7 +29,6 @@ _FETCH_EXTERNALS = {"tavily", "exa", "you", "volcengine"}
 
 
 def _install_keys_and_empty_keyring(monkeypatch):
-    import os
 
     fake = types.ModuleType("keyring")
     fake.get_password = lambda service, name: None
@@ -54,7 +50,9 @@ def test_all_five_search_providers_register_with_keys(monkeypatch):
 def test_all_four_fetch_providers_register_with_keys(monkeypatch):
     _install_keys_and_empty_keyring(monkeypatch)
     config = SearchConfig()
-    registry = build_fetch_registry(FetchConfig(providers=["open_websearch", *_FETCH_EXTERNALS]), config)
+    registry = build_fetch_registry(
+        FetchConfig(providers=["open_websearch", *_FETCH_EXTERNALS]), config
+    )
     assert _FETCH_EXTERNALS <= set(registry)
     assert "fetch" in registry["open_websearch"].capabilities
 
@@ -131,9 +129,7 @@ def test_smoke_script_dry_run_lists_rows_without_network(monkeypatch, tmp_path, 
         search=SearchConfig(providers=["open_websearch", "tavily"]),
         fetch=FetchConfig(),
     )
-    exit_code = module.main(
-        ["--provider", "tavily", "--operation", "search"], config=config
-    )
+    exit_code = module.main(["--provider", "tavily", "--operation", "search"], config=config)
     output = capsys.readouterr().out
     report = json.loads(output)
     assert exit_code == 0
@@ -181,11 +177,19 @@ def test_smoke_script_live_requires_single_provider(tmp_path, capsys):
     assert "--provider" in capsys.readouterr().out
 
 
-@pytest.mark.parametrize("name,key_env", [
-    ("anysearch", "ANYSEARCH_API_KEY"), ("parallel_mcp", "PARALLEL_API_KEY"),
-])
+@pytest.mark.parametrize(
+    "name,key_env",
+    [
+        ("anysearch", "ANYSEARCH_API_KEY"),
+        ("parallel_mcp", "PARALLEL_API_KEY"),
+    ],
+)
 def test_fetch_smoke_dry_optional_key_and_one_live_call(
-    monkeypatch, tmp_path, capsys, name, key_env,
+    monkeypatch,
+    tmp_path,
+    capsys,
+    name,
+    key_env,
 ):
     module = _load_smoke_module()
     _install_keys_and_empty_keyring(monkeypatch)
@@ -193,7 +197,7 @@ def test_fetch_smoke_dry_optional_key_and_one_live_call(
     config = Config(vault=tmp_path, fetch=FetchConfig(providers=[name]))
     args = ["--provider", name, "--operation", "fetch"]
     assert module.main(args, config=config) == 0
-    row, = json.loads(capsys.readouterr().out)["rows"]
+    (row,) = json.loads(capsys.readouterr().out)["rows"]
     assert row["operation"] == "fetch" and row["provider"] == name
     assert row["key_present"] is False and row["would_register"] is True
 
@@ -203,11 +207,15 @@ def test_fetch_smoke_dry_optional_key_and_one_live_call(
         calls.append(query.url)
         return FetchResult(query.url, query.url, "Title", "Body")
 
-    monkeypatch.setattr(module, "build_fetch_registry", lambda *_: {
-        name: types.SimpleNamespace(fetch=fetch),
-    })
+    monkeypatch.setattr(
+        module,
+        "build_fetch_registry",
+        lambda *_: {
+            name: types.SimpleNamespace(fetch=fetch),
+        },
+    )
     monkeypatch.setattr(module, "assert_public_fetch_url", lambda url: None)
     assert module.main([*args, "--live", "--max-requests", "3"], config=config) == 0
-    row, = json.loads(capsys.readouterr().out)["reports"]
+    (row,) = json.loads(capsys.readouterr().out)["reports"]
     assert row["ok"] and row["requests"] == 1
     assert calls == ["https://example.com"]

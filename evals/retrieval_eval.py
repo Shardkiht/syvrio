@@ -13,6 +13,7 @@
     uv run python evals/retrieval_eval.py --keyword  # 只跑 BM25，离线可用
     uv run python evals/retrieval_eval.py --failures # 打印未过 @3 的用例
 """
+
 from __future__ import annotations
 
 import argparse
@@ -32,9 +33,7 @@ CASES_FILE = DATA_DIR / "retrieval_cases.json"
 
 def load_data() -> tuple[list[dict], list[dict]]:
     if not CORPUS_FILE.exists() or not CASES_FILE.exists():
-        raise SystemExit(
-            "缺少冻结数据；先运行：uv run python evals/generate_retrieval_data.py"
-        )
+        raise SystemExit("缺少冻结数据；先运行：uv run python evals/generate_retrieval_data.py")
     corpus = json.loads(CORPUS_FILE.read_text(encoding="utf-8"))
     cases = json.loads(CASES_FILE.read_text(encoding="utf-8"))
     return corpus, cases
@@ -97,7 +96,9 @@ def main() -> None:
         retrievers: dict = {"keyword": KeywordRetriever(service.store)}
         if not args.keyword:
             if not LocalEmbedder.available():
-                raise SystemExit("未安装 local-embed extra，先用 --keyword 或 uv sync --extra local-embed")
+                raise SystemExit(
+                    "未安装 local-embed extra，先用 --keyword 或 uv sync --extra local-embed"
+                )
             embedder = LocalEmbedder("BAAI/bge-small-zh-v1.5")
             vector = VectorRetriever(service.store, embedder)
             retrievers["vector"] = vector
@@ -112,7 +113,7 @@ def main() -> None:
         categories = [c["category"] for c in cases]
         for category in dict.fromkeys(categories):
             line = f"{category:<8}"
-            for name, r in results.items():
+            for _name, r in results.items():
                 rows = r["per_category"][category]
                 line += f"{sum(rows) / len(rows):>10.0%}"
             print(line)

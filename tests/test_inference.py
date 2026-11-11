@@ -73,7 +73,9 @@ def test_inference_rejects_non_fact_or_inactive_sources(service, source_state):
     before = service.inferences.path.read_bytes() if service.inferences.path.exists() else b""
     with pytest.raises(ValueError, match="当前有效的事实条目"):
         service.propose_inference("可能适合阅读活动", [source_id])
-    assert (service.inferences.path.read_bytes() if service.inferences.path.exists() else b"") == before
+    assert (
+        service.inferences.path.read_bytes() if service.inferences.path.exists() else b""
+    ) == before
 
 
 @pytest.mark.parametrize("ids", [[], [""], ["   "]])

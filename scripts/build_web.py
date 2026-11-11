@@ -9,6 +9,7 @@ silently ship a wheel without Web assets. The staged ``static/`` directory is
 ignored by Git (see .gitignore) and forced into the wheel by hatchling's
 ``artifacts`` setting.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -62,8 +63,12 @@ def verify_wheel(path: Path) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true", help="only verify staged assets")
-    parser.add_argument("--wheel", nargs="+", metavar="WHEEL",
-                        help="also verify that built wheel(s) contain the Web assets")
+    parser.add_argument(
+        "--wheel",
+        nargs="+",
+        metavar="WHEEL",
+        help="also verify that built wheel(s) contain the Web assets",
+    )
     args = parser.parse_args()
 
     if args.wheel:

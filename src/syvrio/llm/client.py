@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -67,7 +68,9 @@ def _reasoning_fields(message) -> tuple[str, dict]:
     ):
         if isinstance(value, (list, dict)) and value:
             metadata[key] = value
-    return (text if isinstance(text, str) and text else alias if isinstance(alias, str) else ""), metadata
+    return (
+        text if isinstance(text, str) and text else alias if isinstance(alias, str) else ""
+    ), metadata
 
 
 def _reasoning_route(config: LLMConfig) -> tuple[str, str]:
@@ -89,24 +92,37 @@ def _reasoning_route(config: LLMConfig) -> tuple[str, str]:
         policy = "turn"
     else:
         return "", ""
-    source = hashlib.sha256(f"{provider}\n{endpoint}\n{config.litellm_model()}".encode()).hexdigest()
+    source = hashlib.sha256(
+        f"{provider}\n{endpoint}\n{config.litellm_model()}".encode()
+    ).hexdigest()
     return source, policy
 
 
 def _chat_history(config: LLMConfig, messages: list[dict]) -> tuple[list[dict], list[dict], str]:
     source, policy = _reasoning_route(config)
-    last_user = max((i for i, msg in enumerate(messages)
-                     if msg["role"] == "user" and not msg.get("_tool_wrap_up")), default=-1)
-    private = {"reasoning_content", "reasoning_source", "reasoning", "reasoning_details",
-               "thinking_blocks", "_tool_wrap_up"}
-    clean = [
-        {k: v for k, v in msg.items() if k not in private}
-        for msg in messages
-    ]
+    last_user = max(
+        (
+            i
+            for i, msg in enumerate(messages)
+            if msg["role"] == "user" and not msg.get("_tool_wrap_up")
+        ),
+        default=-1,
+    )
+    private = {
+        "reasoning_content",
+        "reasoning_source",
+        "reasoning",
+        "reasoning_details",
+        "thinking_blocks",
+        "_tool_wrap_up",
+    }
+    clean = [{k: v for k, v in msg.items() if k not in private} for msg in messages]
     primary = [
         {**msg, "reasoning_content": original["reasoning_content"]}
-        if source and msg["role"] == "assistant"
-        and original.get("reasoning_source") == source and original.get("reasoning_content")
+        if source
+        and msg["role"] == "assistant"
+        and original.get("reasoning_source") == source
+        and original.get("reasoning_content")
         and (policy == "history" or index > last_user)
         else msg
         for index, (msg, original) in enumerate(zip(clean, messages, strict=True))
@@ -115,7 +131,6 @@ def _chat_history(config: LLMConfig, messages: list[dict]) -> tuple[list[dict], 
 
 
 def _litellm():
-    import os
 
     os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
     os.environ.setdefault("LITELLM_LOG", "ERROR")
@@ -263,7 +278,7 @@ def supported_params(model: str) -> tuple[str, ...]:
         return ("tools", "tool_choice", "stream", "max_tokens", "max_completion_tokens")
     # 自定义 OpenAI 兼容端点统一用 openai/ 前缀；LiteLLM 对未知 id 会回退成
     # 通用 OpenAI 参数表，不能据此判断供应商真的支持 reasoning_effort 等能力。
-    if model.startswith("openai/") and "/" in model[len("openai/"):]:
+    if model.startswith("openai/") and "/" in model[len("openai/") :]:
         return ()
     litellm = _litellm()
     try:
@@ -319,17 +334,22 @@ def clear_model_cache() -> None:
     _MODEL_CACHE.clear()
 
 
-def _fetch_provider_models_uncached(config: LLMConfig, timeout: float, api_key: str | None) -> list[str]:
+def _fetch_provider_models_uncached(
+    config: LLMConfig, timeout: float, api_key: str | None
+) -> list[str]:
     if not config.base_url or (not api_key and config.requires_api_key()):
         return []
     try:
         from openai import OpenAI
 
-        with OpenAI(api_key=api_key or "local", base_url=config.base_url, timeout=timeout,
-                    max_retries=0) as client:
-            return list(dict.fromkeys(
-                model.id for model in client.models.list().data if model.id and model.id.strip()
-            ))
+        with OpenAI(
+            api_key=api_key or "local", base_url=config.base_url, timeout=timeout, max_retries=0
+        ) as client:
+            return list(
+                dict.fromkeys(
+                    model.id for model in client.models.list().data if model.id and model.id.strip()
+                )
+            )
     except Exception:
         return []
 
@@ -384,8 +404,13 @@ class LiteLLMChatModel:
         self.config = config
 
     def chat(
-        self, messages: list[dict], tools: list[dict], on_delta: Callable[[str], None] | None = None,
-        cancel: Event | None = None, *, on_reasoning: Callable[[str], None] | None = None,
+        self,
+        messages: list[dict],
+        tools: list[dict],
+        on_delta: Callable[[str], None] | None = None,
+        cancel: Event | None = None,
+        *,
+        on_reasoning: Callable[[str], None] | None = None,
     ) -> AssistantTurn:
         if self.config.requires_api_key() and not self.config.api_key():
             raise ChatModelError(
@@ -397,7 +422,9 @@ class LiteLLMChatModel:
         fallback_messages = clean if primary != clean else None
         source = source if tools else ""
         if on_delta is None and on_reasoning is None:
-            kwargs = {"fallback_messages": fallback_messages} if fallback_messages is not None else {}
+            kwargs = (
+                {"fallback_messages": fallback_messages} if fallback_messages is not None else {}
+            )
             response = complete(self.config, primary, tools=tools or None, **kwargs)
             choice = response.choices[0]
             message = choice.message
@@ -411,12 +438,16 @@ class LiteLLMChatModel:
                 usage=_usage(response, litellm),
                 reasoning_content=reasoning,
                 reasoning_fragments=[metadata] if metadata else [],
-                reasoning_source=source if reasoning and _primary_response(response, self.config.fallbacks) else "",
+                reasoning_source=source
+                if reasoning and _primary_response(response, self.config.fallbacks)
+                else "",
             )
         parser = _StreamAccumulator(on_delta, litellm, on_reasoning, source)
         return self._chat_stream(primary, tools or None, parser, litellm, cancel, fallback_messages)
 
-    def _chat_stream(self, messages, tools, parser, litellm, cancel, fallback_messages) -> AssistantTurn:
+    def _chat_stream(
+        self, messages, tools, parser, litellm, cancel, fallback_messages
+    ) -> AssistantTurn:
         """流式：文本 delta 实时回调，tool_calls 增量累积，结束时返回聚合结果。"""
         kwargs: dict = {
             "model": self.config.litellm_model(),
@@ -592,15 +623,23 @@ class _StreamAccumulator:
             try:
                 arguments = raw if isinstance(raw, dict) else json.loads(raw or "{}")
             except json.JSONDecodeError as exc:
-                raise ChatModelError("Streaming tool call returned malformed JSON arguments.") from exc
+                raise ChatModelError(
+                    "Streaming tool call returned malformed JSON arguments."
+                ) from exc
             if not isinstance(arguments, dict) or not acc["name"]:
                 raise ChatModelError("Streaming tool call is missing a name or object arguments.")
             tool_calls.append(
-                ToolCall(id=acc["id"] or f"call-{len(tool_calls)}", name=acc["name"], arguments=arguments)
+                ToolCall(
+                    id=acc["id"] or f"call-{len(tool_calls)}", name=acc["name"], arguments=arguments
+                )
             )
         self._finish_reasoning()
         return AssistantTurn(
-            content="".join(self.content_parts), tool_calls=tool_calls, usage=self.usage,
-            reasoning_content="".join(self.reasoning_parts), reasoning_fragments=self.reasoning_fragments,
-            reasoning_source=self.source if self.reasoning_parts else "", reasoning_seconds=self.reasoning_seconds,
+            content="".join(self.content_parts),
+            tool_calls=tool_calls,
+            usage=self.usage,
+            reasoning_content="".join(self.reasoning_parts),
+            reasoning_fragments=self.reasoning_fragments,
+            reasoning_source=self.source if self.reasoning_parts else "",
+            reasoning_seconds=self.reasoning_seconds,
         )

@@ -19,7 +19,11 @@ class ThinkingText(TextArea):
 
 class ThinkingPanel(Vertical):
     def __init__(
-        self, text: str, *, active: bool = False, record_id: str | None = None,
+        self,
+        text: str,
+        *,
+        active: bool = False,
+        record_id: str | None = None,
         seconds: float | None = None,
     ) -> None:
         super().__init__(classes="thinking-panel")
@@ -31,8 +35,14 @@ class ThinkingPanel(Vertical):
         self._pending: list[str] = []
         self._scheduled = False
         self._button = Button(self._label(), classes="thinking-toggle", compact=True)
-        self._area = ThinkingText(text if active else "", read_only=True, soft_wrap=True,
-                                  show_line_numbers=False, show_cursor=False, classes="thinking-text")
+        self._area = ThinkingText(
+            text if active else "",
+            read_only=True,
+            soft_wrap=True,
+            show_line_numbers=False,
+            show_cursor=False,
+            classes="thinking-text",
+        )
         self._area.display = active
         self._area.styles.height = 3
 
@@ -106,14 +116,18 @@ class ThinkingPanel(Vertical):
                 area.scroll_to(y=scroll_y, animate=False, immediate=True)
 
     def _label(self) -> str:
-        return "Thinking…" if self._active else (
-            f"Thought for {self._seconds:.1f}s" if self._seconds is not None else "Thinking"
+        return (
+            "Thinking…"
+            if self._active
+            else (f"Thought for {self._seconds:.1f}s" if self._seconds is not None else "Thinking")
         )
 
     def _apply_mode(self) -> None:
         area = self._area
         area.display = self._mode != "collapsed"
-        area.styles.height = min(10, max(3, self.screen.size.height // 3)) if self._mode == "expanded" else 3
+        area.styles.height = (
+            min(10, max(3, self.screen.size.height // 3)) if self._mode == "expanded" else 3
+        )
         self._button.label = self._label()
 
     @on(Button.Pressed, ".thinking-toggle")

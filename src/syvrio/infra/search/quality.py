@@ -7,6 +7,7 @@
 - 时间词/事件词归入 freshness/intent，不要求结果完整命中。
 全部为确定性规则，不访问 LLM。
 """
+
 from __future__ import annotations
 
 import re
@@ -76,9 +77,7 @@ _FRESHNESS_PATTERN = re.compile(
 
 # 专有名词短语：连续首字母大写的词，允许中间一个 of/the/and 等连接词。
 # 例："Clash of Clans Town Hall 15" → "Clash of Clans" + "Town Hall"。
-_PHRASE_CONNECTORS = frozenset(
-    "of the and for de la van von der da di du".split()
-)
+_PHRASE_CONNECTORS = frozenset("of the and for de la van von der da di du".split())
 _PHRASE_ARTICLES = frozenset("the a an".split())
 _PHRASE_MAX_WORDS = 3
 
@@ -92,9 +91,7 @@ def _latin_pattern(word: str) -> re.Pattern[str]:
 @lru_cache(maxsize=256)
 def _phrase_pattern(phrase: str) -> re.Pattern[str]:
     # 词间只允许空白/标点，不做跨词跳跃，避免把无关短语拼成命中。
-    joined = r"[^0-9a-z]{1,3}".join(
-        re.escape(word) for word in phrase.split()
-    )
+    joined = r"[^0-9a-z]{1,3}".join(re.escape(word) for word in phrase.split())
     return re.compile(rf"(?<![0-9a-z]){joined}(?![0-9a-z])")
 
 
@@ -130,9 +127,7 @@ def _extract_latin_phrases(source: str) -> list[str]:
                     cursor += 2
             break
         meaningful = [word for word in words if word.lower() not in _PHRASE_CONNECTORS]
-        if len(words) >= 2 and not any(
-            word.lower() in _LATIN_STOPWORDS for word in meaningful
-        ):
+        if len(words) >= 2 and not any(word.lower() in _LATIN_STOPWORDS for word in meaningful):
             phrases.append(" ".join(words).lower())
             index = cursor + 1
         else:
@@ -312,12 +307,8 @@ def score_entry(
             title_core += 3.0 if term.kind != "cjk_gram" else 1.0
         elif _match(term, snippet):
             snippet_core += 1.0 if term.kind != "cjk_gram" else 0.5
-    covered = sum(
-        1 for term in analysis.core_terms if _match(term, title) or _match(term, snippet)
-    )
-    core_coverage = (
-        2.0 if analysis.core_terms and covered == len(analysis.core_terms) else 0.0
-    )
+    covered = sum(1 for term in analysis.core_terms if _match(term, title) or _match(term, snippet))
+    core_coverage = 2.0 if analysis.core_terms and covered == len(analysis.core_terms) else 0.0
     intent = sum(
         0.5
         for word in analysis.intent_terms
@@ -379,14 +370,10 @@ def is_strong_hit(result: SearchResult, analysis: QueryAnalysis) -> bool:
     title_hits = sum(1 for term in analysis.core_terms if _match(term, title))
     if not title_hits:
         return False
-    phrase_terms = [
-        term for term in analysis.core_terms if term.kind == "latin_phrase"
-    ]
+    phrase_terms = [term for term in analysis.core_terms if term.kind == "latin_phrase"]
     if phrase_terms and not any(_match(term, title) for term in phrase_terms):
         return False
-    covered = sum(
-        1 for term in analysis.core_terms if _match(term, title) or _match(term, snippet)
-    )
+    covered = sum(1 for term in analysis.core_terms if _match(term, title) or _match(term, snippet))
     if phrase_terms:
         return covered * 2 > len(analysis.core_terms)
     # 覆盖一半以上核心词；只有 1 个核心词时标题命中即可（导航型查询）。
@@ -401,8 +388,7 @@ def quality_gate(ranked: list[SearchResult], analysis: QueryAnalysis) -> GateDec
     strong = sum(1 for result in ranked if is_strong_hit(result, analysis))
     # 标题完整覆盖全部核心词的结果本身就是决定性命中，单条即可早停。
     full_title = any(
-        all(_match(term, result.title.lower()) for term in analysis.core_terms)
-        for result in ranked
+        all(_match(term, result.title.lower()) for term in analysis.core_terms) for result in ranked
     )
     if strong >= 2 or full_title:
         return GateDecision(True, strong, "multiple_strong" if strong >= 2 else "full_title")

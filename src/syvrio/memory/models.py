@@ -3,11 +3,12 @@ from __future__ import annotations
 import calendar
 import re
 import secrets
-from datetime import date, datetime
+from datetime import date
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from ..time import parse_timestamp, serialize_timestamp, utc_now
 
 _SHORT_FIELD = re.compile(
     r"(?P<label>[\u3400-\u4dbf\u4e00-\u9fffA-Za-z][\u3400-\u4dbf\u4e00-\u9fffA-Za-z0-9 _-]{1,17})"
@@ -78,7 +79,9 @@ class MemoryContext(BaseModel):
             # 无法区分时，只记录当前表达，不能倒推为事件当时的情绪。
             self.emotion_at = "expression"
         if self.valid_from and self.valid_to:
-            start = date.fromisoformat(self.valid_from + "-01" * (3 - len(self.valid_from.split("-"))))
+            start = date.fromisoformat(
+                self.valid_from + "-01" * (3 - len(self.valid_from.split("-")))
+            )
             end_parts = [int(part) for part in self.valid_to.split("-")]
             year = end_parts[0]
             month = end_parts[1] if len(end_parts) > 1 else 12
@@ -129,11 +132,17 @@ class Inference(BaseModel):
     status: InferenceStatus = "hypothesis"
     source_fingerprints: dict[str, str] = Field(default_factory=dict)
 
+    @field_validator("created_at", "updated_at")
+    @classmethod
+    def validate_timestamp(cls, value: str) -> str:
+        return serialize_timestamp(parse_timestamp(value))
+
     @model_validator(mode="after")
     def validate_fingerprints(self) -> Inference:
         if self.source_fingerprints:
             if set(self.source_fingerprints) != set(self.source_ids) or any(
-                not re.fullmatch(r"[0-9a-f]{64}", value) for value in self.source_fingerprints.values()
+                not re.fullmatch(r"[0-9a-f]{64}", value)
+                for value in self.source_fingerprints.values()
             ):
                 raise ValueError("推断证据指纹须覆盖全部来源并使用有效摘要。")
         return self
@@ -206,6 +215,11 @@ class PendingItem(BaseModel):
     conflict_with: str | None = None
     context: MemoryContext | None = None
 
+    @field_validator("created_at")
+    @classmethod
+    def validate_timestamp(cls, value: str) -> str:
+        return serialize_timestamp(parse_timestamp(value))
+
     @classmethod
     def from_candidate(
         cls,
@@ -216,10 +230,10 @@ class PendingItem(BaseModel):
         message_id: str | None = None,
         conflict_with: str | None = None,
     ) -> "PendingItem":
-        stamp = datetime.now()
+        stamp = utc_now()
         return cls(
             id=f"p-{stamp:%Y%m%d-%H%M%S}-{secrets.token_hex(4)}",
-            created_at=stamp.isoformat(timespec="seconds"),
+            created_at=serialize_timestamp(stamp.replace(microsecond=0)),
             source=source,
             text=candidate.text,
             topic=candidate.topic,
@@ -281,10 +295,25 @@ class Entry(BaseModel):
 
     @property
     def index_text(self) -> str:
-        return "\n".join([self.text, *(f.raw_markdown for f in (*self.context_fields, *self.extension_fields)
-                                       if f.key not in {"syvrio.recorded_at", "syvrio.supersedes", "syvrio.session",
-                                                        "syvrio.message", "syvrio.change_kind",
-                                                        "migration.evidence_v1", "migration.evidence_v2"})])
+        return "\n".join(
+            [
+                self.text,
+                *(
+                    f.raw_markdown
+                    for f in (*self.context_fields, *self.extension_fields)
+                    if f.key
+                    not in {
+                        "syvrio.recorded_at",
+                        "syvrio.supersedes",
+                        "syvrio.session",
+                        "syvrio.message",
+                        "syvrio.change_kind",
+                        "migration.evidence_v1",
+                        "migration.evidence_v2",
+                    }
+                ),
+            ]
+        )
 
     @property
     def embedding_text(self) -> str:
@@ -297,7 +326,7 @@ class Entry(BaseModel):
         if not re.search(r"[\u3400-\u4dbf\u4e00-\u9fff]", label):
             return indexed
         context = f"\n主题：{self.topic_title}" if 1 <= len(self.topic_title) <= 64 else ""
-        return f"{label}是{value}。{context}{indexed[len(self.text):]}"
+        return f"{label}是{value}。{context}{indexed[len(self.text) :]}"
 
 
 class TopicInfo(BaseModel):

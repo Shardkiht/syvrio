@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-import pytest
-
-pytestmark = pytest.mark.retrieval
-
 import numpy as np
+import pytest
 
 from syvrio.infra.config import Config, EmbeddingConfig, RetrievalConfig
 from syvrio.memory import service as service_module
@@ -15,6 +12,8 @@ from syvrio.retrieval import (
     SearchHit,
     VectorRetriever,
 )
+
+pytestmark = pytest.mark.retrieval
 
 # 同义词组：组内任一词命中即贡献该维度方向，模拟语义相近。
 GROUPS = {
@@ -237,9 +236,12 @@ def test_hybrid_preserves_keyword_hits_without_literal_signal():
     other = SearchHit(id="vector", text="其他命中", topic="work")
     for query in ("搜 docker", "docker 是什么"):
         assert {hit.id for hit in HybridRetriever(Keyword(), Vector([other])).search(query)} == {
-            "keyword", "vector",
+            "keyword",
+            "vector",
         }
-    assert [hit.id for hit in HybridRetriever(Keyword(), Vector([])).search("git 是什么")] == ["keyword"]
+    assert [hit.id for hit in HybridRetriever(Keyword(), Vector([])).search("git 是什么")] == [
+        "keyword"
+    ]
 
 
 def test_field_mentions_do_not_force_lookup_priority(tmp_path):
@@ -306,8 +308,13 @@ def test_field_index_respects_token_boundaries_and_longest_labels(tmp_path):
     latin = store.append("devices", "PIN: TEST-PIN")
     keyword = KeywordRetriever(store)
 
-    assert [hit.id for hit in keyword.search("我的备份卷标是什么") if hit.matched_field] == [long.id]
-    assert {hit.id for hit in keyword.search("卷标和备份卷标") if hit.matched_field} == {short.id, long.id}
+    assert [hit.id for hit in keyword.search("我的备份卷标是什么") if hit.matched_field] == [
+        long.id
+    ]
+    assert {hit.id for hit in keyword.search("卷标和备份卷标") if hit.matched_field} == {
+        short.id,
+        long.id,
+    }
     assert not any(hit.matched_field for hit in keyword.search("SPINNING"))
     assert keyword.search("Find my pin")[0].id == latin.id
 
@@ -320,9 +327,12 @@ def test_same_field_uses_context_to_choose_between_records(tmp_path):
     first = store.append("devices", "运行模式：预览节点使用隔离模式")
     second = store.append("devices", "运行模式：批处理节点使用常规模式")
     keyword = KeywordRetriever(store)
-    embedder = FakeEmbedder({
-        "preview": ["预览", "隔离"], "batch": ["批处理", "常规"],
-    })
+    embedder = FakeEmbedder(
+        {
+            "preview": ["预览", "隔离"],
+            "batch": ["批处理", "常规"],
+        }
+    )
     hybrid = HybridRetriever(keyword, VectorRetriever(store, embedder))
 
     for query, expected in (("预览节点的运行模式", first), ("批处理节点的运行模式", second)):
@@ -351,10 +361,11 @@ def test_embedding_cache_rebuilds_changed_short_fact_only(tmp_path):
     vector = VectorRetriever(store, embedder)
     vector.cache_path.parent.mkdir(parents=True, exist_ok=True)
     np.savez(
-        vector.cache_path, model=np.array(embedder.model_id),
+        vector.cache_path,
+        model=np.array(embedder.model_id),
         ids=np.array([short.id, long.id]),
         hashes=np.array([text_hash(short.index_text), text_hash(long.index_text)]),
-        vectors=np.array([[1., 0., 0., 0.], [0., 0., 1., 0.]]),
+        vectors=np.array([[1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]]),
     )
     assert short.embedding_text != short.index_text
     assert "合成人物资料" in short.embedding_text
@@ -398,9 +409,7 @@ def test_large_corpus_keeps_explicit_short_fields_without_local_model(tmp_path):
 
 
 def test_build_retriever_falls_back_without_fastembed(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        service_module.LocalEmbedder, "available", staticmethod(lambda: False)
-    )
+    monkeypatch.setattr(service_module.LocalEmbedder, "available", staticmethod(lambda: False))
     config = Config(vault=tmp_path, retrieval=RetrievalConfig(method="hybrid"))
 
     retriever, mode = service_module.build_retriever(config, MemoryStore(tmp_path))
@@ -410,9 +419,7 @@ def test_build_retriever_falls_back_without_fastembed(tmp_path, monkeypatch):
 
 
 def test_build_retriever_hybrid_when_local_available(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        service_module.LocalEmbedder, "available", staticmethod(lambda: True)
-    )
+    monkeypatch.setattr(service_module.LocalEmbedder, "available", staticmethod(lambda: True))
     config = Config(vault=tmp_path, retrieval=RetrievalConfig(method="hybrid"))
 
     retriever, mode = service_module.build_retriever(config, MemoryStore(tmp_path))
@@ -474,13 +481,18 @@ def test_init_vault_preserves_user_gitignore_without_final_newline(tmp_path):
 
 def test_sync_refuses_duplicate_entry_ids_across_topics(tmp_path):
     import pytest
+
     from syvrio.memory.schema import Core, SchemaError, render_record
 
     store = MemoryStore(tmp_path)
     store.append("food", "喜欢清淡、像茶的风味", entry_id="mem-dup")
     housing = store.topic_path("housing")
-    housing.write_text(render_record("在找市区的房子",
-        Core(id="mem-dup", status="active", source="chat", confidence=1.0)), encoding="utf-8")
+    housing.write_text(
+        render_record(
+            "在找市区的房子", Core(id="mem-dup", status="active", source="chat", confidence=1.0)
+        ),
+        encoding="utf-8",
+    )
     retriever = VectorRetriever(store, FakeEmbedder(GROUPS))
 
     with pytest.raises(SchemaError, match="duplicate memory id across topics"):
@@ -491,6 +503,11 @@ def test_malformed_cache_ids_rebuild_instead_of_crashing(tmp_path):
     store = seeded_store(tmp_path)
     retriever = VectorRetriever(store, FakeEmbedder(GROUPS))
     retriever.cache_path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez(retriever.cache_path, model=np.array("fake"), ids=np.array([["bad"]]),
-             hashes=np.array(["bad"]), vectors=np.ones((1, 3)))
+    np.savez(
+        retriever.cache_path,
+        model=np.array("fake"),
+        ids=np.array([["bad"]]),
+        hashes=np.array(["bad"]),
+        vectors=np.ones((1, 3)),
+    )
     assert retriever.search("房子")

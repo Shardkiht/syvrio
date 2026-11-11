@@ -14,6 +14,7 @@
 标注：2=能直接支持查询，1=仅背景相关，0=无关。人名/产品名均为合成或
 公开技术测试词（如 Tibo/Codex），不含任何私人数据。
 """
+
 from __future__ import annotations
 
 import argparse
@@ -21,7 +22,7 @@ import json
 import math
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from syvrio.infra.search.base import SearchQuery, SearchResult
@@ -50,167 +51,589 @@ class Case:
     expect_strong_stop: bool = False  # 首引擎有强匹配时应早停（1 次请求）
 
 
-def it(title: str, url: str, snippet: str, grade: int, engine: str = "bing", published: str | None = None) -> PoolItem:
-    return PoolItem(title=title, url=url, snippet=snippet, grade=grade, engine=engine, published=published)
+def it(
+    title: str,
+    url: str,
+    snippet: str,
+    grade: int,
+    engine: str = "bing",
+    published: str | None = None,
+) -> PoolItem:
+    return PoolItem(
+        title=title, url=url, snippet=snippet, grade=grade, engine=engine, published=published
+    )
 
 
 # ---------- 固定候选池数据集（32 例） ----------
 
 CASES: tuple[Case, ...] = (
     # ---- 短英文实体（含 context 消歧） ----
-    Case("se1", "tibo", "short-entity", (
-        it("OpenAI Codex overview", "https://openai.example/codex", "Codex is OpenAI's coding agent.", 0),
-        it("AI industry weekly", "https://news.example/ai-weekly", "General AI news roundup.", 0),
-        it("Tibo (Thibault Sottiaux) leads Codex", "https://bio.example/tibo", "Tibo is the Codex lead at OpenAI.", 2, "baidu"),
-        it("Tibo 重置追踪站", "https://tracker.example/tibo", "Tibo 的 Codex 额度重置记录。", 2, "baidu"),
-    ), context=("OpenAI", "Codex")),
-    Case("se2", "tibo codex", "short-entity", (
-        it("Codex resets tracker", "https://reset.example/codex", "Track Codex usage resets.", 1),
-        it("Tibo Codex 28 天挑战", "https://reset.example/tibo-28", "Tibo 的 Codex 挑战记录。", 2),
-        it("Codex 安装教程", "https://guide.example/codex-install", "How to install Codex.", 0),
-    )),
-    Case("se3", "thsottiaux codex", "short-entity", (
-        it("街头挑战视频", "https://video.example/street-1", "娱乐视频，与查询无关。", 0),
-        it("直播剪辑", "https://video.example/street-2", "娱乐直播剪辑。", 0),
-        it("Thibault Sottiaux on X", "https://x.example/thsottiaux", "@thsottiaux announces Codex resets.", 2, "baidu"),
-        it("Codex 负责人发声", "https://media.example/codex-lead", "Codex 团队负责人公开回应。", 1, "baidu"),
-    )),
-    Case("se4", "tibo 最近的公告", "short-entity", (
-        it("OpenAI Codex release notes", "https://docs.example/codex-notes", "Codex changelog and release notes.", 1),
-        it("Tibo 发布重置公告", "https://tracker.example/tibo-notice", "Tibo 官宣新一轮 Codex 重置。", 2, "baidu"),
-    ), context=("OpenAI", "Codex")),
-    Case("se5", "wjx-handler ai", "short-entity", (
-        it("Handler pattern in AI apps", "https://patterns.example/handler", "Generic handler design pattern.", 0),
-        it("AI handler libraries", "https://libs.example/ai-handlers", "List of handler libraries.", 0),
-    )),
-    Case("se6", "Tibo OpenAI", "short-entity", (
-        it("OpenAI company page", "https://openai.example/about", "OpenAI official about page.", 0),
-        it("Tibo 在 OpenAI 负责什么", "https://bio.example/tibo-openai", "Tibo 负责 OpenAI 核心产品与平台。", 2, "baidu"),
-        it("Codex team structure", "https://docs.example/codex-team", "Codex team org chart.", 1, "baidu"),
-    ), context=("OpenAI",)),
-
+    Case(
+        "se1",
+        "tibo",
+        "short-entity",
+        (
+            it(
+                "OpenAI Codex overview",
+                "https://openai.example/codex",
+                "Codex is OpenAI's coding agent.",
+                0,
+            ),
+            it(
+                "AI industry weekly",
+                "https://news.example/ai-weekly",
+                "General AI news roundup.",
+                0,
+            ),
+            it(
+                "Tibo (Thibault Sottiaux) leads Codex",
+                "https://bio.example/tibo",
+                "Tibo is the Codex lead at OpenAI.",
+                2,
+                "baidu",
+            ),
+            it(
+                "Tibo 重置追踪站",
+                "https://tracker.example/tibo",
+                "Tibo 的 Codex 额度重置记录。",
+                2,
+                "baidu",
+            ),
+        ),
+        context=("OpenAI", "Codex"),
+    ),
+    Case(
+        "se2",
+        "tibo codex",
+        "short-entity",
+        (
+            it(
+                "Codex resets tracker",
+                "https://reset.example/codex",
+                "Track Codex usage resets.",
+                1,
+            ),
+            it(
+                "Tibo Codex 28 天挑战",
+                "https://reset.example/tibo-28",
+                "Tibo 的 Codex 挑战记录。",
+                2,
+            ),
+            it("Codex 安装教程", "https://guide.example/codex-install", "How to install Codex.", 0),
+        ),
+    ),
+    Case(
+        "se3",
+        "thsottiaux codex",
+        "short-entity",
+        (
+            it("街头挑战视频", "https://video.example/street-1", "娱乐视频，与查询无关。", 0),
+            it("直播剪辑", "https://video.example/street-2", "娱乐直播剪辑。", 0),
+            it(
+                "Thibault Sottiaux on X",
+                "https://x.example/thsottiaux",
+                "@thsottiaux announces Codex resets.",
+                2,
+                "baidu",
+            ),
+            it(
+                "Codex 负责人发声",
+                "https://media.example/codex-lead",
+                "Codex 团队负责人公开回应。",
+                1,
+                "baidu",
+            ),
+        ),
+    ),
+    Case(
+        "se4",
+        "tibo 最近的公告",
+        "short-entity",
+        (
+            it(
+                "OpenAI Codex release notes",
+                "https://docs.example/codex-notes",
+                "Codex changelog and release notes.",
+                1,
+            ),
+            it(
+                "Tibo 发布重置公告",
+                "https://tracker.example/tibo-notice",
+                "Tibo 官宣新一轮 Codex 重置。",
+                2,
+                "baidu",
+            ),
+        ),
+        context=("OpenAI", "Codex"),
+    ),
+    Case(
+        "se5",
+        "wjx-handler ai",
+        "short-entity",
+        (
+            it(
+                "Handler pattern in AI apps",
+                "https://patterns.example/handler",
+                "Generic handler design pattern.",
+                0,
+            ),
+            it(
+                "AI handler libraries",
+                "https://libs.example/ai-handlers",
+                "List of handler libraries.",
+                0,
+            ),
+        ),
+    ),
+    Case(
+        "se6",
+        "Tibo OpenAI",
+        "short-entity",
+        (
+            it(
+                "OpenAI company page",
+                "https://openai.example/about",
+                "OpenAI official about page.",
+                0,
+            ),
+            it(
+                "Tibo 在 OpenAI 负责什么",
+                "https://bio.example/tibo-openai",
+                "Tibo 负责 OpenAI 核心产品与平台。",
+                2,
+                "baidu",
+            ),
+            it(
+                "Codex team structure",
+                "https://docs.example/codex-team",
+                "Codex team org chart.",
+                1,
+                "baidu",
+            ),
+        ),
+        context=("OpenAI",),
+    ),
     # ---- 中文专有名词 ----
-    Case("cn1", "智谱 GLM 更新", "cjk-proper", (
-        it("智（汉语汉字）", "https://dict.example/zhi", "汉字智的基本解释。", 0),
-        it("智的意思与拼音", "https://hanzi.example/zhi", "智字详解。", 0),
-        it("智谱清言", "https://chat.example/zhipu", "智谱的对话产品主页。", 1),
-        it("智谱发布 GLM 新一代模型", "https://ai.example/glm5", "智谱发布 GLM 新版本。", 2, "baidu"),
-    )),
-    Case("cn2", "文心一言 用户数", "cjk-proper", (
-        it("文（汉字）", "https://dict.example/wen", "汉字文的基本解释。", 0),
-        it("文心一言累计用户规模", "https://ai.example/ernie-users", "文心一言用户数据公布。", 2, "baidu"),
-        it("百度文心一言发布", "https://news.example/ernie-launch", "文心一言发布会回顾。", 1, "baidu"),
-    )),
-    Case("cn3", "通义千问 开源", "cjk-proper", (
-        it("义（汉字）", "https://dict.example/yi", "汉字义的解释。", 0),
-        it("通义千问开源模型下载", "https://model.example/qwen-oss", "通义千问开源版本发布页。", 2, "baidu"),
-    )),
-    Case("cn4", "豆包 大模型", "cjk-proper", (
-        it("豆包食谱", "https://food.example/douban", "豆包菜谱。", 0),
-        it("豆包大模型正式发布", "https://ai.example/doubao", "豆包大模型能力介绍。", 2, "baidu"),
-    )),
-    Case("cn5", "Kimi 月之暗面", "cjk-proper", (
-        it("Kimi 官网", "https://kimi.example", "Kimi 产品主页。", 1),
-        it("月之暗面发布 Kimi 新版", "https://ai.example/kimi-moon", "月之暗面公司发布 Kimi 更新。", 2, "baidu"),
-    )),
-
+    Case(
+        "cn1",
+        "智谱 GLM 更新",
+        "cjk-proper",
+        (
+            it("智（汉语汉字）", "https://dict.example/zhi", "汉字智的基本解释。", 0),
+            it("智的意思与拼音", "https://hanzi.example/zhi", "智字详解。", 0),
+            it("智谱清言", "https://chat.example/zhipu", "智谱的对话产品主页。", 1),
+            it(
+                "智谱发布 GLM 新一代模型",
+                "https://ai.example/glm5",
+                "智谱发布 GLM 新版本。",
+                2,
+                "baidu",
+            ),
+        ),
+    ),
+    Case(
+        "cn2",
+        "文心一言 用户数",
+        "cjk-proper",
+        (
+            it("文（汉字）", "https://dict.example/wen", "汉字文的基本解释。", 0),
+            it(
+                "文心一言累计用户规模",
+                "https://ai.example/ernie-users",
+                "文心一言用户数据公布。",
+                2,
+                "baidu",
+            ),
+            it(
+                "百度文心一言发布",
+                "https://news.example/ernie-launch",
+                "文心一言发布会回顾。",
+                1,
+                "baidu",
+            ),
+        ),
+    ),
+    Case(
+        "cn3",
+        "通义千问 开源",
+        "cjk-proper",
+        (
+            it("义（汉字）", "https://dict.example/yi", "汉字义的解释。", 0),
+            it(
+                "通义千问开源模型下载",
+                "https://model.example/qwen-oss",
+                "通义千问开源版本发布页。",
+                2,
+                "baidu",
+            ),
+        ),
+    ),
+    Case(
+        "cn4",
+        "豆包 大模型",
+        "cjk-proper",
+        (
+            it("豆包食谱", "https://food.example/douban", "豆包菜谱。", 0),
+            it(
+                "豆包大模型正式发布",
+                "https://ai.example/doubao",
+                "豆包大模型能力介绍。",
+                2,
+                "baidu",
+            ),
+        ),
+    ),
+    Case(
+        "cn5",
+        "Kimi 月之暗面",
+        "cjk-proper",
+        (
+            it("Kimi 官网", "https://kimi.example", "Kimi 产品主页。", 1),
+            it(
+                "月之暗面发布 Kimi 新版",
+                "https://ai.example/kimi-moon",
+                "月之暗面公司发布 Kimi 更新。",
+                2,
+                "baidu",
+            ),
+        ),
+    ),
     # ---- 技术名词（应一次请求早停） ----
-    Case("tt1", "LiteLLM tool calling documentation", "tech-term", (
-        it("LiteLLM tool calling docs", "https://docs.example/litellm-tools", "LiteLLM tool calling reference.", 2),
-        it("Getting started | LiteLLM", "https://docs.example/litellm-start", "LiteLLM getting started guide.", 1),
-    ), expect_strong_stop=True),
-    Case("tt2", "python asyncio tutorial", "tech-term", (
-        it("Asyncio in Python docs", "https://docs.example/asyncio", "Official asyncio tutorial.", 2),
-        it("Async patterns", "https://blog.example/async-patterns", "Common asyncio patterns.", 1),
-    ), expect_strong_stop=True),
-    Case("tt3", "rust ownership borrow checker", "tech-term", (
-        it("Rust ownership chapter", "https://docs.example/rust-own", "The Rust book ownership chapter.", 2),
-        it("Borrow checker explained", "https://blog.example/borrow", "Understanding the borrow checker.", 1),
-    ), expect_strong_stop=True),
-    Case("tt4", "docker compose healthcheck", "tech-term", (
-        it("Compose healthcheck reference", "https://docs.example/compose-hc", "Docker Compose healthcheck config.", 2),
-        it("Container health tips", "https://blog.example/health", "General container health tips.", 0),
-    ), expect_strong_stop=True),
-    Case("tt5", "textual python tui", "tech-term", (
-        it("Textual TUI framework", "https://docs.example/textual", "Build TUIs with Textual.", 2),
-        it("TUI design patterns", "https://blog.example/tui", "TUI design discussion.", 1),
-    ), expect_strong_stop=True),
-
+    Case(
+        "tt1",
+        "LiteLLM tool calling documentation",
+        "tech-term",
+        (
+            it(
+                "LiteLLM tool calling docs",
+                "https://docs.example/litellm-tools",
+                "LiteLLM tool calling reference.",
+                2,
+            ),
+            it(
+                "Getting started | LiteLLM",
+                "https://docs.example/litellm-start",
+                "LiteLLM getting started guide.",
+                1,
+            ),
+        ),
+        expect_strong_stop=True,
+    ),
+    Case(
+        "tt2",
+        "python asyncio tutorial",
+        "tech-term",
+        (
+            it(
+                "Asyncio in Python docs",
+                "https://docs.example/asyncio",
+                "Official asyncio tutorial.",
+                2,
+            ),
+            it(
+                "Async patterns",
+                "https://blog.example/async-patterns",
+                "Common asyncio patterns.",
+                1,
+            ),
+        ),
+        expect_strong_stop=True,
+    ),
+    Case(
+        "tt3",
+        "rust ownership borrow checker",
+        "tech-term",
+        (
+            it(
+                "Rust ownership chapter",
+                "https://docs.example/rust-own",
+                "The Rust book ownership chapter.",
+                2,
+            ),
+            it(
+                "Borrow checker explained",
+                "https://blog.example/borrow",
+                "Understanding the borrow checker.",
+                1,
+            ),
+        ),
+        expect_strong_stop=True,
+    ),
+    Case(
+        "tt4",
+        "docker compose healthcheck",
+        "tech-term",
+        (
+            it(
+                "Compose healthcheck reference",
+                "https://docs.example/compose-hc",
+                "Docker Compose healthcheck config.",
+                2,
+            ),
+            it(
+                "Container health tips",
+                "https://blog.example/health",
+                "General container health tips.",
+                0,
+            ),
+        ),
+        expect_strong_stop=True,
+    ),
+    Case(
+        "tt5",
+        "textual python tui",
+        "tech-term",
+        (
+            it(
+                "Textual TUI framework",
+                "https://docs.example/textual",
+                "Build TUIs with Textual.",
+                2,
+            ),
+            it("TUI design patterns", "https://blog.example/tui", "TUI design discussion.", 1),
+        ),
+        expect_strong_stop=True,
+    ),
     # ---- 新闻时效 ----
-    Case("nw1", "GLM 最新模型 发布", "freshness", (
-        it("智（汉字）", "https://dict.example/zhi", "汉字解释。", 0),
-        it("GLM-5 发布公告", "https://ai.example/glm5-release", "GLM 新模型发布公告。", 2, "baidu", "2026-10-20"),
-        it("GLM 历史版本回顾", "https://ai.example/glm-history", "GLM 系列历史。", 1, "baidu", "2025-01-01"),
-    )),
-    Case("nw2", "codex reset latest", "freshness", (
-        it("Codex resets tracker", "https://reset.example/codex", "Latest Codex resets.", 2, None, "2026-10-28"),
-        it("Old Codex review", "https://blog.example/codex-old", "Early Codex impressions.", 0, None, "2025-03-01"),
-    )),
-    Case("nw3", "openai news today", "freshness", (
-        it("OpenAI newsroom", "https://news.example/openai", "Today's OpenAI headlines.", 2, None, "2026-10-31"),
-        it("OpenAI about", "https://openai.example/about", "Company background.", 1),
-    )),
-    Case("nw4", "智谱 最新 发布", "freshness", (
-        it("智谱清言", "https://chat.example/zhipu", "产品主页。", 1),
-        it("智谱最新发布会实录", "https://ai.example/zhipu-event", "智谱最新发布会内容。", 2, "baidu", "2026-10-25"),
-    )),
-    Case("nw5", "litellm release notes latest version", "freshness", (
-        it("LiteLLM releases", "https://release.example/litellm", "Latest LiteLLM release notes.", 2, None, "2026-10-29"),
-        it("LiteLLM old announcement", "https://blog.example/litellm-old", "Old intro post.", 0, None, "2024-02-01"),
-    )),
-
+    Case(
+        "nw1",
+        "GLM 最新模型 发布",
+        "freshness",
+        (
+            it("智（汉字）", "https://dict.example/zhi", "汉字解释。", 0),
+            it(
+                "GLM-5 发布公告",
+                "https://ai.example/glm5-release",
+                "GLM 新模型发布公告。",
+                2,
+                "baidu",
+                "2026-10-20",
+            ),
+            it(
+                "GLM 历史版本回顾",
+                "https://ai.example/glm-history",
+                "GLM 系列历史。",
+                1,
+                "baidu",
+                "2025-01-01",
+            ),
+        ),
+    ),
+    Case(
+        "nw2",
+        "codex reset latest",
+        "freshness",
+        (
+            it(
+                "Codex resets tracker",
+                "https://reset.example/codex",
+                "Latest Codex resets.",
+                2,
+                None,
+                "2026-10-28",
+            ),
+            it(
+                "Old Codex review",
+                "https://blog.example/codex-old",
+                "Early Codex impressions.",
+                0,
+                None,
+                "2025-03-01",
+            ),
+        ),
+    ),
+    Case(
+        "nw3",
+        "openai news today",
+        "freshness",
+        (
+            it(
+                "OpenAI newsroom",
+                "https://news.example/openai",
+                "Today's OpenAI headlines.",
+                2,
+                None,
+                "2026-10-31",
+            ),
+            it("OpenAI about", "https://openai.example/about", "Company background.", 1),
+        ),
+    ),
+    Case(
+        "nw4",
+        "智谱 最新 发布",
+        "freshness",
+        (
+            it("智谱清言", "https://chat.example/zhipu", "产品主页。", 1),
+            it(
+                "智谱最新发布会实录",
+                "https://ai.example/zhipu-event",
+                "智谱最新发布会内容。",
+                2,
+                "baidu",
+                "2026-10-25",
+            ),
+        ),
+    ),
+    Case(
+        "nw5",
+        "litellm release notes latest version",
+        "freshness",
+        (
+            it(
+                "LiteLLM releases",
+                "https://release.example/litellm",
+                "Latest LiteLLM release notes.",
+                2,
+                None,
+                "2026-10-29",
+            ),
+            it(
+                "LiteLLM old announcement",
+                "https://blog.example/litellm-old",
+                "Old intro post.",
+                0,
+                None,
+                "2024-02-01",
+            ),
+        ),
+    ),
     # ---- 歧义实体 ----
-    Case("am1", "mercury planet facts", "ambiguous", (
-        it("Mercury (planet) overview", "https://space.example/mercury", "Mercury is the smallest planet.", 2),
-        it("Mercury element", "https://chem.example/hg", "Mercury is a chemical element.", 0),
-    )),
-    Case("am2", "julia programming", "ambiguous", (
-        it("Julia language homepage", "https://lang.example/julia", "The Julia programming language.", 2),
-        it("Famous people named Julia", "https://people.example/julia", "List of people named Julia.", 0),
-    )),
-    Case("am3", "orca whale", "ambiguous", (
-        it("Orca (killer whale)", "https://ocean.example/orca", "Orcas are the largest dolphins.", 2),
-        it("Orca software tool", "https://tools.example/orca", "A task runner named Orca.", 0),
-    )),
-    Case("am4", "swift language", "ambiguous", (
-        it("Swift programming language", "https://lang.example/swift", "Apple's Swift language.", 2),
-        it("Taylor Swift tour", "https://music.example/swift", "Concert information.", 0),
-    )),
-
+    Case(
+        "am1",
+        "mercury planet facts",
+        "ambiguous",
+        (
+            it(
+                "Mercury (planet) overview",
+                "https://space.example/mercury",
+                "Mercury is the smallest planet.",
+                2,
+            ),
+            it("Mercury element", "https://chem.example/hg", "Mercury is a chemical element.", 0),
+        ),
+    ),
+    Case(
+        "am2",
+        "julia programming",
+        "ambiguous",
+        (
+            it(
+                "Julia language homepage",
+                "https://lang.example/julia",
+                "The Julia programming language.",
+                2,
+            ),
+            it(
+                "Famous people named Julia",
+                "https://people.example/julia",
+                "List of people named Julia.",
+                0,
+            ),
+        ),
+    ),
+    Case(
+        "am3",
+        "orca whale",
+        "ambiguous",
+        (
+            it(
+                "Orca (killer whale)",
+                "https://ocean.example/orca",
+                "Orcas are the largest dolphins.",
+                2,
+            ),
+            it("Orca software tool", "https://tools.example/orca", "A task runner named Orca.", 0),
+        ),
+    ),
+    Case(
+        "am4",
+        "swift language",
+        "ambiguous",
+        (
+            it(
+                "Swift programming language",
+                "https://lang.example/swift",
+                "Apple's Swift language.",
+                2,
+            ),
+            it("Taylor Swift tour", "https://music.example/swift", "Concert information.", 0),
+        ),
+    ),
     # ---- 泛查询（不应被实体门控误杀） ----
-    Case("gn1", "python 教程", "generic", (
-        it("Python 官方教程", "https://docs.example/python", "Python 官方入门教程。", 2),
-        it("编程语言排行", "https://rank.example/langs", "语言热度排行。", 0),
-    )),
-    Case("gn2", "编程入门", "generic", (
-        it("编程入门指南", "https://learn.example/start", "零基础编程入门。", 2),
-        it("键盘选购", "https://shop.example/keyboard", "机械键盘推荐。", 0),
-    )),
-    Case("gn3", "healthy breakfast ideas", "generic", (
-        it("10 healthy breakfasts", "https://food.example/breakfast", "Healthy breakfast ideas.", 2),
-        it("Restaurant reviews", "https://food.example/restaurants", "Local restaurant reviews.", 0),
-    )),
-    Case("gn4", "如何学习英语", "generic", (
-        it("英语学习方法", "https://learn.example/english", "系统化英语学习路线。", 2),
-        it("出国留学中介", "https://svc.example/study", "留学服务广告。", 0),
-    )),
-
+    Case(
+        "gn1",
+        "python 教程",
+        "generic",
+        (
+            it("Python 官方教程", "https://docs.example/python", "Python 官方入门教程。", 2),
+            it("编程语言排行", "https://rank.example/langs", "语言热度排行。", 0),
+        ),
+    ),
+    Case(
+        "gn2",
+        "编程入门",
+        "generic",
+        (
+            it("编程入门指南", "https://learn.example/start", "零基础编程入门。", 2),
+            it("键盘选购", "https://shop.example/keyboard", "机械键盘推荐。", 0),
+        ),
+    ),
+    Case(
+        "gn3",
+        "healthy breakfast ideas",
+        "generic",
+        (
+            it(
+                "10 healthy breakfasts",
+                "https://food.example/breakfast",
+                "Healthy breakfast ideas.",
+                2,
+            ),
+            it(
+                "Restaurant reviews",
+                "https://food.example/restaurants",
+                "Local restaurant reviews.",
+                0,
+            ),
+        ),
+    ),
+    Case(
+        "gn4",
+        "如何学习英语",
+        "generic",
+        (
+            it("英语学习方法", "https://learn.example/english", "系统化英语学习路线。", 2),
+            it("出国留学中介", "https://svc.example/study", "留学服务广告。", 0),
+        ),
+    ),
     # ---- 无结果 / 负例 ----
-    Case("ng1", "tibo", "negative", (
-        it("图书促销", "https://shop.example/books", "图书打折广告。", 0),
-        it("天气查询", "https://weather.example", "天气预报。", 0),
-    )),
+    Case(
+        "ng1",
+        "tibo",
+        "negative",
+        (
+            it("图书促销", "https://shop.example/books", "图书打折广告。", 0),
+            it("天气查询", "https://weather.example", "天气预报。", 0),
+        ),
+    ),
     Case("ng2", "zzqqwxy protocol", "negative", ()),
-    Case("ng3", "asdkjhg kitchen", "negative", (
-        it("Kitchen design", "https://home.example/kitchen", "Kitchen remodeling ideas.", 0),
-    )),
-    Case("ng4", "fake-project-x release", "negative", (
-        it("Project management tips", "https://work.example/pm", "Generic PM advice.", 0),
-    )),
+    Case(
+        "ng3",
+        "asdkjhg kitchen",
+        "negative",
+        (it("Kitchen design", "https://home.example/kitchen", "Kitchen remodeling ideas.", 0),),
+    ),
+    Case(
+        "ng4",
+        "fake-project-x release",
+        "negative",
+        (it("Project management tips", "https://work.example/pm", "Generic PM advice.", 0),),
+    ),
 )
 
 
 # ---------- mock 传输 ----------
+
 
 class PoolTransport:
     """按 engines 参数返回固定候选池中对应引擎的结果；记录每次请求。"""
@@ -243,8 +666,12 @@ class PoolProvider:
         selected = query.engines or ("bing",)
         return [
             SearchResult(
-                title=item.title, url=item.url, snippet=item.snippet,
-                published=item.published, provider="open_websearch", engine=item.engine,
+                title=item.title,
+                url=item.url,
+                snippet=item.snippet,
+                published=item.published,
+                provider="open_websearch",
+                engine=item.engine,
             )
             for item in self.pool
             if item.engine in selected
@@ -258,17 +685,26 @@ def run_pipeline(case: Case) -> tuple[list[SearchResult], int, bool, str]:
     """端到端跑一个 case，返回 (top_results, 请求次数, 是否高置信通过, hint)。"""
     provider = PoolProvider(case.pool)
     router = SearchRouter(
-        {"open_websearch": provider}, order=["open_websearch"], engines=["bing"],
-        fallback_engines=("baidu", "duckduckgo", "sogou"), max_engines=3,
+        {"open_websearch": provider},
+        order=["open_websearch"],
+        engines=["bing"],
+        fallback_engines=("baidu", "duckduckgo", "sogou"),
+        max_engines=3,
     )
     outcome = router.search(SearchQuery(query=case.query, limit=5, context_terms=case.context))
-    return outcome.results, provider.calls, outcome.hint == "" and bool(outcome.results), outcome.hint
+    return (
+        outcome.results,
+        provider.calls,
+        outcome.hint == "" and bool(outcome.results),
+        outcome.hint,
+    )
 
 
 # ---------- 指标 ----------
 
+
 def dcg_at_5(grades: list[int]) -> float:
-    return sum((2 ** g - 1) / math.log2(i + 2) for i, g in enumerate(grades[:5]))
+    return sum((2**g - 1) / math.log2(i + 2) for i, g in enumerate(grades[:5]))
 
 
 def ndcg_at_5(results: list[SearchResult], pool: tuple[PoolItem, ...]) -> float:
@@ -290,7 +726,9 @@ def naive_pipeline(case: Case) -> list[SearchResult]:
     fallback = [i for i in case.pool if i.engine != "bing"]
     ordered = primary + fallback
     return [
-        SearchResult(title=i.title, url=i.url, snippet=i.snippet, published=i.published, engine=i.engine)
+        SearchResult(
+            title=i.title, url=i.url, snippet=i.snippet, published=i.published, engine=i.engine
+        )
         for i in ordered[:5]
     ]
 
@@ -299,7 +737,9 @@ def oracle_pipeline(case: Case) -> list[SearchResult]:
     """上界参照：全部候选按人工标注排序。"""
     ordered = sorted(case.pool, key=lambda i: -i.grade)
     return [
-        SearchResult(title=i.title, url=i.url, snippet=i.snippet, published=i.published, engine=i.engine)
+        SearchResult(
+            title=i.title, url=i.url, snippet=i.snippet, published=i.published, engine=i.engine
+        )
         for i in ordered[:5]
     ]
 
@@ -307,7 +747,14 @@ def oracle_pipeline(case: Case) -> list[SearchResult]:
 def evaluate(cases: tuple[Case, ...]) -> dict:
     per_case = []
     agg = {
-        "pipeline": {"p5": [], "success5": [], "mrr5": [], "ndcg5": [], "false_accept": [], "requests": []},
+        "pipeline": {
+            "p5": [],
+            "success5": [],
+            "mrr5": [],
+            "ndcg5": [],
+            "false_accept": [],
+            "requests": [],
+        },
         "naive": {"p5": [], "success5": [], "ndcg5": []},
         "oracle": {"p5": [], "success5": [], "ndcg5": []},
     }
@@ -343,11 +790,18 @@ def evaluate(cases: tuple[Case, ...]) -> dict:
         agg["oracle"]["success5"].append(1.0 if 2 in og else 0.0)
         agg["oracle"]["ndcg5"].append(ndcg_at_5(oracle, case.pool))
 
-        per_case.append({
-            "qid": case.qid, "query": case.query, "category": case.category,
-            "grades": grades, "requests": requests, "confident": confident,
-            "hint": hint[:40], "ndcg5": round(ndcg, 4),
-        })
+        per_case.append(
+            {
+                "qid": case.qid,
+                "query": case.query,
+                "category": case.category,
+                "grades": grades,
+                "requests": requests,
+                "confident": confident,
+                "hint": hint[:40],
+                "ndcg5": round(ndcg, 4),
+            }
+        )
     elapsed = time.perf_counter() - started
 
     def mean(values: list[float]) -> float:
@@ -357,7 +811,8 @@ def evaluate(cases: tuple[Case, ...]) -> dict:
     negative_qids = {c.qid for c in negative}
     false_accept_negative = [
         entry["confident"] and all(g < 1 for g in entry["grades"])
-        for entry in per_case if entry["qid"] in negative_qids
+        for entry in per_case
+        if entry["qid"] in negative_qids
     ]
     summary = {
         "cases": len(cases),
@@ -370,7 +825,9 @@ def evaluate(cases: tuple[Case, ...]) -> dict:
             "false_accept_rate": mean(agg["pipeline"]["false_accept"]),
             "false_accept_negative_only": round(
                 sum(1 for v in false_accept_negative if v) / len(false_accept_negative), 4
-            ) if false_accept_negative else 0.0,
+            )
+            if false_accept_negative
+            else 0.0,
             "avg_requests_per_query": mean(agg["pipeline"]["requests"]),
         },
         "naive_pool_order": {
@@ -400,7 +857,14 @@ def main() -> None:
         b = baseline["summary"]["pipeline"]
         c = report["summary"]["pipeline"]
         print("== pipeline 指标对比（基线 → 当前） ==")
-        for key in ("p_at_5", "success_at_5", "mrr_at_5", "ndcg_at_5", "false_accept_rate", "avg_requests_per_query"):
+        for key in (
+            "p_at_5",
+            "success_at_5",
+            "mrr_at_5",
+            "ndcg_at_5",
+            "false_accept_rate",
+            "avg_requests_per_query",
+        ):
             print(f"  {key}: {b[key]} -> {c[key]}")
         print("== 参照 ==")
         print(f"  naive_pool_order ndcg@5: {report['summary']['naive_pool_order']['ndcg_at_5']}")

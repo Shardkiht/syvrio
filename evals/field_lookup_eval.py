@@ -1,4 +1,5 @@
 """Evaluate exact label boundaries on a fixed, synthetic field corpus."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -45,12 +46,18 @@ def seed(vault: Path) -> None:
     topics = vault / "memories" / "general"
     topics.mkdir(parents=True)
     for group in range(12):
-        rows = FIELDS if group == 0 else [
-            (f"decoy-{group}-{i}",
-             f"样本 {group}-{i} 记录设备编号、复核周期、端口规则和文件交接安排。"
-             "另有独立的容器标签处理流程。")
-            for i in range(109)
-        ]
+        rows = (
+            FIELDS
+            if group == 0
+            else [
+                (
+                    f"decoy-{group}-{i}",
+                    f"样本 {group}-{i} 记录设备编号、复核周期、端口规则和文件交接安排。"
+                    "另有独立的容器标签处理流程。",
+                )
+                for i in range(109)
+            ]
+        )
         records = [
             render_record(text, Core(id=ident, status="active", source="eval", confidence=1))
             for ident, text in rows

@@ -3,6 +3,7 @@
 业务状态流转仍由 ChatApp 的 worker 调用 MemoryService.review_inference 完成；
 本模块只负责展示和把用户操作回调给上层，不直接读写推断日志。
 """
+
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -18,6 +19,7 @@ from textual.widgets import Button, OptionList, Static, TextArea
 from textual.widgets.option_list import Option
 
 from ..memory.models import Inference
+from ..time import format_local_timestamp
 
 STATUS_LABELS = {
     "hypothesis": "Pending",
@@ -114,7 +116,10 @@ class InferenceScreen(ModalScreen):
             yield Static("Inferences", id="inference-title")
             yield Static("AI-generated hypotheses · Separate from facts", id="inference-subtitle")
             yield Static("", id="inference-filters")
-            yield Static("No inferences yet. Reflection and profile review will add them here.", id="inference-empty")
+            yield Static(
+                "No inferences yet. Reflection and profile review will add them here.",
+                id="inference-empty",
+            )
             with Horizontal(id="inference-body"):
                 yield OptionList(id="inference-list", classes="thin-scroll")
                 with Vertical(id="inference-detail"):
@@ -192,7 +197,9 @@ class InferenceScreen(ModalScreen):
         for index, (key, label) in enumerate(FILTERS):
             if index:
                 text.append("  ·  ", style="#5f5f5f")
-            text.append(f"{label} {counts[key]}", style="bold #6cb6ff" if key == self._filter else "#8e8e8e")
+            text.append(
+                f"{label} {counts[key]}", style="bold #6cb6ff" if key == self._filter else "#8e8e8e"
+            )
         self.query_one("#inference-filters", Static).update(text)
         self.query_one("#inference-filters").display = bool(self._items)
         self.query_one("#inference-empty").display = not self._items
@@ -212,7 +219,11 @@ class InferenceScreen(ModalScreen):
         current_ids = [option.id for option in listing.options]
         rebuild = self._list_filter != self._filter
         if not rebuild:
-            removed = [index for index, item_id in enumerate(current_ids) if item_id not in self._visible_ids]
+            removed = [
+                index
+                for index, item_id in enumerate(current_ids)
+                if item_id not in self._visible_ids
+            ]
             for index in reversed(removed):
                 listing.remove_option_at_index(index)
             current_ids = [item_id for item_id in current_ids if item_id in self._visible_ids]
@@ -224,7 +235,7 @@ class InferenceScreen(ModalScreen):
             for index, item in enumerate(visible[: len(current_ids)]):
                 if self._rendered.get(item.id) != item:
                     listing.replace_option_prompt_at_index(index, _NoWrap(_prompt(item)))
-            for item in visible[len(current_ids):]:
+            for item in visible[len(current_ids) :]:
                 listing.add_option(_option(item))
         self._list_filter = self._filter
         self._rendered = {item.id: item for item in visible}
@@ -258,16 +269,24 @@ class InferenceScreen(ModalScreen):
             self.query_one("#inference-detail-text").update("No inference in this filter.")
             self.query_one("#inference-detail-sources").update("")
         else:
-            note = "Review only · confirmation never writes facts" if item.status in REVIEWABLE else "Read-only record"
+            note = (
+                "Review only · confirmation never writes facts"
+                if item.status in REVIEWABLE
+                else "Read-only record"
+            )
             self.query_one("#inference-detail-status").update(STATUS_LABELS[item.status])
             self.query_one("#inference-detail-kind").update(
-                f"Type: {KIND_LABELS.get(item.kind, item.kind)}   Updated: {item.updated_at[:16].replace('T', ' ')}"
+                f"Type: {KIND_LABELS.get(item.kind, item.kind)}   Updated: {format_local_timestamp(item.updated_at)}"
             )
             self.query_one("#inference-detail-text").update(item.text)
             lines = [f"Sources ({len(item.source_ids)})"]
             for source_id in item.source_ids:
                 text = self._sources.get(source_id, "")
-                lines.append(f"· {_excerpt(text)}" if text else f"· Source unavailable ({_short_id(source_id)})")
+                lines.append(
+                    f"· {_excerpt(text)}"
+                    if text
+                    else f"· Source unavailable ({_short_id(source_id)})"
+                )
             lines.append(note)
             self.query_one("#inference-detail-sources").update("\n".join(lines))
         self._sync_actions()
@@ -282,7 +301,11 @@ class InferenceScreen(ModalScreen):
         self.query_one("#inference-edit-actions").display = self._editing
         self.query_one("#inference-save", Button).disabled = self._busy
         self.query_one("#inference-cancel", Button).disabled = self._busy
-        hint = "Ctrl+S Save · Esc Cancel" if self._editing else "C Confirm · R Reject · E Edit · Esc Close"
+        hint = (
+            "Ctrl+S Save · Esc Cancel"
+            if self._editing
+            else "C Confirm · R Reject · E Edit · Esc Close"
+        )
         self.query_one("#inference-hint", Static).update(hint)
 
     # ---------- 筛选与选择 ----------

@@ -3,6 +3,7 @@
 各厂商适配器只负责构造自己的鉴权 Header 与请求/响应映射；HTTP 层的
 超时、状态码分级、网络异常归一在这里统一处理。
 """
+
 from __future__ import annotations
 
 import json
@@ -53,9 +54,7 @@ class JsonApiClient:
         self.provider_name = provider_name
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
-        self._client_factory = client_factory or (
-            lambda: httpx.Client(timeout=timeout)
-        )
+        self._client_factory = client_factory or (lambda: httpx.Client(timeout=timeout))
 
     def effective_timeout(self, query_timeout: float | None) -> float | None:
         """单次请求超时取配置与 router 下发剩余预算的较小值。"""

@@ -1,7 +1,8 @@
 """Git 同步用例：只协调 GitSyncService，不处理界面状态。"""
+
 from __future__ import annotations
 
-from ..infra.gitsync import SyncResult, SyncStage
+from ..infra.gitsync import SyncResult
 from ..memory.service import MemoryService
 
 
@@ -26,6 +27,4 @@ class GitUseCases:
         *,
         wait_for_git: bool = False,
     ) -> SyncResult:
-        return self.service.git_sync.sync(
-            trigger, on_progress, wait_for_git=wait_for_git
-        )
+        return self.service.git_sync.sync(trigger, on_progress, wait_for_git=wait_for_git)

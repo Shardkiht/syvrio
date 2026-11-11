@@ -12,6 +12,7 @@
 
 Key 从环境变量或系统凭据读取，输出只含状态与数量，不回显 Key。
 """
+
 from __future__ import annotations
 
 import argparse
@@ -68,9 +69,7 @@ def _search_key_env(name: str) -> str | None:
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="多厂商搜索/抓取受控冒烟")
     parser.add_argument("--provider", help="只检查/调用指定厂商；缺省列出全部")
-    parser.add_argument(
-        "--operation", choices=("search", "fetch"), default="search"
-    )
+    parser.add_argument("--operation", choices=("search", "fetch"), default="search")
     parser.add_argument(
         "--live",
         action="store_true",
@@ -92,14 +91,16 @@ def _dry_report(config) -> list[dict]:
         ("search", config.search.providers),
         ("fetch", config.fetch.providers),
     ):
-        optional = _OPTIONAL_KEY_PROVIDERS if operation == "search" else _OPTIONAL_FETCH_KEY_PROVIDERS
+        optional = (
+            _OPTIONAL_KEY_PROVIDERS if operation == "search" else _OPTIONAL_FETCH_KEY_PROVIDERS
+        )
         for name in listed:
             if operation == "search":
                 env_name = _search_key_env(name)
             else:
-                env_name = optional.get(name) or _EXTERNAL_FETCH_PROVIDERS.get(
-                    name, (None, None)
-                )[1]
+                env_name = (
+                    optional.get(name) or _EXTERNAL_FETCH_PROVIDERS.get(name, (None, None))[1]
+                )
             key_present = None if env_name is None else bool(read_api_key(env_name))
             # 匿名 Provider 无 Key 也注册；官方厂商必须有 Key。
             would_register = env_name is None or name in optional or key_present
@@ -189,7 +190,9 @@ def _live_fetch(config, provider: str) -> dict:
         }
     except ValueError:
         return {
-            "provider": provider, "operation": "fetch", "ok": False,
+            "provider": provider,
+            "operation": "fetch",
+            "ok": False,
             "error_kind": "unsafe_url",
         }
     return {
@@ -214,8 +217,7 @@ def main(argv: list[str] | None = None, config=None) -> int:
             rows = [
                 row
                 for row in rows
-                if row["provider"] == args.provider
-                and row["operation"] == args.operation
+                if row["provider"] == args.provider and row["operation"] == args.operation
             ]
         print(json.dumps({"mode": "dry", "rows": rows}, ensure_ascii=False, indent=2))
         return 0

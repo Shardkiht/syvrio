@@ -4,12 +4,12 @@ import json
 
 import pytest
 
-pytestmark = pytest.mark.memory
-
 from syvrio.infra.config import Config, LLMConfig, RetrievalConfig
 from syvrio.memory.extractor import StaticExtractor
 from syvrio.memory.models import Candidate, ExtractionResult, MemoryContext, PendingItem
 from syvrio.memory.service import MemoryService
+
+pytestmark = pytest.mark.memory
 
 
 def make_service(tmp_path, candidates):
@@ -25,7 +25,9 @@ def make_service(tmp_path, candidates):
 @pytest.mark.parametrize("confidence", [0.95, 0.5])
 def test_context_survives_admission_and_pending_approval(tmp_path, confidence):
     context = MemoryContext(event_time="2024-06", time_text="2024年6月")
-    svc = make_service(tmp_path, [Candidate(text="2024年6月参加合成展览", confidence=confidence, context=context)])
+    svc = make_service(
+        tmp_path, [Candidate(text="2024年6月参加合成展览", confidence=confidence, context=context)]
+    )
     result = svc.memorize("合成对话", session_id="s-test", message_id="m-test")
     if result.queued:
         assert svc.pending()[0].context == context
@@ -39,10 +41,18 @@ def test_context_survives_admission_and_pending_approval(tmp_path, confidence):
 
 
 def test_approve_rewrite_drops_stale_context(tmp_path):
-    svc = make_service(tmp_path, [Candidate(
-        text="2024年参观合成展馆", confidence=0.5,
-        context=MemoryContext(event_time="2024", location="合成展馆", location_kind="event"),
-    )])
+    svc = make_service(
+        tmp_path,
+        [
+            Candidate(
+                text="2024年参观合成展馆",
+                confidence=0.5,
+                context=MemoryContext(
+                    event_time="2024", location="合成展馆", location_kind="event"
+                ),
+            )
+        ],
+    )
     item = svc.memorize("合成对话").queued[0]
     entry = svc.approve(item.id, text_override="2025年参观合成展馆")
     assert entry.context is None
@@ -51,10 +61,16 @@ def test_approve_rewrite_drops_stale_context(tmp_path):
 
 
 def test_context_credentials_block_before_admission_or_queue(tmp_path):
-    svc = make_service(tmp_path, [Candidate(
-        text="合成事件", confidence=0.5,
-        context=MemoryContext(location="密码是 synthetic-only", location_kind="event"),
-    )])
+    svc = make_service(
+        tmp_path,
+        [
+            Candidate(
+                text="合成事件",
+                confidence=0.5,
+                context=MemoryContext(location="密码是 synthetic-only", location_kind="event"),
+            )
+        ],
+    )
     result = svc.memorize("合成对话")
     assert result.blocked == ["合成事件"]
     assert svc.pending() == [] and svc.store.entries() == []
@@ -62,8 +78,12 @@ def test_context_credentials_block_before_admission_or_queue(tmp_path):
 
 def test_import_dry_run_includes_context_without_writing(tmp_path):
     svc = make_service(tmp_path, [])
-    candidate = Candidate(text="2024年合成事件", confidence=0.95, context=MemoryContext(event_time="2024"))
-    result = svc.import_text("合成文档", dry_run=True, extractor=StaticExtractor(ExtractionResult(memories=[candidate])))
+    candidate = Candidate(
+        text="2024年合成事件", confidence=0.95, context=MemoryContext(event_time="2024")
+    )
+    result = svc.import_text(
+        "合成文档", dry_run=True, extractor=StaticExtractor(ExtractionResult(memories=[candidate]))
+    )
     assert result.admitted[0].context == candidate.context
     assert svc.store.entries() == []
 
@@ -119,7 +139,9 @@ def test_approve_writes_entry_and_clears_pending(tmp_path):
     audit = json.loads(service.audit.path.read_text(encoding="utf-8"))
     assert audit.pop("at")
     assert audit == {"action": "approve", "item": item.id, "entry": entry.id, "supersedes": ""}
-    assert "人工确认" in (tmp_path / "vault" / "memories" / "general" / "preferences.md").read_text(encoding="utf-8")
+    assert "人工确认" in (tmp_path / "vault" / "memories" / "general" / "preferences.md").read_text(
+        encoding="utf-8"
+    )
 
 
 @pytest.mark.parametrize("original", ["可能喜欢浅烘", "API key: demo-placeholder"])
@@ -155,8 +177,11 @@ def test_approve_override_writes_only_final_entry(tmp_path, original):
     audit = json.loads(service.audit.path.read_text(encoding="utf-8"))
     assert audit.pop("at")
     assert audit == {
-        "action": "approve", "item": item.id, "entry": entry.id,
-        "supersedes": "", "text_override": "喜欢中烘咖啡",
+        "action": "approve",
+        "item": item.id,
+        "entry": entry.id,
+        "supersedes": "",
+        "text_override": "喜欢中烘咖啡",
     }
 
 
@@ -192,10 +217,13 @@ def test_approve_conflict_links_final_entry_to_old_entry(tmp_path, override):
 
 
 def test_approve_stale_conflict_replaces_current_successor(tmp_path):
-    service = make_service(tmp_path, [
-        Candidate(text="每月合成预算为200元", topic="budget", confidence=1.0),
-        Candidate(text="每月合成预算为300元", topic="budget", confidence=1.0),
-    ])
+    service = make_service(
+        tmp_path,
+        [
+            Candidate(text="每月合成预算为200元", topic="budget", confidence=1.0),
+            Candidate(text="每月合成预算为300元", topic="budget", confidence=1.0),
+        ],
+    )
     old = service.note("每月合成预算为100元", topic="budget")
     items = service.memorize("合成预算更新").queued
     assert len(items) == 2
@@ -210,7 +238,9 @@ def test_approve_stale_conflict_replaces_current_successor(tmp_path):
 def test_approve_stale_conflict_does_not_resurrect_deleted_memory(tmp_path):
     service = make_service(tmp_path, [])
     old = service.note("合成旧事实")
-    item = PendingItem.from_candidate(Candidate(text="合成新事实"), "test", "conflict", conflict_with=old.id)
+    item = PendingItem.from_candidate(
+        Candidate(text="合成新事实"), "test", "conflict", conflict_with=old.id
+    )
     service.queue.add(item)
     service.forget(old.id)
     with pytest.raises(ValueError, match="已删除"):
@@ -222,7 +252,9 @@ def test_approve_stale_conflict_does_not_resurrect_deleted_memory(tmp_path):
 def test_approve_append_failure_keeps_previous_memory_active(tmp_path, monkeypatch):
     service = make_service(tmp_path, [])
     old = service.note("合成旧事实")
-    item = PendingItem.from_candidate(Candidate(text="合成新事实"), "test", "conflict", conflict_with=old.id)
+    item = PendingItem.from_candidate(
+        Candidate(text="合成新事实"), "test", "conflict", conflict_with=old.id
+    )
     service.queue.add(item)
 
     def fail(*args, **kwargs):
@@ -254,8 +286,10 @@ def test_approve_invalid_override_leaves_storage_unchanged(tmp_path, conflict, o
     )
     service.queue.add(item)
     paths = [
-        service.store.topic_path("preferences"), service.queue.pending_path,
-        service.queue.resolved_path, service.audit.path,
+        service.store.topic_path("preferences"),
+        service.queue.pending_path,
+        service.queue.resolved_path,
+        service.audit.path,
     ]
     before = {path: path.read_bytes() for path in paths}
 
@@ -355,9 +389,7 @@ def test_read_topic_truncates_to_token_budget(tmp_path):
 def test_commit_push_failure_does_not_hide_commit(tmp_path):
     # auto_push 但无 remote：本地提交必须成功返回 hash，push 失败只记录在 push_error。
     config = Config(vault=tmp_path / "vault", llm=LLMConfig(), auto_push=True)
-    service = MemoryService(
-        config, extractor=StaticExtractor(ExtractionResult(memories=[]))
-    )
+    service = MemoryService(config, extractor=StaticExtractor(ExtractionResult(memories=[])))
     service.init_vault()
     service.note("一条记录", topic="misc")
 
@@ -448,21 +480,41 @@ def test_approve_rejects_secret_and_keeps_pending(tmp_path):
     assert [pending.id for pending in service.pending()] == [item.id]
 
 
-@pytest.mark.parametrize("operation,stage", [
-    ("approve", "status"), ("approve", "resolve"), ("approve", "audit"),
-    ("correct", "status"), ("correct", "audit"),
-    ("reject", "resolve"), ("reject", "audit"), ("forget", "audit"),
-])
-def test_manual_write_failure_rolls_back_and_retry_is_consistent(tmp_path, monkeypatch, operation, stage):
+@pytest.mark.parametrize(
+    "operation,stage",
+    [
+        ("approve", "status"),
+        ("approve", "resolve"),
+        ("approve", "audit"),
+        ("correct", "status"),
+        ("correct", "audit"),
+        ("reject", "resolve"),
+        ("reject", "audit"),
+        ("forget", "audit"),
+    ],
+)
+def test_manual_write_failure_rolls_back_and_retry_is_consistent(
+    tmp_path, monkeypatch, operation, stage
+):
     service = make_service(tmp_path, [])
     old = service.note("Synthetic original fact", topic="preferences")
-    item = PendingItem.from_candidate(Candidate(text="Synthetic replacement fact", topic="other"),
-                                      "test", "conflict", conflict_with=old.id)
+    item = PendingItem.from_candidate(
+        Candidate(text="Synthetic replacement fact", topic="other"),
+        "test",
+        "conflict",
+        conflict_with=old.id,
+    )
     service.queue.add(item)
     service.audit.write("synthetic-baseline")
-    paths = [service.store.topic_path("preferences"), service.store.topic_path("other"),
-             service.queue.pending_path, service.queue.resolved_path, service.audit.path]
+    paths = [
+        service.store.topic_path("preferences"),
+        service.store.topic_path("other"),
+        service.queue.pending_path,
+        service.queue.resolved_path,
+        service.audit.path,
+    ]
     before = {path: path.read_bytes() if path.exists() else None for path in paths}
+
     def execute():
         if operation == "approve":
             return service.approve(item.id)
@@ -471,12 +523,18 @@ def test_manual_write_failure_rolls_back_and_retry_is_consistent(tmp_path, monke
         if operation == "reject":
             return service.reject(item.id)
         return service.forget(old.id)
-    obj, name = {"status": (service.store, "set_status"),
-                 "resolve": (service.queue, "resolve"), "audit": (service.audit, "write")}[stage]
+
+    obj, name = {
+        "status": (service.store, "set_status"),
+        "resolve": (service.queue, "resolve"),
+        "audit": (service.audit, "write"),
+    }[stage]
     original = getattr(obj, name)
+
     def fail_after_write(*args, **kwargs):
         original(*args, **kwargs)
         raise OSError("synthetic write failure")
+
     with monkeypatch.context() as patch:
         patch.setattr(obj, name, fail_after_write)
         with pytest.raises(OSError, match="synthetic write failure"):
@@ -488,7 +546,9 @@ def test_manual_write_failure_rolls_back_and_retry_is_consistent(tmp_path, monke
     active = service.store.entries()
     assert len(active) == (0 if operation == "forget" else 1)
     assert service.pending() == ([] if operation in ("approve", "reject") else [item])
-    logs = [json.loads(line) for line in service.audit.path.read_text(encoding="utf-8").splitlines()]
+    logs = [
+        json.loads(line) for line in service.audit.path.read_text(encoding="utf-8").splitlines()
+    ]
     assert [row["action"] for row in logs] == ["synthetic-baseline", operation]
     if operation in ("approve", "correct"):
         assert len(service.store.entries(include_inactive=True)) == 2

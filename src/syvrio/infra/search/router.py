@@ -1,16 +1,15 @@
 from __future__ import annotations
 
-from ..paths import SyvrioPaths, vault_paths
-
+import dataclasses
 import hashlib
 from collections.abc import Sequence
 from contextlib import closing
-from typing import Any
-import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from ..config import SearchConfig, read_api_key
+from ..paths import SyvrioPaths, vault_paths
 from .attempts import SearchAttempt, SearchRun
 from .base import (
     FetchResult,
@@ -69,9 +68,7 @@ _OPTIONAL_KEY_PROVIDERS = {
 }
 
 
-def _build_optional_provider(
-    name: str, api_key: str, config: SearchConfig
-) -> SearchProvider:
+def _build_optional_provider(name: str, api_key: str, config: SearchConfig) -> SearchProvider:
     if name == "anysearch":
         from .anysearch import AnySearchProvider
 
@@ -84,9 +81,7 @@ def _build_optional_provider(
     if name == "parallel_mcp":
         from .parallel_mcp import ParallelMcpProvider
 
-        return ParallelMcpProvider(
-            api_key, timeout=max(15.0, config.timeout)
-        )
+        return ParallelMcpProvider(api_key, timeout=max(15.0, config.timeout))
     raise ValueError(f"未知的可选搜索 provider: {name}")
 
 
@@ -113,6 +108,7 @@ def _build_external_provider(name: str, api_key: str, timeout: float) -> SearchP
 
         return VolcengineSearchProvider(api_key, timeout=timeout)
     raise ValueError(f"未知的外部搜索 provider: {name}")
+
 
 # 空结果与时效性查询的缓存短命 TTL；成功结果沿用配置的 cache_ttl。
 EMPTY_RESULT_TTL = 300.0
@@ -182,9 +178,7 @@ class CandidatePool:
             key = url or f"{result.title}\x00{result.snippet}"
             entry = self._entries.get(key)
             if entry is None:
-                self._entries[key] = PoolEntry(
-                    result, [(result.provider, result.engine, rank)]
-                )
+                self._entries[key] = PoolEntry(result, [(result.provider, result.engine, rank)])
                 self._order.append(key)
                 continue
             entry.ranks.append((result.provider, result.engine, rank))
@@ -320,9 +314,7 @@ class SearchRouter:
 
     @property
     def supports_fetch(self) -> bool:
-        return any(
-            "fetch" in provider.capabilities for provider in self.registry.values()
-        )
+        return any("fetch" in provider.capabilities for provider in self.registry.values())
 
     def search(self, query: SearchQuery) -> SearchOutcome:
         text = query.query.strip()
@@ -333,9 +325,7 @@ class SearchRouter:
         strategy = (query.strategy or "auto").strip().lower()
         if strategy not in SEARCH_STRATEGIES:
             raise ValueError(f"unsupported search strategy: {strategy}")
-        requested = normalize_search_providers(
-            query.providers, limit=MAX_SELECTED_PROVIDERS
-        )
+        requested = normalize_search_providers(query.providers, limit=MAX_SELECTED_PROVIDERS)
         preferred = (query.preferred_provider or "auto").strip().lower()
         selection_failures: list[SearchFailure] = []
         if engine != "auto":
@@ -368,8 +358,16 @@ class SearchRouter:
         # 不能为了默认展示 5 条就只向上游要 5 条。
         fetch_limit = min(30, max(10, limit * 3))
         cache_key = self._cache_key(
-            text, limit, engine, query.lang, query.freshness, names, engines, query,
-            strategy, requested,
+            text,
+            limit,
+            engine,
+            query.lang,
+            query.freshness,
+            names,
+            engines,
+            query,
+            strategy,
+            requested,
         )
         if strategy == "strict" and not names:
             return SearchOutcome(
@@ -415,14 +413,27 @@ class SearchRouter:
             else:
                 slots = ((),)
             for index, slot in enumerate(slots):
-                for phrase in ([text, *variants] if index == 0 else [text]):
-                    attempts.append(SearchAttempt(name, provider, SearchQuery(
-                        phrase, limit=fetch_limit, engine=engine, lang=query.lang,
-                        freshness=query.freshness, engines=slot,
-                    ), index))
+                for phrase in [text, *variants] if index == 0 else [text]:
+                    attempts.append(
+                        SearchAttempt(
+                            name,
+                            provider,
+                            SearchQuery(
+                                phrase,
+                                limit=fetch_limit,
+                                engine=engine,
+                                lang=query.lang,
+                                freshness=query.freshness,
+                                engines=slot,
+                            ),
+                            index,
+                        )
+                    )
             variants = []
 
-        run = SearchRun(attempts, self.timeout_budget, self.max_requests, self.usage_limiter, failures)
+        run = SearchRun(
+            attempts, self.timeout_budget, self.max_requests, self.usage_limiter, failures
+        )
         successful: list[str] = []
         name_hint = names[-1] if names else ""
         with closing(run.results()) as responses:
@@ -445,9 +456,16 @@ class SearchRouter:
                 break
 
         outcome = self._final_outcome(
-            failures, pool, analysis, limit, cache_key, name_hint=name_hint,
-            budget_exhausted=run.budget_exhausted, timed_out=run.timed_out,
-            attempted=run.attempted, strategy=strategy,
+            failures,
+            pool,
+            analysis,
+            limit,
+            cache_key,
+            name_hint=name_hint,
+            budget_exhausted=run.budget_exhausted,
+            timed_out=run.timed_out,
+            attempted=run.attempted,
+            strategy=strategy,
             contributors=successful if strategy == "compare" else pool.providers(),
         )
         if strategy == "compare":
@@ -464,8 +482,7 @@ class SearchRouter:
         if verification == "complete":
             count = len(dict.fromkeys(contributors)) or 2
             return (
-                f"交叉验证：已合并 {count} 家 Provider 的结果；"
-                "同一页面被多家返回不构成独立证据。"
+                f"交叉验证：已合并 {count} 家 Provider 的结果；同一页面被多家返回不构成独立证据。"
             )
         if verification == "unknown":
             return "交叉验证状态未知（旧缓存缺少验证信息）。"
@@ -516,7 +533,10 @@ class SearchRouter:
             # 池里至少有核心词命中：正常完成才按成功语义缓存（时效查询短 TTL）。
             if not truncated:
                 self._cache_put(
-                    cache_key, merged, name_hint, analysis,
+                    cache_key,
+                    merged,
+                    name_hint,
+                    analysis,
                     strategy=strategy,
                     attempted=attempted,
                     contributors=contributors,
@@ -539,7 +559,11 @@ class SearchRouter:
             # 正常完成时低相关候选只短 TTL 缓存，给之后的回退留机会。
             if not truncated:
                 self._cache_put(
-                    cache_key, merged, name_hint, analysis, short=True,
+                    cache_key,
+                    merged,
+                    name_hint,
+                    analysis,
+                    short=True,
                     strategy=strategy,
                     attempted=attempted,
                     contributors=contributors,
@@ -561,7 +585,10 @@ class SearchRouter:
             # 真正的零命中（没有任何上游失败）才短 TTL 缓存；失败导致的空
             # 永不入缓存，否则验证码/限流期间会一直拿到空。
             self.cache.set(
-                cache_key, [], name_hint, ttl=EMPTY_RESULT_TTL,
+                cache_key,
+                [],
+                name_hint,
+                ttl=EMPTY_RESULT_TTL,
                 strategy=strategy,
                 attempted=list(attempted or []),
                 contributors=contributors,
@@ -570,8 +597,14 @@ class SearchRouter:
         if failures and all(
             failure.kind
             in (
-                "timeout", "network", "rate_limit", "unavailable", "bad_response",
-                "auth", "quota", "budget_exhausted",
+                "timeout",
+                "network",
+                "rate_limit",
+                "unavailable",
+                "bad_response",
+                "auth",
+                "quota",
+                "budget_exhausted",
             )
             for failure in failures
         ):
@@ -587,12 +620,11 @@ class SearchRouter:
             for failure in failures
         ):
             hint += " SearXNG 返回 403：请确认实例已在 settings.yml 的 search.formats 中启用 json。"
-        if any(
-            failure.provider == "searxng" and failure.kind == "network"
-            for failure in failures
-        ):
+        if any(failure.provider == "searxng" and failure.kind == "network" for failure in failures):
             hint += " 请确认 SearXNG 实例已启动且 searxng_base_url 可达。"
-        if any("open-websearch" in failure.detail or "daemon" in failure.detail for failure in failures):
+        if any(
+            "open-websearch" in failure.detail or "daemon" in failure.detail for failure in failures
+        ):
             hint += " 请确认 open-websearch 已启动：npx open-websearch@latest serve"
         return SearchOutcome(
             failed=failures,
@@ -626,27 +658,31 @@ class SearchRouter:
         }
         # 时效性查询（今天/最新/latest...）成功结果也只短缓存。
         if short or analysis.freshness_requested:
-            self.cache.set(
-                cache_key, results, name, ttl=FRESHNESS_TTL, **metadata
-            )
+            self.cache.set(cache_key, results, name, ttl=FRESHNESS_TTL, **metadata)
         else:
             self.cache.set(cache_key, results, name, **metadata)
 
     def _exhausted(self, failures: list[SearchFailure]) -> SearchOutcome:
-        if failures and all(
-            failure.kind in ("timeout", "network", "rate_limit", "unavailable", "bad_response")
-            for failure in failures
-        ) and not any("未注册" in failure.detail or "预算" in failure.detail for failure in failures):
+        if (
+            failures
+            and all(
+                failure.kind in ("timeout", "network", "rate_limit", "unavailable", "bad_response")
+                for failure in failures
+            )
+            and not any(
+                "未注册" in failure.detail or "预算" in failure.detail for failure in failures
+            )
+        ):
             hint = "所有搜索引擎均失败。"
         else:
             hint = "未找到相关结果。"
-        if any("open-websearch" in failure.detail or "daemon" in failure.detail for failure in failures):
+        if any(
+            "open-websearch" in failure.detail or "daemon" in failure.detail for failure in failures
+        ):
             hint += " 请确认 open-websearch 已启动：npx open-websearch@latest serve"
         return SearchOutcome(failed=failures, hint=hint)
 
-    def _engine_slots(
-        self, default_engines: tuple[str, ...]
-    ) -> tuple[tuple[str, ...], ...]:
+    def _engine_slots(self, default_engines: tuple[str, ...]) -> tuple[tuple[str, ...], ...]:
         """自动搜索的引擎尝试序列；显式指定引擎时不进入本方法（保持用户语义）。"""
         if default_engines:
             ordered = list(default_engines)
@@ -664,7 +700,9 @@ class SearchRouter:
     def fetch(self, url: str, max_chars: int = 4000) -> FetchResult:
         """抓取搜索结果正文；兼容入口，实际调度委托独立 FetchRouter。"""
         if self._fetch_router is None:
-            self._fetch_router = FetchRouter(self.registry, order=self.order, usage_limiter=self.usage_limiter)
+            self._fetch_router = FetchRouter(
+                self.registry, order=self.order, usage_limiter=self.usage_limiter
+            )
         return self._fetch_router.fetch(url, max_chars)
 
     def _cache_key(
@@ -683,9 +721,7 @@ class SearchRouter:
         # context（保留顺序，影响变体生成）、auto/explicit 引擎策略、回退
         # 序列与预算、Provider 选择策略都参与键；任一变化即视为新查询。
         engine_strategy = "explicit" if query.engines else "auto"
-        context_sig = "\x1e".join(
-            term.strip() for term in query.context_terms if term.strip()
-        )
+        context_sig = "\x1e".join(term.strip() for term in query.context_terms if term.strip())
         raw = "\x1f".join(
             [
                 "search-v7",

@@ -7,20 +7,19 @@ import shutil
 import subprocess
 import threading
 import time
-from datetime import datetime
 from email.utils import parsedate_to_datetime
 from typing import Any, Callable
 
 import httpx
 
 from ... import __version__
+from ...time import utc_now
 from .base import (
     FetchQuery,
     FetchResult,
     ProviderError,
     ProviderErrorKind,
     SearchFailure,
-    SearchProvider,
     SearchQuery,
     SearchResult,
 )
@@ -56,9 +55,7 @@ def npx_command(
     """解析 npx 路径；Windows 下 .cmd/.bat 通过 cmd /c 启动。"""
     resolved = shutil.which(command) or shutil.which(f"{command}.cmd")
     if not resolved:
-        raise ProviderError(
-            NAME, ProviderErrorKind.NETWORK, "未找到 npx；请先安装 Node.js"
-        )
+        raise ProviderError(NAME, ProviderErrorKind.NETWORK, "未找到 npx；请先安装 Node.js")
     if os.name == "nt" and resolved.lower().endswith((".cmd", ".bat")):
         return [os.environ.get("COMSPEC", "cmd.exe"), "/c", resolved, *args]
     return [resolved, *args]
@@ -78,7 +75,7 @@ def _retry_after_seconds(value: str | None) -> float:
             moment = parsedate_to_datetime(value)
             if moment.tzinfo is None:
                 return 0.0
-            return max(0.0, (moment - datetime.now(moment.tzinfo)).total_seconds())
+            return max(0.0, (moment - utc_now()).total_seconds())
         except (TypeError, ValueError, OverflowError):
             return 0.0
 
@@ -187,9 +184,7 @@ class HttpTransport:
         except httpx.TimeoutException as exc:
             raise ProviderError(NAME, ProviderErrorKind.TIMEOUT, str(exc)) from exc
         except httpx.RequestError as exc:
-            raise ProviderError(
-                NAME, ProviderErrorKind.NETWORK, f"{exc}；{DAEMON_HINT}"
-            ) from exc
+            raise ProviderError(NAME, ProviderErrorKind.NETWORK, f"{exc}；{DAEMON_HINT}") from exc
         except httpx.HTTPError as exc:
             raise ProviderError(NAME, ProviderErrorKind.NETWORK, str(exc)) from exc
 
@@ -223,7 +218,9 @@ class HttpTransport:
             raise ProviderError(NAME, _error_kind(code), detail or "open-websearch 调用失败")
         data = payload.get("data")
         if not isinstance(data, dict):
-            raise ProviderError(NAME, ProviderErrorKind.BAD_RESPONSE, "open-websearch 响应缺少 data")
+            raise ProviderError(
+                NAME, ProviderErrorKind.BAD_RESPONSE, "open-websearch 响应缺少 data"
+            )
         return data
 
     def _parse(self, response: httpx.Response) -> tuple[list[dict], list[dict]]:
@@ -244,7 +241,11 @@ class HttpTransport:
                 f"{item.get('engine', 'unknown')}: {item.get('code', '')} {item.get('message', '')}"
                 for item in partial
             )
-            kind = ProviderErrorKind.TIMEOUT if "TIMEOUT" in details.upper() or "TIMEDOUT" in details.upper() else ProviderErrorKind.NETWORK
+            kind = (
+                ProviderErrorKind.TIMEOUT
+                if "TIMEOUT" in details.upper() or "TIMEDOUT" in details.upper()
+                else ProviderErrorKind.NETWORK
+            )
             raise ProviderError(NAME, kind, details or "All search engines failed")
         # 有部分结果时失败不能静默吞掉：交给上层转成结构化诊断。
         return [item for item in results if isinstance(item, dict)], partial
@@ -306,9 +307,7 @@ class McpStdioTransport:
             raise ProviderError(NAME, ProviderErrorKind.NETWORK, str(exc)) from exc
 
         messages: queue.Queue[str | None] = queue.Queue()
-        threading.Thread(
-            target=self._read_stdout, args=(process, messages), daemon=True
-        ).start()
+        threading.Thread(target=self._read_stdout, args=(process, messages), daemon=True).start()
         try:
             # router 下发的单次超时受剩余预算约束；MCP 传输同样遵守。
             effective_timeout = min(self.timeout, timeout) if timeout else self.timeout
@@ -397,7 +396,9 @@ class McpStdioTransport:
             except queue.Empty as exc:
                 raise TimeoutError from exc
             if line is None:
-                raise ProviderError(NAME, ProviderErrorKind.UNAVAILABLE, "open-websearch MCP 进程已退出")
+                raise ProviderError(
+                    NAME, ProviderErrorKind.UNAVAILABLE, "open-websearch MCP 进程已退出"
+                )
             try:
                 message = json.loads(line)
             except json.JSONDecodeError:

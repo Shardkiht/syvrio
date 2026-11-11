@@ -1,9 +1,14 @@
 """Map extracted text to the common FetchResult without exposing raw HTML."""
-from html.parser import HTMLParser
+
 import re
+from html.parser import HTMLParser
 
 from .base import (
-    FetchQuery, FetchResult, ProviderError, ProviderErrorKind, truncate_fetch_content,
+    FetchQuery,
+    FetchResult,
+    ProviderError,
+    ProviderErrorKind,
+    truncate_fetch_content,
 )
 
 _HTML = re.compile(

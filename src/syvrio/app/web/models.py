@@ -4,6 +4,7 @@ The browser only ever sees these shapes; provider-specific payloads stay in the
 Agent/LLM layers. SSE events use one flat schema so the front end can dispatch
 on ``type`` without understanding any provider protocol.
 """
+
 from __future__ import annotations
 
 from typing import Literal

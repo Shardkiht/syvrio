@@ -1,4 +1,5 @@
 """Review pending facts in one modal while the app handles queue writes."""
+
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -48,11 +49,15 @@ class PendingScreen(ModalScreen):
             yield Static("Review candidates before writing to memory", id="pending-subtitle")
             yield Static(id="pending-count")
             with Horizontal(id="pending-body"):
-                yield OptionList(id="pending-list", classes="thin-scroll", markup=False, compact=True)
+                yield OptionList(
+                    id="pending-list", classes="thin-scroll", markup=False, compact=True
+                )
                 with Vertical(id="pending-detail"):
                     with VerticalScroll(id="pending-detail-body", classes="thin-scroll"):
                         yield Static(id="pending-topic", markup=False)
-                        yield Static(id="pending-reason", classes="inference-detail-line", markup=False)
+                        yield Static(
+                            id="pending-reason", classes="inference-detail-line", markup=False
+                        )
                         yield Static(id="pending-text", markup=False)
                     yield TextArea(id="pending-editor", soft_wrap=True, show_line_numbers=False)
             with Horizontal(id="pending-actions"):
@@ -97,7 +102,9 @@ class PendingScreen(ModalScreen):
         self.query_one("#pending-topic", Static).update(item.topic)
         self.query_one("#pending-reason", Static).update(item.reason)
         self.query_one("#pending-text", Static).update(item.text)
-        self.query_one("#pending-detail-body", VerticalScroll).scroll_home(animate=False, immediate=True)
+        self.query_one("#pending-detail-body", VerticalScroll).scroll_home(
+            animate=False, immediate=True
+        )
 
     def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
         if not self._editing and event.option.id == self._current().id:
@@ -163,8 +170,10 @@ class PendingScreen(ModalScreen):
         self.query_one("#pending-edit-actions").display = self._editing
         for button in self.query(Button):
             button.disabled = self._busy
-        hint = "Ctrl+S Save and approve · Esc Cancel" if self._editing else (
-            "C Approve · R Reject · E Edit · PgUp/PgDn Read · Esc Close"
+        hint = (
+            "Ctrl+S Save and approve · Esc Cancel"
+            if self._editing
+            else ("C Approve · R Reject · E Edit · PgUp/PgDn Read · Esc Close")
         )
         self.query_one("#pending-hint", Static).update(hint)
 

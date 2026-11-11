@@ -8,13 +8,19 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
-from ..infra.tokens import estimate_tokens, truncate_to_tokens
 from ..infra.diagnostics import record_event
+from ..infra.tokens import estimate_tokens, truncate_to_tokens
 from ..llm.client import complete
+from ..time import parse_timestamp, utc_timestamp
 from .detect import contains_secret
 from .inference import source_fingerprint
 from .models import (
-    Entry, Inference, ProfileItem, ProfileSummaryResponse, ReflectionProposal, ReflectionResponse,
+    Entry,
+    Inference,
+    ProfileItem,
+    ProfileSummaryResponse,
+    ReflectionProposal,
+    ReflectionResponse,
 )
 from .reflection_schedule import ReflectionSchedule
 from .store import normalize_text
@@ -23,7 +29,21 @@ if TYPE_CHECKING:
     from .service import MemoryService
 
 
-PROFILE_TOPICS = frozenset({"preferences", "goals", "constraints", "habits", "schedule", "偏好", "喜好", "目标", "约束", "习惯", "日程"})
+PROFILE_TOPICS = frozenset(
+    {
+        "preferences",
+        "goals",
+        "constraints",
+        "habits",
+        "schedule",
+        "偏好",
+        "喜好",
+        "目标",
+        "约束",
+        "习惯",
+        "日程",
+    }
+)
 PROFILE_SUMMARY_VERSION = 2
 PROFILE_SUMMARY_MAX_TOKENS = 4000
 PROFILE_SUMMARY_INFERENCE_LIMIT = 12
@@ -124,15 +144,38 @@ class ReflectionEngine:
         with self.service.write_lock:
             facts = {item.id: item for item in self.service.current_facts()}
             inferences = self.service.list_inferences()
-            profile_sources = {source for item in inferences if item.kind == "profile"
-                               and item.status in {"hypothesis", "confirmed"} for source in item.source_ids}
-            result = [ProfileItem(id=item.id, text=item.text, kind="fact", source_ids=[item.id],
-                                  status="active", updated_at=item.timestamp)
-                      for item in facts.values() if Path(item.topic).stem.casefold() in PROFILE_TOPICS or item.id in profile_sources]
-            result.extend(ProfileItem(id=item.id, text=item.text, kind="inference", source_ids=item.source_ids,
-                                      status=item.status, updated_at=item.updated_at)
-                          for item in inferences if item.kind == "profile"
-                          and item.status in {"hypothesis", "confirmed"} and set(item.source_ids) <= facts.keys())
+            profile_sources = {
+                source
+                for item in inferences
+                if item.kind == "profile" and item.status in {"hypothesis", "confirmed"}
+                for source in item.source_ids
+            }
+            result = [
+                ProfileItem(
+                    id=item.id,
+                    text=item.text,
+                    kind="fact",
+                    source_ids=[item.id],
+                    status="active",
+                    updated_at=item.timestamp,
+                )
+                for item in facts.values()
+                if Path(item.topic).stem.casefold() in PROFILE_TOPICS or item.id in profile_sources
+            ]
+            result.extend(
+                ProfileItem(
+                    id=item.id,
+                    text=item.text,
+                    kind="inference",
+                    source_ids=item.source_ids,
+                    status=item.status,
+                    updated_at=item.updated_at,
+                )
+                for item in inferences
+                if item.kind == "profile"
+                and item.status in {"hypothesis", "confirmed"}
+                and set(item.source_ids) <= facts.keys()
+            )
             return result
 
     def profile_summary(self) -> ProfileSummaryView | None:
@@ -181,13 +224,16 @@ class ReflectionEngine:
                     "source_fingerprints": sorted(item.source_fingerprints.items()),
                 }
                 for item in inferences
-                if item.kind == "profile" and item.status == "confirmed"
-                and set(item.source_ids) <= entry_ids and not contains_secret(item.text)
+                if item.kind == "profile"
+                and item.status == "confirmed"
+                and set(item.source_ids) <= entry_ids
+                and not contains_secret(item.text)
             ),
             key=lambda item: item["id"],
         )
-        payload = json.dumps({"facts": facts, "confirmed": confirmed},
-                             ensure_ascii=False, sort_keys=True)
+        payload = json.dumps(
+            {"facts": facts, "confirmed": confirmed}, ensure_ascii=False, sort_keys=True
+        )
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     def _load_summary(self) -> dict | None:
@@ -204,11 +250,14 @@ class ReflectionEngine:
         for key in ("generated_at", "model", "signature", "facts_signature", "evidence_signature"):
             if not isinstance(data.get(key), str):
                 return None
+        parse_timestamp(data["generated_at"])
         for key in ("fact_count", "unique_count", "topic_count"):
             if type(data.get(key)) is not int:
                 return None
         source_ids = data.get("source_ids")
-        if not isinstance(source_ids, list) or not all(isinstance(item, str) for item in source_ids):
+        if not isinstance(source_ids, list) or not all(
+            isinstance(item, str) for item in source_ids
+        ):
             return None
         return data
 
@@ -233,8 +282,11 @@ class ReflectionEngine:
             return
         with self.service.write_lock:
             entries = sorted(
-                (item for item in self.service.current_facts()
-                 if not contains_secret(item.model_dump_json())),
+                (
+                    item
+                    for item in self.service.current_facts()
+                    if not contains_secret(item.model_dump_json())
+                ),
                 key=lambda item: item.id,
             )
             inferences = self.service.list_inferences()
@@ -269,11 +321,11 @@ class ReflectionEngine:
         low, high = profile_length_range(unique_count, topic_count)
         window = self.service.config.chat.context_window
         if window < PROFILE_SUMMARY_MIN_WINDOW:
-            raise ValueError(
-                f"画像摘要需要至少 {PROFILE_SUMMARY_MIN_WINDOW} tokens 的上下文窗口。")
+            raise ValueError(f"画像摘要需要至少 {PROFILE_SUMMARY_MIN_WINDOW} tokens 的上下文窗口。")
         output_tokens = self._summary_output_budget(window, high)
         available = (
-            window - output_tokens
+            window
+            - output_tokens
             - estimate_tokens(PROFILE_SUMMARY_PROMPT)
             - PROFILE_SUMMARY_MARGIN_TOKENS
         )
@@ -282,19 +334,22 @@ class ReflectionEngine:
 
         entry_ids = {entry.id for entry in entries}
         confirmed = [
-            item for item in inferences
-            if item.kind == "profile" and item.status == "confirmed"
-            and set(item.source_ids) <= entry_ids and not contains_secret(item.text)
+            item
+            for item in inferences
+            if item.kind == "profile"
+            and item.status == "confirmed"
+            and set(item.source_ids) <= entry_ids
+            and not contains_secret(item.text)
         ]
-        confirmed.sort(key=lambda item: item.updated_at)
+        confirmed.sort(key=lambda item: parse_timestamp(item.updated_at))
         inference_payload = [
             {"text": truncate_to_tokens(item.text, 120)}
             for item in confirmed[-PROFILE_SUMMARY_INFERENCE_LIMIT:]
         ]
 
-        detailed_topics = sorted(
-            topics, key=lambda topic: (-len(groups[topic]), topic)
-        )[:PROFILE_SUMMARY_TOPIC_LIMIT]
+        detailed_topics = sorted(topics, key=lambda topic: (-len(groups[topic]), topic))[
+            :PROFILE_SUMMARY_TOPIC_LIMIT
+        ]
         detailed_set = set(detailed_topics)
         other_topics = [topic for topic in topics if topic not in detailed_set]
         counts = {topic: 0 for topic in topics}
@@ -302,7 +357,8 @@ class ReflectionEngine:
         selected_topics: list[str] = []
         source_ids: list[str] = []
         dates = sorted(
-            entry.context.valid_from for entry in entries
+            entry.context.valid_from
+            for entry in entries
             if entry.context and entry.context.valid_from
         )
 
@@ -396,30 +452,36 @@ class ReflectionEngine:
         llm = self.service.config.llm
         window = self.service.config.chat.context_window
         if window < PROFILE_SUMMARY_MIN_WINDOW:
-            raise ValueError(
-                f"画像摘要需要至少 {PROFILE_SUMMARY_MIN_WINDOW} tokens 的上下文窗口。")
+            raise ValueError(f"画像摘要需要至少 {PROFILE_SUMMARY_MIN_WINDOW} tokens 的上下文窗口。")
         if llm.requires_api_key() and not llm.api_key():
             raise ValueError("未配置模型凭据。")
         target = int(payload["target_chars"][1])
         max_tokens = self._summary_output_budget(window, target)
         # 模型调用前再次核验完整输入预算，避免构造后又被其他字段撑爆窗口。
         input_tokens = estimate_tokens(PROFILE_SUMMARY_PROMPT) + estimate_tokens(
-            json.dumps(payload, ensure_ascii=False))
+            json.dumps(payload, ensure_ascii=False)
+        )
         if input_tokens + max_tokens + PROFILE_SUMMARY_MARGIN_TOKENS > window:
             raise ValueError("画像摘要输入超出上下文窗口。")
         # 画像摘要 payload 大、spark 生成 60s 内出不完，7/7 超时；放宽到 6 分钟。
         config = replace(llm, num_retries=0, fallbacks=[], timeout=min(llm.timeout, 360.0))
-        response = complete(config, [
-            {"role": "system", "content": PROFILE_SUMMARY_PROMPT},
-            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-        ], response_format={"type": "json_object"}, max_tokens=max_tokens)
+        response = complete(
+            config,
+            [
+                {"role": "system", "content": PROFILE_SUMMARY_PROMPT},
+                {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+            ],
+            response_format={"type": "json_object"},
+            max_tokens=max_tokens,
+        )
         text = response.choices[0].message.content or ""
         if text.strip().startswith("```"):
             text = text.strip().split("\n", 1)[-1].rsplit("```", 1)[0]
         return ProfileSummaryResponse.model_validate_json(text).summary
 
-    def _generate_summary(self, draft: _SummaryDraft,
-                          model: Callable[[dict], str] | None) -> tuple[str, str | None, bool]:
+    def _generate_summary(
+        self, draft: _SummaryDraft, model: Callable[[dict], str] | None
+    ) -> tuple[str, str | None, bool]:
         """返回 (状态, 错误, 是否写入)；调用次数由调用方统一计数。"""
         try:
             text = (model or self._summary_model)(draft.payload)
@@ -431,15 +493,20 @@ class ReflectionEngine:
         if self._cancel.is_set():
             return "cancelled", None, False
         window = self.service.config.chat.context_window
-        limit = min(PROFILE_SUMMARY_MAX_TOKENS, max(256, int(draft.high * 1.2)), max(256, window // 3))
+        limit = min(
+            PROFILE_SUMMARY_MAX_TOKENS, max(256, int(draft.high * 1.2)), max(256, window // 3)
+        )
         text = truncate_to_tokens(text.strip(), limit)
-        stamp = datetime.now().astimezone().isoformat(timespec="seconds")
+        stamp = utc_timestamp()
         # 摘要只依赖事实正文与参与生成的已确认画像推断；发布前在写锁内复核证据，
         # 期间新增事实、确认或拒绝推断都不能被旧内容覆盖成最新签名。
         with self.service.write_lock:
             entries = sorted(
-                (item for item in self.service.current_facts()
-                 if not contains_secret(item.model_dump_json())),
+                (
+                    item
+                    for item in self.service.current_facts()
+                    if not contains_secret(item.model_dump_json())
+                ),
                 key=lambda item: item.id,
             )
             inferences = self.service.list_inferences()
@@ -488,16 +555,19 @@ class ReflectionEngine:
     def _load_profile_fingerprints(self) -> tuple[dict[str, str], set[str]]:
         return self.schedule.load_fingerprints()
 
-    def _write_profile_fingerprints(self, fingerprints: dict[str, str],
-                                    important_ids: list[str]) -> None:
+    def _write_profile_fingerprints(
+        self, fingerprints: dict[str, str], important_ids: list[str]
+    ) -> None:
         self.schedule.write_fingerprints(fingerprints, important_ids)
 
-    def _facts_changes(self, entries: list[Entry], previous: dict[str, str],
-                       remembered_important: set[str]):
+    def _facts_changes(
+        self, entries: list[Entry], previous: dict[str, str], remembered_important: set[str]
+    ):
         return self.schedule.facts_changes(entries, previous, remembered_important)
 
-    def _record_run_state(self, mode: str, result: ReflectionResult,
-                          entries: list[Entry] | None, auto: bool) -> None:
+    def _record_run_state(
+        self, mode: str, result: ReflectionResult, entries: list[Entry] | None, auto: bool
+    ) -> None:
         self.schedule.record_run(mode, result, entries, auto)
 
     def schedule_overview(self, now: datetime | None = None) -> dict:
@@ -508,8 +578,10 @@ class ReflectionEngine:
             return ""
         # 只为当前来源相关且仍有效的已确认画像推断构造上下文，不重建完整画像。
         items = [
-            item for item in self.service.list_inferences()
-            if item.kind == "profile" and item.status == "confirmed"
+            item
+            for item in self.service.list_inferences()
+            if item.kind == "profile"
+            and item.status == "confirmed"
             and source_ids.intersection(item.source_ids)
         ]
         if not items:
@@ -540,13 +612,22 @@ class ReflectionEngine:
                 continue
             if not isinstance(event, dict):
                 raise ValueError("回顾任务日志格式错误。")
+            if "at" in event:
+                parse_timestamp(event["at"])
             if event.get("status") == "recovery":
                 ignored = event.get("ignored_line")
                 if type(ignored) is not int or ignored not in damaged or ignored >= number:
                     raise ValueError("回顾任务恢复标记无效。")
                 recovered.add(ignored)
             else:
-                if event.get("status") not in {"attempt", "prepared", "completed", "failed", "cancelled", "stale"} or not isinstance(event.get("key"), str):
+                if event.get("status") not in {
+                    "attempt",
+                    "prepared",
+                    "completed",
+                    "failed",
+                    "cancelled",
+                    "stale",
+                } or not isinstance(event.get("key"), str):
                     raise ValueError("回顾任务日志格式错误。")
                 events.append(event)
         pending = damaged - recovered
@@ -554,13 +635,20 @@ class ReflectionEngine:
             raise ValueError("回顾任务日志中间损坏，已停止。")
         return events, len(lines) if pending else None
 
-    def _record(self, key: str, status: str, proposals: list[ReflectionProposal] | None = None,
-                mode: str | None = None, sources: list[str] | None = None,
-                inputs: list[str] | None = None, error_kind: str | None = None) -> None:
+    def _record(
+        self,
+        key: str,
+        status: str,
+        proposals: list[ReflectionProposal] | None = None,
+        mode: str | None = None,
+        sources: list[str] | None = None,
+        inputs: list[str] | None = None,
+        error_kind: str | None = None,
+    ) -> None:
         with self._vault_lock:
             _, damaged_tail = self._events_unlocked()
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            stamp = datetime.now().astimezone().isoformat(timespec="seconds")
+            stamp = utc_timestamp()
             with self.path.open("a+b") as handle:
                 handle.seek(0, 2)
                 if handle.tell():
@@ -597,25 +685,57 @@ class ReflectionEngine:
             raise ValueError("未配置模型凭据。")
         # 请求预算按真实发送次数约束；关闭底层重试和候补模型。超时与画像摘要同款放宽（6 分钟）。
         config = replace(llm, num_retries=0, fallbacks=[], timeout=min(llm.timeout, 360.0))
-        facts = [{"id": item.id, "topic": truncate_to_tokens(item.topic, 40), "text": truncate_to_tokens(item.text, 250),
-                  "context": {key: truncate_to_tokens(value, 40) for key, value in item.context.model_dump(exclude_none=True).items()} if item.context else {}}
-                 for item in entries]
-        response = complete(config, [
-            {"role": "system", "content": REFLECTION_PROMPT + f"\n本次最多 {max(1, output_tokens // 300)} 条，每条正文不超过100字。"},
-            {"role": "user", "content": json.dumps({"mode": mode, "facts": facts}, ensure_ascii=False)},
-        ], response_format={"type": "json_object"}, max_tokens=output_tokens)
+        facts = [
+            {
+                "id": item.id,
+                "topic": truncate_to_tokens(item.topic, 40),
+                "text": truncate_to_tokens(item.text, 250),
+                "context": {
+                    key: truncate_to_tokens(value, 40)
+                    for key, value in item.context.model_dump(exclude_none=True).items()
+                }
+                if item.context
+                else {},
+            }
+            for item in entries
+        ]
+        response = complete(
+            config,
+            [
+                {
+                    "role": "system",
+                    "content": REFLECTION_PROMPT
+                    + f"\n本次最多 {max(1, output_tokens // 300)} 条，每条正文不超过100字。",
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps({"mode": mode, "facts": facts}, ensure_ascii=False),
+                },
+            ],
+            response_format={"type": "json_object"},
+            max_tokens=output_tokens,
+        )
         text = response.choices[0].message.content or ""
         if text.strip().startswith("```"):
             text = text.strip().split("\n", 1)[-1].rsplit("```", 1)[0]
         return ReflectionResponse.model_validate_json(text).proposals
 
-    def run(self, mode: str = "dream", max_requests: int = 1,
-            model: Callable[[str, list[Entry]], list[ReflectionProposal]] | None = None,
-            cancel_event: threading.Event | None = None, *,
-            refresh_summary: bool = False,
-            summary_model: Callable[[dict], str] | None = None,
-            auto: bool = False) -> ReflectionResult:
-        if mode not in {"dream", "profile"} or type(max_requests) is not int or not 0 <= max_requests <= 20:
+    def run(
+        self,
+        mode: str = "dream",
+        max_requests: int = 1,
+        model: Callable[[str, list[Entry]], list[ReflectionProposal]] | None = None,
+        cancel_event: threading.Event | None = None,
+        *,
+        refresh_summary: bool = False,
+        summary_model: Callable[[dict], str] | None = None,
+        auto: bool = False,
+    ) -> ReflectionResult:
+        if (
+            mode not in {"dream", "profile"}
+            or type(max_requests) is not int
+            or not 0 <= max_requests <= 20
+        ):
             raise ValueError("回顾模式须为 dream/profile，请求预算须在 0–20 之间。")
         if not self._running.acquire(blocking=False):
             raise ValueError("已有回顾任务运行中，请等待完成或先取消。")
@@ -625,7 +745,10 @@ class ReflectionEngine:
         try:
             with self.service.write_lock:
                 entries = self.service.current_facts()
-            entries = sorted((item for item in entries if not contains_secret(item.model_dump_json())), key=lambda item: item.id)
+            entries = sorted(
+                (item for item in entries if not contains_secret(item.model_dump_json())),
+                key=lambda item: item.id,
+            )
             if mode == "profile" and refresh_summary:
                 if not entries:
                     self._remove_summary()
@@ -652,16 +775,23 @@ class ReflectionEngine:
                             return result
                         except Exception as exc:
                             record_event("reflection.summary_failed", exc)
-                            summary_status, summary_error = "failed", "画像摘要准备失败；保留此前摘要。"
+                            summary_status, summary_error = (
+                                "failed",
+                                "画像摘要准备失败；保留此前摘要。",
+                            )
                             result.error = summary_error
                         else:
                             result.requests += 1
                             try:
                                 summary_status, summary_error, _ = self._generate_summary(
-                                    draft, summary_model)
+                                    draft, summary_model
+                                )
                             except Exception as exc:
                                 record_event("reflection.summary_failed", exc)
-                                summary_status, summary_error = "failed", "画像摘要写入失败；保留此前摘要。"
+                                summary_status, summary_error = (
+                                    "failed",
+                                    "画像摘要写入失败；保留此前摘要。",
+                                )
                             if summary_error:
                                 result.error = summary_error
                             if summary_status == "cancelled":
@@ -671,31 +801,56 @@ class ReflectionEngine:
                 return result
             events = self._events()[0]
             completed = {event["key"] for event in events if event["status"] == "completed"}
-            processed = {signature for event in events if event["status"] == "completed" and event.get("mode") == mode
-                         for signature in event.get("sources", [])}
-            prepared = {event["key"]: event["proposals"] for event in events if event["status"] == "prepared"}
+            processed = {
+                signature
+                for event in events
+                if event["status"] == "completed" and event.get("mode") == mode
+                for signature in event.get("sources", [])
+            }
+            prepared = {
+                event["key"]: event["proposals"]
+                for event in events
+                if event["status"] == "prepared"
+            }
             by_signature = {self._signature(item): item for item in entries}
             batches: list[tuple[str, list[Entry], list[str]]] = []
             claimed: set[str] = set()
             # 先恢复已校验结果的原批次，避免前一批成功后重新分组造成再次付费。
             for event in events:
-                if event["status"] != "prepared" or event.get("mode") != mode or event["key"] in completed:
+                if (
+                    event["status"] != "prepared"
+                    or event.get("mode") != mode
+                    or event["key"] in completed
+                ):
                     continue
                 sources, inputs = event.get("sources", []), event.get("inputs", [])
-                if sources and inputs and set(inputs) <= by_signature.keys() and not set(sources) <= processed:
+                if (
+                    sources
+                    and inputs
+                    and set(inputs) <= by_signature.keys()
+                    and not set(sources) <= processed
+                ):
                     if set(sources).intersection(claimed):
                         continue
-                    batches.append((event["key"], [by_signature[signature] for signature in inputs], sources))
+                    batches.append(
+                        (event["key"], [by_signature[signature] for signature in inputs], sources)
+                    )
                     claimed.update(sources)
             pending = [item for item in entries if self._signature(item) not in processed | claimed]
             capacity = min(12, max(1, self.service.config.chat.context_window // 1500))
-            references = [item for item in entries if self._signature(item) in processed][:min(4, capacity - 1)]
+            references = [item for item in entries if self._signature(item) in processed][
+                : min(4, capacity - 1)
+            ]
             result.skipped = sum(self._signature(item) in processed for item in entries)
             batch_size = capacity - len(references)
             for index in range(0, len(pending), batch_size):
-                fresh = pending[index:index + batch_size]
+                fresh = pending[index : index + batch_size]
                 batch = fresh + references
-                key = hashlib.sha256(("v1:" + mode + ":" + ":".join(self._signature(item) for item in batch)).encode()).hexdigest()
+                key = hashlib.sha256(
+                    (
+                        "v1:" + mode + ":" + ":".join(self._signature(item) for item in batch)
+                    ).encode()
+                ).hexdigest()
                 if key in completed:
                     result.skipped += len(fresh)
                 else:
@@ -716,11 +871,20 @@ class ReflectionEngine:
                         proposals = (model or self._model)(mode, batch)
                     proposals = ReflectionResponse(proposals=proposals).proposals
                     evidence = {item.id: self._signature(item) for item in batch}
-                    if any(not set(item.source_ids) <= evidence.keys() or contains_secret(item.text) for item in proposals):
+                    if any(
+                        not set(item.source_ids) <= evidence.keys() or contains_secret(item.text)
+                        for item in proposals
+                    ):
                         raise ValueError("回顾结果包含无效来源或凭据。")
                     if key not in prepared:
-                        self._record(key, "prepared", proposals, mode, source_signatures,
-                                     [self._signature(item) for item in batch])
+                        self._record(
+                            key,
+                            "prepared",
+                            proposals,
+                            mode,
+                            source_signatures,
+                            [self._signature(item) for item in batch],
+                        )
                     if self._cancel.is_set():
                         result.cancelled = True
                         self._record(key, "cancelled")
@@ -731,8 +895,13 @@ class ReflectionEngine:
                             result.cancelled = True
                             self._record(key, "cancelled")
                             break
-                        current = {item.id: self._signature(item) for item in self.service.current_facts()}
-                        if any(current.get(source) != signature for source, signature in evidence.items()):
+                        current = {
+                            item.id: self._signature(item) for item in self.service.current_facts()
+                        }
+                        if any(
+                            current.get(source) != signature
+                            for source, signature in evidence.items()
+                        ):
                             self._record(key, "stale")
                             result.error = "回顾期间来源发生变化，请重新运行。"
                             break
@@ -742,7 +911,10 @@ class ReflectionEngine:
                                 result.cancelled = True
                                 break
                             item = self.service.propose_inference(
-                                proposal.text, proposal.source_ids, "profile" if mode == "profile" else "reflection")
+                                proposal.text,
+                                proposal.source_ids,
+                                "profile" if mode == "profile" else "reflection",
+                            )
                             if item.id not in known:
                                 result.proposed += 1
                                 known.add(item.id)
@@ -755,10 +927,28 @@ class ReflectionEngine:
                 except Exception as exc:
                     record_event("reflection.failed", exc)
                     # 任务进度日志只保存类别；详细异常进入独立的本地诊断日志。
-                    timed_out = isinstance(exc, TimeoutError) or type(exc).__name__ in {"Timeout", "APITimeoutError", "ReadTimeout", "ConnectTimeout"}
-                    kind = "timeout" if timed_out else "validation" if isinstance(exc, ValueError) else "storage" if isinstance(exc, OSError) else "request"
+                    timed_out = isinstance(exc, TimeoutError) or type(exc).__name__ in {
+                        "Timeout",
+                        "APITimeoutError",
+                        "ReadTimeout",
+                        "ConnectTimeout",
+                    }
+                    kind = (
+                        "timeout"
+                        if timed_out
+                        else "validation"
+                        if isinstance(exc, ValueError)
+                        else "storage"
+                        if isinstance(exc, OSError)
+                        else "request"
+                    )
                     self._record(key, "failed", error_kind=kind)
-                    reason = {"timeout": "模型请求超时", "validation": "模型结果校验失败", "storage": "本地读写失败", "request": "模型请求或处理失败"}[kind]
+                    reason = {
+                        "timeout": "模型请求超时",
+                        "validation": "模型结果校验失败",
+                        "storage": "本地读写失败",
+                        "request": "模型请求或处理失败",
+                    }[kind]
                     result.error = f"{reason}；已保留进度，重新运行可继续。"
                     break
             return result

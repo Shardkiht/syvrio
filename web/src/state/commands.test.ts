@@ -117,3 +117,17 @@ describe('option panels', () => {
       .toContain('failed');
   });
 });
+
+it('localizes absolute timestamps in the Web Git status command', () => {
+  const stamp = '2026-11-11T01:05:03+00:00';
+  const message = commandMessage(result({
+    command: 'git',
+    intent: 'git_status',
+    message: 'initialized: True\nlast_push_at: ' + stamp,
+    data: { timestamps: { last_push_at: stamp } },
+  }));
+  expect(message).toMatch(/last_push_at: \d{4}-\d{2}-\d{2} (?:[01]\d|2[0-3]):\d{2}/);
+  expect(message).toContain('initialized: True');
+  expect(message).not.toContain(stamp);
+  expect(message).not.toMatch(/\b(?:AM|PM)\b/);
+});

@@ -68,9 +68,7 @@ class SearchCache:
             return None
         try:
             results = [
-                SearchResult(**item)
-                for item in entry.get("results", [])
-                if isinstance(item, dict)
+                SearchResult(**item) for item in entry.get("results", []) if isinstance(item, dict)
             ]
         except (TypeError, ValueError):
             # 派生缓存字段损坏时按未命中处理，不能让搜索整体失败。
@@ -80,7 +78,10 @@ class SearchCache:
             strategy = "auto"
         verification = entry.get("verification", "")
         if not isinstance(verification, str) or verification not in (
-            "complete", "incomplete", "unknown", ""
+            "complete",
+            "incomplete",
+            "unknown",
+            "",
         ):
             verification = "unknown" if strategy == "compare" else ""
         if strategy == "compare" and not verification:

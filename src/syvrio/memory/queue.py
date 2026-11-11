@@ -1,15 +1,14 @@
 from __future__ import annotations
 
-from ..infra.paths import vault_paths
-
 import json
 import os
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime
 from pathlib import Path
 
+from ..infra.paths import vault_paths
+from ..time import utc_timestamp
 from .models import PendingItem
 
 
@@ -41,7 +40,9 @@ def rollback_files(paths: list[Path]) -> Iterator[None]:
                 if temporary is not None:
                     temporary.unlink(missing_ok=True)
         if errors:
-            raise ExceptionGroup("Write failed and rollback was incomplete", [failure, *errors]) from failure
+            raise ExceptionGroup(
+                "Write failed and rollback was incomplete", [failure, *errors]
+            ) from failure
         raise
 
 
@@ -68,8 +69,12 @@ class PendingQueue:
         try:
             # 使用独立临时文件，只在完整写入并关闭后替换 pending。
             with tempfile.NamedTemporaryFile(
-                mode="w", encoding="utf-8", dir=self.dir,
-                prefix=f".{self.pending_path.name}.", suffix=".tmp", delete=False,
+                mode="w",
+                encoding="utf-8",
+                dir=self.dir,
+                prefix=f".{self.pending_path.name}.",
+                suffix=".tmp",
+                delete=False,
             ) as handle:
                 temporary = Path(handle.name)
                 handle.write(content + ("\n" if content else ""))
@@ -97,7 +102,7 @@ class PendingQueue:
         with rollback_files([self.pending_path, self.resolved_path]):
             self.dir.mkdir(parents=True, exist_ok=True)
             record = target.model_dump()
-            record.update(status=status, resolved_at=datetime.now().isoformat(timespec="seconds"))
+            record.update(status=status, resolved_at=utc_timestamp())
             with self.resolved_path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(record, ensure_ascii=False) + "\n")
             self._save([item for item in items if item is not target])

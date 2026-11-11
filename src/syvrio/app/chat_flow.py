@@ -8,6 +8,7 @@ from textual.widgets import Input, Static
 from ..application.contracts import ThinkingUpdate, TurnCallbacks, UndoOutcome
 from ..application.conversation import QueuedLine as _QueuedLine
 from ..infra.diagnostics import record_event
+from ..time import format_local_timestamp, utc_timestamp
 from .chat_widgets import ASSISTANT_NAME, ChatReply
 from .thinking_panel import ThinkingPanel
 
@@ -90,9 +91,7 @@ class ChatFlowMixin:
         error: str | None = None,
     ) -> None:
         """Worker 已退出后执行撤销；不启动新请求，也不自动发送旧队列。"""
-        outcome = self.application.conversation.perform_undo(
-            session_id, user_message_id, error
-        )
+        outcome = self.application.conversation.perform_undo(session_id, user_message_id, error)
         self._apply_undo_outcome(outcome)
 
     def _apply_undo_outcome(self, outcome: UndoOutcome) -> None:
@@ -192,7 +191,7 @@ class ChatFlowMixin:
         self.update_status()
 
     def _start_ask(self, line: str, session_id: str | None = None) -> None:
-        stamp = time.strftime("%H:%M")
+        stamp = format_local_timestamp(utc_timestamp(), "%H:%M")
         # 用户气泡只渲染进它所属会话的视图；后台任务不串入当前视图。
         if session_id is None or self.application.conversation.current_id == session_id:
             self.add_user_turn(line, stamp)
@@ -276,16 +275,16 @@ class ChatFlowMixin:
         callbacks = TurnCallbacks(
             on_event=lambda event: self.call_from_thread(self.add_event, event),
             on_delta=lambda delta: self.call_from_thread(self._stream_append, stamp, delta),
-            on_thinking=lambda update: self.call_from_thread(self._thinking_update, turn_id, update),
+            on_thinking=lambda update: self.call_from_thread(
+                self._thinking_update, turn_id, update
+            ),
             on_progress=lambda phase: self.call_from_thread(self._progress_update, phase),
             on_session=lambda session: self.call_from_thread(self._bind_ask_session, session.id),
             on_user_message=lambda message_id: self.call_from_thread(
                 self._bind_ask_user_message, message_id
             ),
         )
-        result = self.application.conversation.run_turn(
-            line, callbacks, token, session_id
-        )
+        result = self.application.conversation.run_turn(line, callbacks, token, session_id)
         if result.status == "undo":
             self._ui(self._finish_on_ui, result.turn_id, self._apply_undo_outcome, result.undo)
             return
@@ -359,8 +358,10 @@ class ChatFlowMixin:
                     widget.remove()
                 return  # A session switch already loaded the finalized record.
             if widget is None and update.text.strip():
-                chat.mount(ThinkingPanel(update.text, record_id=update.record_id, seconds=update.seconds),
-                           before=self._stream_widget)
+                chat.mount(
+                    ThinkingPanel(update.text, record_id=update.record_id, seconds=update.seconds),
+                    before=self._stream_widget,
+                )
             elif widget is not None:
                 widget.finish(update.text, update.record_id, update.seconds)
             self._scroll_end()
@@ -378,7 +379,9 @@ class ChatFlowMixin:
             widget.append(update.text)
 
     def _mount_live_thinking(self) -> None:
-        widget = ThinkingPanel("".join(self._thinking_parts), active=not self._stream_buffer.strip())
+        widget = ThinkingPanel(
+            "".join(self._thinking_parts), active=not self._stream_buffer.strip()
+        )
         self._thinking_widget = widget
         self._chat().mount(widget, before=self._stream_widget)
         self._scroll_end()
@@ -418,7 +421,10 @@ class ChatFlowMixin:
         # 事件卡只进当前视图；后台请求的事件由磁盘 tool 记录在切回时重建。
         if self._ask_in_current_view():
             self._chat().mount(
-                Static(f"✓ {event}" if memo else event, classes="event-card memo" if memo else "event-card")
+                Static(
+                    f"✓ {event}" if memo else event,
+                    classes="event-card memo" if memo else "event-card",
+                )
             )
             self._scroll_end()
 

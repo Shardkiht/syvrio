@@ -1,34 +1,52 @@
 from __future__ import annotations
 
-from ..infra.paths import vault_paths
-
-from pathlib import Path
-import json
 import hashlib
+import json
 import re
+from pathlib import Path
 
+from ..infra.paths import vault_paths
 from .models import Entry, Inference
 
 
 def evidence_v2(entry: Entry) -> str:
     def nodes(fields):
-        return [(node.key, node.value, nodes(node.children)) for node in fields
-                if node.key not in {"migration.evidence_v1", "migration.evidence_v2"}]
+        return [
+            (node.key, node.value, nodes(node.children))
+            for node in fields
+            if node.key not in {"migration.evidence_v1", "migration.evidence_v2"}
+        ]
 
-    payload = json.dumps({
-        "id": entry.id, "text": entry.text.replace("\r\n", "\n"), "status": entry.status,
-        "timestamp": entry.timestamp, "supersedes": entry.supersedes, "metadata": entry.metadata,
-        "context": nodes(entry.context_fields), "extensions": nodes(entry.extension_fields),
-    }, sort_keys=True, ensure_ascii=False)
+    payload = json.dumps(
+        {
+            "id": entry.id,
+            "text": entry.text.replace("\r\n", "\n"),
+            "status": entry.status,
+            "timestamp": entry.timestamp,
+            "supersedes": entry.supersedes,
+            "metadata": entry.metadata,
+            "context": nodes(entry.context_fields),
+            "extensions": nodes(entry.extension_fields),
+        },
+        sort_keys=True,
+        ensure_ascii=False,
+    )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def source_fingerprint(entry: Entry) -> str:
     digest = evidence_v2(entry)
-    markers = {node.key: node.value for node in entry.extension_fields
-               if node.key in {"migration.evidence_v1", "migration.evidence_v2"}}
+    markers = {
+        node.key: node.value
+        for node in entry.extension_fields
+        if node.key in {"migration.evidence_v1", "migration.evidence_v2"}
+    }
     previous = markers.get("migration.evidence_v1")
-    if previous and re.fullmatch(r"[0-9a-f]{64}", previous) and markers.get("migration.evidence_v2") == digest:
+    if (
+        previous
+        and re.fullmatch(r"[0-9a-f]{64}", previous)
+        and markers.get("migration.evidence_v2") == digest
+    ):
         # A migrated record keeps its old evidence identity until its content changes.
         return previous
     return digest

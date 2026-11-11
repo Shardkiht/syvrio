@@ -6,10 +6,10 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
-pytestmark = pytest.mark.memory
-
 from syvrio.memory.extractor import ExtractorError, parse_extraction
 from syvrio.memory.models import MemoryContext
+
+pytestmark = pytest.mark.memory
 
 
 @pytest.mark.parametrize("value", ["2024", "2024-02", "2024-02-29"])
@@ -20,7 +20,9 @@ def test_context_preserves_date_precision(value):
     assert candidate.context.valid_to is None
 
 
-@pytest.mark.parametrize("value", ["0000", "2023-02-29", "2024-13", "2024-1", "昨天", "2024-02-29T12:00:00Z"])
+@pytest.mark.parametrize(
+    "value", ["0000", "2023-02-29", "2024-13", "2024-1", "昨天", "2024-02-29T12:00:00Z"]
+)
 def test_context_rejects_invalid_or_invented_date_formats(value):
     with pytest.raises(ValidationError):
         MemoryContext(event_time=value)
@@ -39,7 +41,9 @@ def test_missing_context_does_not_add_dates_or_emotions():
     assert parse_extraction('{"memories":[{"text":"喜欢热饮"}]}').memories[0].context is None
 
 
-@pytest.mark.parametrize("start,end", [("2025", "2024"), ("2024-03", "2024-02"), ("2024-02-29", "2024-02-28")])
+@pytest.mark.parametrize(
+    "start,end", [("2025", "2024"), ("2024-03", "2024-02"), ("2024-02-29", "2024-02-28")]
+)
 def test_context_rejects_reversed_validity(start, end):
     with pytest.raises(ValidationError, match="结束时间"):
         MemoryContext(valid_from=start, valid_to=end)
@@ -56,11 +60,17 @@ def test_context_distinguishes_location_kind(kind):
     assert MemoryContext(location="合成地点", location_kind=kind).location_kind == kind
 
 
-@pytest.mark.parametrize("context", [
-    {"location": "合成地点"}, {"location_kind": "event"},
-    {"emotion": "开心", "emotion_source": "inferred"}, {"emotion": "可能不开心"},
-    {"emotion_source": "explicit"}, {"emotion": "  ", "emotion_source": "explicit"},
-])
+@pytest.mark.parametrize(
+    "context",
+    [
+        {"location": "合成地点"},
+        {"location_kind": "event"},
+        {"emotion": "开心", "emotion_source": "inferred"},
+        {"emotion": "可能不开心"},
+        {"emotion_source": "explicit"},
+        {"emotion": "  ", "emotion_source": "explicit"},
+    ],
+)
 def test_context_rejects_ambiguous_or_inferred_labels(context):
     with pytest.raises(ValidationError):
         MemoryContext.model_validate(context)
@@ -82,9 +92,15 @@ def test_llm_extractor_requests_optional_context_without_current_date(monkeypatc
 
     def fake_complete(config, messages, **kwargs):
         captured.extend(messages)
-        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
-            content='{"memories":[{"text":"去年参加合成展览","context":{"time_text":"去年"}}]}'
-        ))])
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content='{"memories":[{"text":"去年参加合成展览","context":{"time_text":"去年"}}]}'
+                    )
+                )
+            ]
+        )
 
     monkeypatch.setattr(extractor, "complete", fake_complete)
     candidate = extractor.LLMExtractor(LLMConfig()).extract("去年参加合成展览").memories[0]

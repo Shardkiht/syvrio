@@ -6,9 +6,6 @@ import threading
 from datetime import date
 
 import pytest
-
-pytestmark = pytest.mark.ui
-
 from textual.geometry import Offset
 from textual.widgets import Button, Input, Static
 
@@ -18,12 +15,21 @@ from syvrio.app.chat_app import ChatApp, SidebarToggle
 from syvrio.app.chat_input import BarInput
 from syvrio.app.command_catalog import SLASH_COMMANDS
 from syvrio.app.git_screen import GitConfirmScreen, GitScreen
-from syvrio.infra.config import ChatConfig, Config, GitConfig, LLMConfig, RetrievalConfig, SearchConfig
+from syvrio.infra.config import (
+    ChatConfig,
+    Config,
+    GitConfig,
+    LLMConfig,
+    RetrievalConfig,
+    SearchConfig,
+)
 from syvrio.infra.tokens import format_tokens
 from syvrio.llm import AssistantTurn
 from syvrio.memory.extractor import StaticExtractor
 from syvrio.memory.models import ExtractionResult
 from syvrio.memory.service import MemoryService
+
+pytestmark = pytest.mark.ui
 
 
 class FakeChatModel:
@@ -48,6 +54,7 @@ class FakeSummarizer:
 
 async def test_inference_review_uses_worker_and_keeps_facts_separate(tmp_path):
     import asyncio
+
     from syvrio.app.inference_screen import InferenceScreen
 
     app = build_app(tmp_path, [])
@@ -72,6 +79,7 @@ async def test_inference_review_uses_worker_and_keeps_facts_separate(tmp_path):
 
 async def _open_inferences(app, pilot):
     import asyncio
+
     from syvrio.app.inference_screen import InferenceScreen
 
     await asyncio.wait_for(app.workers.wait_for_complete(), timeout=30)
@@ -104,7 +112,6 @@ async def test_inference_screen_empty_state(tmp_path):
 
 
 async def test_inference_screen_single_pending_confirm_refreshes_in_place(tmp_path):
-    from syvrio.app.inference_screen import InferenceScreen
 
     app = build_app(tmp_path, [])
     source = app.service.note("合成事实：喜欢安静活动")
@@ -113,9 +120,13 @@ async def test_inference_screen_single_pending_confirm_refreshes_in_place(tmp_pa
         screen = await _open_inferences(app, pilot)
         assert screen._filter == "hypothesis"
         assert "Pending" in str(screen.query_one("#inference-detail-status").render())
-        assert "confirmation never writes facts" in str(screen.query_one("#inference-detail-sources").render())
+        assert "confirmation never writes facts" in str(
+            screen.query_one("#inference-detail-sources").render()
+        )
         assert str(screen.query_one("#inference-detail-text").render()) == item.text
-        assert "合成事实：喜欢安静活动" in str(screen.query_one("#inference-detail-sources").render())
+        assert "合成事实：喜欢安静活动" in str(
+            screen.query_one("#inference-detail-sources").render()
+        )
         assert not screen.query_one("#inference-confirm", Button).disabled
 
         await pilot.press("c")
@@ -129,7 +140,9 @@ async def test_inference_screen_single_pending_confirm_refreshes_in_place(tmp_pa
         assert screen._current() is None
         assert "Pending 0" in str(screen.query_one("#inference-filters").render())
         assert "Confirmed 1" in str(screen.query_one("#inference-filters").render())
-        assert "Confirmed. 0 pending remaining." in str(screen.query_one("#inference-message").render())
+        assert "Confirmed. 0 pending remaining." in str(
+            screen.query_one("#inference-message").render()
+        )
 
 
 async def test_inference_screen_edit_labels_and_shortcut_letters_in_editor(tmp_path):
@@ -139,7 +152,10 @@ async def test_inference_screen_edit_labels_and_shortcut_letters_in_editor(tmp_p
     async with app.run_test(size=(100, 30)) as pilot:
         screen = await _open_inferences(app, pilot)
         assert str(screen.query_one("#inference-correct", Button).label) == "Edit"
-        assert str(screen.query_one("#inference-hint").render()) == "C Confirm · R Reject · E Edit · Esc Close"
+        assert (
+            str(screen.query_one("#inference-hint").render())
+            == "C Confirm · R Reject · E Edit · Esc Close"
+        )
         await pilot.press("e")
         await pilot.pause()
         editor = screen.query_one("#inference-editor")
@@ -165,7 +181,9 @@ async def test_inference_sources_use_one_fact_scan(tmp_path, monkeypatch):
         return entries(*args, **kwargs)
 
     monkeypatch.setattr(app.service.store, "entries", counted_entries)
-    monkeypatch.setattr(app.service.store, "find", lambda *_: pytest.fail("来源不得逐个 find 全库扫描"))
+    monkeypatch.setattr(
+        app.service.store, "find", lambda *_: pytest.fail("来源不得逐个 find 全库扫描")
+    )
     async with app.run_test(size=(100, 30)) as pilot:
         await app.workers.wait_for_complete()
         before = len(calls)
@@ -206,7 +224,9 @@ async def test_inference_edit_failure_preserves_draft_and_retries(tmp_path, monk
         assert not screen._editing
         assert screen._current().id != item.id
         assert screen._current().text == revised
-        assert "Edit saved as a new pending hypothesis." in str(screen.query_one("#inference-message").render())
+        assert "Edit saved as a new pending hypothesis." in str(
+            screen.query_one("#inference-message").render()
+        )
 
 
 async def test_inference_screen_filters_and_readonly_states(tmp_path):
@@ -249,6 +269,7 @@ async def test_inference_screen_filters_and_readonly_states(tmp_path):
         await pilot.pause()
         assert screen._filter == "all"
         from textual.widgets import OptionList
+
         listing = screen.query_one("#inference-list", OptionList)
         assert len(listing.options) == 4
         assert pending.id in {option.id for option in listing.options}
@@ -261,7 +282,10 @@ async def test_inference_screen_long_text_and_long_source_ids(tmp_path):
     app = build_app(tmp_path, [])
     long_fact = "合成事实 [/x]：" + "长期项目偏好先验证最小闭环。" * 20
     source = app.service.note(long_fact)
-    long_text = "[/x] 可能在做长期项目时偏好先搭建可验证的最小闭环，再逐步扩展功能；面对不确定需求时倾向先确认边界。" * 4
+    long_text = (
+        "[/x] 可能在做长期项目时偏好先搭建可验证的最小闭环，再逐步扩展功能；面对不确定需求时倾向先确认边界。"
+        * 4
+    )
     app.service.propose_inference(long_text, [source.id])
     async with app.run_test(size=(120, 36)) as pilot:
         screen = await _open_inferences(app, pilot)
@@ -270,14 +294,24 @@ async def test_inference_screen_long_text_and_long_source_ids(tmp_path):
         assert "Sources (1)" in sources
         assert "[/x]" in sources
         assert len(sources) < len(long_fact) + 40  # 来源只给摘录，不整段搬运
-        assert screen.query_one("#inference-detail-body").region.height <= screen.query_one("#inference-detail").region.height
-        assert screen.query_one("#inference-actions").region.bottom <= screen.query_one("#inference-card").region.bottom
+        assert (
+            screen.query_one("#inference-detail-body").region.height
+            <= screen.query_one("#inference-detail").region.height
+        )
+        assert (
+            screen.query_one("#inference-actions").region.bottom
+            <= screen.query_one("#inference-card").region.bottom
+        )
 
         # 长来源 ID 由组件级数据构造：业务接口不允许伪造来源，这里只验证展示规则。
         stamp = "2026-11-05T18:00:00+08:00"
         item = Inference(
-            id="inf-synthetic", text="可能偏好简洁界面", kind="profile",
-            source_ids=["mem-20990101-000000-abcdef123456"], created_at=stamp, updated_at=stamp,
+            id="inf-synthetic",
+            text="可能偏好简洁界面",
+            kind="profile",
+            source_ids=["mem-20990101-000000-abcdef123456"],
+            created_at=stamp,
+            updated_at=stamp,
         )
         app.push_screen(InferenceScreen([item], {}, lambda *args: None))
         await pilot.pause()
@@ -302,8 +336,11 @@ async def test_inference_screen_reject_and_correct_full_text(tmp_path):
         screen._set_filter("all")
         await pilot.pause()
         from textual.widgets import OptionList
+
         listing = screen.query_one("#inference-list", OptionList)
-        listing.highlighted = next(index for index, option in enumerate(listing.options) if option.id == item.id)
+        listing.highlighted = next(
+            index for index, option in enumerate(listing.options) if option.id == item.id
+        )
         await pilot.pause()
         # 已拒绝不可再操作。
         assert all(button.disabled for button in screen.query("#inference-actions Button"))
@@ -318,7 +355,9 @@ async def test_inference_screen_reject_and_correct_full_text(tmp_path):
         await pilot.pause()
         editor = screen.query_one("#inference-editor")
         assert editor.display and editor.text == editable.text
-        revised = editable.text + "；先给最小验证版本，再补充细节。\n第二行保留完整原文，不静默截断。"
+        revised = (
+            editable.text + "；先给最小验证版本，再补充细节。\n第二行保留完整原文，不静默截断。"
+        )
         editor.load_text(revised)
         await pilot.press("ctrl+s")
         await _finish_inference_worker(app, pilot)
@@ -386,6 +425,7 @@ async def test_inference_screen_list_and_detail_scroll(tmp_path):
         app.service.propose_inference(f"第{index}条待审查推断。" + "补充说明" * 80, [source.id])
     async with app.run_test(size=(100, 26)) as pilot:
         from textual.widgets import OptionList
+
         screen = await _open_inferences(app, pilot)
         listing = screen.query_one("#inference-list", OptionList)
         assert listing.option_count == 12
@@ -440,7 +480,9 @@ async def test_inference_sync_updates_options_in_place(tmp_path):
 
     app = build_app(tmp_path, [])
     source = app.service.note("合成事实")
-    entries = [app.service.propose_inference(f"合成假设 {index}", [source.id]) for index in range(5)]
+    entries = [
+        app.service.propose_inference(f"合成假设 {index}", [source.id]) for index in range(5)
+    ]
     sources = {source.id: source.text}
     async with app.run_test(size=(120, 36)) as pilot:
         screen = await _open_inferences(app, pilot)
@@ -468,8 +510,10 @@ async def test_inference_review_error_releases_input(tmp_path, monkeypatch):
     import asyncio
 
     app = build_app(tmp_path, [])
+
     def fail():
         raise ValueError("合成损坏日志")
+
     monkeypatch.setattr(app.service, "list_inferences", fail)
     async with app.run_test() as pilot:
         await asyncio.wait_for(app.workers.wait_for_complete(), timeout=30)
@@ -483,15 +527,18 @@ async def test_inference_review_error_releases_input(tmp_path, monkeypatch):
 async def test_dream_background_allows_session_switch_and_cancellation(tmp_path, monkeypatch):
     import asyncio
     import threading
+
     from syvrio.memory.models import ReflectionProposal
 
     app = build_app(tmp_path, [])
     source = app.service.note("合成回顾来源", topic="preferences")
     started, release = threading.Event(), threading.Event()
+
     def model(mode, entries):
         started.set()
         assert release.wait(10)
         return [ReflectionProposal(text="可能偏好合成活动", source_ids=[source.id])]
+
     monkeypatch.setattr(app.service.reflection, "_model", model)
     async with app.run_test() as pilot:
         await asyncio.wait_for(app.workers.wait_for_complete(), timeout=30)
@@ -514,14 +561,20 @@ async def test_dream_background_allows_session_switch_and_cancellation(tmp_path,
 
 async def test_profile_view_does_not_invoke_model(tmp_path, monkeypatch):
     import asyncio
+
     from syvrio.app.chat_widgets import ProfileScreen
 
     app = build_app(tmp_path, [])
     app.service.note("合成偏好", topic="preferences")
-    app.service.reflection.run("profile", 1, refresh_summary=True,
-                               summary_model=lambda payload: "缓存中的画像正文")
-    monkeypatch.setattr(app.service.reflection, "_model", lambda *_: pytest.fail("查看不应调用模型"))
-    monkeypatch.setattr(app.service.reflection, "profile", lambda: pytest.fail("查看不得全量遍历画像"))
+    app.service.reflection.run(
+        "profile", 1, refresh_summary=True, summary_model=lambda payload: "缓存中的画像正文"
+    )
+    monkeypatch.setattr(
+        app.service.reflection, "_model", lambda *_: pytest.fail("查看不应调用模型")
+    )
+    monkeypatch.setattr(
+        app.service.reflection, "profile", lambda: pytest.fail("查看不得全量遍历画像")
+    )
     async with app.run_test() as pilot:
         app._command("/profile")
         await asyncio.wait_for(app.workers.wait_for_complete(), timeout=30)
@@ -534,7 +587,10 @@ async def test_profile_view_does_not_invoke_model(tmp_path, monkeypatch):
         assert str(app.screen.query_one("#profile-status").render()) == "Up to date"
         metadata = str(app.screen.query_one("#profile-meta").render())
         assert "Generated " in metadata and "Facts 1" in metadata and "Unique 1" in metadata
-        assert str(app.screen.query_one("#profile-hint").render()) == "↑↓ Scroll · PgUp/PgDn Page · Esc Close"
+        assert (
+            str(app.screen.query_one("#profile-hint").render())
+            == "↑↓ Scroll · PgUp/PgDn Page · Esc Close"
+        )
         await pilot.press("escape")
         await pilot.pause()
         assert not isinstance(app.screen, ProfileScreen)
@@ -543,6 +599,7 @@ async def test_profile_view_does_not_invoke_model(tmp_path, monkeypatch):
 
 async def test_profile_view_shows_empty_state_without_cache(tmp_path):
     import asyncio
+
     from syvrio.app.chat_widgets import ProfileScreen
 
     app = build_app(tmp_path, [])
@@ -551,7 +608,9 @@ async def test_profile_view_shows_empty_state_without_cache(tmp_path):
         await asyncio.wait_for(app.workers.wait_for_complete(), timeout=30)
         await pilot.pause()
         assert isinstance(app.screen, ProfileScreen)
-        assert "No profile summary yet" in str(app.screen.query_one("#profile-text", Static).content)
+        assert "No profile summary yet" in str(
+            app.screen.query_one("#profile-text", Static).content
+        )
         assert str(app.screen.query_one("#profile-status").render()) == "Not generated"
         assert not app.screen.query_one("#profile-meta").display
         await pilot.press("escape")
@@ -560,15 +619,18 @@ async def test_profile_view_shows_empty_state_without_cache(tmp_path):
 
 async def test_profile_view_marks_outdated_summary(tmp_path):
     import asyncio
+
     from syvrio.app.chat_widgets import ProfileScreen
 
     app = build_app(tmp_path, [])
     app.service.note("合成早期偏好", topic="preferences")
-    app.service.reflection.run("profile", 1, refresh_summary=True,
-                               summary_model=lambda payload: "旧画像")
+    app.service.reflection.run(
+        "profile", 1, refresh_summary=True, summary_model=lambda payload: "旧画像"
+    )
     path = app.service.store.topic_path("preferences")
-    path.write_text(path.read_text(encoding="utf-8").replace("合成早期偏好", "合成后期偏好"),
-                    encoding="utf-8")
+    path.write_text(
+        path.read_text(encoding="utf-8").replace("合成早期偏好", "合成后期偏好"), encoding="utf-8"
+    )
     async with app.run_test() as pilot:
         app._command("/profile")
         await asyncio.wait_for(app.workers.wait_for_complete(), timeout=30)
@@ -582,10 +644,15 @@ async def test_profile_view_marks_outdated_summary(tmp_path):
 
 async def test_profile_view_reports_cache_read_failure(tmp_path, monkeypatch):
     import asyncio
+
     from syvrio.app.chat_widgets import ProfileScreen
 
     app = build_app(tmp_path, [])
-    monkeypatch.setattr(app.service.reflection, "profile_summary", lambda: (_ for _ in ()).throw(OSError("合成缓存故障")))
+    monkeypatch.setattr(
+        app.service.reflection,
+        "profile_summary",
+        lambda: (_ for _ in ()).throw(OSError("合成缓存故障")),
+    )
     async with app.run_test(size=(80, 24)) as pilot:
         app._command("/profile")
         await asyncio.wait_for(app.workers.wait_for_complete(), timeout=30)
@@ -601,18 +668,23 @@ async def test_profile_view_reports_cache_read_failure(tmp_path, monkeypatch):
 
 async def test_profile_long_mixed_text_scrolls_and_resizes(tmp_path):
     import asyncio
+
     from syvrio.app.chat_widgets import ProfileScreen
 
     app = build_app(tmp_path, [])
     app.service.note("合成偏好", topic="preferences")
     paragraphs = [
         "日常阅读偏好清淡、简洁且可验证的信息组织方式，保留自然段落与适当留白。" * 12,
-        "For technical work, prefer small iterations, explicit evidence, Python 3.12 and Textual interfaces." * 8,
-        "中英文与数字混排时保持完整语义，例如 120×36、80×24，以及 API、JSON、Markdown 等术语。" * 12,
+        "For technical work, prefer small iterations, explicit evidence, Python 3.12 and Textual interfaces."
+        * 8,
+        "中英文与数字混排时保持完整语义，例如 120×36、80×24，以及 API、JSON、Markdown 等术语。"
+        * 12,
         "最后一段用于验证滚动到底部后正文仍然完整，标题与底部快捷键提示不会随正文移动。" * 12,
     ]
     summary_text = "\n\n".join(paragraphs)
-    app.service.reflection.run("profile", 1, refresh_summary=True, summary_model=lambda payload: "短摘要")
+    app.service.reflection.run(
+        "profile", 1, refresh_summary=True, summary_model=lambda payload: "短摘要"
+    )
     cache_path = app.service.reflection.summary_path
     cached = json.loads(cache_path.read_text(encoding="utf-8"))
     cached["text"] = summary_text
@@ -658,8 +730,9 @@ async def test_profile_refresh_updates_cache_in_background(tmp_path, monkeypatch
 
     app = build_app(tmp_path, [])
     app.service.note("合成偏好", topic="preferences")
-    monkeypatch.setattr(app.service.reflection, "_summary_model",
-                        lambda payload: "刷新后的画像摘要")
+    monkeypatch.setattr(
+        app.service.reflection, "_summary_model", lambda payload: "刷新后的画像摘要"
+    )
     monkeypatch.setattr(app.service.reflection, "_model", lambda *_: [])
     async with app.run_test() as pilot:
         app._command("/profile refresh 1")
@@ -697,7 +770,9 @@ async def test_profile_refresh_does_not_block_chat_while_running(tmp_path, monke
                 if app.screen.query("#profile-text"):
                     break
             # 摘要生成中仍可打开当前缓存视图（此时应显示空状态）。
-            assert "No profile summary yet" in str(app.screen.query_one("#profile-text", Static).content)
+            assert "No profile summary yet" in str(
+                app.screen.query_one("#profile-text", Static).content
+            )
             await pilot.press("escape")
             release.set()
             await asyncio.wait_for(app.workers.wait_for_complete(), timeout=30)
@@ -791,6 +866,7 @@ async def test_import_apply_cancel_starts_no_parsing_or_writes(tmp_path, monkeyp
 
 async def test_import_apply_confirms_once_for_multiple_files(tmp_path, monkeypatch):
     import asyncio
+
     from syvrio.memory import service as module
     from syvrio.memory.models import Candidate
 
@@ -819,7 +895,10 @@ async def test_import_apply_confirms_once_for_multiple_files(tmp_path, monkeypat
         await asyncio.wait_for(app.workers.wait_for_complete(), timeout=30)
         await pilot.pause()
         assert len(extracted) == 2
-        assert {entry.text for entry in app.service.store.entries()} == {"合成第一条记忆", "合成第二条记忆"}
+        assert {entry.text for entry in app.service.store.entries()} == {
+            "合成第一条记忆",
+            "合成第二条记忆",
+        }
         assert not app.busy
         assert "PickScreen" not in type(app.screen).__name__
 
@@ -830,7 +909,12 @@ def build_app(tmp_path, turns, extract_on_exit=False, search=None, git=None):
         llm=LLMConfig(),
         retrieval=RetrievalConfig(method="keyword"),
         search=search or SearchConfig(auto_start=False),
-        chat=ChatConfig(context_window=32000, auto_recall=3, recall_rewrite=False, extract_on_exit=extract_on_exit),
+        chat=ChatConfig(
+            context_window=32000,
+            auto_recall=3,
+            recall_rewrite=False,
+            extract_on_exit=extract_on_exit,
+        ),
         git=git or GitConfig(auto_sync=False),
     )
     service = MemoryService(config, extractor=StaticExtractor(ExtractionResult(memories=[])))
@@ -911,13 +995,20 @@ async def test_undo_restores_last_message_for_editing(tmp_path):
         ]
         assert raw_texts == ["原始提问", "编辑后的提问"]
 
+
 @pytest.mark.parametrize("action", ["new", "resume"])
 async def test_session_switch_drops_previous_context_usage(tmp_path, action):
     app = build_app(tmp_path, [AssistantTurn(content="合成回复")])
     target = app.sessions.create()
-    app.sessions.append(target, {
-        "type": "message", "id": new_message_id(), "role": "user", "content": "历史合成提问",
-    })
+    app.sessions.append(
+        target,
+        {
+            "type": "message",
+            "id": new_message_id(),
+            "role": "user",
+            "content": "历史合成提问",
+        },
+    )
     async with app.run_test(size=(120, 40)) as pilot:
         widget = app.query_one("#input", Input)
         widget.value = "新合成提问"
@@ -959,9 +1050,7 @@ async def test_status_bar_renders_context_usage(tmp_path):
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         status = app.query_one("#status", Static)
-        rendered = "".join(
-            status.render_line(y).text for y in range(status.size.height)
-        )
+        rendered = "".join(status.render_line(y).text for y in range(status.size.height))
 
         assert "Context" in rendered
         assert "/32K" in rendered
@@ -986,9 +1075,7 @@ async def test_resumed_session_shows_its_own_context_usage(tmp_path):
         assert app.runtime.last_plan is None
         usage = app.runtime.context_usage()
         assert usage > 0
-        assert f"{format_tokens(usage)}/32K" in str(
-            app.query_one("#status", Static).content
-        )
+        assert f"{format_tokens(usage)}/32K" in str(app.query_one("#status", Static).content)
 
 
 async def test_undo_recomputes_context_usage(tmp_path):
@@ -1007,9 +1094,7 @@ async def test_undo_recomputes_context_usage(tmp_path):
         assert app.runtime.last_plan is None
         usage = app.runtime.context_usage()
         assert usage > 0
-        assert f"{format_tokens(usage)}/32K" in str(
-            app.query_one("#status", Static).content
-        )
+        assert f"{format_tokens(usage)}/32K" in str(app.query_one("#status", Static).content)
 
 
 async def test_status_context_usage_matches_last_plan(tmp_path):
@@ -1033,8 +1118,18 @@ async def test_history_pages_preserve_records_and_flat_reply_widgets(tmp_path):
     app = build_app(tmp_path, [])
     session = app.sessions.create()
     for index in range(14):
-        app.sessions.append(session, {"type": "message", "id": f"u{index}", "role": "user", "content": f"合成提问{index}"})
-        app.sessions.append(session, {"type": "assistant", "id": f"a{index}", "content": f"# 合成回复{index}\n\n" + "- 合成条目\n" * 30})
+        app.sessions.append(
+            session,
+            {"type": "message", "id": f"u{index}", "role": "user", "content": f"合成提问{index}"},
+        )
+        app.sessions.append(
+            session,
+            {
+                "type": "assistant",
+                "id": f"a{index}",
+                "content": f"# 合成回复{index}\n\n" + "- 合成条目\n" * 30,
+            },
+        )
     original = session.path.read_bytes()
     app.runtime.resume(session.id)
     async with app.run_test(size=(120, 40)) as pilot:
@@ -1044,7 +1139,9 @@ async def test_history_pages_preserve_records_and_flat_reply_widgets(tmp_path):
         while app.query(HistoryMore):
             app.query_one(HistoryMore).action_load()
             await pilot.pause()
-        assert [str(widget.content) for widget in app.query(".bubble")] == [f"合成提问{i}" for i in range(14)]
+        assert [str(widget.content) for widget in app.query(".bubble")] == [
+            f"合成提问{i}" for i in range(14)
+        ]
         assert len(app.query(ChatReply)) == 14
         assert all(len(reply.query("*")) == 0 for reply in app.query(ChatReply))
     assert session.path.read_bytes() == original
@@ -1094,6 +1191,7 @@ async def test_resume_session_does_not_show_success_notification(tmp_path, monke
 
 async def test_reply_selection_tracks_stream_updates_and_resize(tmp_path):
     from textual.selection import SELECT_ALL
+
     from syvrio.app.chat_widgets import ChatReply
 
     app = build_app(tmp_path, [])
@@ -1103,7 +1201,9 @@ async def test_reply_selection_tracks_stream_updates_and_resize(tmp_path):
         await pilot.pause()
         reply = app.query_one(ChatReply)
         assert "合成标题" in reply.get_selection(SELECT_ALL)[0]
-        app._stream_append("12:00", "- 合成条目\n\n```python\nprint('sample')\n```\n\n" + "wrapped words " * 12)
+        app._stream_append(
+            "12:00", "- 合成条目\n\n```python\nprint('sample')\n```\n\n" + "wrapped words " * 12
+        )
         app._stream_flush()
         await pilot.pause()
         wide = reply.get_selection(SELECT_ALL)[0]
@@ -1125,8 +1225,13 @@ async def test_switch_clears_previous_history_page_state(tmp_path):
     app = build_app(tmp_path, [])
     first, second = app.sessions.create(), app.sessions.create()
     for index in range(22):
-        app.sessions.append(first, {"type": "message", "id": f"m{index}", "role": "user", "content": f"旧会话{index}"})
-    app.sessions.append(second, {"type": "message", "id": "new", "role": "user", "content": "新会话"})
+        app.sessions.append(
+            first,
+            {"type": "message", "id": f"m{index}", "role": "user", "content": f"旧会话{index}"},
+        )
+    app.sessions.append(
+        second, {"type": "message", "id": "new", "role": "user", "content": "新会话"}
+    )
     app.runtime.resume(first.id)
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
@@ -1141,13 +1246,17 @@ async def test_switch_clears_previous_history_page_state(tmp_path):
         assert [str(widget.content) for widget in app.query(".bubble")] == ["新会话"]
 
 
-async def test_context_estimation_uses_worker_cache_and_rejects_stale_results(tmp_path, monkeypatch):
+async def test_context_estimation_uses_worker_cache_and_rejects_stale_results(
+    tmp_path, monkeypatch
+):
     import asyncio
     import threading
 
     app = build_app(tmp_path, [])
     session = app.sessions.create()
-    app.sessions.append(session, {"type": "message", "id": "m1", "role": "user", "content": "合成陈述"})
+    app.sessions.append(
+        session, {"type": "message", "id": "m1", "role": "user", "content": "合成陈述"}
+    )
     entered, release = threading.Event(), threading.Event()
     calls = []
     main_thread = threading.get_ident()
@@ -1198,7 +1307,9 @@ async def test_context_estimation_uses_worker_cache_and_rejects_stale_results(tm
 async def test_context_estimation_failure_keeps_input_enabled(tmp_path, monkeypatch):
     app = build_app(tmp_path, [])
     session = app.sessions.create()
-    app.sessions.append(session, {"type": "message", "id": "m1", "role": "user", "content": "合成陈述"})
+    app.sessions.append(
+        session, {"type": "message", "id": "m1", "role": "user", "content": "合成陈述"}
+    )
     app.runtime.resume(session.id)
     calls = []
 
@@ -1247,7 +1358,10 @@ async def test_command_palette_filter_navigate_execute(tmp_path):
         await pilot.pause()
         assert not palette.display
         # /think 要么弹出选择器，要么提示模型不支持；两者都说明命令已执行。
-        assert app.query(".card") or app.screen.__class__.__name__ in {"PickScreen", "TextInputScreen"}
+        assert app.query(".card") or app.screen.__class__.__name__ in {
+            "PickScreen",
+            "TextInputScreen",
+        }
         assert widget.value == ""
 
 
@@ -1283,9 +1397,14 @@ async def test_tab_completes_highlighted_command_without_executing(tmp_path, mon
 
 @pytest.mark.parametrize(
     ("partial", "completed"),
-    [("/profile r", "/profile refresh"), ("/model re", "/model refresh"),
-     ("/dream ca", "/dream cancel"), ("/profile refresh 3", "/profile refresh 3"),
-     ("/import /tmp/notes", "/import /tmp/notes"), ("ordinary text", "ordinary text")],
+    [
+        ("/profile r", "/profile refresh"),
+        ("/model re", "/model refresh"),
+        ("/dream ca", "/dream cancel"),
+        ("/profile refresh 3", "/profile refresh 3"),
+        ("/import /tmp/notes", "/import /tmp/notes"),
+        ("ordinary text", "ordinary text"),
+    ],
 )
 async def test_tab_completes_subcommands_and_preserves_arguments(tmp_path, partial, completed):
     app = build_app(tmp_path, [])
@@ -1346,7 +1465,7 @@ async def test_command_palette_columns_align(tmp_path):
         assert rows[0].has_class("cmd-active")
 
         starts = set()
-        for row, (_, usage, description) in zip(rows, SLASH_COMMANDS):
+        for row, (_, usage, description) in zip(rows, SLASH_COMMANDS, strict=True):
             plain = row.render().plain
             # [refresh] 等方括号必须原样可见，不能被当成标记吞掉
             assert usage in plain
@@ -1381,8 +1500,9 @@ async def test_command_palette_scrolls_highlighted_command_into_view(tmp_path):
 
 
 async def test_command_palette_mouse_wheel_scrolls(tmp_path):
-    from syvrio.app.chat_app import CommandPalette
     from textual.events import MouseScrollDown
+
+    from syvrio.app.chat_app import CommandPalette
 
     app = build_app(tmp_path, [])
     async with app.run_test(size=(120, 40)) as pilot:
@@ -1390,8 +1510,9 @@ async def test_command_palette_mouse_wheel_scrolls(tmp_path):
         await pilot.pause()
         palette = app.query_one("#cmd-palette", CommandPalette)
         before = palette.listing.scroll_y
-        palette.listing.post_message(MouseScrollDown(
-            palette.listing, 0, 0, 0, 1, 0, False, False, False))
+        palette.listing.post_message(
+            MouseScrollDown(palette.listing, 0, 0, 0, 1, 0, False, False, False)
+        )
         await pilot.pause()
         assert palette.listing.scroll_y > before
 
@@ -1414,6 +1535,7 @@ async def test_command_palette_prefix_filters(tmp_path, prefix, expected):
 
 async def test_command_palette_click_runs_visible_command(tmp_path):
     import asyncio
+
     from syvrio.app.chat_app import CommandPalette
 
     app = build_app(tmp_path, [])
@@ -1498,7 +1620,9 @@ async def test_model_picker_can_configure_provider_key(tmp_path, monkeypatch):
 
     monkeypatch.setattr(
         "syvrio.application.settings.fetch_provider_models",
-        lambda source, refresh=False: ["live-siliconflow-model"] if source.provider == "siliconflow" else [],
+        lambda source, refresh=False: (
+            ["live-siliconflow-model"] if source.provider == "siliconflow" else []
+        ),
     )
     app = build_app(tmp_path, [])
     app.service.config_path = tmp_path / "syvrio.toml"
@@ -1537,7 +1661,9 @@ async def test_model_picker_can_configure_provider_key(tmp_path, monkeypatch):
 
         providers = app.screen.query_one("#pick-list", ListView)
         labels = [str(item.query_one(Label).render()) for item in providers.children]
-        providers.index = next(i for i, label in enumerate(labels) if label.startswith("SiliconFlow"))
+        providers.index = next(
+            i for i, label in enumerate(labels) if label.startswith("SiliconFlow")
+        )
         providers.focus()
         await pilot.pause()
         await pilot.press("enter")
@@ -1598,7 +1724,9 @@ async def test_model_picker_can_remove_provider_key(tmp_path, monkeypatch):
 
         providers = app.screen.query_one("#pick-list", ListView)
         labels = [str(item.query_one(Label).render()) for item in providers.children]
-        providers.index = next(i for i, label in enumerate(labels) if label.startswith("SiliconFlow"))
+        providers.index = next(
+            i for i, label in enumerate(labels) if label.startswith("SiliconFlow")
+        )
         providers.focus()
         await pilot.press("enter")
         for _ in range(50):
@@ -1654,9 +1782,12 @@ async def test_provider_removal_failure_keeps_key_and_ui_usable(tmp_path, monkey
 
 async def test_model_picker_provider_menu_returns_to_models(tmp_path, monkeypatch):
     from textual.widgets import ListView
+
     from syvrio.app.chat_widgets import ModelPickerScreen
 
-    monkeypatch.setattr("syvrio.application.settings.fetch_provider_models", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        "syvrio.application.settings.fetch_provider_models", lambda *args, **kwargs: []
+    )
     app = build_app(tmp_path, [])
     async with app.run_test(size=(120, 40)) as pilot:
         app._show_model_picker(app._model_entries())
@@ -1667,9 +1798,19 @@ async def test_model_picker_provider_menu_returns_to_models(tmp_path, monkeypatc
         await pilot.press("ctrl+p")
         await pilot.pause()
         assert not isinstance(app.screen, ModelPickerScreen)
-        assert [item.value for item in app.screen.query_one("#pick-list", ListView).children] == ["add", "update", "endpoint", "remove"]
+        assert [item.value for item in app.screen.query_one("#pick-list", ListView).children] == [
+            "add",
+            "update",
+            "endpoint",
+            "remove",
+        ]
         app._apply_fetched_models(picker, [("late-model", ("deepseek", "late"), False)])
-        assert [item.value for item in app.screen.query_one("#pick-list", ListView).children] == ["add", "update", "endpoint", "remove"]
+        assert [item.value for item in app.screen.query_one("#pick-list", ListView).children] == [
+            "add",
+            "update",
+            "endpoint",
+            "remove",
+        ]
         await pilot.press("escape")
         for _ in range(100):
             await pilot.pause()
@@ -1691,6 +1832,7 @@ async def test_model_picker_shortcuts_work_from_search(tmp_path, monkeypatch, sh
         await pilot.press(shortcut)
         await pilot.pause()
         assert selected == [(sentinel, "")]
+
 
 @pytest.mark.parametrize("size", [(80, 24), (120, 40)])
 async def test_model_picker_keeps_shortcut_hint_visible(tmp_path, size):
@@ -1717,6 +1859,7 @@ async def test_ctrl_p_outside_model_picker_keeps_command_palette(tmp_path):
 
 async def test_model_picker_filters_by_search(tmp_path):
     import asyncio
+
     from textual.widgets import ListView
 
     from syvrio.app.chat_widgets import PickScreen
@@ -1739,7 +1882,9 @@ async def test_model_picker_filters_by_search(tmp_path):
         search.value = "silicon"
         # ListView 的移除与挂载异步完成，不能假设一帧后已经得到最终列表。
         async with asyncio.timeout(5):
-            while [item.label for item in picker.query("#pick-list OptionItem")] != ["SiliconFlow · DeepSeek V3"]:
+            while [item.label for item in picker.query("#pick-list OptionItem")] != [
+                "SiliconFlow · DeepSeek V3"
+            ]:
                 await pilot.pause()
 
         items = list(picker.query("#pick-list OptionItem"))
@@ -1756,6 +1901,7 @@ async def test_model_picker_filters_by_search(tmp_path):
 
 async def test_model_picker_prioritizes_the_exact_api_id_over_vendor_variants(tmp_path):
     import asyncio
+
     from textual.widgets import ListView
 
     model = "deepseek-v4.1-flash-1017"
@@ -1773,7 +1919,10 @@ async def test_model_picker_prioritizes_the_exact_api_id_over_vendor_variants(tm
         assert listing.children[0].label.startswith("Recent · ")
         picker.query_one("#pick-search", Input).value = model
         async with asyncio.timeout(5):
-            while listing.highlighted_child is None or listing.highlighted_child.value != ("dashscope", model):
+            while listing.highlighted_child is None or listing.highlighted_child.value != (
+                "dashscope",
+                model,
+            ):
                 await pilot.pause()
         assert [item.value[1] for item in listing.children] == [model, vendor_model]
 
@@ -1793,9 +1942,7 @@ async def test_model_picker_uses_cache_and_refreshes_in_background(tmp_path, mon
         "syvrio.application.settings.cached_provider_models",
         lambda config: ["cached-model"],
     )
-    monkeypatch.setattr(
-        "syvrio.application.settings.fetch_provider_models", fake_fetch
-    )
+    monkeypatch.setattr("syvrio.application.settings.fetch_provider_models", fake_fetch)
 
     monkeypatch.setenv("DEEPSEEK_API_KEY", "synthetic-key")
     app = build_app(tmp_path, [])
@@ -1852,9 +1999,7 @@ async def test_model_picker_preserves_highlight_during_background_refresh(tmp_pa
         assert search.value == ""
 
         # 线上目录插入新模型导致索引偏移时，仍按原值保持高亮。
-        app._apply_fetched_models(
-            picker, [("new-model", ("deepseek", "new"), False), *entries]
-        )
+        app._apply_fetched_models(picker, [("new-model", ("deepseek", "new"), False), *entries])
         await pilot.pause()
         assert listing.highlighted_child.value == ("deepseek", "model-5")
         assert search.has_focus
@@ -1974,7 +2119,9 @@ async def test_context_picker_builds_options_off_ui_thread(tmp_path, monkeypatch
         release.wait(5)
         return [8_000, 16_000]
 
-    monkeypatch.setattr("syvrio.application.settings.SettingsUseCases.context_options", slow_options)
+    monkeypatch.setattr(
+        "syvrio.application.settings.SettingsUseCases.context_options", slow_options
+    )
     app = build_app(tmp_path, [])
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
@@ -2008,7 +2155,6 @@ async def test_context_picker_builds_options_off_ui_thread(tmp_path, monkeypatch
 
 
 async def test_context_picker_failure_reports_and_recovers(tmp_path, monkeypatch):
-    from syvrio.app.chat_widgets import PickScreen
 
     monkeypatch.setattr(
         "syvrio.application.settings.SettingsUseCases.context_options",
@@ -2030,8 +2176,6 @@ async def test_context_picker_failure_reports_and_recovers(tmp_path, monkeypatch
 
 async def test_ctrl_b_toggles_sidebar(tmp_path):
     from textual.containers import Vertical
-
-    from syvrio.app.chat_app import SidebarToggle
 
     app = build_app(tmp_path, [])
     async with app.run_test(size=(120, 40)) as pilot:
@@ -2127,11 +2271,7 @@ async def test_sidebar_rows_align_with_new_session(tmp_path):
             if app.query("#sessions > ListItem"):
                 break
         new_session = app.query_one("#new-session").region
-        rows = [
-            item.region
-            for item in app.query("#sessions > ListItem")
-            if hasattr(item, "row")
-        ]
+        rows = [item.region for item in app.query("#sessions > ListItem") if hasattr(item, "row")]
         assert rows
         assert all(row.x == new_session.x and row.width == new_session.width for row in rows)
 
@@ -2229,9 +2369,15 @@ async def test_session_switch_failure_releases_busy(tmp_path):
 async def test_resuming_torn_session_shows_recovery_notice_and_continues(tmp_path):
     app = build_app(tmp_path, [AssistantTurn(content="接续成功")])
     session = app.runtime.ensure_session()
-    app.runtime.sessions.append(session, {
-        "type": "message", "id": new_message_id(), "role": "user", "content": "合成历史",
-    })
+    app.runtime.sessions.append(
+        session,
+        {
+            "type": "message",
+            "id": new_message_id(),
+            "role": "user",
+            "content": "合成历史",
+        },
+    )
     with session.path.open("ab") as handle:
         handle.write(b'{"type":"assistant","content":"')
     original = session.path.read_bytes()
@@ -2373,7 +2519,11 @@ async def test_session_delete_failure_keeps_file_and_ui_usable(tmp_path, monkeyp
     row = {"id": session.id, "title": "Synthetic session"}
     notifications = []
     monkeypatch.setattr(app, "notify", lambda message, **kwargs: notifications.append(message))
-    monkeypatch.setattr(app.sessions, "delete", lambda *_: (_ for _ in ()).throw(OSError("synthetic delete failure")))
+    monkeypatch.setattr(
+        app.sessions,
+        "delete",
+        lambda *_: (_ for _ in ()).throw(OSError("synthetic delete failure")),
+    )
     async with app.run_test(size=(80, 24)) as pilot:
         app._delete_session_result(row, True)
         await pilot.pause()
@@ -2568,7 +2718,11 @@ async def test_session_picker_rail_stays_aligned_for_long_titles_and_widths(tmp_
 
     app = build_app(tmp_path, [])
     store = app.sessions
-    titles = ("超长会话标题" * 12 + " https://github.com/example/repository", "短标题", "第三条会话")
+    titles = (
+        "超长会话标题" * 12 + " https://github.com/example/repository",
+        "短标题",
+        "第三条会话",
+    )
     ids = []
     for title in titles:
         session = store.create()
@@ -2599,9 +2753,15 @@ async def test_session_picker_rail_stays_aligned_for_long_titles_and_widths(tmp_
             assert len({cell["title_x"] for cell in cells.values()}) == 1
             # 长标题保持单行截断，行高一致。
             assert {cell["height"] for cell in cells.values()} == {2}
-            assert all(row.query_one(".session-title").size.height == 1 for row in picker.query("#picker-list SessionItem"))
+            assert all(
+                row.query_one(".session-title").size.height == 1
+                for row in picker.query("#picker-list SessionItem")
+            )
             # 列表不横向溢出，底部提示仍完整可见。
-            assert all(item.region.right <= listing.region.right for item in picker.query("#picker-list SessionItem"))
+            assert all(
+                item.region.right <= listing.region.right
+                for item in picker.query("#picker-list SessionItem")
+            )
             assert footer.region.bottom <= picker.query_one("#pick-card").region.bottom
 
 
@@ -2796,8 +2956,9 @@ async def test_pending_decision_keeps_tui_responsive(tmp_path, monkeypatch, acti
 
     app = build_app(tmp_path, [])
     item, remaining = [
-        PendingItem.from_candidate(Candidate(text=text, topic="preferences", confidence=0.5),
-                                   "chat", "low confidence")
+        PendingItem.from_candidate(
+            Candidate(text=text, topic="preferences", confidence=0.5), "chat", "low confidence"
+        )
         for text in ("Synthetic first preference", "Synthetic second preference")
     ]
     app.service.queue.add(item)
@@ -2868,7 +3029,8 @@ async def test_pending_interactive_edit_approves_only_final_text(tmp_path, monke
         await pilot.pause()
         item = PendingItem.from_candidate(
             Candidate(text="可能喜欢浅烘", topic="preferences", confidence=0.5),
-            "chat", "low confidence",
+            "chat",
+            "low confidence",
         )
         app.service.queue.add(item)
         app.refresh_pending()
@@ -2898,12 +3060,16 @@ async def test_pending_interactive_edit_approves_only_final_text(tmp_path, monke
         with monkeypatch.context() as patch:
             patch.setattr(app.service, "approve", fail_approval)
             await pilot.press("ctrl+s")
-            await app.workers.wait_for_complete(worker for worker in app.workers if worker.group == "pending")
+            await app.workers.wait_for_complete(
+                worker for worker in app.workers if worker.group == "pending"
+            )
             await pilot.pause()
         assert app.screen is screen
         assert field.text == "\n" + edited
         assert field.has_focus
-        assert "synthetic write failure" in str(screen.query_one("#pending-message", Static).content)
+        assert "synthetic write failure" in str(
+            screen.query_one("#pending-message", Static).content
+        )
         assert app.service.pending() == [item]
         await pilot.press("ctrl+s")
         for _ in range(100):
@@ -3026,8 +3192,8 @@ async def test_tool_event_rows_use_single_border_and_assistant_is_syvrio(tmp_pat
 async def test_streaming_error_marks_interruption(tmp_path, monkeypatch):
     # 回归（issue #4）：中途断流保留半截内容并显式标注，不静默吞掉。
     app = build_app(tmp_path, [])
-    from syvrio.llm import ChatModelError
     from syvrio.app import chat_flow
+    from syvrio.llm import ChatModelError
 
     logged = []
     monkeypatch.setattr(chat_flow, "record_event", lambda *args, **kwargs: logged.append(args))
@@ -3060,15 +3226,18 @@ async def test_streaming_error_marks_interruption(tmp_path, monkeypatch):
         cards = [str(w.render()) for w in app.query(".card")]
         assert any("连接中断" in c for c in cards)
         assert app.query_one("#input", Input).disabled is False
-        assert any(event[0] == "chat.failed" and isinstance(event[1], ChatModelError)
-                   for event in logged)
+        assert any(
+            event[0] == "chat.failed" and isinstance(event[1], ChatModelError) for event in logged
+        )
 
 
 async def test_reading_diagnostics_records_state_transitions_without_content(tmp_path, monkeypatch):
     from syvrio.app import chat_widgets
 
     logged = []
-    monkeypatch.setattr(chat_widgets, "record_event", lambda *args, **kwargs: logged.append((args, kwargs)))
+    monkeypatch.setattr(
+        chat_widgets, "record_event", lambda *args, **kwargs: logged.append((args, kwargs))
+    )
     app = build_app(tmp_path, [])
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -3083,7 +3252,9 @@ async def test_reading_diagnostics_records_state_transitions_without_content(tmp
         assert all(args == ("reading.changed",) for args, _ in logged)
         assert logged[0][1]["follow"] is False
         assert logged[1][1]["selecting"] is True
-        assert all(type(value) in (bool, int, float) for _, state in logged for value in state.values())
+        assert all(
+            type(value) in (bool, int, float) for _, state in logged for value in state.values()
+        )
 
 
 async def test_switch_defers_distill_then_catches_up_in_background(tmp_path):
@@ -3116,7 +3287,12 @@ async def test_switch_defers_distill_then_catches_up_in_background(tmp_path):
         second = app.sessions.create()
         app.sessions.append(
             second,
-            {"type": "message", "id": new_message_id(), "role": "user", "content": "第二场对话内容"},
+            {
+                "type": "message",
+                "id": new_message_id(),
+                "role": "user",
+                "content": "第二场对话内容",
+            },
         )
         app.refresh_sessions()
         app.runtime.resume(first.id)  # 活跃会话才有 close(distill=False) 的 deferred 标记
@@ -3150,10 +3326,16 @@ async def test_session_picker_search_resume_and_delete(tmp_path):
         store = app.sessions
         s1 = store.create()
         store.rename(s1, "Java 并发讨论")
-        store.append(s1, {"type": "message", "id": new_message_id(), "role": "user", "content": "Java 并发讨论"})
+        store.append(
+            s1,
+            {"type": "message", "id": new_message_id(), "role": "user", "content": "Java 并发讨论"},
+        )
         s2 = store.create()
         store.rename(s2, "租房预算讨论")
-        store.append(s2, {"type": "message", "id": new_message_id(), "role": "user", "content": "租房预算讨论"})
+        store.append(
+            s2,
+            {"type": "message", "id": new_message_id(), "role": "user", "content": "租房预算讨论"},
+        )
 
         widget = app.query_one("#input", Input)
         widget.value = "/sessions"
@@ -3306,9 +3488,7 @@ async def test_transcript_replays_tool_events(tmp_path):
         },
     )
     payload = {
-        "results": [
-            {"title": "t", "url": "https://example.com", "snippet": "", "published": None}
-        ],
+        "results": [{"title": "t", "url": "https://example.com", "snippet": "", "published": None}],
         "provider": "open_websearch",
         "failed": [],
     }
@@ -3485,14 +3665,18 @@ async def test_session_picker_rename_current_updates_runtime(tmp_path):
 
 async def test_automatic_reflection_idle_uses_persistent_schedule(tmp_path, monkeypatch):
     import asyncio
+
     from syvrio.memory.reflection import ReflectionResult
+
     app = build_app(tmp_path, [])
     calls = []
     monkeypatch.setattr(app.service.reflection, "auto_check_due", lambda now=None: True)
     monkeypatch.setattr(app.service.reflection, "auto_plan", lambda now=None: "dream")
+
     def run(mode, budget, cancel_event=None, **kwargs):
         calls.append((mode, budget, kwargs.get("auto")))
         return ReflectionResult(mode, requests=1)
+
     monkeypatch.setattr(app.service.reflection, "run", run)
     async with app.run_test() as pilot:
         await asyncio.wait_for(app.workers.wait_for_complete(), timeout=30)
@@ -3517,14 +3701,18 @@ async def test_automatic_reflection_idle_uses_persistent_schedule(tmp_path, monk
 
 async def test_automatic_profile_refresh_spends_one_request(tmp_path, monkeypatch):
     import asyncio
+
     from syvrio.memory.reflection import ReflectionResult
+
     app = build_app(tmp_path, [])
     calls = []
     monkeypatch.setattr(app.service.reflection, "auto_check_due", lambda now=None: True)
     monkeypatch.setattr(app.service.reflection, "auto_plan", lambda now=None: "profile")
+
     def run(mode, budget, cancel_event=None, **kwargs):
         calls.append((mode, budget, kwargs.get("auto"), kwargs.get("refresh_summary")))
         return ReflectionResult(mode, requests=1, summary_status="updated")
+
     monkeypatch.setattr(app.service.reflection, "run", run)
     async with app.run_test() as pilot:
         await asyncio.wait_for(app.workers.wait_for_complete(), timeout=30)
@@ -3538,10 +3726,15 @@ async def test_automatic_profile_refresh_spends_one_request(tmp_path, monkeypatc
 
 async def test_automatic_reflection_skips_when_schedule_not_due(tmp_path, monkeypatch):
     import asyncio
+
     app = build_app(tmp_path, [])
     monkeypatch.setattr(app.service.reflection, "auto_check_due", lambda now=None: False)
-    monkeypatch.setattr(app.service.reflection, "auto_plan", lambda now=None: pytest.fail("到期前不得扫描"))
-    monkeypatch.setattr(app.service.reflection, "run", lambda *a, **k: pytest.fail("到期前不得请求"))
+    monkeypatch.setattr(
+        app.service.reflection, "auto_plan", lambda now=None: pytest.fail("到期前不得扫描")
+    )
+    monkeypatch.setattr(
+        app.service.reflection, "run", lambda *a, **k: pytest.fail("到期前不得请求")
+    )
     async with app.run_test() as pilot:
         await asyncio.wait_for(app.workers.wait_for_complete(), timeout=30)
         app._reflection_last_activity = 0
@@ -3552,10 +3745,13 @@ async def test_automatic_reflection_skips_when_schedule_not_due(tmp_path, monkey
 
 async def test_automatic_reflection_plan_without_work_does_not_run(tmp_path, monkeypatch):
     import asyncio
+
     app = build_app(tmp_path, [])
     monkeypatch.setattr(app.service.reflection, "auto_check_due", lambda now=None: True)
     monkeypatch.setattr(app.service.reflection, "auto_plan", lambda now=None: None)
-    monkeypatch.setattr(app.service.reflection, "run", lambda *a, **k: pytest.fail("无任务不得请求"))
+    monkeypatch.setattr(
+        app.service.reflection, "run", lambda *a, **k: pytest.fail("无任务不得请求")
+    )
     async with app.run_test() as pilot:
         await asyncio.wait_for(app.workers.wait_for_complete(), timeout=30)
         app._reflection_last_activity = 0
@@ -3568,11 +3764,14 @@ async def test_automatic_reflection_plan_without_work_does_not_run(tmp_path, mon
 
 async def test_automatic_reflection_failure_releases_state(tmp_path, monkeypatch):
     import asyncio
+
     app = build_app(tmp_path, [])
     monkeypatch.setattr(app.service.reflection, "auto_check_due", lambda now=None: True)
     monkeypatch.setattr(app.service.reflection, "auto_plan", lambda now=None: "dream")
+
     def fail(*args, **kwargs):
         raise RuntimeError("synthetic auto failure")
+
     monkeypatch.setattr(app.service.reflection, "run", fail)
     async with app.run_test() as pilot:
         await asyncio.wait_for(app.workers.wait_for_complete(), timeout=30)
@@ -3587,10 +3786,14 @@ async def test_automatic_reflection_failure_releases_state(tmp_path, monkeypatch
 
 async def test_automatic_reflection_disabled_or_draft_does_not_start(tmp_path, monkeypatch):
     import asyncio
+
     app = build_app(tmp_path, [])
-    monkeypatch.setattr(app.service.reflection, "auto_check_due",
-                        lambda now=None: pytest.fail("禁用或草稿时不得检查调度"))
-    async with app.run_test() as pilot:
+    monkeypatch.setattr(
+        app.service.reflection,
+        "auto_check_due",
+        lambda now=None: pytest.fail("禁用或草稿时不得检查调度"),
+    )
+    async with app.run_test():
         await asyncio.wait_for(app.workers.wait_for_complete(), timeout=30)
         app.service.config.chat.auto_reflect = False
         app._reflection_last_activity = 0
@@ -3644,10 +3847,18 @@ def test_fixed_tui_text_is_english():
     import ast
     import re
     from pathlib import Path
+
     from syvrio.app import chat_app
 
     directory = Path(chat_app.__file__).parent
-    for name in ("chat_app", "chat_commands", "chat_widgets", "chat_flow", "command_catalog", "chat_reflection"):
+    for name in (
+        "chat_app",
+        "chat_commands",
+        "chat_widgets",
+        "chat_flow",
+        "command_catalog",
+        "chat_reflection",
+    ):
         path = directory / f"{name}.py"
         if not path.exists():
             continue
@@ -3655,11 +3866,21 @@ def test_fixed_tui_text_is_english():
         docstrings = set()
         for node in ast.walk(tree):
             if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
-                if node.body and isinstance(node.body[0], ast.Expr) and isinstance(node.body[0].value, ast.Constant):
+                if (
+                    node.body
+                    and isinstance(node.body[0], ast.Expr)
+                    and isinstance(node.body[0].value, ast.Constant)
+                ):
                     docstrings.add(id(node.body[0].value))
         for node in ast.walk(tree):
-            if isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in docstrings:
-                assert not re.search(r"[\u4e00-\u9fff]", node.value), f"{path.name}:{node.lineno}: {node.value}"
+            if (
+                isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+                and id(node) not in docstrings
+            ):
+                assert not re.search(r"[\u4e00-\u9fff]", node.value), (
+                    f"{path.name}:{node.lineno}: {node.value}"
+                )
 
 
 async def test_native_input_cursor_tracks_editing_and_cleans_up(tmp_path, monkeypatch):
@@ -3671,12 +3892,14 @@ async def test_native_input_cursor_tracks_editing_and_cleans_up(tmp_path, monkey
         widget = app.query_one("#input", BarInput)
         writes = []
         cursor_shown = asyncio.Event()
+
         # Focus schedules cursor output after refresh, which may lag a pilot pause.
         def capture_cursor(data):
             if data in ("\x1b[5 q\x1b[?25h", "\x1b[?25l\x1b[0 q"):
                 writes.append(data)
                 if data == "\x1b[5 q\x1b[?25h":
                     cursor_shown.set()
+
         monkeypatch.setattr(app._driver, "write", capture_cursor)
         monkeypatch.setattr(BarInput, "_uses_native_cursor", property(lambda self: True))
         widget._restart_blink()
@@ -3817,10 +4040,13 @@ async def test_slash_commands_during_streaming_use_palette_and_execute(tmp_path,
 
 async def test_spark_thinking_selection_during_reply_applies_to_next_turn(tmp_path, monkeypatch):
     from textual.widgets import ListView
+
     from syvrio.llm import LiteLLMChatModel, ToolCall
 
     app = build_app(tmp_path, [])
-    app.service.config.llm = LLMConfig(provider="spark", model="spark-x2.6", spark_thinking="enabled")
+    app.service.config.llm = LLMConfig(
+        provider="spark", model="spark-x2.6", spark_thinking="enabled"
+    )
     app.runtime.reload_llm(app.service.config)
     gate = threading.Event()
     calls = []
@@ -3863,11 +4089,13 @@ async def test_submit_during_ask_queues_fifo_across_sessions(tmp_path):
     # 验收场景：A 生成中 → 切 B（/new）→ A/B 各排队一条 → 按提交顺序全局执行，
     # 回复各自落回原会话，且任意时刻至多一个请求。
     app = build_app(tmp_path, [])
-    gated = GatedChatModel([
-        AssistantTurn(content="reply-1"),
-        AssistantTurn(content="reply-2"),
-        AssistantTurn(content="reply-3"),
-    ])
+    gated = GatedChatModel(
+        [
+            AssistantTurn(content="reply-1"),
+            AssistantTurn(content="reply-2"),
+            AssistantTurn(content="reply-3"),
+        ]
+    )
     gated.gates = [threading.Event(), threading.Event(), threading.Event()]
     app.runtime.model = gated
     async with app.run_test(size=(120, 40)) as pilot:
@@ -3917,19 +4145,25 @@ async def test_submit_during_ask_queues_fifo_across_sessions(tmp_path):
         records_a = store.load(session_a).records
         records_b = store.load(session_b).records
         assert any(r.get("content") == "m2" for r in records_a)
-        assert any(r.get("type") == "assistant" and "reply-2" in str(r.get("content")) for r in records_a)
+        assert any(
+            r.get("type") == "assistant" and "reply-2" in str(r.get("content")) for r in records_a
+        )
         assert any(r.get("content") == "m3" for r in records_b)
-        assert any(r.get("type") == "assistant" and "reply-3" in str(r.get("content")) for r in records_b)
+        assert any(
+            r.get("type") == "assistant" and "reply-3" in str(r.get("content")) for r in records_b
+        )
 
 
 async def test_undo_during_generation_bypasses_queue_and_targets_original_session(tmp_path):
     # A 生成中 /undo 立即取消，不进入 FIFO；切到 B 后也只撤销 A，不改 B 的输入。
     app = build_app(tmp_path, [])
-    gated = GatedChatModel([
-        AssistantTurn(content="reply-1"),
-        AssistantTurn(content="reply-2"),
-        AssistantTurn(content="reply-b"),
-    ])
+    gated = GatedChatModel(
+        [
+            AssistantTurn(content="reply-1"),
+            AssistantTurn(content="reply-2"),
+            AssistantTurn(content="reply-b"),
+        ]
+    )
     gated.gates = [threading.Event(), threading.Event(), threading.Event()]
     app.runtime.model = gated
     async with app.run_test(size=(120, 40)) as pilot:
@@ -4030,14 +4264,15 @@ async def test_undo_during_ask_is_immediate_and_idempotent(tmp_path):
         session = app.sessions.load(session_id)
         assert session.user_texts() == ["m0"]
         assert len([r for r in session.records if r.get("type") == "undo"]) == 1
-        active = "\n".join(
-            str(r.get("content", "")) for r in session.active_records()
-        )
+        active = "\n".join(str(r.get("content", "")) for r in session.active_records())
         assert "m1" not in active and "reply-1" not in active
 
 
-async def test_model_failure_during_undo_releases_tui_with_diagnostics_enabled(tmp_path, monkeypatch):
+async def test_model_failure_during_undo_releases_tui_with_diagnostics_enabled(
+    tmp_path, monkeypatch
+):
     from queue import Queue
+
     from syvrio.infra import diagnostics
 
     monkeypatch.setattr(diagnostics, "_queue", Queue())
@@ -4078,11 +4313,13 @@ async def test_model_failure_during_undo_releases_tui_with_diagnostics_enabled(t
 
 async def test_undo_keeps_queued_message_paused_without_losing_it(tmp_path):
     app = build_app(tmp_path, [])
-    gated = GatedChatModel([
-        AssistantTurn(content="reply-m1"),
-        AssistantTurn(content="reply-edited"),
-        AssistantTurn(content="reply-queued"),
-    ])
+    gated = GatedChatModel(
+        [
+            AssistantTurn(content="reply-m1"),
+            AssistantTurn(content="reply-edited"),
+            AssistantTurn(content="reply-queued"),
+        ]
+    )
     gated.gates = [threading.Event(), threading.Event(), threading.Event()]
     app.runtime.model = gated
     async with app.run_test(size=(120, 40)) as pilot:
@@ -4141,7 +4378,15 @@ async def test_natural_completion_after_undo_request_does_not_keep_reply(tmp_pat
         app._undo_requested = True
         app._undo_target_session_id = session.id
         app._undo_target_message_id = "u1"
-        app._finish_on_ui(app.application.conversation.active_turn_id, app._finish_reply, "final reply", "12:00", "", session.id, "u1")
+        app._finish_on_ui(
+            app.application.conversation.active_turn_id,
+            app._finish_reply,
+            "final reply",
+            "12:00",
+            "",
+            session.id,
+            "u1",
+        )
         await pilot.pause()
 
         assert app.query_one("#input", Input).value == "m1"
@@ -4168,7 +4413,9 @@ async def test_undo_without_bound_message_does_not_touch_earlier_turn(tmp_path):
         app._undo_requested = True
         app._undo_target_session_id = session.id
         app._undo_target_message_id = None
-        app._finish_on_ui(app.application.conversation.active_turn_id, app._finish_cancelled, session.id, None)
+        app._finish_on_ui(
+            app.application.conversation.active_turn_id, app._finish_cancelled, session.id, None
+        )
         await pilot.pause()
 
         loaded = app.sessions.load(session.id)
@@ -4200,7 +4447,12 @@ async def test_undo_restores_multiple_background_sessions_independently(tmp_path
             app._undo_requested = True
             app._undo_target_session_id = session.id
             app._undo_target_message_id = message_id
-            app._finish_on_ui(app.application.conversation.active_turn_id, app._finish_cancelled, session.id, message_id)
+            app._finish_on_ui(
+                app.application.conversation.active_turn_id,
+                app._finish_cancelled,
+                session.id,
+                message_id,
+            )
             await pilot.pause()
 
         assert app._pending_undo_restore == {
@@ -4277,7 +4529,9 @@ async def test_undo_without_target_resumes_queued_messages(tmp_path, monkeypatch
         app._undo_requested = True
         app._undo_target_session_id = session.id
         app._undo_target_message_id = None
-        app._finish_on_ui(app.application.conversation.active_turn_id, app._finish_cancelled, session.id, None)
+        app._finish_on_ui(
+            app.application.conversation.active_turn_id, app._finish_cancelled, session.id, None
+        )
 
         await _wait_ask_started(app, pilot)
         assert app._queue_paused_after_undo is False
@@ -4324,7 +4578,9 @@ async def test_undo_session_load_failure_resumes_queued_messages(tmp_path, monke
         app._undo_requested = True
         app._undo_target_session_id = session.id
         app._undo_target_message_id = "old"
-        app._finish_on_ui(app.application.conversation.active_turn_id, app._finish_cancelled, session.id, "old")
+        app._finish_on_ui(
+            app.application.conversation.active_turn_id, app._finish_cancelled, session.id, "old"
+        )
 
         await _wait_ask_started(app, pilot)
         assert app._queue_paused_after_undo is False
@@ -4364,7 +4620,9 @@ async def test_undo_write_failure_resumes_queued_messages(tmp_path, monkeypatch)
         app._undo_requested = True
         app._undo_target_session_id = session.id
         app._undo_target_message_id = "old"
-        app._finish_on_ui(app.application.conversation.active_turn_id, app._finish_cancelled, session.id, "old")
+        app._finish_on_ui(
+            app.application.conversation.active_turn_id, app._finish_cancelled, session.id, "old"
+        )
 
         await _wait_ask_started(app, pilot)
         assert app._queue_paused_after_undo is False
@@ -4462,7 +4720,10 @@ async def test_switch_during_ask_is_immediate_and_reply_lands_in_original(tmp_pa
             gated.gates[0].set()
         await _wait_idle(app, pilot)
         records_a = app.sessions.load(session_a).records
-        assert any(r.get("type") == "assistant" and "slow reply" in str(r.get("content")) for r in records_a)
+        assert any(
+            r.get("type") == "assistant" and "slow reply" in str(r.get("content"))
+            for r in records_a
+        )
         assert not app.query(".reply")  # B 的空视图未被串入
 
 
@@ -4488,13 +4749,19 @@ async def test_switch_back_to_generating_session_replays_stream(tmp_path):
         app._switch_session(session_b)
         # 导航标志先释放，Textual 的旧控件移除随后异步完成。
         async with asyncio.timeout(5):
-            while app._navigation_busy or app.runtime.current.id != session_b or app.query(".reply"):
+            while (
+                app._navigation_busy or app.runtime.current.id != session_b or app.query(".reply")
+            ):
                 await pilot.pause()
         assert not app.query(".reply")  # 切走后视图清空，buffer 保留
 
         app._switch_session(session_a)
         async with asyncio.timeout(5):
-            while app._navigation_busy or app.runtime.current.id != session_a or not app.query(".reply"):
+            while (
+                app._navigation_busy
+                or app.runtime.current.id != session_a
+                or not app.query(".reply")
+            ):
                 await pilot.pause()
         assert app.query(".reply")  # 活跃段重放
         assert app._stream_buffer == "streamed body"
@@ -4502,7 +4769,10 @@ async def test_switch_back_to_generating_session_replays_stream(tmp_path):
         gated.gates[0].set()
         await _wait_idle(app, pilot)
         records_a = app.sessions.load(session_a).records
-        assert any(r.get("type") == "assistant" and "streamed body" in str(r.get("content")) for r in records_a)
+        assert any(
+            r.get("type") == "assistant" and "streamed body" in str(r.get("content"))
+            for r in records_a
+        )
 
 
 async def test_closed_marker_after_assistant_records_when_switching_mid_ask(tmp_path):
@@ -4526,12 +4796,20 @@ async def test_closed_marker_after_assistant_records_when_switching_mid_ask(tmp_
                 break
         # 请求未结束时不得提前落 closed 标记
         path = app.sessions.load(session_a).path
-        types = [json.loads(line)["type"] for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        types = [
+            json.loads(line)["type"]
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
         assert "closed" not in types
 
         gated.gates[0].set()
         await _wait_idle(app, pilot)
-        types = [json.loads(line)["type"] for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        types = [
+            json.loads(line)["type"]
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
         assert types.count("closed") == 1
         assert "distill_deferred" in types
         last_assistant = max(i for i, t in enumerate(types) if t == "assistant")
@@ -4566,7 +4844,9 @@ async def test_delete_blocked_while_generating(tmp_path):
 
 async def test_command_during_ask_queues_and_runs_after_reply(tmp_path):
     app = build_app(tmp_path, [])
-    gated = GatedChatModel([AssistantTurn(content="reply body"), AssistantTurn(content="next reply")])
+    gated = GatedChatModel(
+        [AssistantTurn(content="reply body"), AssistantTurn(content="next reply")]
+    )
     gated.gates = [threading.Event(), threading.Event()]
     app.runtime.model = gated
     async with app.run_test(size=(120, 40)) as pilot:
@@ -4585,7 +4865,9 @@ async def test_command_during_ask_queues_and_runs_after_reply(tmp_path):
                 if len(gated.calls) == 2:
                     break
             assert gated.calls == ["q", "next question"]
-            assert any("No earlier records" in str(card.render()) for card in app.query(".event-card"))
+            assert any(
+                "No earlier records" in str(card.render()) for card in app.query(".event-card")
+            )
         finally:
             for gate in gated.gates:
                 gate.set()
@@ -4633,7 +4915,14 @@ async def test_switch_consolidate_skipped_while_ask_in_flight(tmp_path, monkeypa
 
     def fake_consolidate(self, **kwargs):
         calls.append("consolidate")
-        return {"consolidated": 0, "errors": [], "admitted": 0, "queued": 0, "duplicates": 0, "blocked": 0}
+        return {
+            "consolidated": 0,
+            "errors": [],
+            "admitted": 0,
+            "queued": 0,
+            "duplicates": 0,
+            "blocked": 0,
+        }
 
     monkeypatch.setattr(AgentRuntime, "consolidate_pending", fake_consolidate)
     app = build_app(tmp_path, [])
@@ -4651,7 +4940,6 @@ async def test_switch_consolidate_skipped_while_ask_in_flight(tmp_path, monkeypa
         app.query_one("#input", Input).value = "q"
         await pilot.press("enter")
         await _wait_ask_started(app, pilot)
-        session_a = app.runtime.current.id
 
         session_b = app.sessions.create().id
         app._switch_session(session_b)
@@ -4688,9 +4976,14 @@ def test_native_cursor_requires_supported_terminal(monkeypatch):
     ],
 )
 def test_wsl_native_cursor_without_windows_terminal_variables(
-    monkeypatch, release, term, headless, expected,
+    monkeypatch,
+    release,
+    term,
+    headless,
+    expected,
 ):
     from types import SimpleNamespace
+
     from syvrio.app import chat_input
 
     monkeypatch.setattr(chat_input.sys, "platform", "linux")
@@ -4743,7 +5036,9 @@ async def test_queued_command_rechecks_target_after_another_navigation(tmp_path,
                 app._pending_switch = b.id
 
         monkeypatch.setattr(app, "_switch_session", switch)
-        monkeypatch.setattr(app, "_command", lambda line: executed.append((app.runtime.current.id, line)))
+        monkeypatch.setattr(
+            app, "_command", lambda line: executed.append((app.runtime.current.id, line))
+        )
         app._queue.append(_QueuedLine(a.id, "/undo"))
         app._dispatch_queue()
         for _ in range(200):
@@ -4766,7 +5061,9 @@ async def test_queued_sync_command_continues_following_message(tmp_path, monkeyp
         await _wait_idle(app, pilot)
         app.runtime.resume(b.id)
         monkeypatch.setattr(app, "_command", lambda line: executed.append(("command", line)))
-        monkeypatch.setattr(app, "_start_ask", lambda line, sid: executed.append(("message", line, sid)))
+        monkeypatch.setattr(
+            app, "_start_ask", lambda line, sid: executed.append(("message", line, sid))
+        )
         app._queue.extend([_QueuedLine(a.id, "/undo"), _QueuedLine(a.id, "next message")])
         app._dispatch_queue()
         for _ in range(200):
@@ -4777,14 +5074,17 @@ async def test_queued_sync_command_continues_following_message(tmp_path, monkeyp
         assert not app._queue
 
 
-@pytest.mark.parametrize("value, position, cells", [
-    ("", 0, 0),
-    ("搜索下", 3, 6),
-    ("搜索下 ", 4, 7),
-    ("a你b", 3, 4),
-    ("a你b", 1, 1),
-    ("a你b", 2, 3),
-])
+@pytest.mark.parametrize(
+    "value, position, cells",
+    [
+        ("", 0, 0),
+        ("搜索下", 3, 6),
+        ("搜索下 ", 4, 7),
+        ("a你b", 3, 4),
+        ("a你b", 1, 1),
+        ("a你b", 2, 3),
+    ],
+)
 async def test_input_caret_matches_insertion_cell(tmp_path, value, position, cells):
     app = build_app(tmp_path, [])
     async with app.run_test(size=(120, 40)) as pilot:
@@ -4793,7 +5093,10 @@ async def test_input_caret_matches_insertion_cell(tmp_path, value, position, cel
         widget.value = value
         widget.cursor_position = position
         await pilot.pause()
-        assert widget.cursor_screen_offset.x == widget.content_region.x + cells - widget.scroll_offset.x
+        assert (
+            widget.cursor_screen_offset.x
+            == widget.content_region.x + cells - widget.scroll_offset.x
+        )
         assert widget.cursor_screen_offset.y == widget.content_region.y
         assert app.cursor_position == widget.cursor_screen_offset
         assert widget.value == value
@@ -4812,8 +5115,10 @@ async def test_native_input_caret_follows_horizontal_scroll(tmp_path, monkeypatc
 
         def assert_caret():
             region = widget.content_region
-            cells = cell_len(widget.value[:widget.cursor_position])
-            assert app.cursor_position == Offset(region.x + cells - widget.scroll_offset.x, region.y)
+            cells = cell_len(widget.value[: widget.cursor_position])
+            assert app.cursor_position == Offset(
+                region.x + cells - widget.scroll_offset.x, region.y
+            )
             assert region.x <= app.cursor_position.x < region.right
 
         widget.insert_text_at_cursor(value)
@@ -4854,6 +5159,7 @@ async def test_escape_stops_stream_keeps_draft_and_drains_visible_queue(tmp_path
     app = build_app(tmp_path, [])
     release = threading.Event()
     calls = []
+
     class Model:
         def chat(self, messages, tools, on_delta=None):
             calls.append(messages[-1]["content"])
@@ -4864,6 +5170,7 @@ async def test_escape_stops_stream_keeps_draft_and_drains_visible_queue(tmp_path
             else:
                 on_delta("queued reply")
             return AssistantTurn(content="queued reply")
+
     app.runtime.model = Model()
     try:
         async with app.run_test(size=(120, 40)) as pilot:
@@ -4927,8 +5234,9 @@ async def test_pending_long_text_scrolls_without_hiding_actions(tmp_path, size):
     app = build_app(tmp_path, [])
     text = "Synthetic [bold] literal 中文 \n" * 100 + "END OF FULL PENDING TEXT"
     items = [
-        PendingItem.from_candidate(Candidate(text=body, topic="preferences", confidence=0.5),
-                                   "chat", "low confidence")
+        PendingItem.from_candidate(
+            Candidate(text=body, topic="preferences", confidence=0.5), "chat", "low confidence"
+        )
         for body in ("Synthetic short candidate", text)
     ]
     async with app.run_test(size=size) as pilot:
@@ -4994,6 +5302,7 @@ async def test_welcome_transitions_to_left_aligned_conversation(tmp_path, size):
 async def test_conversation_caps_wide_prose_and_adapts_to_narrow_windows(tmp_path):
     from rich.cells import cell_len
     from textual.selection import SELECT_ALL
+
     from syvrio.app.chat_widgets import ChatReply
 
     content = "这是一段用于检查中文长句换行的合成回复。" * 10
@@ -5023,17 +5332,23 @@ async def test_conversation_caps_wide_prose_and_adapts_to_narrow_windows(tmp_pat
 
 @pytest.mark.parametrize("size", [(50, 24), (120, 40)])
 async def test_home_has_full_project_wordmark(tmp_path, size):
-    from syvrio.app.chat_widgets import HomePanel
     from rich.cells import cell_len
+
+    from syvrio.app.chat_widgets import HomePanel
+
     app = build_app(tmp_path, [])
     async with app.run_test(size=size) as pilot:
         await pilot.pause()
         logo = app.query_one(".welcome-wordmark", Static)
         for _ in range(30):
-            if logo.region.height == (1 if app.query_one(HomePanel).size.width < HomePanel.wordmark_width() else 7):
+            if logo.region.height == (
+                1 if app.query_one(HomePanel).size.width < HomePanel.wordmark_width() else 7
+            ):
                 break
             await pilot.pause(0.02)
-        assert logo.region.height == (1 if app.query_one(HomePanel).size.width < HomePanel.wordmark_width() else 7)
+        assert logo.region.height == (
+            1 if app.query_one(HomePanel).size.width < HomePanel.wordmark_width() else 7
+        )
         assert abs(logo.region.center[0] - app.query_one(HomePanel).region.center[0]) <= 1
         assert logo.region.bottom <= app.query_one("#input").region.y
         assert len(app.query_one(HomePanel).children) == 2
@@ -5082,7 +5397,9 @@ async def test_stream_follow_pauses_above_bottom_and_resumes_at_bottom(tmp_path)
 
 async def test_chat_selection_suspends_cursor_and_stream_scroll(tmp_path, monkeypatch):
     from types import SimpleNamespace
+
     from textual.selection import SELECT_ALL
+
     app = build_app(tmp_path, [])
     async with app.run_test(size=(100, 24)) as pilot:
         app.add_user_turn("Synthetic question")
@@ -5115,6 +5432,7 @@ async def test_chat_selection_suspends_cursor_and_stream_scroll(tmp_path, monkey
 
 async def test_mouse_drag_in_chat_keeps_input_caret_stable(tmp_path):
     from textual.color import Color
+
     app = build_app(tmp_path, [])
     async with app.run_test(size=(100, 30)) as pilot:
         app.add_user_turn("Synthetic question")
@@ -5139,8 +5457,11 @@ async def test_mouse_drag_in_chat_keeps_input_caret_stable(tmp_path):
 
 
 @pytest.mark.parametrize("paragraphs", [40, 50, 60])
-async def test_wheel_during_stream_freezes_layout_and_caret_until_bottom(tmp_path, monkeypatch, paragraphs):
-    from textual.events import MouseScrollUp, MouseScrollDown
+async def test_wheel_during_stream_freezes_layout_and_caret_until_bottom(
+    tmp_path, monkeypatch, paragraphs
+):
+    from textual.events import MouseScrollUp
+
     app = build_app(tmp_path, [])
     async with app.run_test(size=(100, 24)) as pilot:
         app.add_user_turn("Synthetic question")
@@ -5154,14 +5475,20 @@ async def test_wheel_during_stream_freezes_layout_and_caret_until_bottom(tmp_pat
         monkeypatch.setattr(app._driver, "write", lambda *_: None)
         monkeypatch.setattr(BarInput, "_uses_native_cursor", property(lambda self: True))
         widget._show_native_cursor()
-        chat.post_message(MouseScrollUp(chat, x=5, y=5, delta_x=0, delta_y=0, button=0, shift=False, meta=False, ctrl=False))
+        chat.post_message(
+            MouseScrollUp(
+                chat, x=5, y=5, delta_x=0, delta_y=0, button=0, shift=False, meta=False, ctrl=False
+            )
+        )
         await pilot.pause()
         assert widget._cursor_suspended and not widget._native_cursor_active
         assert not chat.follow_output
         y, height = chat.scroll_y, reply.virtual_size.height
         app._stream_widget = reply
         for index in range(8):
-            app._stream_buffer = original + "\n\n# New heading\n\n" + ("new content\n" * (index + 1))
+            app._stream_buffer = (
+                original + "\n\n# New heading\n\n" + ("new content\n" * (index + 1))
+            )
             app._stream_flush()
             await pilot.pause()
             assert reply._markdown == original
@@ -5175,26 +5502,36 @@ async def test_wheel_during_stream_freezes_layout_and_caret_until_bottom(tmp_pat
         chat.scroll_end(animate=False)
         for _ in range(30):
             await pilot.pause(0.02)
-            if reply._markdown == final and reply.virtual_size.height > height and chat.is_vertical_scroll_end:
+            if (
+                reply._markdown == final
+                and reply.virtual_size.height > height
+                and chat.is_vertical_scroll_end
+            ):
                 break
         assert reply._markdown == final
         assert reply.virtual_size.height > height
         assert reply._pending_markdown is None
-        assert chat.is_vertical_scroll_end, (chat.scroll_y, chat.max_scroll_y, chat.follow_output,
-                                              chat.selecting, bool(app.screen.selections))
+        assert chat.is_vertical_scroll_end, (
+            chat.scroll_y,
+            chat.max_scroll_y,
+            chat.follow_output,
+            chat.selecting,
+            bool(app.screen.selections),
+        )
         widget.on_key()
         assert widget._native_cursor_active
 
 
 async def test_selected_stream_text_stays_copyable_until_input_clicked(tmp_path):
     from textual.selection import SELECT_ALL
+
     app = build_app(tmp_path, [])
     async with app.run_test(size=(100, 24)) as pilot:
         app.add_user_turn("Synthetic question")
         app.add_assistant_turn("Original **selected** text", "12:00")
         await pilot.pause()
         await pilot.pause()
-        chat = app.query_one("#chat")
+
         reply = app.query_one(".reply")
         app.screen.selections = {reply: SELECT_ALL}
         before = reply.get_selection(SELECT_ALL)[0]
@@ -5241,8 +5578,14 @@ def _configure_git_remote(app, tmp_path):
     remote = tmp_path / "remote.git"
     subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
     vault = str(app.service.config.vault)
-    subprocess.run(["git", "-C", vault, "remote", "add", "origin", str(remote)], check=True, capture_output=True)
-    subprocess.run(["git", "-C", vault, "push", "-u", "origin", "HEAD"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", vault, "remote", "add", "origin", str(remote)],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-C", vault, "push", "-u", "origin", "HEAD"], check=True, capture_output=True
+    )
     return remote
 
 
@@ -5250,7 +5593,9 @@ def _remote_log(remote) -> list[str]:
     # Vault 提交信息含中文；Windows GBK 默认解码会炸掉 subprocess 读取线程。
     completed = subprocess.run(
         ["git", "-C", str(remote), "log", "--oneline"],
-        capture_output=True, text=True, encoding="utf-8",
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
     )
     return [line for line in completed.stdout.splitlines() if line]
 
@@ -5454,8 +5799,7 @@ async def test_reflection_status_shows_pending_inference_batch(tmp_path):
         await pilot.pause()
         cards = [str(card.content) for card in app.query(".card")]
         assert any(
-            "0 pending changes" in text and "inference batch pending" in text
-            for text in cards
+            "0 pending changes" in text and "inference batch pending" in text for text in cards
         )
 
 
@@ -5500,15 +5844,20 @@ async def test_session_switch_failure_keeps_turn_and_queues_message(tmp_path):
     gated = GatedChatModel([AssistantTurn(content="reply A"), AssistantTurn(content="reply B")])
     gated.gates.extend([threading.Event(), threading.Event()])
     app.runtime.model = gated
-    session = app.runtime.ensure_session()
+    app.runtime.ensure_session()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         app._start_ask("original turn")
         await _wait_ask_started(app, pilot)
         turn_id = app.application.conversation.active_turn_id
 
-        app.run_worker(lambda: app._session_work("missing-session"), group="session",
-                       thread=True, exclusive=True, exit_on_error=False)
+        app.run_worker(
+            lambda: app._session_work("missing-session"),
+            group="session",
+            thread=True,
+            exclusive=True,
+            exit_on_error=False,
+        )
         for _ in range(200):
             await pilot.pause()
             if not app._navigation_busy and any(
@@ -5545,7 +5894,9 @@ async def test_model_load_failure_keeps_active_turn_and_queue(tmp_path, monkeypa
     app.runtime.ensure_session()
     monkeypatch.setattr(
         "syvrio.application.settings.SettingsUseCases.model_options",
-        lambda self, *args, **kwargs: (_ for _ in ()).throw(RuntimeError("synthetic model metadata failure")),
+        lambda self, *args, **kwargs: (_ for _ in ()).throw(
+            RuntimeError("synthetic model metadata failure")
+        ),
     )
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
@@ -5595,11 +5946,15 @@ async def test_navigation_and_background_errors_do_not_touch_active_turn(tmp_pat
         assert app._end_ask(turn_id) is True
 
 
-async def test_generation_finished_recorded_once_and_stale_finish_keeps_queue(tmp_path, monkeypatch):
+async def test_generation_finished_recorded_once_and_stale_finish_keeps_queue(
+    tmp_path, monkeypatch
+):
     import syvrio.app.chat_app as chat_app_module
 
     events = []
-    monkeypatch.setattr(chat_app_module, "record_event", lambda name, *args, **kwargs: events.append(name))
+    monkeypatch.setattr(
+        chat_app_module, "record_event", lambda name, *args, **kwargs: events.append(name)
+    )
     app = build_app(tmp_path, [])
     session = None
     async with app.run_test(size=(120, 40)) as pilot:
@@ -5642,7 +5997,10 @@ async def test_context_compact_and_import_failures_release_only_own_state(tmp_pa
         app._command("/context")
         for _ in range(200):
             await pilot.pause()
-            if any("Loading context options failed" in str(card.render()) for card in app.query(".card")):
+            if any(
+                "Loading context options failed" in str(card.render())
+                for card in app.query(".card")
+            ):
                 break
         assert app._context_loading is False
         assert app.application.conversation.active_turn_id == turn_id
@@ -5701,8 +6059,10 @@ async def test_reasoning_preview_expansion_follow_and_folding(tmp_path, monkeypa
             assert release_bottom.wait(30)
             on_reasoning("latest thought\n")
             assert release_tool.wait(30)
-            return AssistantTurn(reasoning_content=first + more + "latest thought\n",
-                                 tool_calls=[ToolCall("step-1", "recall", {"query": "synthetic"})])
+            return AssistantTurn(
+                reasoning_content=first + more + "latest thought\n",
+                tool_calls=[ToolCall("step-1", "recall", {"query": "synthetic"})],
+            )
         on_reasoning("Second reasoning stage")
         assert release_body.wait(30)
         on_delta("Visible answer")
@@ -5722,9 +6082,14 @@ async def test_reasoning_preview_expansion_follow_and_folding(tmp_path, monkeypa
         widget.value = "Synthetic multi-stage question"
         try:
             await pilot.press("enter")
-            await until(pilot, lambda: bool(app.query(ThinkingText))
-                        and app.query_one(ThinkingText).size.height == 3
-                        and app.query_one(ThinkingText).is_vertical_scroll_end)
+            await until(
+                pilot,
+                lambda: (
+                    bool(app.query(ThinkingText))
+                    and app.query_one(ThinkingText).size.height == 3
+                    and app.query_one(ThinkingText).is_vertical_scroll_end
+                ),
+            )
             panel = app.query_one(ThinkingPanel)
             area = panel.query_one(ThinkingText)
             assert widget.has_focus and area.size.height == 3 and area.is_vertical_scroll_end
@@ -5816,8 +6181,10 @@ async def test_reasoning_stays_with_background_session(tmp_path, monkeypatch):
         assert release.wait(30)
         on_reasoning(" and second")
         on_delta("Synthetic background answer")
-        return AssistantTurn(content="Synthetic background answer",
-                             reasoning_content="Synthetic background first and second")
+        return AssistantTurn(
+            content="Synthetic background answer",
+            reasoning_content="Synthetic background first and second",
+        )
 
     monkeypatch.setattr(LiteLLMChatModel, "chat", chat)
     async with app.run_test(size=(120, 40)) as pilot:

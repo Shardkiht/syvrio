@@ -27,6 +27,10 @@ jobs:
         run: corepack enable
       - run: uv lock --check
       - run: uv sync --frozen
+      - name: Lint Python
+        run: uv run --frozen ruff check src tests scripts evals
+      - name: Check Python formatting
+        run: uv run --frozen ruff format --check src tests scripts evals
       # The staged Web bundle is git-ignored. Building it here is mandatory:
       # hatchling force-includes it into the sdist, and `uv build` builds the
       # wheel FROM the sdist. Without this step the wheel ships no Web UI.

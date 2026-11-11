@@ -1,4 +1,5 @@
 """Local domain mapping tests: pure functions plus an isolated hosts file."""
+
 from __future__ import annotations
 
 import pytest
@@ -21,10 +22,21 @@ def test_normalize_domain_accepts_plain_hostnames():
     assert DEFAULT_DOMAIN == "syvrio.local"
 
 
-@pytest.mark.parametrize("value", [
-    "", "   ", "http://syvrio.local", "syvrio.local:8765", "syvrio.local/path",
-    "*.local", "127.0.0.1", "localhost", "-bad.local", "a" * 300,
-])
+@pytest.mark.parametrize(
+    "value",
+    [
+        "",
+        "   ",
+        "http://syvrio.local",
+        "syvrio.local:8765",
+        "syvrio.local/path",
+        "*.local",
+        "127.0.0.1",
+        "localhost",
+        "-bad.local",
+        "a" * 300,
+    ],
+)
 def test_normalize_domain_rejects_ambiguous_or_unsafe_values(value):
     with pytest.raises(ValueError):
         normalize_domain(value)
@@ -73,10 +85,20 @@ def test_web_map_only_prints_remote_url_without_starting_a_server():
 
     from syvrio.app.cli import app
 
-    result = CliRunner().invoke(app, [
-        "web", "--domain", "syvrio.local", "--domain-ip", "100.64.0.9",
-        "--map-only", "--no-hosts", "--port", "8765",
-    ])
+    result = CliRunner().invoke(
+        app,
+        [
+            "web",
+            "--domain",
+            "syvrio.local",
+            "--domain-ip",
+            "100.64.0.9",
+            "--map-only",
+            "--no-hosts",
+            "--port",
+            "8765",
+        ],
+    )
     assert result.exit_code == 0, result.output
     assert "100.64.0.9\tsyvrio.local" in result.output
     assert "http://syvrio.local:8765/" in result.output
@@ -87,10 +109,18 @@ def test_web_rejects_an_invalid_mapping_ip():
 
     from syvrio.app.cli import app
 
-    result = CliRunner().invoke(app, [
-        "web", "--domain", "syvrio.local", "--domain-ip", "bogus",
-        "--map-only", "--no-hosts",
-    ])
+    result = CliRunner().invoke(
+        app,
+        [
+            "web",
+            "--domain",
+            "syvrio.local",
+            "--domain-ip",
+            "bogus",
+            "--map-only",
+            "--no-hosts",
+        ],
+    )
     assert result.exit_code != 0
 
 
@@ -103,8 +133,7 @@ def test_unwritable_hosts_degrades_to_a_manual_instruction(tmp_path, monkeypatch
     def denied(*args, **kwargs):
         raise PermissionError("elevated permission required")
 
-    monkeypatch.setattr(module.Path, "read_bytes",
-                        lambda self: b"127.0.0.1\tlocalhost\n")
+    monkeypatch.setattr(module.Path, "read_bytes", lambda self: b"127.0.0.1\tlocalhost\n")
     monkeypatch.setattr(module.Path, "write_bytes", lambda self, data: len(data))
     monkeypatch.setattr(module.Path, "open", denied)
     result = module.ensure_hosts_mapping("syvrio.local", path=hosts)

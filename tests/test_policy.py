@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import pytest
 
-pytestmark = pytest.mark.memory
-
 from syvrio.memory.models import Candidate
 from syvrio.memory.policy import decide
+
+pytestmark = pytest.mark.memory
 
 
 def test_high_confidence_is_admitted():

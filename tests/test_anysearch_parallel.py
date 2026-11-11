@@ -88,8 +88,12 @@ def test_anysearch_key_uses_bearer():
 
 @pytest.mark.parametrize(
     ("status", "kind"),
-    [(401, ProviderErrorKind.AUTH), (403, ProviderErrorKind.AUTH),
-     (429, ProviderErrorKind.RATE_LIMIT), (500, ProviderErrorKind.UNAVAILABLE)],
+    [
+        (401, ProviderErrorKind.AUTH),
+        (403, ProviderErrorKind.AUTH),
+        (429, ProviderErrorKind.RATE_LIMIT),
+        (500, ProviderErrorKind.UNAVAILABLE),
+    ],
 )
 def test_anysearch_http_error_classification(status, kind):
     provider = _anysearch(lambda request: _response({"error": "x"}, status))
@@ -122,9 +126,12 @@ def test_anysearch_truncates_long_snippet():
     text = "x" * 900
     provider = _anysearch(
         lambda request: _response(
-            {"code": 0, "data": {"results": [
-                {"title": "t", "url": "https://example.com/", "content": text}
-            ]}}
+            {
+                "code": 0,
+                "data": {
+                    "results": [{"title": "t", "url": "https://example.com/", "content": text}]
+                },
+            }
         )
     )
     results = provider.search(SearchQuery("q"))
@@ -172,9 +179,11 @@ def _structured(results: list[dict]) -> SimpleNamespace:
 
 
 def test_parallel_anonymous_and_key_modes_share_one_path():
-    payload = _structured([
-        {"url": "https://example.com/a", "title": "A", "excerpts": ["one"]},
-    ])
+    payload = _structured(
+        [
+            {"url": "https://example.com/a", "title": "A", "excerpts": ["one"]},
+        ]
+    )
     provider, record = _parallel(payload)
     assert provider.search(SearchQuery("Java 17"))[0].provider == "parallel_mcp"
     assert record["headers"] == {}
@@ -197,26 +206,28 @@ def test_parallel_anonymous_and_key_modes_share_one_path():
 
 def test_parallel_structured_mapping_dedup_dates_and_truncation():
     long_excerpt = "y" * 900
-    result = _structured([
-        {
-            "url": "https://Example.com/page/#one",
-            "title": "First",
-            "publish_date": "2024-06-01T12:00:00Z",
-            "excerpts": [long_excerpt, {"text": "second"}],
-        },
-        {
-            "url": "https://example.com/page",
-            "title": "duplicate",
-            "publish_date": "2099-01-01",
-            "excerpts": ["dup"],
-        },
-        {
-            "url": "https://example.com/other",
-            "title": "Other",
-            "publish_date": "not-a-date",
-            "excerpts": [],
-        },
-    ])
+    result = _structured(
+        [
+            {
+                "url": "https://Example.com/page/#one",
+                "title": "First",
+                "publish_date": "2024-06-01T12:00:00Z",
+                "excerpts": [long_excerpt, {"text": "second"}],
+            },
+            {
+                "url": "https://example.com/page",
+                "title": "duplicate",
+                "publish_date": "2099-01-01",
+                "excerpts": ["dup"],
+            },
+            {
+                "url": "https://example.com/other",
+                "title": "Other",
+                "publish_date": "not-a-date",
+                "excerpts": [],
+            },
+        ]
+    )
     provider, _ = _parallel(result)
     results = provider.search(SearchQuery("q", limit=5))
     assert [item.title for item in results] == ["First", "Other"]
@@ -227,9 +238,11 @@ def test_parallel_structured_mapping_dedup_dates_and_truncation():
 
 
 def test_parallel_accepts_json_text_content_and_fenced_json():
-    payload = {"result": {"results": [
-        {"url": "https://example.com/text", "title": "Text", "excerpts": ["e"]}
-    ]}}
+    payload = {
+        "result": {
+            "results": [{"url": "https://example.com/text", "title": "Text", "excerpts": ["e"]}]
+        }
+    }
     result = SimpleNamespace(
         is_error=False,
         structured_content=None,
@@ -248,9 +261,7 @@ def test_parallel_tool_error_and_unparseable_payload():
     assert caught.value.kind is ProviderErrorKind.BAD_RESPONSE
     assert record["closed"] is True
 
-    provider, _ = _parallel(
-        SimpleNamespace(is_error=False, structured_content=None, content=[])
-    )
+    provider, _ = _parallel(SimpleNamespace(is_error=False, structured_content=None, content=[]))
     with pytest.raises(ProviderError) as caught:
         provider.search(SearchQuery("q"))
     assert caught.value.kind is ProviderErrorKind.BAD_RESPONSE
@@ -308,9 +319,7 @@ def test_parallel_uses_real_fastmcp_protocol_in_memory():
 
 
 def test_optional_providers_register_without_keys(monkeypatch):
-    monkeypatch.setattr(
-        "syvrio.infra.search.router.read_api_key", lambda env_name: ""
-    )
+    monkeypatch.setattr("syvrio.infra.search.router.read_api_key", lambda env_name: "")
     registry = build_registry(
         SearchConfig(providers=["anysearch", "parallel_mcp", "open_websearch"])
     )
@@ -347,7 +356,11 @@ def test_router_falls_back_and_usage_limit_is_local():
 
         def search(self, query):
             type(self).calls += 1
-            return [SearchResult("Synthetic query", "https://example.com", "synthetic", provider="anysearch")]
+            return [
+                SearchResult(
+                    "Synthetic query", "https://example.com", "synthetic", provider="anysearch"
+                )
+            ]
 
     router = SearchRouter(
         {"parallel_mcp": Failing(), "anysearch": Working()},

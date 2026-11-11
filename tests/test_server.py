@@ -1,9 +1,6 @@
 from __future__ import annotations
 
 import pytest
-
-pytestmark = pytest.mark.mcp
-
 from fastmcp import Client
 
 from syvrio.app.server import build_server
@@ -11,6 +8,8 @@ from syvrio.infra.config import Config, LLMConfig
 from syvrio.memory.extractor import StaticExtractor
 from syvrio.memory.models import Candidate, ExtractionResult
 from syvrio.memory.service import MemoryService
+
+pytestmark = pytest.mark.mcp
 
 
 def make_server(tmp_path, candidates):
@@ -51,7 +50,9 @@ async def test_mcp_memorize_recall_pending(tmp_path):
 
 
 async def test_mcp_topics_and_status(tmp_path):
-    server = make_server(tmp_path, [Candidate(text="用 手冲滤纸", topic="devices", confidence=0.95)])
+    server = make_server(
+        tmp_path, [Candidate(text="用 手冲滤纸", topic="devices", confidence=0.95)]
+    )
 
     async with Client(server) as client:
         await client.call_tool("memorize", {"text": "对话"})

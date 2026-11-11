@@ -2,6 +2,7 @@
 
 组件一律通过 self.app 鸭子类型回调 ChatApp，不反向 import，避免界面层内部循环依赖。
 """
+
 from __future__ import annotations
 
 import re
@@ -10,38 +11,38 @@ import unicodedata
 from markdown_it import MarkdownIt
 from markdown_it.rules_inline import emphasis
 from markdown_it.rules_inline.state_inline import StateInline
-from rich.markup import escape
-from rich.markdown import Markdown as RichMarkdown, Heading, CodeBlock
-from rich.syntax import Syntax
 from rich.console import Console, ConsoleOptions, RenderResult
+from rich.markdown import CodeBlock, Heading
+from rich.markdown import Markdown as RichMarkdown
+from rich.syntax import Syntax
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.events import MouseScrollUp, MouseScrollDown
-from textual.content import Content
 from textual.containers import Center, Horizontal, Vertical, VerticalScroll
+from textual.content import Content
+from textual.events import MouseScrollDown, MouseScrollUp
 from textual.screen import ModalScreen
 from textual.selection import Selection
-from textual.style import Style
 from textual.strip import Strip
+from textual.style import Style
 from textual.visual import RenderOptions, RichVisual
-from textual.widgets import Button, Input, Label, ListView, ListItem, Static
+from textual.widgets import Button, Input, Label, ListItem, ListView, Static
 
 from ..agent.session import Session
-from .thinking_panel import ThinkingPanel
 from ..infra.diagnostics import record_event
-from .command_catalog import SLASH_COMMANDS, slash_matches
+from ..time import format_local_timestamp
 from .chat_theme import MARKDOWN_THEME
-
+from .command_catalog import SLASH_COMMANDS, slash_matches
+from .thinking_panel import ThinkingPanel
 
 _CJK_EMPHASIS = re.compile(r"[\u3400-\u9fff]\*\*[^\w\s*]|[^\w\s*]\*\*[\u3400-\u9fff]")
 
 
 def _cjk_strong(state: StateInline, silent: bool) -> bool:
     start = state.pos
-    if silent or state.src[start:start + 2] != "**":
+    if silent or state.src[start : start + 2] != "**":
         return False
-    if state.src[start:start + 3] == "***":
+    if state.src[start : start + 3] == "***":
         return False
     before = state.src[start - 1] if start else " "
     after = state.src[start + 2] if start + 2 < state.posMax else " "
@@ -65,19 +66,30 @@ class _ReplyHeading(Heading):
 class _ReplyCodeBlock(CodeBlock):
     def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
         # Remove only the fence's terminal newline, never code indentation/spaces.
-        yield Syntax(str(self.text).removesuffix("\n"), self.lexer_name,
-                     theme=self.theme, background_color="#202020",
-                     word_wrap=True, padding=(0, 1))
+        yield Syntax(
+            str(self.text).removesuffix("\n"),
+            self.lexer_name,
+            theme=self.theme,
+            background_color="#202020",
+            word_wrap=True,
+            padding=(0, 1),
+        )
 
 
 class _ReplyMarkdown(RichMarkdown):
-    elements = {**RichMarkdown.elements, "heading_open": _ReplyHeading,
-                "fence": _ReplyCodeBlock, "code_block": _ReplyCodeBlock}
+    elements = {
+        **RichMarkdown.elements,
+        "heading_open": _ReplyHeading,
+        "fence": _ReplyCodeBlock,
+        "code_block": _ReplyCodeBlock,
+    }
 
     def __init__(self, markdown: str) -> None:
         compatible = bool(_CJK_EMPHASIS.search(markdown))
         # Initialize Rich's rendering state without parsing an affected reply twice.
-        super().__init__("" if compatible else markdown, code_theme="github-dark", style="markdown.text")
+        super().__init__(
+            "" if compatible else markdown, code_theme="github-dark", style="markdown.text"
+        )
         if compatible:
             self.markup = markdown
             parser = MarkdownIt().enable("strikethrough").enable("table")
@@ -98,12 +110,14 @@ class _SelectableMarkdown(RichVisual):
             console = self._widget.app.console
             options = self._widget.app.console_options.update(width=width, highlight=False)
             with console.use_theme(MARKDOWN_THEME):
-                text = Text.assemble(*(
-                    (segment.text, segment.style)
-                    for segment in console.render(self._renderable, options)
-                    if not segment.control
-                ))
-            text = text[:len(text.plain.rstrip("\n"))]
+                text = Text.assemble(
+                    *(
+                        (segment.text, segment.style)
+                        for segment in console.render(self._renderable, options)
+                        if not segment.control
+                    )
+                )
+            text = text[: len(text.plain.rstrip("\n"))]
             self._content_cache = (width, Content.from_rich_text(text))
         return self._content_cache[1]
 
@@ -173,15 +187,25 @@ class TranscriptView(VerticalScroll):
         self._reading_state: tuple | None = None
 
     def record_reading_state(self) -> None:
-        state = (self.follow_output, self.selecting, bool(self.screen.selections),
-                 self.is_vertical_scrollbar_grabbed)
+        state = (
+            self.follow_output,
+            self.selecting,
+            bool(self.screen.selections),
+            self.is_vertical_scrollbar_grabbed,
+        )
         if state == self._reading_state:
             return
         self._reading_state = state
-        record_event("reading.changed", follow=state[0], selecting=state[1],
-                     selected=state[2], grabbed=state[3], scroll_y=self.scroll_y,
-                     scroll_max=self.max_scroll_y,
-                     streaming=getattr(self.app, "_ask_active", False))
+        record_event(
+            "reading.changed",
+            follow=state[0],
+            selecting=state[1],
+            selected=state[2],
+            grabbed=state[3],
+            scroll_y=self.scroll_y,
+            scroll_max=self.max_scroll_y,
+            streaming=getattr(self.app, "_ask_active", False),
+        )
 
     def on_resize(self) -> None:
         # Buffered Markdown can change virtual height one layout after flush.
@@ -206,12 +230,21 @@ class TranscriptView(VerticalScroll):
 
     @property
     def reading_paused(self) -> bool:
-        return (not self.follow_output or self.selecting or self.is_vertical_scrollbar_grabbed
-                or any(self in widget.ancestors_with_self for widget in self.screen.selections))
+        return (
+            not self.follow_output
+            or self.selecting
+            or self.is_vertical_scrollbar_grabbed
+            or any(self in widget.ancestors_with_self for widget in self.screen.selections)
+        )
 
     def resume_output(self) -> None:
         selected = any(self in widget.ancestors_with_self for widget in self.screen.selections)
-        if not self.is_vertical_scroll_end or self.selecting or selected or self.is_vertical_scrollbar_grabbed:
+        if (
+            not self.is_vertical_scroll_end
+            or self.selecting
+            or selected
+            or self.is_vertical_scrollbar_grabbed
+        ):
             return
         self.follow_output = True
         changed = [reply.flush_pending() for reply in self.query(ChatReply)]
@@ -243,21 +276,36 @@ class TranscriptView(VerticalScroll):
             kind = record.get("type")
             if kind == "tool":
                 self._tools[str(record.get("tool_call_id"))] = record
-            elif kind == "message" and record.get("role") == "user" and str(record.get("content") or "").strip():
+            elif (
+                kind == "message"
+                and record.get("role") == "user"
+                and str(record.get("content") or "").strip()
+            ):
                 self._turns.append(record)
-            elif kind == "assistant" and (record.get("content") or record.get("tool_calls") or record.get("reasoning")):
+            elif kind == "assistant" and (
+                record.get("content") or record.get("tool_calls") or record.get("reasoning")
+            ):
                 self._turns.append(record)
         widgets = []
         if session.damaged_tail_line is not None:
-            widgets.append(Static("Incomplete session tail: recovered complete records; original file preserved.", classes="card"))
+            widgets.append(
+                Static(
+                    "Incomplete session tail: recovered complete records; original file preserved.",
+                    classes="card",
+                )
+            )
         summary = session.summary_text()
         if summary:
-            widgets.extend([Static("Earlier summary", classes="who-ai"), ChatReply(summary, classes="reply")])
+            widgets.extend(
+                [Static("Earlier summary", classes="who-ai"), ChatReply(summary, classes="reply")]
+            )
         self._start = max(0, len(self._turns) - self.PAGE_SIZE)
         if self._start:
-            self._more = HistoryMore(f"Load earlier records ({self._start} remaining)", classes="card")
+            self._more = HistoryMore(
+                f"Load earlier records ({self._start} remaining)", classes="card"
+            )
             widgets.append(self._more)
-        widgets.extend(self._widgets(self._turns[self._start:]))
+        widgets.extend(self._widgets(self._turns[self._start :]))
         if widgets:
             self.mount(*widgets)
 
@@ -265,7 +313,7 @@ class TranscriptView(VerticalScroll):
         widgets = []
         for record in turns:
             content = str(record.get("content") or "")
-            stamp = str(record.get("at") or "")[11:16]
+            stamp = format_local_timestamp(record.get("at"), "%H:%M")
             if record.get("type") == "message":
                 if stamp:
                     widgets.append(Static(f"You · {stamp}", classes="who-user"))
@@ -273,8 +321,11 @@ class TranscriptView(VerticalScroll):
                 continue
             reasoning = record.get("reasoning") or {}
             if (reasoning.get("text") or "").strip():
-                widgets.append(ThinkingPanel(reasoning["text"], record_id=record["id"],
-                                             seconds=reasoning.get("seconds")))
+                widgets.append(
+                    ThinkingPanel(
+                        reasoning["text"], record_id=record["id"], seconds=reasoning.get("seconds")
+                    )
+                )
             if content.strip():
                 widgets.append(Static(f"Syvrio · {stamp}" if stamp else "Syvrio", classes="who-ai"))
                 widgets.append(ChatReply(content, classes="reply"))
@@ -283,8 +334,12 @@ class TranscriptView(VerticalScroll):
                 if result is not None:
                     event = self.app._tool_event_label(call, result)
                     memo = event.startswith(("Saved", "Corrected", "Deleted"))
-                    widgets.append(Static(f"✓ {event}" if memo else event,
-                                          classes="event-card memo" if memo else "event-card"))
+                    widgets.append(
+                        Static(
+                            f"✓ {event}" if memo else event,
+                            classes="event-card memo" if memo else "event-card",
+                        )
+                    )
         return widgets
 
     def load_earlier(self) -> None:
@@ -292,7 +347,7 @@ class TranscriptView(VerticalScroll):
             return
         more = self._more
         start = max(0, self._start - self.PAGE_SIZE)
-        self.mount(*self._widgets(self._turns[start:self._start]), after=more)
+        self.mount(*self._widgets(self._turns[start : self._start]), after=more)
         self._start = start
         if start:
             more.update(f"Load earlier records ({start} remaining)")
@@ -376,6 +431,7 @@ class SessionItem(ListItem):
 
 class PickScreen(ModalScreen):
     """单选模态：ESC 取消（回调收到 None），Enter/点击确认；可选用搜索框过滤。"""
+
     BINDINGS = [
         ("escape", "cancel", "Cancel"),
         ("up", "move_selection(-1)", "Previous"),
@@ -384,8 +440,15 @@ class PickScreen(ModalScreen):
         Binding("pagedown", "read_detail(1)", show=False, priority=True),
     ]
 
-    def __init__(self, title: str, options: list[tuple], on_result, searchable: bool = False,
-                 *, detail: str | None = None) -> None:
+    def __init__(
+        self,
+        title: str,
+        options: list[tuple],
+        on_result,
+        searchable: bool = False,
+        *,
+        detail: str | None = None,
+    ) -> None:
         super().__init__()
         self._title = title
         self._options = list(options)
@@ -394,7 +457,11 @@ class PickScreen(ModalScreen):
         self._detail = detail
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
-        return self._detail is not None if action == "read_detail" else super().check_action(action, parameters)
+        return (
+            self._detail is not None
+            if action == "read_detail"
+            else super().check_action(action, parameters)
+        )
 
     def action_read_detail(self, direction: int) -> None:
         panel = self.query_one("#pick-detail", VerticalScroll)
@@ -431,16 +498,23 @@ class PickScreen(ModalScreen):
         widget = self.query_one("#pick-search" if self._searchable else "#pick-list")
         if widget.can_focus:
             widget.focus()
-            if isinstance(widget, Input): self.app.cursor_position = widget.cursor_screen_offset
+            if isinstance(widget, Input):
+                self.app.cursor_position = widget.cursor_screen_offset
 
     def on_resize(self) -> None:
         if self._detail is not None:
-            hint = "PgUp/PgDn Read · Enter Confirm · Esc Cancel" if self.size.width < 72 else "PgUp/PgDn read · ↑↓ select · Enter confirm · ESC cancel"
+            hint = (
+                "PgUp/PgDn Read · Enter Confirm · Esc Cancel"
+                if self.size.width < 72
+                else "PgUp/PgDn read · ↑↓ select · Enter confirm · ESC cancel"
+            )
             self.query_one(".pick-hint", Static).update(hint)
 
     def update_options(self, options: list[tuple]) -> None:
         self._options = list(options)
-        self._apply_filter(self.query_one("#pick-search", Input).value if self._searchable else "", preserve=True)
+        self._apply_filter(
+            self.query_one("#pick-search", Input).value if self._searchable else "", preserve=True
+        )
 
     def _filtered_options(self, needle: str) -> list[tuple]:
         return [option for option in self._options if needle in option[0].lower()]
@@ -456,18 +530,23 @@ class PickScreen(ModalScreen):
             index = 0
             if preserve and previous is not None:
                 # 后台刷新不打断键盘导航：按值找回高亮项，找不到再按原位置收敛。
-                index = next((i for i, option in enumerate(options) if option[1] == previous.value), min(previous_index or 0, len(options) - 1))
+                index = next(
+                    (i for i, option in enumerate(options) if option[1] == previous.value),
+                    min(previous_index or 0, len(options) - 1),
+                )
             listing.index = index
 
     def on_input_changed(self, event: Input.Changed) -> None:
-        if self._searchable: self._apply_filter(event.value)
+        if self._searchable:
+            self._apply_filter(event.value)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if not self._searchable:
             return
         event.stop()
         item = self.query_one("#pick-list", ListView).highlighted_child
-        if item is not None: self._finish(item.value)
+        if item is not None:
+            self._finish(item.value)
 
     def action_move_selection(self, step: int) -> None:
         # 搜索框保持焦点，方向键只移动高亮，用户可以继续输入过滤。
@@ -507,7 +586,11 @@ class ModelPickerScreen(PickScreen):
 
     def _filtered_options(self, needle: str) -> list[tuple]:
         options = super()._filtered_options(needle)
-        return sorted(options, key=lambda option: option[1][1].lower() != needle) if needle else options
+        return (
+            sorted(options, key=lambda option: option[1][1].lower() != needle)
+            if needle
+            else options
+        )
 
     def action_providers(self) -> None:
         self._finish(("__providers__", ""))
@@ -541,9 +624,13 @@ class CommandRow(Static):
         self.command = command
         usage_width = max(len(item[1]) for item in SLASH_COMMANDS)
         # 直接组合文本样式，嵌套的可选参数方括号也不经过 markup 解析。
-        super().__init__(Content.assemble(
-            (f"{usage:<{usage_width}}", "cmd-usage"), " ", (description, "cmd-desc"),
-        ))
+        super().__init__(
+            Content.assemble(
+                (f"{usage:<{usage_width}}", "cmd-usage"),
+                " ",
+                (description, "cmd-desc"),
+            )
+        )
         self.add_class("cmd-row")
 
     def on_click(self) -> None:
@@ -660,11 +747,11 @@ class SessionPickerScreen(ModalScreen):
         self._rows = rows
         # 外部刷新（如删除会话）也要重算过滤结果，否则已删条目仍显示并可被选中。
         needle = self.query_one("#picker-input", Input).value.strip().lower()
-        self._filtered = [
-            row
-            for row in rows
-            if needle in row["title"].lower() or needle in row["id"].lower()
-        ] if needle else rows
+        self._filtered = (
+            [row for row in rows if needle in row["title"].lower() or needle in row["id"].lower()]
+            if needle
+            else rows
+        )
         self._rebuild()
 
     def on_input_changed(self, event: Input.Changed) -> None:
@@ -683,7 +770,9 @@ class SessionPickerScreen(ModalScreen):
         listing = self.query_one("#picker-list", ListView)
         listing.clear()
         for row in self._filtered:
-            time_text = (row.get("updated_at") or "")[11:16]
+            time_text = format_local_timestamp(
+                row.get("last_message_at") or row.get("started_at"), "%H:%M"
+            )
             meta = f"{time_text} · {row['messages']} msgs".lstrip("· ")
             if row["id"] == self._current_id:
                 meta += " · ← current"
@@ -741,22 +830,33 @@ class ProfileScreen(ModalScreen):
 
     BINDINGS = [("escape", "close", "Close")]
 
-    def __init__(self, body: str, status: str, stale: bool = False,
-                 generated_at: str | None = None, fact_count: int | None = None, unique_count: int | None = None) -> None:
+    def __init__(
+        self,
+        body: str,
+        status: str,
+        stale: bool = False,
+        generated_at: str | None = None,
+        fact_count: int | None = None,
+        unique_count: int | None = None,
+    ) -> None:
         super().__init__()
         self._body = body
         self._status = status
         self._stale = stale
         self._metadata = ""
         if generated_at is not None:
-            generated = generated_at[:16].replace("T", " ")
+            generated = format_local_timestamp(generated_at)
             self._metadata = f"Generated {generated} · Facts {fact_count} · Unique {unique_count}"
 
     def compose(self) -> ComposeResult:
         with Vertical(id="profile-card"):
             yield Static("User Profile", id="profile-title")
             yield Static("Personal memory overview", id="profile-subtitle")
-            yield Static(self._status, id="profile-status", classes="profile-status stale" if self._stale else "profile-status")
+            yield Static(
+                self._status,
+                id="profile-status",
+                classes="profile-status stale" if self._stale else "profile-status",
+            )
             yield Static(self._metadata, id="profile-meta")
             with VerticalScroll(id="profile-body", classes="thin-scroll"):
                 yield Static(self._body, id="profile-text", markup=False)
@@ -780,7 +880,9 @@ class TextInputScreen(ModalScreen):
 
     BINDINGS = [("escape", "cancel", "Cancel")]
 
-    def __init__(self, title: str, default: str = "", on_result=None, password: bool = False) -> None:
+    def __init__(
+        self, title: str, default: str = "", on_result=None, password: bool = False
+    ) -> None:
         super().__init__()
         self._title = title
         self._default = default

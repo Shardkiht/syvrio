@@ -11,8 +11,6 @@ from pathlib import Path
 
 import pytest
 
-pytestmark = pytest.mark.memory
-
 from syvrio.agent.session import SessionStore
 from syvrio.infra.config import (
     Config,
@@ -29,6 +27,8 @@ from syvrio.infra.locking import LockTimeout, git_operation_lock, vault_write_lo
 from syvrio.memory.extractor import StaticExtractor
 from syvrio.memory.models import ExtractionResult
 from syvrio.memory.service import MemoryService
+
+pytestmark = pytest.mark.memory
 
 TZ = timezone(timedelta(hours=8))
 
@@ -47,9 +47,7 @@ def make_uninitialized_service(vault: Path, *, auto_sync: bool = True) -> Memory
         git=GitConfig(auto_sync=auto_sync),
         auto_push=False,
     )
-    return MemoryService(
-        config, extractor=StaticExtractor(ExtractionResult(memories=[]))
-    )
+    return MemoryService(config, extractor=StaticExtractor(ExtractionResult(memories=[])))
 
 
 def make_service(tmp_path: Path, *, auto_sync: bool = True) -> MemoryService:
@@ -68,7 +66,11 @@ def add_remote(service: MemoryService, tmp_path: Path, *, upstream: bool = True)
 
 
 def remote_log(remote: Path) -> list[str]:
-    return [line for line in _git("log", "--oneline", cwd=remote, check=False).stdout.splitlines() if line]
+    return [
+        line
+        for line in _git("log", "--oneline", cwd=remote, check=False).stdout.splitlines()
+        if line
+    ]
 
 
 def read_state(service: MemoryService) -> dict:
@@ -202,8 +204,15 @@ def test_diverged_remote_stops_push_without_force(tmp_path):
     other = tmp_path / "other"
     _git("clone", str(remote), str(other))
     _git(
-        "-c", "user.name=synthetic", "-c", "user.email=synthetic@example.invalid",
-        "commit", "--allow-empty", "-m", "remote-only", cwd=other,
+        "-c",
+        "user.name=synthetic",
+        "-c",
+        "user.email=synthetic@example.invalid",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "remote-only",
+        cwd=other,
     )
     _git("push", cwd=other)
     service.note("本地新记录", topic="misc")
@@ -336,7 +345,11 @@ def test_pre_staged_parent_files_are_never_committed(tmp_path):
         service.init_vault()
 
     assert _git("rev-list", "--count", "HEAD", cwd=parent, check=False).returncode != 0
-    staged = [item for item in _git("diff", "--cached", "--name-only", "-z", cwd=parent).stdout.split("\x00") if item]
+    staged = [
+        item
+        for item in _git("diff", "--cached", "--name-only", "-z", cwd=parent).stdout.split("\x00")
+        if item
+    ]
     assert "external.txt" in staged
     assert not any(item.startswith("vault/") for item in staged)
 
@@ -515,7 +528,11 @@ def test_init_vault_refuses_pre_staged_sensitive_file(tmp_path):
 
     assert caught.value.kind == "sensitive"
     assert (vault / ".env").exists()
-    staged = [item for item in _git("diff", "--cached", "--name-only", "-z", cwd=vault).stdout.split("\x00") if item]
+    staged = [
+        item
+        for item in _git("diff", "--cached", "--name-only", "-z", cwd=vault).stdout.split("\x00")
+        if item
+    ]
     assert ".env" in staged
     assert _git("rev-list", "--count", "HEAD", cwd=vault, check=False).returncode != 0
 
@@ -563,9 +580,7 @@ def test_sync_never_calls_llm(monkeypatch, tmp_path):
     )
     service.note("自动同步不调用模型", topic="misc")
 
-    result = service.git_sync.sync(
-        "scheduled", now=datetime(2026, 11, 2, 3, 0, tzinfo=TZ)
-    )
+    result = service.git_sync.sync("scheduled", now=datetime(2026, 11, 2, 3, 0, tzinfo=TZ))
 
     assert result.status == "success"
     assert result.committed
@@ -793,8 +808,10 @@ def test_vault_lock_contention_does_not_commit_unprotected(tmp_path):
         # 使用同进程另一个线程执行同步，确保测试真实模拟锁竞争。
         # vault 锁等待默认为 30s；此处将其 acquire 包装成较短超时。
         original_acquire = lock.acquire
+
         def acquire_short(timeout=None):
             return original_acquire(timeout=0.1)
+
         lock.acquire = acquire_short
         try:
             result = service.git_sync.sync("manual")
@@ -982,7 +999,9 @@ def test_session_jsonl_integrity_during_concurrent_sync(tmp_path):
     assert result.status == "success"
     worktree = [json.loads(line) for line in session.path.read_text(encoding="utf-8").splitlines()]
     committed_raw = _git(
-        "show", f"HEAD:{session.path.relative_to(service.config.vault).as_posix()}", cwd=service.config.vault
+        "show",
+        f"HEAD:{session.path.relative_to(service.config.vault).as_posix()}",
+        cwd=service.config.vault,
     ).stdout
     committed = [json.loads(line) for line in committed_raw.splitlines()]
     assert all(isinstance(record, dict) for record in worktree)
@@ -996,7 +1015,7 @@ def test_session_jsonl_integrity_during_concurrent_sync(tmp_path):
 def test_git_config_load_validate_and_example(tmp_path):
     path = tmp_path / "syvrio.toml"
     path.write_text(
-        "[git]\nauto_sync = false\nsync_time = \"04:30\"\nretry_interval_minutes = 45\n",
+        '[git]\nauto_sync = false\nsync_time = "04:30"\nretry_interval_minutes = 45\n',
         encoding="utf-8",
     )
     loaded = load_config(path)
@@ -1005,7 +1024,7 @@ def test_git_config_load_validate_and_example(tmp_path):
     assert loaded.git.retry_interval_minutes == 45
 
     bad = tmp_path / "bad.toml"
-    bad.write_text("[git]\nsync_time = \"25:00\"\n", encoding="utf-8")
+    bad.write_text('[git]\nsync_time = "25:00"\n', encoding="utf-8")
     with pytest.raises(ConfigError, match="HH:MM"):
         load_config(bad)
 

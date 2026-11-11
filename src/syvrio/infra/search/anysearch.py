@@ -1,4 +1,5 @@
 """AnySearch REST 搜索适配器：匿名可用，配置 Key 后改用 Bearer。"""
+
 from __future__ import annotations
 
 from typing import Any, Callable
@@ -6,7 +7,12 @@ from typing import Any, Callable
 import httpx
 
 from .base import (
-    FetchQuery, FetchResult, ProviderError, ProviderErrorKind, SearchQuery, SearchResult,
+    FetchQuery,
+    FetchResult,
+    ProviderError,
+    ProviderErrorKind,
+    SearchQuery,
+    SearchResult,
 )
 from .fetch_content import extract_text, extracted_result
 from .http_client import JsonApiClient
@@ -41,9 +47,7 @@ class AnySearchProvider:
             "zone": self._zone,
             "language": self._language,
         }
-        headers = (
-            {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
-        )
+        headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
         response = self._client.post_json(
             "/search",
             body,
@@ -61,16 +65,12 @@ class AnySearchProvider:
             )
         data = payload.get("data")
         if not isinstance(data, dict):
-            raise ProviderError(
-                NAME, ProviderErrorKind.BAD_RESPONSE, "响应缺少 data 对象"
-            )
+            raise ProviderError(NAME, ProviderErrorKind.BAD_RESPONSE, "响应缺少 data 对象")
         results = data.get("results")
         if results is None:
             return []
         if not isinstance(results, list):
-            raise ProviderError(
-                NAME, ProviderErrorKind.BAD_RESPONSE, "data.results 字段类型异常"
-            )
+            raise ProviderError(NAME, ProviderErrorKind.BAD_RESPONSE, "data.results 字段类型异常")
         mapped = [_map_result(item) for item in results]
         return [item for item in mapped if item is not None]
 
@@ -109,8 +109,11 @@ class AnySearchFetchProvider:
         if payload.get("code") != 0 or not isinstance(data, dict):
             raise ProviderError(NAME, ProviderErrorKind.BAD_RESPONSE, "Extract 响应结构异常")
         return extracted_result(
-            NAME, query, url=data.get("final_url") or data.get("url"),
-            title=data.get("title"), content=extract_text(data.get("content")),
+            NAME,
+            query,
+            url=data.get("final_url") or data.get("url"),
+            title=data.get("title"),
+            content=extract_text(data.get("content")),
         )
 
 

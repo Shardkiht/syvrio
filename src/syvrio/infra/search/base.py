@@ -100,7 +100,9 @@ def normalize_search_engines(
             try:
                 value = json.loads(value)
             except ValueError:
-                raise ValueError("search_engine must be a valid JSON array or engine name") from None
+                raise ValueError(
+                    "search_engine must be a valid JSON array or engine name"
+                ) from None
             if not isinstance(value, list):
                 raise ValueError("search_engine must be a list of strings")
             return normalize_search_engines(value, allowed, limit)
@@ -145,9 +147,7 @@ def normalize_search_engines(
     return tuple(selected)
 
 
-def normalize_search_providers(
-    value: object, limit: int = 8
-) -> tuple[str, ...]:
+def normalize_search_providers(value: object, limit: int = 8) -> tuple[str, ...]:
     """规范化 LLM 推荐的 Provider 列表：去重、保序、限制长度。
 
     兼容部分模型把数组序列化成 JSON 字符串的调用方式；空值返回 ()。
@@ -197,8 +197,16 @@ class ProviderErrorKind(str, Enum):
 
 
 class ProviderError(Exception):
-    def __init__(self, provider: str, kind: ProviderErrorKind | str, detail: str = "",
-                 *, code: str = "", pause_reason: str = "", resume_at: float | None = None):
+    def __init__(
+        self,
+        provider: str,
+        kind: ProviderErrorKind | str,
+        detail: str = "",
+        *,
+        code: str = "",
+        pause_reason: str = "",
+        resume_at: float | None = None,
+    ):
         self.code = code
         self.pause_reason = pause_reason
         self.resume_at = resume_at

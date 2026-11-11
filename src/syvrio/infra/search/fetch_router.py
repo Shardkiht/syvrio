@@ -3,15 +3,14 @@
 抓取入口统一做公网 URL 校验（输入与重定向后的 final_url），provider
 只负责自身 API 的请求与映射；失败按序回退，全部失败时汇总诊断。
 """
+
 from __future__ import annotations
 
 from pathlib import Path
-
-from ..paths import SyvrioPaths, vault_paths
-
 from typing import Any, Protocol
 
 from ..config import FetchConfig, SearchConfig
+from ..paths import SyvrioPaths, vault_paths
 from .base import (
     FetchQuery,
     FetchResult,
@@ -60,9 +59,7 @@ class FetchRouter:
 
     @property
     def supports_fetch(self) -> bool:
-        return any(
-            "fetch" in provider.capabilities for provider in self.registry.values()
-        )
+        return any("fetch" in provider.capabilities for provider in self.registry.values())
 
     def fetch(self, url: str, max_chars: int = 4000) -> FetchResult:
         text = url.strip()
@@ -128,13 +125,13 @@ def build_fetch_registry(
             if not api_key and env_name is None:
                 # 未配置 Key 的厂商直接跳过：不参与尝试，也不报错。
                 continue
-            registry[name] = _build_external_fetch_provider(name, api_key, search_config.fetch_timeout)
+            registry[name] = _build_external_fetch_provider(
+                name, api_key, search_config.fetch_timeout
+            )
     return registry
 
 
-def _build_external_fetch_provider(
-    name: str, api_key: str, timeout: float
-) -> FetchProvider:
+def _build_external_fetch_provider(name: str, api_key: str, timeout: float) -> FetchProvider:
     if name == "anysearch":
         from .anysearch import AnySearchFetchProvider
 
@@ -173,9 +170,7 @@ def build_fetch_router(
         paths.validate()
         from .usage import UsageLimiter
 
-        limiter = UsageLimiter(
-            search_config.usage_limits, paths.state_dir / "usage.json"
-        )
+        limiter = UsageLimiter(search_config.usage_limits, paths.state_dir / "usage.json")
     return FetchRouter(
         build_fetch_registry(fetch_config, search_config),
         order=fetch_config.providers,

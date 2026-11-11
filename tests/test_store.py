@@ -1,27 +1,32 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
 
-pytestmark = pytest.mark.memory
-
-from datetime import datetime
-from pathlib import Path
-
-from syvrio.memory.store import MemoryStore, slugify
 from syvrio.memory.legacy import parse_legacy_line
-from syvrio.memory.schema import SchemaError
 from syvrio.memory.models import MemoryContext
+from syvrio.memory.schema import SchemaError
+from syvrio.memory.store import MemoryStore, slugify
+
+pytestmark = pytest.mark.memory
 
 
 def test_context_tag_roundtrip_and_status_change_preserve_id(tmp_path):
     store = MemoryStore(tmp_path)
     context = MemoryContext(
-        event_time="2024-06", location="合成`展馆\n入口", location_kind="event",
-        emotion="当时开心", emotion_at="event", emotion_source="explicit",
+        event_time="2024-06",
+        location="合成`展馆\n入口",
+        location_kind="event",
+        emotion="当时开心",
+        emotion_at="event",
+        emotion_source="explicit",
     )
-    entry = store.append("events", "参加合成展览", context=context, when=datetime(2026, 1, 1))
+    entry = store.append(
+        "events", "参加合成展览", context=context, when=datetime(2026, 1, 1, tzinfo=UTC)
+    )
     assert store.find(entry.id).context == context
-    assert entry.timestamp == "2026-01-01T00:00:00"
+    assert entry.timestamp == "2026-01-01T00:00:00+00:00"
     assert store.set_status(entry.id, "deleted")
     loaded = store.find(entry.id)
     assert loaded.id == entry.id and loaded.context == context
@@ -60,12 +65,16 @@ def test_append_creates_heading_and_entry(tmp_path):
 
 def test_append_preserves_existing_bytes(tmp_path):
     store = MemoryStore(tmp_path)
-    first = store.append("devices", "使用 手冲滤纸", when=datetime(2026, 10, 1, 9, 0, 0))
+    first = store.append(
+        "devices", "使用 手冲滤纸", when=datetime(2026, 10, 1, 9, 0, 0, tzinfo=UTC)
+    )
     original = store.topic_path("devices").read_bytes()
-    second = store.append("devices", "买了一个 7L 挎包", when=datetime(2026, 10, 2, 10, 0, 0))
+    second = store.append(
+        "devices", "买了一个 7L 挎包", when=datetime(2026, 10, 2, 10, 0, 0, tzinfo=UTC)
+    )
 
-    assert first.timestamp == "2026-10-01T09:00:00"
-    assert second.timestamp == "2026-10-02T10:00:00"
+    assert first.timestamp == "2026-10-01T09:00:00+00:00"
+    assert second.timestamp == "2026-10-02T10:00:00+00:00"
     assert store.topic_path("devices").read_bytes().startswith(original)
     assert len(store.entries("devices")) == 2
 
@@ -100,7 +109,9 @@ def test_append_preserves_multiline_text(tmp_path):
 def test_recent_context_is_limited(tmp_path):
     store = MemoryStore(tmp_path)
     for index in range(5):
-        store.append("devices", f"记录 {index}", when=datetime(2026, 10, 1, 9, index, 0))
+        store.append(
+            "devices", f"记录 {index}", when=datetime(2026, 10, 1, 9, index, 0, tzinfo=UTC)
+        )
 
     context = store.recent_context(limit=3)
     assert context.count("\n") == 2
@@ -116,7 +127,9 @@ def test_slugify():
     assert slugify("学习计划") == "学习计划"
 
 
-@pytest.mark.parametrize("source", ["import:合成`笔记.md", "合成\n来源\r尾行", "~syvrio-escaped~literal%20"])
+@pytest.mark.parametrize(
+    "source", ["import:合成`笔记.md", "合成\n来源\r尾行", "~syvrio-escaped~literal%20"]
+)
 def test_metadata_special_characters_roundtrip_with_stable_id(tmp_path, source):
     store = MemoryStore(tmp_path)
     entry = store.append("test", "合成正文 `status=deleted`", source=source, note=source)
@@ -144,7 +157,7 @@ def test_entry_uses_core_and_extensions(tmp_path):
         source="chat",
         confidence=0.91,
         extra={"session": "s-1", "message": "m-2"},
-        when=datetime(2026, 10, 22, 18, 0, 0),
+        when=datetime(2026, 10, 22, 18, 0, 0, tzinfo=UTC),
     )
 
     raw = store.topic_path("housing").read_text(encoding="utf-8")
@@ -153,14 +166,14 @@ def test_entry_uses_core_and_extensions(tmp_path):
         "* 在找市区的房子\n\n  **Core**\n"
         f"  * `id`: `{entry.id}`\n"
         "  * `status`: `active`\n  * `source`: `chat`\n  * `confidence`: `0.91`\n\n"
-        "  **Extensions**\n  * `syvrio.recorded_at`: `2026-10-22T18:00:00`\n"
+        "  **Extensions**\n  * `syvrio.recorded_at`: `2026-10-22T18:00:00+00:00`\n"
         "  * `syvrio.session`: `s-1`\n  * `syvrio.message`: `m-2`\n"
     )
 
 
 def test_set_status_rewrites_tag(tmp_path):
     store = MemoryStore(tmp_path)
-    entry = store.append("housing", "预算 4000", when=datetime(2020, 1, 1, 12, 0, 0))
+    entry = store.append("housing", "预算 4000", when=datetime(2020, 1, 1, 12, 0, 0, tzinfo=UTC))
     assert store.set_status(entry.id, "superseded")
 
     raw = store.topic_path("housing").read_text(encoding="utf-8")
@@ -208,7 +221,9 @@ def test_legacy_comment_line_still_parses(tmp_path):
     )
     store = MemoryStore(tmp_path)
 
-    line = next(line for line in path.read_text(encoding="utf-8").splitlines() if line.startswith("- "))
+    line = next(
+        line for line in path.read_text(encoding="utf-8").splitlines() if line.startswith("- ")
+    )
     entry = parse_legacy_line(line, "old")
     assert entry is not None
     assert entry.text == "旧事实"
@@ -223,7 +238,7 @@ def test_append_retries_duplicate_entry_id(tmp_path, monkeypatch):
     from syvrio.memory import store as store_module
 
     store = MemoryStore(tmp_path)
-    stamp = datetime(2026, 10, 24, 12, 53, 48)
+    stamp = datetime(2026, 10, 24, 12, 53, 48, tzinfo=UTC)
     tokens = iter(["175a", "175a", "beef"])
     monkeypatch.setattr(store_module.secrets, "token_hex", lambda _: next(tokens))
 

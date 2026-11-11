@@ -1,4 +1,14 @@
 """Syvrio Application Layer：与前端无关的用例编排。"""
+
+from .commands import (
+    SLASH_COMMANDS,
+    SLASH_SUBCOMMANDS,
+    CommandResult,
+    CommandUseCases,
+    WebCapability,
+    WebCommandInfo,
+    web_command_catalog,
+)
 from .contracts import (
     ImportChunkProgress,
     ImportResult,
@@ -7,8 +17,8 @@ from .contracts import (
     PendingSnapshot,
     ProfileSnapshot,
     ProviderOption,
-    QueueSnapshot,
     QueuedItem,
+    QueueSnapshot,
     ReflectionSchedule,
     SessionSnapshot,
     SettingsResult,
@@ -18,16 +28,7 @@ from .contracts import (
     TurnResult,
     UndoOutcome,
 )
-from .commands import (
-    CommandResult,
-    CommandUseCases,
-    SLASH_COMMANDS,
-    SLASH_SUBCOMMANDS,
-    WebCapability,
-    WebCommandInfo,
-    web_command_catalog,
-)
-from .conversation import ConversationUseCases, QueuedLine, SAFE_COMMANDS
+from .conversation import SAFE_COMMANDS, ConversationUseCases, QueuedLine
 from .git import GitUseCases
 from .memory import MemoryUseCases
 from .reflection import ReflectionUseCases

@@ -1,10 +1,12 @@
 """模型、供应商、推理与上下文设置用例。"""
+
 from __future__ import annotations
 
+import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 
-from ..infra.config import LLMConfig, SPARK_THINKING_MODES
+from ..infra.config import SPARK_THINKING_MODES, LLMConfig
 from ..infra.providers import (
     PRESETS,
     delete_api_key,
@@ -16,7 +18,12 @@ from ..infra.providers import (
     write_config,
 )
 from ..infra.tokens import format_tokens
-from ..llm import cached_provider_models, fetch_provider_models, model_metadata, supported_params
+from ..llm import (
+    cached_provider_models,
+    fetch_provider_models,
+    model_metadata,
+    supported_params,
+)
 from ..memory.service import MemoryService
 from .contracts import ModelOption, ProviderOption, SettingsResult
 
@@ -32,28 +39,40 @@ class SettingsUseCases:
         current = self.service.config.llm
         sources = {}
         if current.api_key() or not current.requires_api_key():
-            sources[current.provider] = replace(current, base_url=self.provider_endpoint(current.provider))
+            sources[current.provider] = replace(
+                current, base_url=self.provider_endpoint(current.provider)
+            )
         for preset in PRESETS:
             if preset.key not in {"custom", current.provider} and has_api_key(preset):
                 sources[preset.key] = replace(
-                    current, provider=preset.key, base_url=provider_base_url(current, preset),
+                    current,
+                    provider=preset.key,
+                    base_url=provider_base_url(current, preset),
                     api_key_env=preset.api_key_env,
                 )
         return sources
 
-    def model_catalog(self, *, cached_only: bool = False, refresh: bool = False) -> dict[str, list[str]]:
+    def model_catalog(
+        self, *, cached_only: bool = False, refresh: bool = False
+    ) -> dict[str, list[str]]:
         sources = self.model_sources()
         if cached_only:
             return {key: cached_provider_models(source) or [] for key, source in sources.items()}
         if not sources:
             return {}
-        with ThreadPoolExecutor(max_workers=len(sources), thread_name_prefix="syvrio-models") as pool:
-            requests = {key: pool.submit(fetch_provider_models, source, refresh=refresh)
-                        for key, source in sources.items()}
+        with ThreadPoolExecutor(
+            max_workers=len(sources), thread_name_prefix="syvrio-models"
+        ) as pool:
+            requests = {
+                key: pool.submit(fetch_provider_models, source, refresh=refresh)
+                for key, source in sources.items()
+            }
             return {key: request.result() for key, request in requests.items()}
 
     def model_options(
-        self, fetched: dict[str, list[str]] | list[str] | None = None, capabilities: bool = True,
+        self,
+        fetched: dict[str, list[str]] | list[str] | None = None,
+        capabilities: bool = True,
     ) -> list[ModelOption]:
         current = self.service.config.llm
         catalog = {current.provider: fetched} if isinstance(fetched, list) else fetched
@@ -160,12 +179,19 @@ class SettingsUseCases:
                 "Could not save the API key to system credentials. "
                 f"Set {preset.api_key_env} in your environment instead.",
             )
-        return SettingsResult(True, f"{provider_label(preset.key)} API key saved. Choose an API-listed model to switch.")
+        return SettingsResult(
+            True,
+            f"{provider_label(preset.key)} API key saved. Choose an API-listed model to switch.",
+        )
 
     def provider_endpoint(self, provider: str) -> str:
         current = self.service.config.llm
         preset = self._preset(provider)
-        return provider_base_url(current, preset) if preset else current.provider_urls.get(provider, current.base_url)
+        return (
+            provider_base_url(current, preset)
+            if preset
+            else current.provider_urls.get(provider, current.base_url)
+        )
 
     def set_provider_endpoint(self, provider: str, endpoint: str) -> SettingsResult:
         current = self.service.config.llm
@@ -175,7 +201,9 @@ class SettingsUseCases:
             endpoint = normalize_provider_url(endpoint)
         except ValueError as exc:
             return SettingsResult(False, str(exc))
-        self.service.config.llm = replace(current, provider_urls={**current.provider_urls, provider: endpoint})
+        self.service.config.llm = replace(
+            current, provider_urls={**current.provider_urls, provider: endpoint}
+        )
         if self.service.config_path:
             write_config(self.service.config_path, self.service.config)
         return SettingsResult(True, f"{provider_label(provider)} Base URL saved.", True)
@@ -196,14 +224,14 @@ class SettingsUseCases:
         return SettingsResult(True, f"{provider_label(preset.key)} API key updated.")
 
     def remove_provider(self, provider: str) -> SettingsResult:
-        import os
-
         preset = self._preset(provider)
         if preset is None:
             return SettingsResult(False, f"Unknown provider: {provider}")
         label = provider_label(preset.key)
         if provider == self.service.config.llm.provider:
-            return SettingsResult(False, f"{label} is the current provider; switch to another model first.")
+            return SettingsResult(
+                False, f"{label} is the current provider; switch to another model first."
+            )
         if os.environ.get(preset.api_key_env):
             return SettingsResult(
                 False,
@@ -224,9 +252,13 @@ class SettingsUseCases:
             provider=provider,
             model=model,
             base_url=self.provider_endpoint(provider),
-            provider_urls={**({current.provider: current.base_url} if current.base_url else {}),
-                           **current.provider_urls},
-            api_key_env=preset.api_key_env if preset and provider != current.provider else current.api_key_env,
+            provider_urls={
+                **({current.provider: current.base_url} if current.base_url else {}),
+                **current.provider_urls,
+            },
+            api_key_env=preset.api_key_env
+            if preset and provider != current.provider
+            else current.api_key_env,
             recent_models=current.recent_model_ids(),
         )
         if new_llm.provider != current.provider and not new_llm.api_key():
@@ -236,7 +268,9 @@ class SettingsUseCases:
             )
 
         info = model_metadata(new_llm.litellm_model())
-        if new_llm.reasoning_effort and "reasoning_effort" not in supported_params(new_llm.litellm_model()):
+        if new_llm.reasoning_effort and "reasoning_effort" not in supported_params(
+            new_llm.litellm_model()
+        ):
             new_llm.reasoning_effort = None
         context_window = self.service.config.chat.context_window
         max_input = info.get("max_input_tokens")

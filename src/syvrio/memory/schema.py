@@ -1,4 +1,5 @@
 """Parse v2 Markdown using CommonMark blocks; keep source offsets for writes."""
+
 from __future__ import annotations
 
 import re
@@ -43,6 +44,7 @@ class Record:
     core: Core
     context: tuple[FieldNode, ...]
     extensions: tuple[FieldNode, ...]
+    migration_spans: dict[str, tuple[int, int]]
 
 
 @dataclass(frozen=True)
@@ -94,9 +96,14 @@ def parse_document(raw: str, source_path: str, topic: str) -> Document:
                 lo = hi = offsets[first]
                 if value.strip():
                     tokens = _MARKDOWN.parseInline(value)[0].children or []
-                    if (len(children) != 1 or len(tokens) != 1
-                            or tokens[0].type != "code_inline" or not tokens[0].content.strip()
-                            or not value.startswith("`") or not value.endswith("`")):
+                    if (
+                        len(children) != 1
+                        or len(tokens) != 1
+                        or tokens[0].type != "code_inline"
+                        or not tokens[0].content.strip()
+                        or not value.startswith("`")
+                        or not value.endswith("`")
+                    ):
                         fail(first, f"invalid scalar for {key}")
                     value = tokens[0].content
                     if value.startswith(_ESCAPED):
@@ -106,19 +113,39 @@ def parse_document(raw: str, source_path: str, topic: str) -> Document:
                         fail(first, "invalid metadata indentation")
                     lo = offsets[first] + marker.end() + match.start("value")
                     hi = offsets[first] + marker.end() + match.end("value")
-                    result.append((FieldNode(key=key, value=value, raw_markdown=raw[offsets[first]:offsets[last]]), lo, hi))
+                    result.append(
+                        (
+                            FieldNode(
+                                key=key,
+                                value=value,
+                                raw_markdown=raw[offsets[first] : offsets[last]],
+                            ),
+                            lo,
+                            hi,
+                        )
+                    )
                 else:
                     if len(children) < 2:
                         fail(first, f"empty group for {key}")
-                    result.append((FieldNode(key=key, children=tuple(f for f, _, _ in fields(children[1:])),
-                                             raw_markdown=raw[offsets[first]:offsets[last]]), lo, hi))
+                    result.append(
+                        (
+                            FieldNode(
+                                key=key,
+                                children=tuple(f for f, _, _ in fields(children[1:])),
+                                raw_markdown=raw[offsets[first] : offsets[last]],
+                            ),
+                            lo,
+                            hi,
+                        )
+                    )
         return tuple(result)
 
     records = []
     ids = set()
     blocks = SyntaxTreeNode(_MARKDOWN.parse(raw)).children
-    title = next((b.children[0].content.strip() for b in blocks
-                  if b.type == "heading" and b.tag == "h1"), "")
+    title = next(
+        (b.children[0].content.strip() for b in blocks if b.type == "heading" and b.tag == "h1"), ""
+    )
     for block in blocks:
         if block.type != "bullet_list":
             continue
@@ -128,7 +155,9 @@ def parse_document(raw: str, source_path: str, topic: str) -> Document:
             current = None
             content_end = end
             for node in item.children:
-                marker = (_SECTIONS.get(node.children[0].content) if node.type == "paragraph" else None)
+                marker = (
+                    _SECTIONS.get(node.children[0].content) if node.type == "paragraph" else None
+                )
                 if marker:
                     if marker in sections or list(_SECTIONS.values()).index(marker) <= (
                         list(_SECTIONS.values()).index(current) if current else -1
@@ -155,32 +184,69 @@ def parse_document(raw: str, source_path: str, topic: str) -> Document:
                 fail(start, "duplicate memory id")
             ids.add(core.id)
             _, status_start, status_end = next(row for row in core_fields if row[0].key == "status")
-            context, extensions = (
-                tuple(f for f, _, _ in fields(sections[name])) if name in sections else ()
-                for name in ("context", "extensions")
-            )
-            if any(name in sections and not values for name, values in (("context", context), ("extensions", extensions))):
+            context = tuple(f for f, _, _ in fields(sections.get("context", [])))
+            extension_fields = fields(sections.get("extensions", []))
+            extensions = tuple(f for f, _, _ in extension_fields)
+            migration_spans = {}
+            for node, lo, hi in extension_fields:
+                if node.key not in {"syvrio.recorded_at", "migration.evidence_v2"}:
+                    continue
+                if node.value is None or node.key in migration_spans:
+                    fail(start, f"expected one scalar for {node.key}")
+                migration_spans[node.key] = (lo, hi)
+            if any(
+                name in sections and not values
+                for name, values in (("context", context), ("extensions", extensions))
+            ):
                 fail(start, "omit empty optional sections")
             marker = _ITEM.match(lines[start])
             if marker is None:
                 fail(start, "missing list item marker")
             indent = marker.end()
-            text = (lines[start][indent:] + "".join(
-                line[indent:] if line.startswith(" " * indent) else line for line in lines[start + 1:content_end]
-            )).rstrip("\r\n")
+            text = (
+                lines[start][indent:]
+                + "".join(
+                    line[indent:] if line.startswith(" " * indent) else line
+                    for line in lines[start + 1 : content_end]
+                )
+            ).rstrip("\r\n")
             if not text.strip():
                 fail(start, "empty Content")
             metadata = {"source": core.source, "confidence": core_data["confidence"]}
             for node in extensions:
                 if node.key.startswith("syvrio.") and node.value is not None:
                     metadata.setdefault(node.key.removeprefix("syvrio."), node.value)
-            record_raw = raw[offsets[start]:offsets[end]]
-            entry = Entry(id=core.id, topic=topic, text=text, timestamp=metadata.pop("recorded_at", ""),
-                          status=core.status, supersedes=metadata.pop("supersedes", None), metadata=metadata,
-                          raw_markdown=record_raw, source_path=source_path, line=start + 1, end_line=end,
-                          context_fields=context, extension_fields=extensions, confidence=core.confidence,
-                          topic_title=title)
-            records.append(Record(entry, offsets[start], offsets[end], status_start, status_end, core, context, extensions))
+            record_raw = raw[offsets[start] : offsets[end]]
+            entry = Entry(
+                id=core.id,
+                topic=topic,
+                text=text,
+                timestamp=metadata.pop("recorded_at", ""),
+                status=core.status,
+                supersedes=metadata.pop("supersedes", None),
+                metadata=metadata,
+                raw_markdown=record_raw,
+                source_path=source_path,
+                line=start + 1,
+                end_line=end,
+                context_fields=context,
+                extension_fields=extensions,
+                confidence=core.confidence,
+                topic_title=title,
+            )
+            records.append(
+                Record(
+                    entry,
+                    offsets[start],
+                    offsets[end],
+                    status_start,
+                    status_end,
+                    core,
+                    context,
+                    extensions,
+                    migration_spans,
+                )
+            )
     return Document(raw, tuple(records))
 
 
@@ -190,9 +256,22 @@ def render_record(text: str, core: Core, context=(), extensions=(), newline: str
         raise ValueError("empty Content")
     result = [f"* {lines[0]}", *(f"  {line}" if line else "" for line in lines[1:])]
     for section, items in (
-        ("Core", [("id", core.id), ("status", core.status), ("source", core.source),
-                  ("confidence", f"{core.confidence:.2f}" if round(core.confidence, 2) == core.confidence else str(core.confidence))]),
-        ("Context", context), ("Extensions", extensions),
+        (
+            "Core",
+            [
+                ("id", core.id),
+                ("status", core.status),
+                ("source", core.source),
+                (
+                    "confidence",
+                    f"{core.confidence:.2f}"
+                    if round(core.confidence, 2) == core.confidence
+                    else str(core.confidence),
+                ),
+            ],
+        ),
+        ("Context", context),
+        ("Extensions", extensions),
     ):
         if items:
             result.extend(("", f"  **{section}**"))

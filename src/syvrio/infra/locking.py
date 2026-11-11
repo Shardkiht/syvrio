@@ -4,6 +4,7 @@
 跨进程使用操作系统文件锁（POSIX flock / Windows msvcrt），进程异常退出时
 由内核释放，不会留下需要手工清理的锁文件。
 """
+
 from __future__ import annotations
 
 import os

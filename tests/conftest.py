@@ -43,6 +43,7 @@ def _pipe_loop_factory() -> asyncio.AbstractEventLoop:
 
 def pytest_configure(config: pytest.Config) -> None:
     if sys.platform == "win32" and os.environ.get("SYVRIO_TEST_PIPE_LOOP") == "1":
+
         class PipeLoopPolicy(asyncio.WindowsProactorEventLoopPolicy):
             def new_event_loop(self) -> asyncio.AbstractEventLoop:
                 return _pipe_loop_factory()
@@ -81,9 +82,7 @@ class FakeQuestion:
 def patch_questionary(monkeypatch):
     def _patch(module):
         for name in ("select", "text", "password", "confirm"):
-            monkeypatch.setattr(
-                module.questionary, name, lambda *args, **kwargs: FakeQuestion()
-            )
+            monkeypatch.setattr(module.questionary, name, lambda *args, **kwargs: FakeQuestion())
 
     return _patch
 
@@ -107,8 +106,14 @@ def isolate_llm_credentials(monkeypatch):
     fake.get_password = lambda service, name: None
     fake.set_password = lambda service, name, value: None
     monkeypatch.setitem(sys.modules, "keyring", fake)
-    for name in ("DEEPSEEK_API_KEY", "SILICONFLOW_API_KEY", "DASHSCOPE_API_KEY",
-                 "OPENAI_API_KEY", "OPENROUTER_API_KEY", "SPARK_API_KEY"):
+    for name in (
+        "DEEPSEEK_API_KEY",
+        "SILICONFLOW_API_KEY",
+        "DASHSCOPE_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "SPARK_API_KEY",
+    ):
         monkeypatch.delenv(name, raising=False)
 
 

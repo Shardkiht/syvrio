@@ -3,6 +3,7 @@
 auto_parameters=false：不让上游自动升级到 Advanced 消耗更多 Credit；
 include_answer/raw_content/images 均关闭，只取网页结果。
 """
+
 from __future__ import annotations
 
 from typing import Any, Callable
@@ -64,9 +65,7 @@ class TavilySearchProvider:
         if results is None:
             return []
         if not isinstance(results, list):
-            raise ProviderError(
-                NAME, ProviderErrorKind.BAD_RESPONSE, "results 字段类型异常"
-            )
+            raise ProviderError(NAME, ProviderErrorKind.BAD_RESPONSE, "results 字段类型异常")
         mapped = [_map_result(item) for item in results]
         return [item for item in mapped if item is not None]
 
@@ -97,9 +96,7 @@ class TavilyFetchProvider:
         results = payload.get("results")
         if not isinstance(results, list) or not results:
             # HTTP 200 也可能全部失败：错误原因在 failed_results[].error。
-            raise ProviderError(
-                NAME, ProviderErrorKind.BAD_RESPONSE, _failed_reason(payload)
-            )
+            raise ProviderError(NAME, ProviderErrorKind.BAD_RESPONSE, _failed_reason(payload))
         item = results[0] if isinstance(results[0], dict) else {}
         content = str(item.get("raw_content") or "").strip()
         if not content:
@@ -144,5 +141,7 @@ def _map_result(item: Any) -> SearchResult | None:
 def _api_error(status: int, payload: dict) -> ProviderError | None:
     if status in (432, 433):
         reason = "plan_usage_limit" if status == 432 else "pay_as_you_go_limit"
-        return ProviderError(NAME, ProviderErrorKind.QUOTA, reason, code=str(status), pause_reason=reason)
+        return ProviderError(
+            NAME, ProviderErrorKind.QUOTA, reason, code=str(status), pause_reason=reason
+        )
     return None

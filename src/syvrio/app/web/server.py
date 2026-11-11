@@ -3,6 +3,7 @@
 All chat, memory, session and model behaviour stays in the Application layer.
 This module deliberately contains no business logic.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -19,6 +20,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from ...infra.diagnostics import record_event
 from .backend import WebBackend, WebError
 from .models import (
+    ActionResponse,
     ApiErrorResponse,
     CancelRequest,
     CancelResponse,
@@ -26,7 +28,6 @@ from .models import (
     CommandCatalogResponse,
     CommandRequest,
     CommandResponse,
-    ActionResponse,
     CreateSessionResponse,
     DeleteSessionResponse,
     ErrorDetail,
@@ -131,8 +132,11 @@ def create_app(
 
     @app.exception_handler(StarletteHTTPException)
     async def _http_error(request: Request, exc: StarletteHTTPException):
-        return _error("not_found" if exc.status_code == 404 else "http_error",
-                      str(exc.detail), exc.status_code)
+        return _error(
+            "not_found" if exc.status_code == 404 else "http_error",
+            str(exc.detail),
+            exc.status_code,
+        )
 
     @app.exception_handler(Exception)
     async def _unexpected(request: Request, exc: Exception):
@@ -148,18 +152,17 @@ def create_app(
     async def sessions(limit: int = Query(100, ge=1, le=500)):
         return await asyncio.to_thread(owner.list_sessions, limit)
 
-    @app.post("/api/sessions", response_model=CreateSessionResponse,
-              status_code=201, tags=["web"])
+    @app.post("/api/sessions", response_model=CreateSessionResponse, status_code=201, tags=["web"])
     async def create_session():
         return await asyncio.to_thread(owner.create_session)
 
-    @app.post("/api/sessions/{session_id}/switch",
-              response_model=SwitchSessionResponse, tags=["web"])
+    @app.post(
+        "/api/sessions/{session_id}/switch", response_model=SwitchSessionResponse, tags=["web"]
+    )
     async def switch_session(session_id: str):
         return await asyncio.to_thread(owner.switch_session, session_id)
 
-    @app.delete("/api/sessions/{session_id}", response_model=DeleteSessionResponse,
-                tags=["web"])
+    @app.delete("/api/sessions/{session_id}", response_model=DeleteSessionResponse, tags=["web"])
     async def delete_session(session_id: str, confirmed: bool = Query(False)):
         return await asyncio.to_thread(owner.delete_session, session_id, confirmed)
 
@@ -171,8 +174,7 @@ def create_app(
     async def providers():
         return await asyncio.to_thread(owner.providers)
 
-    @app.post("/api/settings/providers/{provider}", response_model=ActionResponse,
-              tags=["web"])
+    @app.post("/api/settings/providers/{provider}", response_model=ActionResponse, tags=["web"])
     async def provider_action(provider: str, body: ProviderActionRequest):
         return await asyncio.to_thread(owner.provider_action, provider, body)
 
@@ -216,8 +218,12 @@ def create_app(
         if not static_ready:
             return JSONResponse(
                 status_code=503,
-                content={"error": {"code": "assets_missing",
-                                   "message": "Web assets are not built. Run scripts/build_web.py."}},
+                content={
+                    "error": {
+                        "code": "assets_missing",
+                        "message": "Web assets are not built. Run scripts/build_web.py.",
+                    }
+                },
             )
         resolved = root.resolve()
         candidate = (resolved / full_path).resolve()

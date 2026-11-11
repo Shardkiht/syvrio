@@ -22,9 +22,7 @@ def build_server(
     svc = service or MemoryService(config or load_config())
     search_config = svc.config.search
     search_router = search_router or (
-        build_search_router(search_config, svc.paths)
-        if search_config.enabled
-        else None
+        build_search_router(search_config, svc.paths) if search_config.enabled else None
     )
     mcp = FastMCP(
         "syvrio",
@@ -50,13 +48,30 @@ def build_server(
         return entry.model_dump()
 
     @mcp.tool
-    def recall(query: str, limit: int = 10, date_from: str | None = None,
-               date_to: str | None = None, location: str | None = None,
-               emotion: str | None = None, as_of: str | None = None,
-               view: str = "current") -> list[dict]:
+    def recall(
+        query: str,
+        limit: int = 10,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        location: str | None = None,
+        emotion: str | None = None,
+        as_of: str | None = None,
+        view: str = "current",
+    ) -> list[dict]:
         """检索本地记忆。query 用自然问句并附常见同义词或字段名，如“我叫什么名字 姓名 名字”。"""
-        return [hit.model_dump() for hit in svc.recall(query, limit, date_from=date_from,
-            date_to=date_to, location=location, emotion=emotion, as_of=as_of, view=view)]
+        return [
+            hit.model_dump()
+            for hit in svc.recall(
+                query,
+                limit,
+                date_from=date_from,
+                date_to=date_to,
+                location=location,
+                emotion=emotion,
+                as_of=as_of,
+                view=view,
+            )
+        ]
 
     @mcp.tool
     def read_topic(topic: str) -> dict:
@@ -108,6 +123,7 @@ def build_server(
         return svc.status()
 
     if search_router is not None:
+
         @mcp.tool
         def search(
             query: str,
@@ -211,9 +227,7 @@ def build_server(
                 return {
                     "results": [],
                     "provider": "",
-                    "failed": [
-                        {"provider": "router", "kind": "unavailable", "detail": str(exc)}
-                    ],
+                    "failed": [{"provider": "router", "kind": "unavailable", "detail": str(exc)}],
                     "hint": str(exc),
                 }
             return outcome.to_payload()

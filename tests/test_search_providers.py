@@ -2,6 +2,7 @@
 
 全部走 httpx.MockTransport，不发真实网络请求；Key 一律用占位字符串。
 """
+
 from __future__ import annotations
 
 import json
@@ -9,16 +10,14 @@ import json
 import httpx
 import pytest
 
-pytestmark = pytest.mark.search
-
 from syvrio.infra.config import SearchConfig
+from syvrio.infra.search.baidu import BaiduSearchProvider
 from syvrio.infra.search.base import (
     FetchQuery,
     ProviderError,
     ProviderErrorKind,
     SearchQuery,
 )
-from syvrio.infra.search.baidu import BaiduSearchProvider
 from syvrio.infra.search.exa import ExaFetchProvider, ExaSearchProvider
 from syvrio.infra.search.http_client import JsonApiClient
 from syvrio.infra.search.router import build_registry
@@ -28,6 +27,8 @@ from syvrio.infra.search.volcengine import (
     VolcengineSearchProvider,
 )
 from syvrio.infra.search.you import YouFetchProvider, YouSearchProvider
+
+pytestmark = pytest.mark.search
 
 KEY = "test-key-placeholder"
 
@@ -200,9 +201,19 @@ def test_baidu_maps_web_references_only():
             200,
             json=baidu_payload(
                 [
-                    {"type": "web", "title": "Tibo 动态", "url": "https://example.com/a",
-                     "content": "相关内容", "date": "2026-10-30"},
-                    {"type": "video", "title": "视频", "url": "https://example.com/v", "content": "x"},
+                    {
+                        "type": "web",
+                        "title": "Tibo 动态",
+                        "url": "https://example.com/a",
+                        "content": "相关内容",
+                        "date": "2026-10-30",
+                    },
+                    {
+                        "type": "video",
+                        "title": "视频",
+                        "url": "https://example.com/v",
+                        "content": "x",
+                    },
                     {"title": "无类型", "url": "https://example.com/n", "content": "y"},
                 ]
             ),
@@ -283,9 +294,13 @@ def test_tavily_request_shape_and_result_mapping():
             200,
             json={
                 "results": [
-                    {"title": "Tibo latest updates", "url": "https://example.com/a",
-                     "content": "announcement body", "score": 0.9,
-                     "published_date": "2026-10-29"},
+                    {
+                        "title": "Tibo latest updates",
+                        "url": "https://example.com/a",
+                        "content": "announcement body",
+                        "score": 0.9,
+                        "published_date": "2026-10-29",
+                    },
                     {"url": "https://example.com/b"},
                 ]
             },
@@ -342,12 +357,18 @@ def test_exa_fixed_auto_request_and_snippet_fallback():
             json={
                 "requestId": "rid",
                 "results": [
-                    {"title": "Exa result", "url": "https://example.com/a",
-                     "publishedDate": "2026-10-01", "summary": "总结内容"},
-                    {"title": "No summary", "url": "https://example.com/b",
-                     "highlights": ["高亮片段", "another"]},
-                    {"title": "Text only", "url": "https://example.com/c",
-                     "text": "x" * 600},
+                    {
+                        "title": "Exa result",
+                        "url": "https://example.com/a",
+                        "publishedDate": "2026-10-01",
+                        "summary": "总结内容",
+                    },
+                    {
+                        "title": "No summary",
+                        "url": "https://example.com/b",
+                        "highlights": ["高亮片段", "another"],
+                    },
+                    {"title": "Text only", "url": "https://example.com/c", "text": "x" * 600},
                     {"title": "No snippet", "url": "https://example.com/d"},
                 ],
             },
@@ -394,10 +415,16 @@ def test_you_request_header_and_web_mapping():
             json={
                 "results": {
                     "web": [
-                        {"title": "Tibo news", "url": "https://example.com/a",
-                         "description": "full description"},
-                        {"title": "Snippet only", "url": "https://example.com/b",
-                         "snippets": ["first snippet", "second"]},
+                        {
+                            "title": "Tibo news",
+                            "url": "https://example.com/a",
+                            "description": "full description",
+                        },
+                        {
+                            "title": "Snippet only",
+                            "url": "https://example.com/b",
+                            "snippets": ["first snippet", "second"],
+                        },
                         {"title": "No text", "url": "https://example.com/c"},
                     ]
                 }
@@ -425,7 +452,9 @@ def test_you_missing_web_section_is_empty():
 
 
 def test_you_401_maps_to_auth():
-    sent, _ = capture(lambda request: httpx.Response(401, json={"message": "Missing Authentication Token"}))
+    sent, _ = capture(
+        lambda request: httpx.Response(401, json={"message": "Missing Authentication Token"})
+    )
     provider = make(YouSearchProvider, sent)
     with pytest.raises(ProviderError) as caught:
         provider.search(SearchQuery("q"))
@@ -437,8 +466,19 @@ def test_you_401_maps_to_auth():
 
 def volc_payload(documents):
     return {
-        "ResponseMetadata": {"RequestId": "rid", "Action": "", "Version": "", "Service": "", "Region": ""},
-        "Result": {"Documents": documents, "TotalDocCount": len(documents), "ErrorCode": "", "ErrorMsg": ""},
+        "ResponseMetadata": {
+            "RequestId": "rid",
+            "Action": "",
+            "Version": "",
+            "Service": "",
+            "Region": "",
+        },
+        "Result": {
+            "Documents": documents,
+            "TotalDocCount": len(documents),
+            "ErrorCode": "",
+            "ErrorMsg": "",
+        },
     }
 
 
@@ -448,10 +488,17 @@ def test_volcengine_global_request_and_document_mapping():
             200,
             json=volc_payload(
                 [
-                    {"Rank": 0, "Url": "https://example.com/a", "Title": "Tibo latest",
-                     "Snippet": [{"Type": "image", "Text": None}, {"Type": "text", "Text": "announcement"}],
-                     "DocumentInfo": {"PublishTime": "2026-10-30", "Filetype": "webpage"},
-                     "HostInfo": {"Hostname": "example.com"}},
+                    {
+                        "Rank": 0,
+                        "Url": "https://example.com/a",
+                        "Title": "Tibo latest",
+                        "Snippet": [
+                            {"Type": "image", "Text": None},
+                            {"Type": "text", "Text": "announcement"},
+                        ],
+                        "DocumentInfo": {"PublishTime": "2026-10-30", "Filetype": "webpage"},
+                        "HostInfo": {"Hostname": "example.com"},
+                    },
                     {"Url": "https://example.com/b", "Title": "No snippet"},
                 ]
             ),
@@ -508,7 +555,9 @@ def test_volcengine_metadata_error_maps_to_auth():
         lambda request: httpx.Response(
             200,
             json={
-                "ResponseMetadata": {"Error": {"Code": "InvalidAuthorization", "Message": "auth failed"}},
+                "ResponseMetadata": {
+                    "Error": {"Code": "InvalidAuthorization", "Message": "auth failed"}
+                },
                 "Result": None,
             },
         )
@@ -545,9 +594,7 @@ def test_tavily_fetch_request_and_mapping():
         lambda request: httpx.Response(
             200,
             json={
-                "results": [
-                    {"url": "https://example.com/a", "raw_content": "正文内容" * 10}
-                ],
+                "results": [{"url": "https://example.com/a", "raw_content": "正文内容" * 10}],
                 "failed_results": [],
             },
         )
@@ -720,12 +767,12 @@ def test_you_fetch_request_and_mapping():
         lambda request: httpx.Response(
             200,
             json=[
-                    {
-                        "url": "https://example.com/a",
-                        "title": "Example Page",
-                        "markdown": "正文内容" * 10,
-                    }
-                ],
+                {
+                    "url": "https://example.com/a",
+                    "title": "Example Page",
+                    "markdown": "正文内容" * 10,
+                }
+            ],
         )
     )
     provider = make(YouFetchProvider, sent)
@@ -767,9 +814,7 @@ def test_you_fetch_truncates_to_max_chars():
 
 def test_you_fetch_missing_markdown_is_error():
     sent, _ = capture(
-        lambda request: httpx.Response(
-            200, json=[{"url": "https://example.com/a", "markdown": ""}]
-        )
+        lambda request: httpx.Response(200, json=[{"url": "https://example.com/a", "markdown": ""}])
     )
     provider = make(YouFetchProvider, sent)
     with pytest.raises(ProviderError, match="未返回正文"):
@@ -823,10 +868,16 @@ def test_volcengine_fetch_truncates_to_max_chars():
     sent, _ = capture(
         lambda request: httpx.Response(
             200,
-            json={"Result": {"Data": {
-                "StatusCode": 200, "Url": "https://example.com/a",
-                "RedirectedUrl": None, "ContentText": "x" * 500,
-            }}},
+            json={
+                "Result": {
+                    "Data": {
+                        "StatusCode": 200,
+                        "Url": "https://example.com/a",
+                        "RedirectedUrl": None,
+                        "ContentText": "x" * 500,
+                    }
+                }
+            },
         )
     )
     provider = make(VolcengineFetchProvider, sent)
@@ -886,34 +937,49 @@ def test_volcengine_fetch_timeout_maps_to_timeout():
 @pytest.mark.parametrize("status", [403, 404, 500])
 def test_volcengine_fetch_rejects_target_http_error(status):
     sent, _ = capture(
-        lambda request: httpx.Response(200, json={
-            "Result": {"Data": {"StatusCode": status, "ContentText": "Error page"}}
-        })
+        lambda request: httpx.Response(
+            200, json={"Result": {"Data": {"StatusCode": status, "ContentText": "Error page"}}}
+        )
     )
     with pytest.raises(ProviderError, match=f"Target HTTP {status}"):
         make(VolcengineFetchProvider, sent).fetch(FetchQuery("https://example.com/a", 100))
 
 
-@pytest.mark.parametrize("cls,status,payload,paused,kind", [
-    (BaiduSearchProvider, 429, {"code": "QUOTA_USER_DAILY_REQUEST"}, True, "quota"),
-    (BaiduSearchProvider, 429, {"code": "QUOTA_USER_DAILY_FREE"}, True, "quota"),
-    (BaiduSearchProvider, 429, {"code": "BILLING_INSUFFICIENT_BALANCE"}, True, "quota"),
-    (BaiduSearchProvider, 429, {"code": "RATE_LIMIT_SEARCH_QPS"}, False, "rate_limit"),
-    (BaiduSearchProvider, 429, {"message": "quota limit"}, False, "rate_limit"),
-    (BaiduSearchProvider, 401, {"code": "QUOTA_USER_DAILY_FREE"}, False, "auth"),
-    (TavilySearchProvider, 432, {}, True, "quota"),
-    (TavilySearchProvider, 433, {}, True, "quota"),
-    (TavilySearchProvider, 429, {}, False, "rate_limit"),
-    (ExaSearchProvider, 402, {"tag": "NO_MORE_CREDITS"}, True, "quota"),
-    (ExaSearchProvider, 402, {"tag": "API_KEY_BUDGET_EXCEEDED"}, True, "quota"),
-    (ExaSearchProvider, 402, {"tag": "TEAM_BUDGET_EXCEEDED"}, True, "quota"),
-    (ExaSearchProvider, 402, {"tag": "X402_PAYMENT_REQUIRED"}, False, "quota"),
-    (YouSearchProvider, 402, {"detail": "Insufficient credits"}, True, "quota"),
-    (YouSearchProvider, 402, {"detail": "Payment required"}, False, "quota"),
-    (VolcengineFetchProvider, 200, {"ResponseMetadata": {"Error": {"CodeN": 10406}}}, True, "quota"),
-    (VolcengineFetchProvider, 200, {"ResponseMetadata": {"Error": {"CodeN": 10412}}}, True, "quota"),
-    (ExaSearchProvider, 500, {"tag": "NO_MORE_CREDITS"}, False, "unavailable"),
-])
+@pytest.mark.parametrize(
+    "cls,status,payload,paused,kind",
+    [
+        (BaiduSearchProvider, 429, {"code": "QUOTA_USER_DAILY_REQUEST"}, True, "quota"),
+        (BaiduSearchProvider, 429, {"code": "QUOTA_USER_DAILY_FREE"}, True, "quota"),
+        (BaiduSearchProvider, 429, {"code": "BILLING_INSUFFICIENT_BALANCE"}, True, "quota"),
+        (BaiduSearchProvider, 429, {"code": "RATE_LIMIT_SEARCH_QPS"}, False, "rate_limit"),
+        (BaiduSearchProvider, 429, {"message": "quota limit"}, False, "rate_limit"),
+        (BaiduSearchProvider, 401, {"code": "QUOTA_USER_DAILY_FREE"}, False, "auth"),
+        (TavilySearchProvider, 432, {}, True, "quota"),
+        (TavilySearchProvider, 433, {}, True, "quota"),
+        (TavilySearchProvider, 429, {}, False, "rate_limit"),
+        (ExaSearchProvider, 402, {"tag": "NO_MORE_CREDITS"}, True, "quota"),
+        (ExaSearchProvider, 402, {"tag": "API_KEY_BUDGET_EXCEEDED"}, True, "quota"),
+        (ExaSearchProvider, 402, {"tag": "TEAM_BUDGET_EXCEEDED"}, True, "quota"),
+        (ExaSearchProvider, 402, {"tag": "X402_PAYMENT_REQUIRED"}, False, "quota"),
+        (YouSearchProvider, 402, {"detail": "Insufficient credits"}, True, "quota"),
+        (YouSearchProvider, 402, {"detail": "Payment required"}, False, "quota"),
+        (
+            VolcengineFetchProvider,
+            200,
+            {"ResponseMetadata": {"Error": {"CodeN": 10406}}},
+            True,
+            "quota",
+        ),
+        (
+            VolcengineFetchProvider,
+            200,
+            {"ResponseMetadata": {"Error": {"CodeN": 10412}}},
+            True,
+            "quota",
+        ),
+        (ExaSearchProvider, 500, {"tag": "NO_MORE_CREDITS"}, False, "unavailable"),
+    ],
+)
 def test_documented_quota_errors_only(cls, status, payload, paused, kind):
     payload["sensitive_debug"] = "must-not-be-echoed"
     sent, _ = capture(lambda request: httpx.Response(status, json=payload))
@@ -929,13 +995,20 @@ def test_documented_quota_errors_only(cls, status, payload, paused, kind):
     assert caught.value.resume_at is None  # no invented reset date
 
 
-
 def test_volcengine_preserves_safe_business_code_without_raw_message():
-    sent, _ = capture(lambda request: httpx.Response(200, json={
-        "ResponseMetadata": {"Error": {
-            "Code": "InvalidAuthorization", "Message": "auth failed must-not-be-echoed"
-        }}
-    }))
+    sent, _ = capture(
+        lambda request: httpx.Response(
+            200,
+            json={
+                "ResponseMetadata": {
+                    "Error": {
+                        "Code": "InvalidAuthorization",
+                        "Message": "auth failed must-not-be-echoed",
+                    }
+                }
+            },
+        )
+    )
     with pytest.raises(ProviderError) as caught:
         make(VolcengineSearchProvider, sent).search(SearchQuery("synthetic"))
     assert caught.value.code == "InvalidAuthorization"

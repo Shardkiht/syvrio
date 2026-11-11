@@ -4,8 +4,6 @@ from types import SimpleNamespace
 
 import pytest
 
-pytestmark = pytest.mark.memory
-
 from syvrio.infra.config import Config, LLMConfig, RetrievalConfig
 from syvrio.memory.extractor import (
     ExtractorError,
@@ -16,11 +14,11 @@ from syvrio.memory.extractor import (
 from syvrio.memory.models import Candidate, ExtractionResult
 from syvrio.memory.service import MemoryService
 
+pytestmark = pytest.mark.memory
+
 
 def response(text: str):
-    return SimpleNamespace(
-        choices=[SimpleNamespace(message=SimpleNamespace(content=text))]
-    )
+    return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=text))])
 
 
 def service(tmp_path) -> MemoryService:
@@ -45,7 +43,9 @@ def test_import_extractor_preserves_explicit_context(monkeypatch):
 
     def fake_complete(config, messages, **kwargs):
         captured.extend(messages)
-        return response('{"memories":[{"text":"2024年参观合成展馆","confidence":0.95,"context":{"event_time":"2024","location":"合成展馆","location_kind":"event"}}]}')
+        return response(
+            '{"memories":[{"text":"2024年参观合成展馆","confidence":0.95,"context":{"event_time":"2024","location":"合成展馆","location_kind":"event"}}]}'
+        )
 
     svc_result = ImportExtractor(LLMConfig(), completer=fake_complete).extract("2024年参观合成展馆")
     assert svc_result.memories[0].context.event_time == "2024"
@@ -125,9 +125,7 @@ def test_import_text_adjudicates_candidates(tmp_path):
 
 def test_import_text_dry_run_writes_nothing(tmp_path):
     svc = service(tmp_path)
-    extractor = _StaticResult(
-        [Candidate(text="干跑条目", topic="preferences", confidence=0.95)]
-    )
+    extractor = _StaticResult([Candidate(text="干跑条目", topic="preferences", confidence=0.95)])
 
     result = svc.import_text("档案内容", dry_run=True, extractor=extractor)
 

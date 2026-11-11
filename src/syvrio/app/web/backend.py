@@ -6,6 +6,7 @@ streams writing the same session. Callbacks from the worker thread are converted
 into ordered structured events and posted onto the SSE connection's asyncio
 queue. Nothing here re-implements the agent loop, memory, sessions or LLM calls.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -26,18 +27,18 @@ from ...infra.locking import LockTimeout, VaultLock, client_instance_lock
 from ...llm import LiteLLMChatModel
 from ...memory.service import MemoryService, get_service
 from .models import (
+    ActionResponse,
     CommandCatalogResponse,
     CommandInfo,
-    ActionResponse,
     CommandResponse,
     CreateSessionResponse,
     DeleteSessionResponse,
     HealthResponse,
+    HistoryItem,
+    HistoryResponse,
     ProviderActionRequest,
     ProviderInfo,
     ProviderListResponse,
-    HistoryItem,
-    HistoryResponse,
     ReasoningBlock,
     SessionInfo,
     SessionListResponse,
@@ -119,7 +120,7 @@ class EventPump:
 
     def on_progress(self, text: str) -> None:
         if text.startswith(TOOL_PREFIX):
-            name = text[len(TOOL_PREFIX):].strip() or "tool"
+            name = text[len(TOOL_PREFIX) :].strip() or "tool"
             self._pending_tools.append(name)
             self.send("tool_start", name=name)
             return
@@ -147,8 +148,7 @@ class EventPump:
     def on_thinking(self, update: ThinkingUpdate) -> None:
         self._flush_tools()
         if update.record_id is not None:
-            self.send("reasoning_end", text=update.text, seconds=update.seconds,
-                      phase=self._phase)
+            self.send("reasoning_end", text=update.text, seconds=update.seconds, phase=self._phase)
         elif update.text:
             self.send("reasoning_delta", text=update.text, phase=self._phase)
 
@@ -255,23 +255,25 @@ class WebBackend:
     # ---------- slash commands ----------
 
     def command_catalog(self) -> CommandCatalogResponse:
-        return CommandCatalogResponse(items=[
-            CommandInfo(
-                name=row.name,
-                usage=row.usage,
-                description=row.description,
-                support=row.support,
-                intent=row.intent,
-                confirm=row.confirm,
-                note=row.note,
-                shortcut=row.shortcut,
-                subcommands=[
-                    {"name": name, "description": description}
-                    for name, description in row.subcommands
-                ],
-            )
-            for row in self._commands.catalog()
-        ])
+        return CommandCatalogResponse(
+            items=[
+                CommandInfo(
+                    name=row.name,
+                    usage=row.usage,
+                    description=row.description,
+                    support=row.support,
+                    intent=row.intent,
+                    confirm=row.confirm,
+                    note=row.note,
+                    shortcut=row.shortcut,
+                    subcommands=[
+                        {"name": name, "description": description}
+                        for name, description in row.subcommands
+                    ],
+                )
+                for row in self._commands.catalog()
+            ]
+        )
 
     def execute_command(
         self, line: str, session_id: str | None, confirmed: bool
@@ -308,8 +310,9 @@ class WebBackend:
         # A stale tab must not act on another tab's session. A null current means
         # the backend sits on an unstarted "new" view, so any concrete id is stale.
         if session_id is not None and session_id != current:
-            raise WebError("session_mismatch",
-                           "This tab is viewing a different session. Refresh first.", 409)
+            raise WebError(
+                "session_mismatch", "This tab is viewing a different session. Refresh first.", 409
+            )
 
     def _command_response(self, result) -> CommandResponse:
         with self._lock:
@@ -348,28 +351,21 @@ class WebBackend:
 
     def list_sessions(self, limit: int = 100) -> SessionListResponse:
         rows = self._conversation.list_sessions(max(1, min(limit, 500)))
-        # SessionStore.list() sorts by updated_at, which also advances on
-        # control records (rename / summary / distill / undo). The sidebar
-        # follows the last real message instead, so an older conversation never
-        # jumps ahead just because it was renamed or distilled.
-        rows = sorted(
-            rows,
-            key=lambda row: str(row.get("last_message_at") or row.get("updated_at") or ""),
-            reverse=True,
-        )
         current = self._conversation.current_id
-        return SessionListResponse(items=[
-            SessionInfo(
-                id=str(row["id"]),
-                title=str(row["title"]),
-                messages=int(row["messages"]),
-                started_at=str(row["started_at"]),
-                updated_at=str(row["updated_at"]),
-                last_message_at=str(row.get("last_message_at") or ""),
-                current=str(row["id"]) == current,
-            )
-            for row in rows
-        ])
+        return SessionListResponse(
+            items=[
+                SessionInfo(
+                    id=str(row["id"]),
+                    title=str(row["title"]),
+                    messages=int(row["messages"]),
+                    started_at=str(row["started_at"]),
+                    updated_at=str(row["updated_at"]),
+                    last_message_at=str(row.get("last_message_at") or ""),
+                    current=str(row["id"]) == current,
+                )
+                for row in rows
+            ]
+        )
 
     def history(self, session_id: str, limit: int = HISTORY_ITEM_LIMIT) -> HistoryResponse:
         self._validate_session_id(session_id)
@@ -392,7 +388,9 @@ class WebBackend:
                 "at": str(record.get("at") or ""),
             }
             if role == "message" and record.get("role") == "user":
-                items.append(HistoryItem(role="user", content=str(record.get("content") or ""), **base))
+                items.append(
+                    HistoryItem(role="user", content=str(record.get("content") or ""), **base)
+                )
             elif role == "assistant":
                 reasoning = record.get("reasoning")
                 block = None
@@ -407,24 +405,30 @@ class WebBackend:
                     for call in (record.get("tool_calls") or [])
                     if isinstance(call, dict)
                 ]
-                items.append(HistoryItem(
-                    role="assistant",
-                    content=str(record.get("content") or ""),
-                    reasoning=block,
-                    tool_calls=calls,
-                    interrupted=bool(record.get("interrupted")),
-                    **base,
-                ))
+                items.append(
+                    HistoryItem(
+                        role="assistant",
+                        content=str(record.get("content") or ""),
+                        reasoning=block,
+                        tool_calls=calls,
+                        interrupted=bool(record.get("interrupted")),
+                        **base,
+                    )
+                )
             elif role == "tool":
-                items.append(HistoryItem(
-                    role="tool",
-                    content=str(record.get("content") or "")[:TOOL_CONTENT_LIMIT],
-                    tool_name=str(record.get("name") or ""),
-                    tool_ok=bool(record.get("ok")),
-                    **base,
-                ))
+                items.append(
+                    HistoryItem(
+                        role="tool",
+                        content=str(record.get("content") or "")[:TOOL_CONTENT_LIMIT],
+                        tool_name=str(record.get("name") or ""),
+                        tool_ok=bool(record.get("ok")),
+                        **base,
+                    )
+                )
             elif role == "summary":
-                items.append(HistoryItem(role="summary", content=str(record.get("content") or ""), **base))
+                items.append(
+                    HistoryItem(role="summary", content=str(record.get("content") or ""), **base)
+                )
         return HistoryResponse(
             session_id=session.id,
             title=session.title(),
@@ -502,16 +506,18 @@ class WebBackend:
 
     def providers(self) -> ProviderListResponse:
         settings = self._app_service.settings
-        return ProviderListResponse(items=[
-            ProviderInfo(
-                key=option.key,
-                label=option.label,
-                configured=option.configured,
-                current=option.current,
-                endpoint=settings.provider_endpoint(option.key),
-            )
-            for option in settings.provider_options()
-        ])
+        return ProviderListResponse(
+            items=[
+                ProviderInfo(
+                    key=option.key,
+                    label=option.label,
+                    configured=option.configured,
+                    current=option.current,
+                    endpoint=settings.provider_endpoint(option.key),
+                )
+                for option in settings.provider_options()
+            ]
+        )
 
     def provider_action(self, provider: str, body: ProviderActionRequest) -> ActionResponse:
         """Provider credentials never leave the server; only booleans are returned."""
@@ -590,9 +596,7 @@ class WebBackend:
             raise WebError("turn_unavailable", "Could not start a request.", 503) from exc
         return turn
 
-    def _worker(
-        self, turn: ActiveTurn, text: str, token, pump: EventPump
-    ) -> None:
+    def _worker(self, turn: ActiveTurn, text: str, token, pump: EventPump) -> None:
         callbacks = TurnCallbacks(
             on_event=pump.on_event,
             on_delta=pump.on_delta,

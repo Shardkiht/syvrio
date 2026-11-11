@@ -1,9 +1,8 @@
 """LLM 首选 Provider 的离线回归：排序提示、回退、额度与缓存隔离。"""
+
 from __future__ import annotations
 
 import pytest
-
-pytestmark = pytest.mark.search
 
 from syvrio.agent.session import SessionStore
 from syvrio.agent.tools import build_tools
@@ -19,6 +18,8 @@ from syvrio.infra.search.cache import SearchCache
 from syvrio.infra.search.router import SearchRouter, _dedupe_failures
 from syvrio.infra.search.usage import UsageLimiter
 from syvrio.memory.service import MemoryService
+
+pytestmark = pytest.mark.search
 
 
 class _Provider:
@@ -44,9 +45,7 @@ def _strong(name: str, url: str) -> SearchResult:
 def test_auto_keeps_configured_order():
     first = _Provider("first", [_strong("first", "https://example.com/1")])
     second = _Provider("second", [_strong("second", "https://example.com/2")])
-    router = SearchRouter(
-        {"first": first, "second": second}, order=["first", "second"]
-    )
+    router = SearchRouter({"first": first, "second": second}, order=["first", "second"])
     outcome = router.search(SearchQuery("tibo"))
     assert outcome.provider == "first"
     assert not second.calls
@@ -74,15 +73,12 @@ def test_unavailable_preferred_provider_degrades_with_diagnostics():
     outcome = router.search(SearchQuery("tibo", preferred_provider="not_registered"))
     assert outcome.provider == "first"
     assert any(
-        item.provider == "not_registered" and item.kind == "unavailable"
-        for item in outcome.failed
+        item.provider == "not_registered" and item.kind == "unavailable" for item in outcome.failed
     )
 
 
 def test_preferred_provider_cannot_bypass_usage_limit():
-    limited = _Provider(
-        "searxng", [_strong("searxng", "https://example.com/limited")]
-    )
+    limited = _Provider("searxng", [_strong("searxng", "https://example.com/limited")])
     backup = _Provider("anysearch", [_strong("anysearch", "https://example.com/a")])
     limiter = UsageLimiter({"searxng": UsageLimit(daily=1)}, clock=lambda: 0.0)
     limiter.record("searxng")
@@ -170,9 +166,7 @@ def test_tool_schema_exposes_enabled_providers_and_preferred_param(tmp_path):
     assert "官方公告" in spec.description
     assert "个人爆料" in spec.description
 
-    outcome = tools.execute(
-        "search", {"query": "tibo", "preferred_provider": "anysearch"}
-    )
+    outcome = tools.execute("search", {"query": "tibo", "preferred_provider": "anysearch"})
     assert outcome.ok is True
     assert first.calls == []
     assert second.calls
@@ -187,9 +181,7 @@ def test_llm_multiple_providers_run_in_requested_order():
         {"first": first, "second": second, "third": third},
         order=["first", "second", "third"],
     )
-    outcome = router.search(
-        SearchQuery("tibo", providers=("second", "third"), strategy="auto")
-    )
+    outcome = router.search(SearchQuery("tibo", providers=("second", "third"), strategy="auto"))
     assert outcome.attempted == ["second"]
     assert not first.calls and not third.calls
     assert outcome.provider == "second"
@@ -198,12 +190,8 @@ def test_llm_multiple_providers_run_in_requested_order():
 def test_auto_falls_back_after_llm_list_quality_is_weak():
     weak = _Provider("searxng", [SearchResult("Unrelated", "https://example.com/w", "")])
     strong = _Provider("anysearch", [_strong("anysearch", "https://example.com/a")])
-    router = SearchRouter(
-        {"searxng": weak, "anysearch": strong}, order=["searxng", "anysearch"]
-    )
-    outcome = router.search(
-        SearchQuery("tibo", providers=("searxng",), strategy="auto")
-    )
+    router = SearchRouter({"searxng": weak, "anysearch": strong}, order=["searxng", "anysearch"])
+    outcome = router.search(SearchQuery("tibo", providers=("searxng",), strategy="auto"))
     assert outcome.attempted == ["searxng", "anysearch"]
     assert outcome.results[0].provider == "anysearch"
 
@@ -215,9 +203,7 @@ def test_auto_appends_remaining_configured_providers():
         {"searxng": weak, "open_websearch": backup},
         order=["open_websearch", "searxng"],
     )
-    outcome = router.search(
-        SearchQuery("tibo", providers=("searxng",), strategy="auto")
-    )
+    outcome = router.search(SearchQuery("tibo", providers=("searxng",), strategy="auto"))
     assert outcome.attempted == ["searxng", "open_websearch"]
     assert outcome.provider == "open_websearch"
 
@@ -275,9 +261,7 @@ def test_strict_only_calls_explicitly_selected_providers():
         {"first": first, "second": second, "third": third},
         order=["first", "second", "third"],
     )
-    outcome = router.search(
-        SearchQuery("tibo", providers=("second",), strategy="strict")
-    )
+    outcome = router.search(SearchQuery("tibo", providers=("second",), strategy="strict"))
     assert outcome.provider == "second"
     assert outcome.attempted == ["second"]
     assert not first.calls and not third.calls
@@ -289,9 +273,7 @@ def test_strict_requires_providers_and_reports_all_unavailable():
     with pytest.raises(ValueError, match="strict strategy requires"):
         router.search(SearchQuery("tibo", strategy="strict"))
 
-    outcome = router.search(
-        SearchQuery("tibo", providers=("ghost",), strategy="strict")
-    )
+    outcome = router.search(SearchQuery("tibo", providers=("ghost",), strategy="strict"))
     assert not first.calls
     assert not outcome.results
     assert "strict" in outcome.hint
@@ -389,9 +371,7 @@ def test_compare_truncation_keeps_actual_contributor_verification(tmp_path):
         cache=SearchCache(tmp_path / "cache.json", 60),
         max_requests=2,
     )
-    outcome = router.search(
-        SearchQuery("tibo codex", strategy="compare")
-    )
+    outcome = router.search(SearchQuery("tibo codex", strategy="compare"))
 
     assert outcome.verification == "complete"
     assert outcome.cached is False
@@ -477,17 +457,13 @@ def test_compare_cache_restores_incomplete_diagnostics(tmp_path):
 
     assert cached.cached is True
     assert cached.verification == "incomplete"
-    assert [(item.provider, item.kind) for item in cached.failed] == [
-        ("anysearch", "network")
-    ]
+    assert [(item.provider, item.kind) for item in cached.failed] == [("anysearch", "network")]
     assert "失败类型：network" in cached.hint
     assert len(first.calls) == 1 and len(failing.calls) == 1
 
 
 def test_compare_cache_keeps_same_url_not_independent(tmp_path):
-    first = _Provider(
-        "searxng", [_strong("searxng", "https://www.example.com/a?utm_source=x")]
-    )
+    first = _Provider("searxng", [_strong("searxng", "https://www.example.com/a?utm_source=x")])
     second = _Provider("anysearch", [_strong("anysearch", "https://example.com/a")])
     router = SearchRouter(
         {"searxng": first, "anysearch": second},
@@ -536,9 +512,7 @@ def test_compare_cache_missing_verification_is_unknown(tmp_path):
 
 
 def test_cache_hit_deduplicates_repeated_selection_failures(tmp_path):
-    provider = _Provider(
-        "fake", [_strong("fake", "https://example.com/result")]
-    )
+    provider = _Provider("fake", [_strong("fake", "https://example.com/result")])
     router = SearchRouter(
         {"fake": provider},
         order=["fake"],
@@ -551,9 +525,7 @@ def test_cache_hit_deduplicates_repeated_selection_failures(tmp_path):
 
     assert first.cached is False and cached.cached is True
     assert len(first.failed) == 1
-    assert [item.to_dict() for item in cached.failed] == [
-        item.to_dict() for item in first.failed
-    ]
+    assert [item.to_dict() for item in cached.failed] == [item.to_dict() for item in first.failed]
     assert len(provider.calls) == 1
 
 
@@ -564,10 +536,7 @@ def test_failure_dedupe_keeps_distinct_kinds_and_details():
         SearchFailure("p", "network", "a"),
         SearchFailure("p", "timeout", "a"),
     ]
-    assert [
-        (item.provider, item.kind, item.detail)
-        for item in _dedupe_failures(failures)
-    ] == [
+    assert [(item.provider, item.kind, item.detail) for item in _dedupe_failures(failures)] == [
         ("p", "timeout", "a"),
         ("p", "timeout", "b"),
         ("p", "network", "a"),
@@ -577,9 +546,7 @@ def test_failure_dedupe_keeps_distinct_kinds_and_details():
 def test_tool_exposes_multi_provider_schema_and_rejects_strict_without_list(tmp_path):
     first = _Provider("searxng", [_strong("searxng", "https://example.com/s")])
     second = _Provider("anysearch", [_strong("anysearch", "https://example.com/a")])
-    router = SearchRouter(
-        {"searxng": first, "anysearch": second}, order=["searxng", "anysearch"]
-    )
+    router = SearchRouter({"searxng": first, "anysearch": second}, order=["searxng", "anysearch"])
     config = Config(
         vault=tmp_path / "vault",
         llm=LLMConfig(),
@@ -628,8 +595,6 @@ def test_tool_schema_without_search_router_stays_valid(tmp_path):
     )
     service = MemoryService(config)
     service.init_vault()
-    tools = build_tools(
-        service, SessionStore(config.vault).create(), search_router=FetchOnly()
-    )
+    tools = build_tools(service, SessionStore(config.vault).create(), search_router=FetchOnly())
     preferred = tools._tools["search"].parameters["properties"]["preferred_provider"]
     assert preferred["enum"] == ["auto"]

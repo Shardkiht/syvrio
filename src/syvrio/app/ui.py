@@ -52,7 +52,9 @@ def styled_table(title: str) -> Table:
 
 def print_hits(query: str, hits, center: bool = False) -> None:
     if not hits:
-        console.print(padded("[dim]未找到相关记忆。[/dim]") if center else "[dim]未找到相关记忆。[/dim]")
+        console.print(
+            padded("[dim]未找到相关记忆。[/dim]") if center else "[dim]未找到相关记忆。[/dim]"
+        )
         return
     table = styled_table(f"检索：{query}")
     table.add_column("ID")

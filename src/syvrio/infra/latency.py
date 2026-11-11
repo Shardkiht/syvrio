@@ -1,4 +1,5 @@
 """Per-turn timing for chat requests. Only numeric measurements are logged."""
+
 from __future__ import annotations
 
 from collections.abc import Iterator
@@ -10,10 +11,11 @@ from time import monotonic
 
 from .diagnostics import record_event
 
-
 _turns = count(1)
 _calls = count(1)
-_active_turn: ContextVar[tuple[TurnLatency, int] | None] = ContextVar("active_turn_latency", default=None)
+_active_turn: ContextVar[tuple[TurnLatency, int] | None] = ContextVar(
+    "active_turn_latency", default=None
+)
 _active_model: ContextVar[TurnLatency | None] = ContextVar("active_model_latency", default=None)
 
 
@@ -29,8 +31,13 @@ class TurnLatency:
         self.seen: set[str] = set()
 
     def event(self, event: str, *, step: int | None = None, **state: bool | int) -> None:
-        record_event(f"latency.{event}", turn=self.id, step=self.step if step is None else step,
-                     at_ms=elapsed_ms(self.started), **state)
+        record_event(
+            f"latency.{event}",
+            turn=self.id,
+            step=self.step if step is None else step,
+            at_ms=elapsed_ms(self.started),
+            **state,
+        )
 
     @contextmanager
     def model_step(self) -> Iterator[float]:
@@ -86,4 +93,6 @@ def track_completion() -> Iterator[None]:
         yield
         ok = True
     finally:
-        trace.event("completion.finished", step=step, call=call, ok=ok, elapsed_ms=elapsed_ms(started))
+        trace.event(
+            "completion.finished", step=step, call=call, ok=ok, elapsed_ms=elapsed_ms(started)
+        )

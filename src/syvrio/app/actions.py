@@ -1,4 +1,5 @@
 """兼容适配：设置用例已迁至 application/settings.py，这里只做旧签名映射。"""
+
 from __future__ import annotations
 
 from ..agent.runtime import AgentRuntime

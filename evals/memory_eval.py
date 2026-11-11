@@ -44,17 +44,39 @@ CASES = [
     Case("事件地点", context={"location": "合成展馆", "location_kind": "event"}),
     Case("居住地点", context={"location": "合成居所", "location_kind": "residence"}),
     Case("缺少地点类型", context={"location": "合成展馆"}, expected="invalid"),
-    Case("当时情绪", context={"emotion": "当时开心", "emotion_at": "event", "emotion_source": "explicit"}),
-    Case("当前表达", context={"emotion": "如今想起感到遗憾", "emotion_at": "expression", "emotion_source": "explicit"}),
-    Case("推断情绪拒绝", context={"emotion": "似乎不开心", "emotion_source": "inferred"}, expected="invalid"),
-    Case("上下文凭据拦截", context={"location": "密码是 synthetic-only", "location_kind": "event"}, expected="blocked"),
+    Case(
+        "当时情绪",
+        context={"emotion": "当时开心", "emotion_at": "event", "emotion_source": "explicit"},
+    ),
+    Case(
+        "当前表达",
+        context={
+            "emotion": "如今想起感到遗憾",
+            "emotion_at": "expression",
+            "emotion_source": "explicit",
+        },
+    ),
+    Case(
+        "推断情绪拒绝",
+        context={"emotion": "似乎不开心", "emotion_source": "inferred"},
+        expected="invalid",
+    ),
+    Case(
+        "上下文凭据拦截",
+        context={"location": "密码是 synthetic-only", "location_kind": "event"},
+        expected="blocked",
+    ),
 ]
 
 
 def run_case(case: Case, vault: Path) -> str | None:
     candidate = {
-        "text": case.text, "topic": "synthetic", "confidence": case.confidence,
-        "kind": case.kind, "sensitive": case.sensitive, "context": case.context,
+        "text": case.text,
+        "topic": "synthetic",
+        "confidence": case.confidence,
+        "kind": case.kind,
+        "sensitive": case.sensitive,
+        "context": case.context,
     }
     try:
         extraction = parse_extraction(json.dumps({"memories": [candidate]}, ensure_ascii=False))
@@ -68,7 +90,9 @@ def run_case(case: Case, vault: Path) -> str | None:
     )
     seed = service.store.append("synthetic", case.seed) if case.seed else None
     result = service.memorize(case.text, source="synthetic-eval")
-    counts = {key: len(getattr(result, key)) for key in ("admitted", "queued", "duplicates", "blocked")}
+    counts = {
+        key: len(getattr(result, key)) for key in ("admitted", "queued", "duplicates", "blocked")
+    }
     if counts.get(case.expected) != 1 or sum(counts.values()) != 1:
         return f"预期 {case.expected}，实际 {counts}"
     if seed and case.expected == "queued" and result.queued[0].conflict_with != seed.id:
@@ -103,14 +127,32 @@ def run_contextual_eval(vault: Path) -> dict:
     from syvrio.memory.models import MemoryContext
 
     service = MemoryService(Config(vault=vault, retrieval=RetrievalConfig(method="keyword")))
-    old = service.store.append("preferences", "合成偏好早期状态", context=MemoryContext(valid_from="2020-01-01"))
+    old = service.store.append(
+        "preferences", "合成偏好早期状态", context=MemoryContext(valid_from="2020-01-01")
+    )
     new = service.evolve(old.id, "合成偏好后期状态", "2024-01-01")
-    target = service.store.append("events", "合成展览活动", context=MemoryContext(
-        event_time="2024-06", location="合成展馆甲", location_kind="event",
-        emotion="期待", emotion_source="explicit"))
-    service.store.append("events", "合成展览活动", context=MemoryContext(
-        event_time="2025-06", location="合成展馆乙", location_kind="event",
-        emotion="遗憾", emotion_source="explicit"))
+    target = service.store.append(
+        "events",
+        "合成展览活动",
+        context=MemoryContext(
+            event_time="2024-06",
+            location="合成展馆甲",
+            location_kind="event",
+            emotion="期待",
+            emotion_source="explicit",
+        ),
+    )
+    service.store.append(
+        "events",
+        "合成展览活动",
+        context=MemoryContext(
+            event_time="2025-06",
+            location="合成展馆乙",
+            location_kind="event",
+            emotion="遗憾",
+            emotion_source="explicit",
+        ),
+    )
     cases = [
         ("合成偏好", {"as_of": "2022-01-01"}, old.id),
         ("合成偏好", {}, new.id),
@@ -122,7 +164,11 @@ def run_contextual_eval(vault: Path) -> dict:
     for name in ("baseline", "contextual"):
         recall, reciprocal = 0.0, 0.0
         for query, filters, expected in cases:
-            hits = service.retriever.search(query, 5) if name == "baseline" else service.recall(query, 5, **filters)
+            hits = (
+                service.retriever.search(query, 5)
+                if name == "baseline"
+                else service.recall(query, 5, **filters)
+            )
             ids = [hit.id for hit in hits]
             recall += float(bool(ids) and ids[0] == expected)
             reciprocal += 1 / (ids.index(expected) + 1) if expected in ids else 0

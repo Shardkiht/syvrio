@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import ipaddress
+import json
 import sys
+from dataclasses import asdict
 from pathlib import Path
+from typing import Annotated
 
 import typer
 
 from .. import __version__
-
 from ..agent.session import SessionStore
 from ..infra.config import (
     Config,
@@ -15,14 +18,14 @@ from ..infra.config import (
     load_config,
     write_example_config,
 )
-from ..infra.gitops import GitError
 from ..infra.diagnostics import record_event, start_diagnostics, stop_diagnostics
-from ..infra.documents import DocumentError, SUPPORTED_SUFFIXES, read_document
+from ..infra.documents import SUPPORTED_SUFFIXES, DocumentError, read_document
+from ..infra.gitops import GitError
 from ..memory.extractor import ExtractorError, split_chunks
 from ..memory.service import MemoryService, get_service
 from .session_ui import print_sessions
 from .tui import run_chat
-from .ui import padded, console, fail, print_hits, styled_table
+from .ui import console, fail, padded, print_hits, styled_table
 
 app = typer.Typer(
     help="Syvrio — Local-first personal AI agent with persistent memory.",
@@ -36,7 +39,10 @@ VAULT_OPTION = typer.Option(None, "--vault", help="覆盖配置中的记忆库�
 
 
 @app.callback()
-def _root(ctx: typer.Context, version: bool = typer.Option(False, "--version", help="Show Syvrio version", is_eager=True)) -> None:
+def _root(
+    ctx: typer.Context,
+    version: bool = typer.Option(False, "--version", help="Show Syvrio version", is_eager=True),
+) -> None:
     """无子命令时直接进入对话；非交互环境回退到帮助。"""
     if version:
         typer.echo(f"Syvrio {__version__}")
@@ -64,12 +70,12 @@ def _service(config: Path | None, vault: Path | None) -> MemoryService:
 
 @app.command()
 def init(
-    vault: Path = typer.Option(default_vault_path(), "--vault", help="记忆库目录"),
+    vault: Annotated[Path | None, typer.Option("--vault", help="记忆库目录")] = None,
     config: Path | None = CONFIG_OPTION,
     force: bool = typer.Option(False, "--force", help="目标目录非空且不是记忆库时仍然继续"),
 ) -> None:
     """初始化记忆库与 Git 仓库。"""
-    vault = vault.expanduser().resolve()
+    vault = (vault if vault is not None else default_vault_path()).expanduser().resolve()
     if vault.exists() and any(vault.iterdir()) and not (vault / ".git").exists() and not force:
         fail(f"{vault} 非空且不是 Syvrio 记忆库；确认无误后加 --force。")
     config_path = config.expanduser() if config else default_config_path()
@@ -117,9 +123,7 @@ def setup(
         f"上下文：{result['context_window']} · 思考强度：{result['reasoning_effort'] or '默认'}"
     )
     if result["key_saved"]:
-        console.print(
-            f"[bold]API Key 已保存到系统凭据[/]（环境变量 {result['api_key_env']} 优先）"
-        )
+        console.print(f"[bold]API Key 已保存到系统凭据[/]（环境变量 {result['api_key_env']} 优先）")
     elif result["keyring_error"]:
         console.print(f"[#b8b8b8]{result['keyring_error']}[/]")
     if result["checked"]:
@@ -195,16 +199,23 @@ def note(
 
 @app.command("import")
 def import_memories(
-    path: Path = typer.Argument(..., help="要导入的文本、聊天导出或文档文件/目录", exists=True),
+    path: Annotated[
+        Path, typer.Argument(help="要导入的文本、聊天导出或文档文件/目录", exists=True)
+    ],
     apply: bool = typer.Option(False, "--apply", help="实际写入；默认只打印计划"),
     config: Path | None = CONFIG_OPTION,
     vault: Path | None = VAULT_OPTION,
 ) -> None:
     """导入文本或文档：AI 整理成条目，程序裁决写入；默认 dry-run（仍调用模型）。"""
-    files = sorted(
-        file for file in path.iterdir()
-        if file.is_file() and file.suffix.lower() in SUPPORTED_SUFFIXES
-    ) if path.is_dir() else [path]
+    files = (
+        sorted(
+            file
+            for file in path.iterdir()
+            if file.is_file() and file.suffix.lower() in SUPPORTED_SUFFIXES
+        )
+        if path.is_dir()
+        else [path]
+    )
     if not files:
         fail("没有找到支持导入的文件；目录只扫描当前层。")
         return
@@ -249,7 +260,9 @@ def import_memories(
     if apply and totals["queued"]:
         console.print("运行 syvrio pending 查看待确认条目。")
     if failed_files or failed_chunks:
-        console.print(f"部分导入失败：{failed_files} 个文件、{failed_chunks} 个文本块；已处理部分不会回滚。")
+        console.print(
+            f"部分导入失败：{failed_files} 个文件、{failed_chunks} 个文本块；已处理部分不会回滚。"
+        )
         raise typer.Exit(code=1)
 
 
@@ -268,8 +281,16 @@ def recall(
 ) -> None:
     """检索记忆。"""
     try:
-        hits = _service(config, vault).recall(query, limit, date_from=date_from,
-            date_to=date_to, location=location, emotion=emotion, as_of=as_of, view=view)
+        hits = _service(config, vault).recall(
+            query,
+            limit,
+            date_from=date_from,
+            date_to=date_to,
+            location=location,
+            emotion=emotion,
+            as_of=as_of,
+            view=view,
+        )
     except ValueError as exc:
         fail(str(exc))
         return
@@ -308,8 +329,6 @@ def profile(
 
 
 def _reflect(service: MemoryService, mode: str, requests: int) -> None:
-    from dataclasses import asdict
-    import json
 
     try:
         result = service.reflection.run(mode, requests, refresh_summary=mode == "profile")
@@ -338,7 +357,9 @@ def inferences(
     inference_id: str | None = typer.Argument(None),
     action: str | None = typer.Option(None, "--action", help="confirm / reject / correct"),
     text: str | None = typer.Option(None, "--text", help="更正后的假设内容"),
-    recover_tail: bool = typer.Option(False, "--recover-tail", help="显式恢复损坏尾行，保留原始字节"),
+    recover_tail: bool = typer.Option(
+        False, "--recover-tail", help="显式恢复损坏尾行，保留原始字节"
+    ),
     config: Path | None = CONFIG_OPTION,
     vault: Path | None = VAULT_OPTION,
 ) -> None:
@@ -355,7 +376,11 @@ def inferences(
                 raise ValueError("操作时必须提供推断 ID。")
             items = [service.review_inference(inference_id, action, text)]
         else:
-            items = [item for item in service.list_inferences() if not inference_id or item.id == inference_id]
+            items = [
+                item
+                for item in service.list_inferences()
+                if not inference_id or item.id == inference_id
+            ]
         for item in items:
             console.print(item.model_dump_json(), markup=False)
     except (KeyError, ValueError) as exc:
@@ -498,7 +523,9 @@ def history(
 
 @app.command()
 def commit(
-    push: bool | None = typer.Option(None, "--push/--no-push", help="是否推送到 remote；默认读取 auto_push"),
+    push: bool | None = typer.Option(
+        None, "--push/--no-push", help="是否推送到 remote；默认读取 auto_push"
+    ),
     config: Path | None = CONFIG_OPTION,
     vault: Path | None = VAULT_OPTION,
 ) -> None:
@@ -533,7 +560,9 @@ def status(
     """查看记忆库状态。"""
     info = _service(config, vault).status()
     console.print(f"记忆库：{info['vault']}")
-    console.print(f"主题 {info['topics']} · 条目 {info['entries']} · 待确认 {info['pending']} · 未提交 {info['dirty']}")
+    console.print(
+        f"主题 {info['topics']} · 条目 {info['entries']} · 待确认 {info['pending']} · 未提交 {info['dirty']}"
+    )
     console.print(f"检索 {info['retrieval']}")
 
 
@@ -554,16 +583,18 @@ def web(
     host: str = typer.Option("127.0.0.1", "--host", help="监听地址；默认仅 loopback"),
     port: int = typer.Option(8765, "--port", min=1, max=65535, help="服务端口 / 远程访问端口"),
     domain: str = typer.Option("", "--domain", help="本地域名；写入 hosts 映射并放行 Host/Origin"),
-    domain_ip: str = typer.Option("127.0.0.1", "--domain-ip", help="域名映射目标 IP；远程 Tailscale 填 100.x.y.z"),
-    map_only: bool = typer.Option(False, "--map-only", help="只写 hosts 映射并打印地址，不启动本机服务（远程访问）"),
+    domain_ip: str = typer.Option(
+        "127.0.0.1", "--domain-ip", help="域名映射目标 IP；远程 Tailscale 填 100.x.y.z"
+    ),
+    map_only: bool = typer.Option(
+        False, "--map-only", help="只写 hosts 映射并打印地址，不启动本机服务（远程访问）"
+    ),
     remove_domain: bool = typer.Option(False, "--remove-domain", help="删除该域名的 hosts 映射"),
     map_hosts: bool = typer.Option(True, "--hosts/--no-hosts", help="是否自动更新系统 hosts 文件"),
     config: Path | None = CONFIG_OPTION,
     vault: Path | None = VAULT_OPTION,
 ) -> None:
     """启动私有 Web 客户端，或为本机/远程实例配置本地域名映射。"""
-    import ipaddress
-
     from .web.hosts import ensure_hosts_mapping, normalize_domain, remove_hosts_mapping
     from .web.server import run_server
 

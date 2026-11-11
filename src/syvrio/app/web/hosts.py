@@ -5,6 +5,7 @@ touch DNS, never open a public port, and degrade to a manual instruction when
 the process lacks permission to write hosts. The Web server still listens on
 loopback only; the browser reaches it through the mapped hostname.
 """
+
 from __future__ import annotations
 
 import ipaddress
@@ -72,22 +73,31 @@ def _active_rows(text: str) -> list[tuple[str, list[str]]]:
     return rows
 
 
-def ensure_hosts_mapping(domain: str, ip: str = LOOPBACK, *, path: Path | None = None) -> HostsResult:
+def ensure_hosts_mapping(
+    domain: str, ip: str = LOOPBACK, *, path: Path | None = None
+) -> HostsResult:
     """Add ``ip domain`` once. Idempotent; never rewrites another mapping."""
     domain = normalize_domain(domain)
     target = path or hosts_path()
     try:
         data = target.read_bytes()
     except OSError as exc:
-        return HostsResult(domain, ip, target, False,
-                           message=f"Cannot read the hosts file ({exc}). "
-                                   f"Add manually: {mapping_line(domain, ip)}")
+        return HostsResult(
+            domain,
+            ip,
+            target,
+            False,
+            message=f"Cannot read the hosts file ({exc}). Add manually: {mapping_line(domain, ip)}",
+        )
     for address, names in _active_rows(data.decode("utf-8", errors="replace")):
         if domain in names:
             if address == ip:
                 return HostsResult(domain, ip, target, False, message="Already mapped.")
             return HostsResult(
-                domain, ip, target, False,
+                domain,
+                ip,
+                target,
+                False,
                 message=f"{domain} is already mapped to {address}; resolve that entry manually.",
             )
     separator = "\r\n" if b"\r\n" in data else "\n"
@@ -100,27 +110,44 @@ def ensure_hosts_mapping(domain: str, ip: str = LOOPBACK, *, path: Path | None =
             handle.write(payload)
     except PermissionError:
         return HostsResult(
-            domain, ip, target, False,
+            domain,
+            ip,
+            target,
+            False,
             message="Administrator/root permission is required to edit the hosts file. "
-                    f"Add manually: {mapping_line(domain, ip)}",
+            f"Add manually: {mapping_line(domain, ip)}",
         )
     except OSError as exc:
-        return HostsResult(domain, ip, target, False,
-                           message=f"Could not update the hosts file ({exc}). "
-                                   f"Add manually: {mapping_line(domain, ip)}")
-    return HostsResult(domain, ip, target, True, backup,
-                       message=f"Mapped {domain} -> {ip} (backup: {backup.name}).")
+        return HostsResult(
+            domain,
+            ip,
+            target,
+            False,
+            message=f"Could not update the hosts file ({exc}). "
+            f"Add manually: {mapping_line(domain, ip)}",
+        )
+    return HostsResult(
+        domain,
+        ip,
+        target,
+        True,
+        backup,
+        message=f"Mapped {domain} -> {ip} (backup: {backup.name}).",
+    )
 
 
-def remove_hosts_mapping(domain: str, ip: str = LOOPBACK, *, path: Path | None = None) -> HostsResult:
+def remove_hosts_mapping(
+    domain: str, ip: str = LOOPBACK, *, path: Path | None = None
+) -> HostsResult:
     """Remove the matching ``ip domain`` line (including an identical manual entry); keep everything else."""
     domain = normalize_domain(domain)
     target = path or hosts_path()
     try:
         data = target.read_bytes()
     except OSError as exc:
-        return HostsResult(domain, ip, target, False,
-                           message=f"Cannot read the hosts file ({exc}).")
+        return HostsResult(
+            domain, ip, target, False, message=f"Cannot read the hosts file ({exc})."
+        )
     lines = data.splitlines(keepends=True)
     kept: list[bytes] = []
     removed = False
@@ -138,10 +165,22 @@ def remove_hosts_mapping(domain: str, ip: str = LOOPBACK, *, path: Path | None =
         backup.write_bytes(data)
         target.write_bytes(b"".join(kept))
     except PermissionError:
-        return HostsResult(domain, ip, target, False,
-                           message="Administrator/root permission is required to edit the hosts file.")
+        return HostsResult(
+            domain,
+            ip,
+            target,
+            False,
+            message="Administrator/root permission is required to edit the hosts file.",
+        )
     except OSError as exc:
-        return HostsResult(domain, ip, target, False,
-                           message=f"Could not update the hosts file ({exc}).")
-    return HostsResult(domain, ip, target, True, backup,
-                       message=f"Removed {domain} -> {ip} (backup: {backup.name}).")
+        return HostsResult(
+            domain, ip, target, False, message=f"Could not update the hosts file ({exc})."
+        )
+    return HostsResult(
+        domain,
+        ip,
+        target,
+        True,
+        backup,
+        message=f"Removed {domain} -> {ip} (backup: {backup.name}).",
+    )

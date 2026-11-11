@@ -32,12 +32,19 @@ class HybridRetriever:
         ascii_terms = set(_ASCII_TERM.findall(query.lower())) if literal_gate else set()
         exact_fields = {hit.id: hit.matched_field for hit in keyword_hits if hit.matched_field}
         keyword_hits = [
-            hit for hit in keyword_hits
-            if (hit.id in exact_fields or not literal_gate
-                or (ascii_terms and not ascii_terms.isdisjoint(
-                    _ASCII_TERM.findall((hit.index_text or hit.text).lower())
-                ))
-                or bigram_coverage(query, hit.index_text or hit.text) >= MIN_QUERY_COVERAGE)
+            hit
+            for hit in keyword_hits
+            if (
+                hit.id in exact_fields
+                or not literal_gate
+                or (
+                    ascii_terms
+                    and not ascii_terms.isdisjoint(
+                        _ASCII_TERM.findall((hit.index_text or hit.text).lower())
+                    )
+                )
+                or bigram_coverage(query, hit.index_text or hit.text) >= MIN_QUERY_COVERAGE
+            )
         ]
         if not keyword_hits:
             return vector_hits[:limit]
@@ -50,8 +57,11 @@ class HybridRetriever:
         # RRF 完全平局（如 BM25 只剩虚词噪声时）按向量名次决胜；展示取向量侧命中，分数更有语义。
         ordered = sorted(
             scores.items(),
-            key=lambda item: (item[0] not in exact_fields, -item[1],
-                              vector_rank.get(item[0], len(vector_rank))),
+            key=lambda item: (
+                item[0] not in exact_fields,
+                -item[1],
+                vector_rank.get(item[0], len(vector_rank)),
+            ),
         )[:limit]
         by_id: dict[str, SearchHit] = {}
         for hits in (vector_hits, keyword_hits):
@@ -59,6 +69,7 @@ class HybridRetriever:
                 by_id.setdefault(hit.id, hit)
         return [
             by_id[entry_id].model_copy(update={"matched_field": exact_fields[entry_id]})
-            if entry_id in exact_fields else by_id[entry_id]
+            if entry_id in exact_fields
+            else by_id[entry_id]
             for entry_id, _ in ordered
         ]

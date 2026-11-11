@@ -9,33 +9,43 @@ from datetime import date
 from itertools import groupby, islice
 from threading import Event
 
-from ..infra.config import ChatConfig, Config
+from ..infra.config import ChatConfig, Config, load_config
+from ..infra.documents import document_paths
 from ..infra.latency import TurnLatency, elapsed_ms, track_turn
 from ..infra.tokens import truncate_to_tokens
-from ..infra.documents import document_paths
 from ..llm import (
     AssistantTurn,
     ChatModel,
     ChatModelError,
     GenerationCancelled,
     LiteLLMChatModel,
+    LLMSummarizer,
     OpenAISummarizer,
     Summarizer,
     ToolCall,
     Usage,
 )
-from ..memory.extractor import split_chunks
 from ..memory.detect import redact_secrets
+from ..memory.extractor import LLMExtractor, split_chunks
 from ..memory.service import MemoryService, load_persona
-from .context import ContextManager
+from .context import ContextManager, record_to_message
 from .prompts import build_system_prompt
-from .recall import RecallQueryBuilder, direct_recall_field, memory_references, should_auto_recall
+from .recall import (
+    RecallQueryBuilder,
+    direct_recall_field,
+    memory_references,
+    should_auto_recall,
+)
 from .session import Session, SessionStore, new_message_id
 from .tools import (
-    PARALLEL_NETWORK_LIMIT, PARALLEL_TOOLS, ToolOutcome, ToolRegistry,
-    build_tools, cancelled_tool, compact_tool_outputs,
+    PARALLEL_NETWORK_LIMIT,
+    PARALLEL_TOOLS,
+    ToolOutcome,
+    ToolRegistry,
+    build_tools,
+    cancelled_tool,
+    compact_tool_outputs,
 )
-
 
 DISTILL_MAX_CHARS = 12000
 MEMORIZE_BATCH_LIMIT = 8
@@ -63,8 +73,12 @@ def _merged_memorize_text(calls: list[ToolCall], user_text: str) -> str | None:
 
 
 def _tool_results(
-    tools: ToolRegistry, calls: list[ToolCall], on_progress: Callable[[str], None] | None,
-    cancel: Event | None, *, user_text: str | None = None,
+    tools: ToolRegistry,
+    calls: list[ToolCall],
+    on_progress: Callable[[str], None] | None,
+    cancel: Event | None,
+    *,
+    user_text: str | None = None,
 ) -> Iterator[tuple[ToolCall, ToolOutcome]]:
     def ready(call: ToolCall) -> bool:
         if on_progress is not None and not (cancel and cancel.is_set()):
@@ -82,7 +96,12 @@ def _tool_results(
                 merged = _merged_memorize_text(batch, user_text)
                 if merged is None:
                     for call in batch:
-                        yield call, tools.execute(call.name, call.arguments) if ready(call) else cancelled_tool()
+                        yield (
+                            call,
+                            tools.execute(call.name, call.arguments)
+                            if ready(call)
+                            else cancelled_tool(),
+                        )
                     continue
                 first, *rest = batch
                 if not ready(first):
@@ -90,22 +109,35 @@ def _tool_results(
                         yield call, cancelled_tool()
                     continue
                 outcome = tools.execute(first.name, {"text": merged})
-                yield first, replace(outcome, display=f"{outcome.display} ({len(batch)} calls batched)")
+                yield (
+                    first,
+                    replace(outcome, display=f"{outcome.display} ({len(batch)} calls batched)"),
+                )
                 for call in rest:
                     payload = {"batched_with": first.id, "ok": outcome.ok}
-                    yield call, ToolOutcome(
-                        outcome.ok, json.dumps(payload), "See the shared memory write result", data=payload
+                    yield (
+                        call,
+                        ToolOutcome(
+                            outcome.ok,
+                            json.dumps(payload),
+                            "See the shared memory write result",
+                            data=payload,
+                        ),
                     )
             continue
         if batch_kind == "serial":
             for call in group:
-                yield call, tools.execute(call.name, call.arguments) if ready(call) else cancelled_tool()
+                yield (
+                    call,
+                    tools.execute(call.name, call.arguments) if ready(call) else cancelled_tool(),
+                )
             continue
         # A non-network call is a barrier. Keep each result paired in model order.
         while batch := list(islice(group, PARALLEL_NETWORK_LIMIT)):
             waits = [
                 tools.start(call.name, call.arguments, cancel=cancel, shared_deadline=True)
-                if ready(call) else cancelled_tool
+                if ready(call)
+                else cancelled_tool
                 for call in batch
             ]
             for call, wait in zip(batch, waits, strict=True):
@@ -189,12 +221,7 @@ class AgentRuntime:
         默认从 service 记住的配置路径重读；调用方持有新配置对象时直接传入，
         避免落盘与重读之间的竞态把切换回滚。
         """
-        from ..llm import LLMSummarizer, LiteLLMChatModel
-        from ..memory.extractor import LLMExtractor
-
         if config is None:
-            from ..infra.config import load_config
-
             path = self.service.config_path
             config = load_config(path) if path else load_config()
         self.service.config.llm = config.llm
@@ -251,15 +278,28 @@ class AgentRuntime:
         try:
             with track_turn(cancel) as latency:
                 return self._run_ask(
-                    session, text, on_event, on_delta, on_progress, cancel,
-                    latency, on_user_message, on_thinking, on_tool,
+                    session,
+                    text,
+                    on_event,
+                    on_delta,
+                    on_progress,
+                    cancel,
+                    latency,
+                    on_user_message,
+                    on_thinking,
+                    on_tool,
                 )
         except GenerationCancelled as exc:
             partial = getattr(exc, "partial_content", "")
-            self._append_assistant(session, AssistantTurn(
-                content=partial + "\n\n*(generation stopped by user)*",
-                reasoning_content=getattr(exc, "partial_reasoning", ""),
-            ), on_thinking, interrupted=True)
+            self._append_assistant(
+                session,
+                AssistantTurn(
+                    content=partial + "\n\n*(generation stopped by user)*",
+                    reasoning_content=getattr(exc, "partial_reasoning", ""),
+                ),
+                on_thinking,
+                interrupted=True,
+            )
             raise
         finally:
             self._active_ask = None
@@ -312,7 +352,9 @@ class AgentRuntime:
         recall_events: list[str] = []
         started = time.monotonic()
         latency.event("recall.started")
-        memory_context = self._auto_recall(session, text, config, recall_queries, recall_events.append)
+        memory_context = self._auto_recall(
+            session, text, config, recall_queries, recall_events.append
+        )
         latency.event("recall.finished", elapsed_ms=elapsed_ms(started))
         if cancel is not None and cancel.is_set():
             raise GenerationCancelled("Stopped by user")
@@ -325,8 +367,12 @@ class AgentRuntime:
             current_id=message_id,
             memory_context=memory_context,
         )
-        latency.event("context.finished", elapsed_ms=elapsed_ms(started),
-                      estimated_tokens=plan.estimated_tokens, compacted=plan.compacted)
+        latency.event(
+            "context.finished",
+            elapsed_ms=elapsed_ms(started),
+            estimated_tokens=plan.estimated_tokens,
+            compacted=plan.compacted,
+        )
         self.last_plan = plan
         self.last_plan_session = session.id
         events: list[str] = []
@@ -349,8 +395,9 @@ class AgentRuntime:
                     f"{flushed.get('queued', 0)} pending"
                 )
 
-        tools = build_tools(self.service, session, timeout=config.tool_timeout,
-                            file_paths=document_paths(text))
+        tools = build_tools(
+            self.service, session, timeout=config.tool_timeout, file_paths=document_paths(text)
+        )
         messages = plan.messages
         usage = Usage()
         steps = 0
@@ -361,21 +408,36 @@ class AgentRuntime:
             with latency.model_step() as started:
                 try:
                     turn = self._chat_with_retry(
-                        model, messages, schemas, on_delta=on_delta, cancel=cancel, on_thinking=on_thinking,
+                        model,
+                        messages,
+                        schemas,
+                        on_delta=on_delta,
+                        cancel=cancel,
+                        on_thinking=on_thinking,
                     )
                 except GenerationCancelled:
                     raise
                 except ChatModelError as exc:
                     if reasoning := getattr(exc, "partial_reasoning", ""):
-                        self._append_assistant(session, AssistantTurn(
-                            content=getattr(exc, "partial_content", "") + "\n\n*(generation interrupted)*",
-                            reasoning_content=reasoning,
-                        ), on_thinking, interrupted=True)
+                        self._append_assistant(
+                            session,
+                            AssistantTurn(
+                                content=getattr(exc, "partial_content", "")
+                                + "\n\n*(generation interrupted)*",
+                                reasoning_content=reasoning,
+                            ),
+                            on_thinking,
+                            interrupted=True,
+                        )
                     raise
-                latency.event("model.finished", ok=True, elapsed_ms=elapsed_ms(started),
-                              prompt_tokens=turn.usage.prompt_tokens,
-                              completion_tokens=turn.usage.completion_tokens,
-                              tool_count=len(turn.tool_calls))
+                latency.event(
+                    "model.finished",
+                    ok=True,
+                    elapsed_ms=elapsed_ms(started),
+                    prompt_tokens=turn.usage.prompt_tokens,
+                    completion_tokens=turn.usage.completion_tokens,
+                    tool_count=len(turn.tool_calls),
+                )
                 return turn
 
         while steps < config.max_tool_steps:
@@ -393,8 +455,9 @@ class AgentRuntime:
             latency.event("tools.started", tool_count=len(turn.tool_calls))
             results = _tool_results(tools, turn.tool_calls, on_progress, cancel, user_text=text)
             for index, (call, outcome) in enumerate(results, 1):
-                latency.event("tool.finished", tool_index=index, ok=outcome.ok,
-                              elapsed_ms=outcome.duration_ms)
+                latency.event(
+                    "tool.finished", tool_index=index, ok=outcome.ok, elapsed_ms=outcome.duration_ms
+                )
                 content = truncate_to_tokens(outcome.content, 2000)
                 self.sessions.append(
                     session,
@@ -408,9 +471,7 @@ class AgentRuntime:
                         "content": content,
                     },
                 )
-                messages.append(
-                    {"role": "tool", "tool_call_id": call.id, "content": content}
-                )
+                messages.append({"role": "tool", "tool_call_id": call.id, "content": content})
                 # Report the outcome just before its text so the UI can pair
                 # the two without parsing the payload.
                 if on_tool is not None:
@@ -506,9 +567,7 @@ class AgentRuntime:
             except Exception as exc:
                 stats["error"] = str(exc)
                 # 留下失败标记：启动补沉淀据此识别"有 closed 但没沉淀成"的会话。
-                self.sessions.append(
-                    session, {"type": "extraction_error", "error": str(exc)[:200]}
-                )
+                self.sessions.append(session, {"type": "extraction_error", "error": str(exc)[:200]})
         self.sessions.append(session, {"type": "closed"})
         return stats
 
@@ -620,8 +679,7 @@ class AgentRuntime:
                 (
                     record
                     for record in reversed(records)
-                    if record.get("type") == "message"
-                    and record.get("role") == "user"
+                    if record.get("type") == "message" and record.get("role") == "user"
                 ),
                 None,
             )
@@ -649,7 +707,11 @@ class AgentRuntime:
         return f"{prompt}\n\n当前日期：{date.today().isoformat()}"
 
     def _auto_recall(
-        self, session: Session, text: str, config: ChatConfig, recall_queries: RecallQueryBuilder,
+        self,
+        session: Session,
+        text: str,
+        config: ChatConfig,
+        recall_queries: RecallQueryBuilder,
         on_event: Callable[[str], None] | None = None,
     ) -> str:
         if config.auto_recall <= 0:
@@ -697,8 +759,12 @@ class AgentRuntime:
         return totals
 
     def _append_assistant(
-        self, session: Session, turn: AssistantTurn,
-        on_thinking: Callable[[ThinkingUpdate], None] | None = None, *, interrupted: bool = False,
+        self,
+        session: Session,
+        turn: AssistantTurn,
+        on_thinking: Callable[[ThinkingUpdate], None] | None = None,
+        *,
+        interrupted: bool = False,
     ) -> dict:
         record = {
             "type": "assistant",
@@ -713,8 +779,10 @@ class AgentRuntime:
             record["interrupted"] = True
         if turn.reasoning_content or turn.reasoning_fragments:
             record["reasoning"] = {
-                "text": turn.reasoning_content, "fragments": turn.reasoning_fragments,
-                "source": turn.reasoning_source, "seconds": turn.reasoning_seconds,
+                "text": turn.reasoning_content,
+                "fragments": turn.reasoning_fragments,
+                "source": turn.reasoning_source,
+                "seconds": turn.reasoning_seconds,
             }
         saved = self.sessions.append(session, record)
         if on_thinking is not None and turn.reasoning_content:
@@ -724,8 +792,6 @@ class AgentRuntime:
 
     @staticmethod
     def _message_from_record(record: dict) -> dict:
-        from .context import record_to_message
-
         return record_to_message(record) or {"role": "assistant", "content": ""}
 
     def _chat_with_retry(
@@ -740,7 +806,11 @@ class AgentRuntime:
         native_adapter = isinstance(model, LiteLLMChatModel)
         if not native_adapter and any("reasoning_source" in message for message in messages):
             messages = [
-                {key: value for key, value in message.items() if key not in {"reasoning_source", "reasoning_content"}}
+                {
+                    key: value
+                    for key, value in message.items()
+                    if key not in {"reasoning_source", "reasoning_content"}
+                }
                 for message in messages
             ]
         if on_delta is not None or on_thinking is not None:

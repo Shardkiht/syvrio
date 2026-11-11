@@ -7,7 +7,7 @@ from typing import Callable
 from ..infra.config import ChatConfig
 from ..infra.tokens import estimate_messages_tokens, estimate_tokens
 from ..llm import Summarizer
-from .session import Session, SessionStore, new_message_id, transcript, dated_message
+from .session import Session, SessionStore, dated_message, new_message_id, transcript
 
 SUMMARY_MAX_CHARS = 1200
 
@@ -87,11 +87,13 @@ def records_to_messages(records: list[dict]) -> list[dict]:
         # A process may stop after a tool has run but before its result is
         # saved. Complete the request history without rerunning the tool.
         for call_id in pending:
-            messages.append({
-                "role": "tool",
-                "tool_call_id": call_id,
-                "content": "Tool result was not recorded. Execution status and side effects are unknown.",
-            })
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "content": "Tool result was not recorded. Execution status and side effects are unknown.",
+                }
+            )
 
     for record in records:
         message = record_to_message(record)
@@ -156,9 +158,17 @@ class ContextManager:
             if current_id is None or record.get("id") != current_id
         ]
         summary_text = session.summary_text()
-        references = f"<long_term_memory>\n{memory_context}\n</long_term_memory>" if memory_context.strip() else ""
-        base_tokens = (estimate_tokens(system_prompt) + estimate_tokens(current_text)
-                       + estimate_tokens(references) + 16)
+        references = (
+            f"<long_term_memory>\n{memory_context}\n</long_term_memory>"
+            if memory_context.strip()
+            else ""
+        )
+        base_tokens = (
+            estimate_tokens(system_prompt)
+            + estimate_tokens(current_text)
+            + estimate_tokens(references)
+            + 16
+        )
         total = base_tokens + estimate_tokens(summary_text) + records_tokens(history)
         compacted = False
         evicted_total = 0
@@ -234,11 +244,15 @@ class ContextManager:
             distilled_ids: list[str] = []
             if user_records and self.flush:
                 try:
-                    flushed = self.flush([dated_message(record) for record in user_records], session)
+                    flushed = self.flush(
+                        [dated_message(record) for record in user_records], session
+                    )
                 except Exception as exc:
                     flushed = {"error": str(exc)}
                 if flushed.get("error"):
-                    events.append(f"Memory distillation during compaction failed: {flushed['error']}")
+                    events.append(
+                        f"Memory distillation during compaction failed: {flushed['error']}"
+                    )
                 else:
                     distilled_ids = [record["id"] for record in user_records]
 
@@ -267,7 +281,9 @@ class ContextManager:
             )
             history = history[cutoff:]
             evicted_total += cutoff
-            events.append(f"Context compacted: {cutoff} earlier records → {len(summary_text)}-character summary")
+            events.append(
+                f"Context compacted: {cutoff} earlier records → {len(summary_text)}-character summary"
+            )
             if self._fits(history, summary_text, base_tokens):
                 break
             keep_tokens = max(400, keep_tokens // 2)

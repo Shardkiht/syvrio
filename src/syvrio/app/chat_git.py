@@ -2,6 +2,7 @@
 
 Git 同步不占用聊天 busy；锁和任务生命周期在 GitSyncService，界面只负责展示。
 """
+
 from __future__ import annotations
 
 from functools import partial
@@ -115,9 +116,7 @@ class ChatGitMixin:
         if target is not None and target.is_mounted:
             target.update_progress(stages)
 
-    def _git_finished(
-        self, screen: GitScreen | None, result: SyncResult, trigger: str
-    ) -> None:
+    def _git_finished(self, screen: GitScreen | None, result: SyncResult, trigger: str) -> None:
         self._git_sync_running = False
         target = screen if screen is not None and screen.is_mounted else self._git_screen
         if target is not None and target.is_mounted:
@@ -134,7 +133,9 @@ class ChatGitMixin:
             self.notify("Git synchronization completed.")
         else:
             detail = result.error or result.status
-            self.notify(f"Git synchronization {result.status}: {detail}", severity="warning", timeout=8)
+            self.notify(
+                f"Git synchronization {result.status}: {detail}", severity="warning", timeout=8
+            )
 
     def _notify_scheduled_result(self, result: SyncResult) -> None:
         if result.status == "success":

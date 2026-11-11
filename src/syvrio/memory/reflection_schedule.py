@@ -2,6 +2,7 @@
 
 只读取状态和文件元信息供 UI 轻量检查；完整事实扫描只在 Worker 中执行。
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -11,6 +12,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ..time import parse_timestamp, serialize_timestamp, utc_now
 from .detect import contains_secret
 from .inference import source_fingerprint
 from .models import Entry
@@ -19,13 +21,36 @@ if TYPE_CHECKING:
     from .reflection import ReflectionEngine, ReflectionResult
 
 REFLECTION_STATE_VERSION = 1
-PROFILE_IMPORTANT_TOPICS = frozenset({
-    "preferences", "goals", "constraints", "schedule", "career", "work",
-    "偏好", "喜好", "目标", "约束", "习惯", "日程", "职业", "工作",
-})
+PROFILE_IMPORTANT_TOPICS = frozenset(
+    {
+        "preferences",
+        "goals",
+        "constraints",
+        "schedule",
+        "career",
+        "work",
+        "偏好",
+        "喜好",
+        "目标",
+        "约束",
+        "习惯",
+        "日程",
+        "职业",
+        "工作",
+    }
+)
 PROFILE_IMPORTANT_KEYWORDS = (
-    "长期", "目标", "职业", "工作", "转行", "计划", "方向",
-    "goal", "career", "long-term", "long term",
+    "长期",
+    "目标",
+    "职业",
+    "工作",
+    "转行",
+    "计划",
+    "方向",
+    "goal",
+    "career",
+    "long-term",
+    "long term",
 )
 MAX_AUTO_RETRY_HOURS = 24.0
 
@@ -88,15 +113,18 @@ class ReflectionSchedule:
             return default
         if isinstance(data.get("last_seen_facts_signature"), str):
             default["last_seen_facts_signature"] = data["last_seen_facts_signature"]
-        if isinstance(data.get("last_checked_at"), str):
-            default["last_checked_at"] = data["last_checked_at"]
+        if (checked_at := data.get("last_checked_at")) is not None:
+            default["last_checked_at"] = serialize_timestamp(parse_timestamp(checked_at))
         for section in ("profile", "dream"):
             raw = data.get(section)
             if not isinstance(raw, dict):
                 continue
             for key in default[section]:
                 if key in raw:
-                    default[section][key] = raw[key]
+                    value = raw[key]
+                    if key.endswith("_at") and value is not None:
+                        value = serialize_timestamp(parse_timestamp(value))
+                    default[section][key] = value
         for section in ("profile", "dream"):
             for key in ("pending_changes", "consecutive_failures", "remaining_batches"):
                 if key in default[section] and type(default[section][key]) is not int:
@@ -117,17 +145,11 @@ class ReflectionSchedule:
 
     @staticmethod
     def parse_time(value) -> datetime | None:
-        if not isinstance(value, str):
-            return None
-        try:
-            parsed = datetime.fromisoformat(value)
-        except ValueError:
-            return None
-        return parsed if parsed.tzinfo is not None else None
+        return parse_timestamp(value) if value is not None else None
 
     @staticmethod
     def stamp(now: datetime) -> str:
-        return now.isoformat(timespec="seconds")
+        return serialize_timestamp(now.replace(microsecond=0))
 
     def elapsed_hours(self, value, now: datetime) -> float | None:
         parsed = self.parse_time(value)
@@ -170,14 +192,21 @@ class ReflectionSchedule:
         if not isinstance(data, dict):
             return {}, set()
         raw = data.get("fingerprints")
-        fingerprints = {
-            key: value for key, value in raw.items()
-            if isinstance(key, str) and isinstance(value, str)
-        } if isinstance(raw, dict) else {}
+        fingerprints = (
+            {
+                key: value
+                for key, value in raw.items()
+                if isinstance(key, str) and isinstance(value, str)
+            }
+            if isinstance(raw, dict)
+            else {}
+        )
         raw_important = data.get("important_ids")
-        important = {
-            value for value in raw_important if isinstance(value, str)
-        } if isinstance(raw_important, list) else set()
+        important = (
+            {value for value in raw_important if isinstance(value, str)}
+            if isinstance(raw_important, list)
+            else set()
+        )
         return fingerprints, important
 
     def write_fingerprints(self, fingerprints: dict[str, str], important_ids: list[str]) -> None:
@@ -192,29 +221,28 @@ class ReflectionSchedule:
             temporary.write_text(json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8")
             temporary.replace(self.fingerprints_path)
 
-    def facts_changes(self, entries: list[Entry], previous: dict[str, str],
-                      remembered_important: set[str]) -> FactChanges:
+    def facts_changes(
+        self, entries: list[Entry], previous: dict[str, str], remembered_important: set[str]
+    ) -> FactChanges:
         current = {entry.id: source_fingerprint(entry) for entry in entries}
         new_ids = set(current) - set(previous)
         changed_ids = {
-            key for key, value in current.items()
-            if key in previous and previous[key] != value
+            key for key, value in current.items() if key in previous and previous[key] != value
         }
         removed_ids = set(previous) - set(current)
         important_current = [entry.id for entry in entries if self.important_entry(entry)]
         # 只有本轮新增、更正或删除的事实才参与“重要变化”判断；
         # 历史中已存在的重要事实不能把之后的普通变更升级为重要变更。
-        important_new = any(
-            self.important_entry(entry) for entry in entries if entry.id in new_ids
-        )
+        important_new = any(self.important_entry(entry) for entry in entries if entry.id in new_ids)
         important_changed = any(
             entry.id in remembered_important or self.important_entry(entry)
-            for entry in entries if entry.id in changed_ids
+            for entry in entries
+            if entry.id in changed_ids
         )
         important_removed = any(key in remembered_important for key in removed_ids)
-        important_ids = sorted(set(important_current) | set(
-            key for key in removed_ids if key in remembered_important
-        ))
+        important_ids = sorted(
+            set(important_current) | set(key for key in removed_ids if key in remembered_important)
+        )
         digest = hashlib.sha256(
             "|".join(f"{key}:{current[key]}" for key in sorted(current)).encode("utf-8")
         ).hexdigest()
@@ -228,7 +256,7 @@ class ReflectionSchedule:
 
     def check_due(self, now: datetime | None = None) -> bool:
         """UI 线程可调用的轻量检查：只读状态和文件元信息，不扫描记忆内容。"""
-        now = now or datetime.now().astimezone()
+        now = now or utc_now()
         config = self.service.config.chat
         state = self.load()
         changed = self.engine._facts_signature() != state["last_seen_facts_signature"]
@@ -251,9 +279,7 @@ class ReflectionSchedule:
         dream_pending = bool(dream.get("pending"))
         summary_needs = self.summary_needs_refresh()
         dream_ready = (
-            not dream_blocked
-            and (changed or dream_pending)
-            and (dream_due or dream_retry)
+            not dream_blocked and (changed or dream_pending) and (dream_due or dream_retry)
         )
         profile_ready = not profile_blocked and (
             (changed and (profile_due or profile_cool or profile_retry))
@@ -272,7 +298,7 @@ class ReflectionSchedule:
         """在 Worker 中扫描一次事实变化，决定本轮自动任务；不调用模型。"""
         if self.engine.running:
             return None
-        now = now or datetime.now().astimezone()
+        now = now or utc_now()
         config = self.service.config.chat
         state = self.load()
         with self.service.write_lock:
@@ -287,9 +313,15 @@ class ReflectionSchedule:
         profile, dream = state["profile"], state["dream"]
         profile_elapsed = self.elapsed_hours(profile.get("last_attempt_at"), now)
         dream_elapsed = self.elapsed_hours(dream.get("last_attempt_at"), now)
-        profile_due = profile_elapsed is None or profile_elapsed >= max(0.1, config.profile_auto_interval_hours)
-        profile_cool = profile_elapsed is None or profile_elapsed >= max(0.1, config.profile_min_cooldown_hours)
-        dream_due = dream_elapsed is None or dream_elapsed >= max(0.1, config.dream_auto_interval_hours)
+        profile_due = profile_elapsed is None or profile_elapsed >= max(
+            0.1, config.profile_auto_interval_hours
+        )
+        profile_cool = profile_elapsed is None or profile_elapsed >= max(
+            0.1, config.profile_min_cooldown_hours
+        )
+        dream_due = dream_elapsed is None or dream_elapsed >= max(
+            0.1, config.dream_auto_interval_hours
+        )
         profile_retry = self.retry_due(profile, now)
         dream_retry = self.retry_due(dream, now)
         profile_blocked = self.retry_blocked(profile, now)
@@ -316,10 +348,7 @@ class ReflectionSchedule:
         profile_pending = (
             pending_changes > 0 or pending_important or summary_stale or pending_inferences
         )
-        valuable_now = (
-            pending_important
-            or pending_changes >= max(1, config.profile_min_changes)
-        )
+        valuable_now = pending_important or pending_changes >= max(1, config.profile_min_changes)
         profile_candidate = (
             not profile_blocked
             and profile_pending
@@ -329,9 +358,7 @@ class ReflectionSchedule:
         dream_pending = bool(dream.get("pending")) or (
             bool(entries) if not baseline else baseline != changes.digest
         )
-        dream_candidate = (
-            not dream_blocked and dream_pending and (dream_due or dream_retry)
-        )
+        dream_candidate = not dream_blocked and dream_pending and (dream_due or dream_retry)
 
         state["last_seen_facts_signature"] = self.engine._facts_signature()
         state["last_checked_at"] = self.stamp(now)
@@ -367,12 +394,13 @@ class ReflectionSchedule:
             return "validation"
         return "request"
 
-    def record_run(self, mode: str, result: ReflectionResult,
-                   entries: list[Entry] | None, auto: bool) -> None:
+    def record_run(
+        self, mode: str, result: ReflectionResult, entries: list[Entry] | None, auto: bool
+    ) -> None:
         # 无新请求但发布了已校验缓存时也算进展，需要同步自动调度状态。
         if result.requests == 0 and result.completed == 0 and not auto:
             return
-        now = datetime.now().astimezone()
+        now = utc_now()
         state = self.load()
         section = state["profile" if mode == "profile" else "dream"]
         if result.cancelled:
@@ -427,7 +455,7 @@ class ReflectionSchedule:
         self.save(state)
 
     def overview(self, now: datetime | None = None) -> dict:
-        now = now or datetime.now().astimezone()
+        now = now or utc_now()
         state = self.load()
         config = self.service.config.chat
         result = {}
@@ -443,8 +471,13 @@ class ReflectionSchedule:
             if retry is not None:
                 next_at = retry if blocked else now
             count = int(section.get("pending_changes") or 0)
-            if mode == "profile" and not blocked and last and (
-                section.get("pending_important") or count >= max(1, config.profile_min_changes)
+            if (
+                mode == "profile"
+                and not blocked
+                and last
+                and (
+                    section.get("pending_important") or count >= max(1, config.profile_min_changes)
+                )
             ):
                 early = last + timedelta(hours=max(0.1, cooldown))
                 if early < next_at:

@@ -8,12 +8,21 @@ from .models import Entry
 
 FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.S)
 ENTRY_LINE_RE = re.compile(r"^- (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}) — (.*)$")
-COMMENT_LINE_RE = re.compile(
-    r"^- <!-- ([^>]+) --> (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}) — (.*)$"
-)
+COMMENT_LINE_RE = re.compile(r"^- <!-- ([^>]+) --> (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}) — (.*)$")
 TAG_AT_END_RE = re.compile(r"\s+`([A-Za-z_][\w-]*)=([^`]*)`$")
 KNOWN_TAG_KEYS = frozenset(
-    {"id", "status", "supersedes", "source", "confidence", "note", "session", "message", "context", "change_kind"}
+    {
+        "id",
+        "status",
+        "supersedes",
+        "source",
+        "confidence",
+        "note",
+        "session",
+        "message",
+        "context",
+        "change_kind",
+    }
 )
 ESCAPED_TAG_PREFIX = "~syvrio-escaped~"
 
@@ -59,8 +68,9 @@ def _split_tags(rest: str) -> tuple[str, dict[str, str]]:
         key = match.group(1)
         value = match.group(2)
         tags[key] = (
-            unquote(value[len(ESCAPED_TAG_PREFIX):])
-            if value.startswith(ESCAPED_TAG_PREFIX) else value
+            unquote(value[len(ESCAPED_TAG_PREFIX) :])
+            if value.startswith(ESCAPED_TAG_PREFIX)
+            else value
         )
         text = text[: match.start()].rstrip()
         if key == "id":
@@ -83,8 +93,14 @@ def parse_legacy_line(line: str, topic: str) -> Entry | None:
             timestamp=comment.group(2),
             status=fields.get("status", STATUS_ACTIVE),
             supersedes=fields.get("supersedes"),
-            metadata={**{key: value for key, value in fields.items()
-                         if key not in ("id", "status", "supersedes")}, **metadata},
+            metadata={
+                **{
+                    key: value
+                    for key, value in fields.items()
+                    if key not in ("id", "status", "supersedes")
+                },
+                **metadata,
+            },
         )
     match = ENTRY_LINE_RE.match(stripped)
     if match is None:
@@ -92,9 +108,7 @@ def parse_legacy_line(line: str, topic: str) -> Entry | None:
     text, tags = _split_tags(match.group(2))
     if tags:
         metadata = {
-            key: value
-            for key, value in tags.items()
-            if key not in ("id", "status", "supersedes")
+            key: value for key, value in tags.items() if key not in ("id", "status", "supersedes")
         }
         entry_id = tags.get("id") or _legacy_id(match.group(1), text)
         return Entry(
@@ -115,6 +129,7 @@ def parse_legacy_line(line: str, topic: str) -> Entry | None:
         status=STATUS_ACTIVE,
         metadata=metadata,
     )
+
 
 def _legacy_id(timestamp: str, text: str) -> str:
     digest = hashlib.sha1(f"{timestamp}{text}".encode("utf-8")).hexdigest()[:8]

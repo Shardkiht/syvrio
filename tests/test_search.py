@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import pytest
 
-pytestmark = pytest.mark.retrieval
-
 from syvrio.memory.store import MemoryStore
 from syvrio.retrieval import KeywordRetriever, tokenize
+
+pytestmark = pytest.mark.retrieval
 
 
 def seed(tmp_path):

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Migrate into a fresh Vault/Runtime pair. Never edits the input or uses Git remotes."""
+
 from __future__ import annotations
 
 import argparse
@@ -69,14 +70,14 @@ def legacy_memory(raw: bytes, old_path: str, new_path: str) -> tuple[bytes, list
         header = yaml.safe_load(match.group(1))
         if not isinstance(header, dict):
             raise ValueError(f"{old_path}: invalid legacy frontmatter")
-        normalized = normalized[match.end():]
+        normalized = normalized[match.end() :]
         if header.get("title") and not re.search(r"^# ", normalized, re.M):
             title = " ".join(str(header["title"]).splitlines())
             normalized = f"# {title}\n\n{normalized}"
     ids = []
     results = []
     reviews = 0
-    for number, line in enumerate(normalized.splitlines(keepends=True), 1):
+    for _number, line in enumerate(normalized.splitlines(keepends=True), 1):
         entry = parse_legacy_line(line, old_path) if line.startswith("- ") else None
         if entry is None:
             results.append(line)
@@ -84,7 +85,9 @@ def legacy_memory(raw: bytes, old_path: str, new_path: str) -> tuple[bytes, list
         old = dict(entry.metadata)
         source = old.pop("source", "")
         confidence = old.pop("confidence", "")
-        needs_review = not source.strip() or any(char in source for char in "\n\r\0") or not confidence
+        needs_review = (
+            not source.strip() or any(char in source for char in "\n\r\0") or not confidence
+        )
         try:
             score = float(confidence)
             if not 0 <= score <= 1:
@@ -108,23 +111,45 @@ def legacy_memory(raw: bytes, old_path: str, new_path: str) -> tuple[bytes, list
             if source:
                 extensions.append(("migration.source_percent_encoded", quote(source, safe="")))
             if confidence:
-                extensions.append(("migration.confidence_percent_encoded", quote(confidence, safe="")))
+                extensions.append(
+                    ("migration.confidence_percent_encoded", quote(confidence, safe=""))
+                )
         for key, value in old.items():
-            if re.fullmatch(r"[a-z][a-z0-9_]*", key) and value.strip() and not any(c in value for c in "\r\n\0"):
+            if (
+                re.fullmatch(r"[a-z][a-z0-9_]*", key)
+                and value.strip()
+                and not any(c in value for c in "\r\n\0")
+            ):
                 extensions.append((f"syvrio.{key}", value))
             else:
-                extensions.append(("migration.legacy_field_percent_encoded", quote(key, safe="") + "=" + quote(value, safe="")))
-        core = Core(id=entry.id, status=entry.status,
-                    source=source if source.strip() and not any(c in source for c in "\n\r\0") else "migration:unknown",
-                    confidence=score)
+                extensions.append(
+                    (
+                        "migration.legacy_field_percent_encoded",
+                        quote(key, safe="") + "=" + quote(value, safe=""),
+                    )
+                )
+        core = Core(
+            id=entry.id,
+            status=entry.status,
+            source=source
+            if source.strip() and not any(c in source for c in "\n\r\0")
+            else "migration:unknown",
+            confidence=score,
+        )
         draft = render_record(entry.text, core, context, extensions)
         projected = parse_document(draft, new_path, new_path).records[0].entry
         # Reproduce the v1 semantic snapshot used by existing inference records,
         # without putting session/record offsets in future evidence identities.
-        payload = entry.model_dump(include={"id", "topic", "text", "timestamp", "status", "supersedes", "metadata"})
+        payload = entry.model_dump(
+            include={"id", "topic", "text", "timestamp", "status", "supersedes", "metadata"}
+        )
         payload["topic"] = Path(old_path).stem
-        previous = hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
-        extensions.extend((("migration.evidence_v1", previous), ("migration.evidence_v2", evidence_v2(projected))))
+        previous = hashlib.sha256(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True).encode()
+        ).hexdigest()
+        extensions.extend(
+            (("migration.evidence_v1", previous), ("migration.evidence_v2", evidence_v2(projected)))
+        )
         results.extend(("\n", render_record(entry.text, core, context, extensions), "\n"))
         ids.append(entry.id)
     result = "".join(results)
@@ -155,10 +180,19 @@ def session_target(data: bytes, path: Path) -> str:
     return f"sessions/{directory}/{path.name}"
 
 
-def build(source: Path, vault: Path, runtime: Path, source_runtime: Path | None = None,
-          bound_vault: Path | None = None) -> dict:
-    if ((source / ".git").is_file() or (source / ".git" / "objects" / "info" / "alternates").exists()):
-        raise ValueError("Migration requires a self-contained Git directory without alternate object stores")
+def build(
+    source: Path,
+    vault: Path,
+    runtime: Path,
+    source_runtime: Path | None = None,
+    bound_vault: Path | None = None,
+) -> dict:
+    if (source / ".git").is_file() or (
+        source / ".git" / "objects" / "info" / "alternates"
+    ).exists():
+        raise ValueError(
+            "Migration requires a self-contained Git directory without alternate object stores"
+        )
     before = inventory(source)
     before_runtime = inventory(source_runtime) if source_runtime else {}
     origins: dict[str, str] = {}
@@ -170,8 +204,10 @@ def build(source: Path, vault: Path, runtime: Path, source_runtime: Path | None 
         label = f"{bucket}/{rel}"
         if label in origins:
             raise ValueError(f"Destination collision: {label}")
-        origins[label] = original.relative_to(source).as_posix() if original.is_relative_to(source) else (
-            "runtime/" + original.relative_to(source_runtime).as_posix()
+        origins[label] = (
+            original.relative_to(source).as_posix()
+            if original.is_relative_to(source)
+            else ("runtime/" + original.relative_to(source_runtime).as_posix())
         )
         output = (vault if bucket == "vault" else runtime) / rel
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -227,23 +263,38 @@ def build(source: Path, vault: Path, runtime: Path, source_runtime: Path | None 
     for name in RECORDS:
         record = vault / "records" / "memory" / name
         counts[name.removesuffix(".jsonl")] = (
-            sum(bool(line.strip()) for line in record.read_bytes().splitlines()) if record.is_file() else 0
+            sum(bool(line.strip()) for line in record.read_bytes().splitlines())
+            if record.is_file()
+            else 0
         )
     if bound_vault is not None:
         state = runtime / "state"
         state.mkdir(exist_ok=True)
         (state / "vault-binding.json").write_text(
-            json.dumps({"version": 2, "vault": str(bound_vault)}), encoding="utf-8")
-    if before != inventory(source) or source_runtime and before_runtime != inventory(source_runtime):
+            json.dumps({"version": 2, "vault": str(bound_vault)}), encoding="utf-8"
+        )
+    if (
+        before != inventory(source)
+        or source_runtime
+        and before_runtime != inventory(source_runtime)
+    ):
         raise ValueError("Source changed during migration; stop Syvrio and retry")
     return {
         "schema_version": 2,
-        "counts": {**counts, "memory": len(ids), "session": len(sessions),
-                   "source_files": sum(not p.endswith("/") for p in before),
-                   "source_runtime_files": sum(not p.endswith("/") for p in before_runtime)},
-        "memory_ids": sorted(ids), "session_ids": sorted(sessions),
-        "source": before, "source_runtime": before_runtime, "origins": origins,
-        "vault": inventory(vault), "runtime": inventory(runtime),
+        "counts": {
+            **counts,
+            "memory": len(ids),
+            "session": len(sessions),
+            "source_files": sum(not p.endswith("/") for p in before),
+            "source_runtime_files": sum(not p.endswith("/") for p in before_runtime),
+        },
+        "memory_ids": sorted(ids),
+        "session_ids": sorted(sessions),
+        "source": before,
+        "source_runtime": before_runtime,
+        "origins": origins,
+        "vault": inventory(vault),
+        "runtime": inventory(runtime),
     }
 
 
@@ -273,7 +324,11 @@ def main(argv: list[str] | None = None) -> int:
     run = (args.runtime_destination or dst.with_name(dst.name + "-runtime")).resolve()
     old_run = args.source_runtime.resolve() if args.source_runtime else None
     roots = [src, dst, run, *([old_run] if old_run else [])]
-    if any(a.is_relative_to(b) or b.is_relative_to(a) for i, a in enumerate(roots) for b in roots[i + 1:]):
+    if any(
+        a.is_relative_to(b) or b.is_relative_to(a)
+        for i, a in enumerate(roots)
+        for b in roots[i + 1 :]
+    ):
         parser.error("source Vault, destination Vault and Runtime directories must not overlap")
     if not src.is_dir() or old_run and not old_run.is_dir():
         parser.error("source directory does not exist")
@@ -291,8 +346,13 @@ def main(argv: list[str] | None = None) -> int:
                 verify(report, dst, run)
             elif args.apply:
                 if run.exists():
-                    if not run.is_dir() or json.loads((run / REPORT).read_text(encoding="utf-8")) != report:
-                        raise ValueError("Runtime destination already exists with a different migration")
+                    if (
+                        not run.is_dir()
+                        or json.loads((run / REPORT).read_text(encoding="utf-8")) != report
+                    ):
+                        raise ValueError(
+                            "Runtime destination already exists with a different migration"
+                        )
                     previous = inventory(run)
                     previous.pop(REPORT, None)
                     if previous != report["runtime"]:
@@ -305,7 +365,14 @@ def main(argv: list[str] | None = None) -> int:
                 verify(report, dst, run)
             elif run.exists():
                 raise ValueError("Runtime destination already exists")
-            print(json.dumps({"status": "dry-run" if args.dry_run else "verified", "counts": report["counts"]}))
+            print(
+                json.dumps(
+                    {
+                        "status": "dry-run" if args.dry_run else "verified",
+                        "counts": report["counts"],
+                    }
+                )
+            )
     except (ValueError, OSError, yaml.YAMLError) as exc:
         parser.exit(1, f"Migration refused: {exc}\n")
     return 0

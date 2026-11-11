@@ -1,29 +1,32 @@
 """Textual 主题与布局样式；ChatApp 通过 CSS = APP_CSS 应用。"""
+
 from __future__ import annotations
 
 from rich.theme import Theme
 
 # Scoped to reply rendering; other Rich/CLI output keeps its own theme.
-MARKDOWN_THEME = Theme({
-    "markdown.text": "#d5d5d5",
-    "markdown.strong": "bold #f0f0f0",
-    "markdown.emph": "italic #b8c7d9",
-    "markdown.h1": "bold #6cb6ff not underline",
-    "markdown.h2": "bold #91c9ff not underline",
-    "markdown.h3": "bold #bbd9f4 not underline",
-    "markdown.h4": "bold #c5c5c5 not underline",
-    "markdown.h5": "bold #c5c5c5 not underline",
-    "markdown.h6": "bold #c5c5c5 not underline",
-    "markdown.link": "#6cb6ff underline",
-    "markdown.link_url": "#6cb6ff underline",
-    "markdown.code": "#e2c08d on #282828",
-    "markdown.block_quote": "italic #9aafc4",
-    "markdown.table.border": "#444444",
-    "markdown.table.header": "bold #bbd9f4",
-    "markdown.item.bullet": "#6cb6ff",
-    "markdown.item.number": "#6cb6ff",
-    "markdown.hr": "#444444",
-})
+MARKDOWN_THEME = Theme(
+    {
+        "markdown.text": "#d5d5d5",
+        "markdown.strong": "bold #f0f0f0",
+        "markdown.emph": "italic #b8c7d9",
+        "markdown.h1": "bold #6cb6ff not underline",
+        "markdown.h2": "bold #91c9ff not underline",
+        "markdown.h3": "bold #bbd9f4 not underline",
+        "markdown.h4": "bold #c5c5c5 not underline",
+        "markdown.h5": "bold #c5c5c5 not underline",
+        "markdown.h6": "bold #c5c5c5 not underline",
+        "markdown.link": "#6cb6ff underline",
+        "markdown.link_url": "#6cb6ff underline",
+        "markdown.code": "#e2c08d on #282828",
+        "markdown.block_quote": "italic #9aafc4",
+        "markdown.table.border": "#444444",
+        "markdown.table.header": "bold #bbd9f4",
+        "markdown.item.bullet": "#6cb6ff",
+        "markdown.item.number": "#6cb6ff",
+        "markdown.hr": "#444444",
+    }
+)
 
 APP_CSS = """
     /* Evolution: neutral surfaces, a clear sky-blue accent, and content-led hierarchy. */

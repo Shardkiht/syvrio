@@ -12,7 +12,11 @@ def syvrio_home() -> Path:
 
 
 def runtime_path(value: str = "") -> Path:
-    return Path(os.environ.get("SYVRIO_RUNTIME") or value or syvrio_home() / "runtime").expanduser().resolve()
+    return (
+        Path(os.environ.get("SYVRIO_RUNTIME") or value or syvrio_home() / "runtime")
+        .expanduser()
+        .resolve()
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,11 +69,22 @@ class SyvrioPaths:
         vault, runtime = self.vault_dir.resolve(), self.runtime_dir.resolve()
         if vault.is_relative_to(runtime) or runtime.is_relative_to(vault):
             raise ValueError("Vault and Runtime must be separate directories")
-        if any(((parent / ".git").is_file() or (parent / ".git" / "HEAD").is_file()) for parent in (runtime, *runtime.parents)):
+        if any(
+            ((parent / ".git").is_file() or (parent / ".git" / "HEAD").is_file())
+            for parent in (runtime, *runtime.parents)
+        ):
             raise ValueError("Runtime cannot be placed inside a Git working tree")
-        for directory in (self.index_dir, self.cache_dir, self.state_dir, self.jobs_dir,
-                          self.lock_dir, self.log_dir, self.cache_dir / "profile",
-                          self.cache_dir / "search", self.jobs_dir / "dreaming"):
+        for directory in (
+            self.index_dir,
+            self.cache_dir,
+            self.state_dir,
+            self.jobs_dir,
+            self.lock_dir,
+            self.log_dir,
+            self.cache_dir / "profile",
+            self.cache_dir / "search",
+            self.jobs_dir / "dreaming",
+        ):
             if directory.is_symlink() or not directory.resolve().is_relative_to(runtime):
                 raise ValueError("Runtime subdirectories cannot redirect outside Runtime")
 
@@ -89,13 +104,17 @@ class SyvrioPaths:
         if previous == {"version": 2, "vault": vault}:
             return
         for path in (
-            self.index_dir / "vectors.npz", self.cache_dir / "profile" / "profile-summary.json",
-            self.state_dir / "fingerprints.json", self.state_dir / "reflection.json",
+            self.index_dir / "vectors.npz",
+            self.cache_dir / "profile" / "profile-summary.json",
+            self.state_dir / "fingerprints.json",
+            self.state_dir / "reflection.json",
             self.state_dir / "git-sync.json",
         ):
             path.unlink(missing_ok=True)
         self.state_dir.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=self.state_dir, delete=False) as handle:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=self.state_dir, delete=False
+        ) as handle:
             tmp = Path(handle.name)
             json.dump({"version": 2, "vault": vault}, handle)
         try:

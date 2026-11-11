@@ -8,45 +8,109 @@ import platform
 import re
 import sys
 import traceback
-from datetime import datetime, timezone
 from logging.handlers import QueueListener, RotatingFileHandler
 from pathlib import Path
 from queue import Full, Queue
 from threading import RLock, current_thread
 
 from .. import __version__
+from ..time import serialize_timestamp, utc_now
 from .config import ConfigError, load_config
 
-
-_EVENTS = frozenset({
-    "app.start", "app.stop", "cli.failed", "tui.failed", "chat.failed",
-    "search.failed", "catchup.failed", "session.failed", "session.reload_failed",
-    "queue.failed", "usage.failed", "reflection.failed", "reading.changed",
-    "generation.started", "generation.finished", "turn.unbound", "tui.finalize_failed",
-    "session.scan_failed", "session.delete_failed",
-    "web.startup_hook_failed", "web.shutdown_distill_failed", "web.history_unreadable",
-    "web.switch_failed", "web.worker_failed", "web.turn_failed", "web.unhandled",
-    "command.failed", "cursor.changed", "undo.failed", "retrieval.vector_dimension_failed",
-    "git_sync.failed", "git_sync.scheduler_failed", "git_sync.status_failed",
-    "reflection.schedule_failed", "reflection.state_failed", "reflection.summary_failed",
-    "latency.turn.started", "latency.turn.finished",
-    "latency.recall.started", "latency.recall.finished",
-    "latency.context.started", "latency.context.finished",
-    "latency.model.started", "latency.model.request", "latency.model.stream_open",
-    "latency.model.first_chunk", "latency.model.first_reasoning", "latency.model.first_text",
-    "latency.model.first_tool", "latency.model.finished",
-    "latency.tools.started", "latency.tool.finished", "latency.tools.finished",
-    "latency.completion.started", "latency.completion.finished",
-})
-_FIELDS = frozenset({
-    "follow", "selecting", "selected", "grabbed", "scroll_y", "scroll_max",
-    "streaming", "queued", "busy",
-    "native", "suspended", "cursor_x", "cursor_y", "elapsed_ms",
-})
-_LATENCY_FIELDS = frozenset({
-    "turn", "step", "call", "at_ms", "elapsed_ms", "ok", "cancelled", "estimated_tokens",
-    "prompt_tokens", "completion_tokens", "compacted", "tool_count", "tool_index",
-})
+_EVENTS = frozenset(
+    {
+        "app.start",
+        "app.stop",
+        "cli.failed",
+        "tui.failed",
+        "chat.failed",
+        "search.failed",
+        "catchup.failed",
+        "session.failed",
+        "session.reload_failed",
+        "queue.failed",
+        "usage.failed",
+        "reflection.failed",
+        "reading.changed",
+        "generation.started",
+        "generation.finished",
+        "turn.unbound",
+        "tui.finalize_failed",
+        "session.scan_failed",
+        "session.delete_failed",
+        "web.startup_hook_failed",
+        "web.shutdown_distill_failed",
+        "web.history_unreadable",
+        "web.switch_failed",
+        "web.worker_failed",
+        "web.turn_failed",
+        "web.unhandled",
+        "command.failed",
+        "cursor.changed",
+        "undo.failed",
+        "retrieval.vector_dimension_failed",
+        "git_sync.failed",
+        "git_sync.scheduler_failed",
+        "git_sync.status_failed",
+        "reflection.schedule_failed",
+        "reflection.state_failed",
+        "reflection.summary_failed",
+        "latency.turn.started",
+        "latency.turn.finished",
+        "latency.recall.started",
+        "latency.recall.finished",
+        "latency.context.started",
+        "latency.context.finished",
+        "latency.model.started",
+        "latency.model.request",
+        "latency.model.stream_open",
+        "latency.model.first_chunk",
+        "latency.model.first_reasoning",
+        "latency.model.first_text",
+        "latency.model.first_tool",
+        "latency.model.finished",
+        "latency.tools.started",
+        "latency.tool.finished",
+        "latency.tools.finished",
+        "latency.completion.started",
+        "latency.completion.finished",
+    }
+)
+_FIELDS = frozenset(
+    {
+        "follow",
+        "selecting",
+        "selected",
+        "grabbed",
+        "scroll_y",
+        "scroll_max",
+        "streaming",
+        "queued",
+        "busy",
+        "native",
+        "suspended",
+        "cursor_x",
+        "cursor_y",
+        "elapsed_ms",
+    }
+)
+_LATENCY_FIELDS = frozenset(
+    {
+        "turn",
+        "step",
+        "call",
+        "at_ms",
+        "elapsed_ms",
+        "ok",
+        "cancelled",
+        "estimated_tokens",
+        "prompt_tokens",
+        "completion_tokens",
+        "compacted",
+        "tool_count",
+        "tool_index",
+    }
+)
 _lock = RLock()
 _listener: QueueListener | None = None
 _handler: RotatingFileHandler | None = None
@@ -72,10 +136,15 @@ def start_diagnostics(config_file: Path | None = None) -> Path | None:
             paths.validate()
             path = paths.log_dir / "syvrio.log"
             path.parent.mkdir(parents=True, exist_ok=True)
-            handler = _QuietFileHandler(path, maxBytes=2 * 1024 * 1024,
-                                        backupCount=3, encoding="utf-8")
-            latency_handler = _QuietFileHandler(path.with_name("latency.log"), maxBytes=2 * 1024 * 1024,
-                                                backupCount=3, encoding="utf-8")
+            handler = _QuietFileHandler(
+                path, maxBytes=2 * 1024 * 1024, backupCount=3, encoding="utf-8"
+            )
+            latency_handler = _QuietFileHandler(
+                path.with_name("latency.log"),
+                maxBytes=2 * 1024 * 1024,
+                backupCount=3,
+                encoding="utf-8",
+            )
         except (OSError, ConfigError, ValueError):
             if handler is not None:
                 handler.close()
@@ -113,8 +182,13 @@ def stop_diagnostics() -> None:
 
 def _safe_traceback(error: BaseException | str) -> str:
     """Retain chained tracebacks and reasons, without locals or credentials."""
-    detail = (error if isinstance(error, str) else
-              "".join(traceback.TracebackException.from_exception(error, capture_locals=False).format()))
+    detail = (
+        error
+        if isinstance(error, str)
+        else "".join(
+            traceback.TracebackException.from_exception(error, capture_locals=False).format()
+        )
+    )
     for name, value in list(os.environ.items()):
         if re.search(r"(?:KEY|TOKEN|SECRET|PASSWORD)$", name, re.I) and len(value) >= 4:
             detail = detail.replace(value, "[REDACTED]")
@@ -122,12 +196,16 @@ def _safe_traceback(error: BaseException | str) -> str:
     detail = re.sub(
         r"(?i)((?:api[_ -]?key|access[_ -]?token|secret|password|passwd|密码|口令|验证码|私钥|密钥|秘钥|令牌|凭据)"
         r"[\"']?\s*(?:是|为|[:：=])\s*[\"']?)[^\s\"',;}]+",
-        r"\1[REDACTED]", detail)
+        r"\1[REDACTED]",
+        detail,
+    )
     detail = re.sub(r"\bsk-[A-Za-z0-9_-]{8,}", "[REDACTED]", detail)
     return detail[:32768]
 
 
-def record_event(event: str, error: BaseException | str | None = None, **state: bool | int | float) -> None:
+def record_event(
+    event: str, error: BaseException | str | None = None, **state: bool | int | float
+) -> None:
     """Write allowlisted events and state. Latency entries never include error text."""
     if event not in _EVENTS:
         return
@@ -137,17 +215,31 @@ def record_event(event: str, error: BaseException | str | None = None, **state: 
         latency = event.startswith("latency.")
         fields = _LATENCY_FIELDS if latency else _FIELDS
         payload = {
-            "time": datetime.now(timezone.utc).isoformat(), "event": event,
-            "pid": os.getpid(), "version": __version__, "platform": platform.system(),
+            "time": serialize_timestamp(utc_now()),
+            "event": event,
+            "pid": os.getpid(),
+            "version": __version__,
+            "platform": platform.system(),
             "python": platform.python_version(),
-            "thread": current_thread().name, "level": "ERROR" if error is not None else "INFO",
-            "state": {key: value for key, value in state.items()
-                      if key in fields and type(value) in (bool, int, float)},
+            "thread": current_thread().name,
+            "level": "ERROR" if error is not None else "INFO",
+            "state": {
+                key: value
+                for key, value in state.items()
+                if key in fields and type(value) in (bool, int, float)
+            },
         }
         if error is not None and not latency:
             payload["traceback"] = _safe_traceback(error)
-        record = logging.LogRecord("syvrio.latency" if latency else "syvrio.diagnostics", logging.INFO, "", 0,
-                                   json.dumps(payload, ensure_ascii=False), (), None)
+        record = logging.LogRecord(
+            "syvrio.latency" if latency else "syvrio.diagnostics",
+            logging.INFO,
+            "",
+            0,
+            json.dumps(payload, ensure_ascii=False),
+            (),
+            None,
+        )
         try:
             _queue.put_nowait(record)
         except Full:

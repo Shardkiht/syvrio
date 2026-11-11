@@ -1,10 +1,11 @@
 """记忆、待确认、推断审查、导入与画像读取用例。"""
+
 from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
 
-from ..infra.documents import DocumentError, SUPPORTED_SUFFIXES, read_document
+from ..infra.documents import SUPPORTED_SUFFIXES, DocumentError, read_document
 from ..memory.extractor import split_chunks
 from ..memory.service import MemoryService
 from .contracts import (

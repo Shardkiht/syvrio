@@ -7,6 +7,7 @@
     uv run python scripts/migrate_vault_2026_10.py            # dry-run
     uv run python scripts/migrate_vault_2026_10.py --apply    # 实际迁移
 """
+
 from __future__ import annotations
 
 import argparse
@@ -32,10 +33,18 @@ TOPIC_MOVES = {
     "projects": "04-learning-projects",
 }
 CANONICAL_TOPICS = {
-    "01-identity", "02-collaboration", "03-career", "04-learning-projects",
-    "05-devices-software", "06-peripherals-audio", "07-housing-life",
-    "08-coffee-food-routine", "09-health", "10-entertainment",
-    "11-private-purchases", "12-growth-people",
+    "01-identity",
+    "02-collaboration",
+    "03-career",
+    "04-learning-projects",
+    "05-devices-software",
+    "06-peripherals-audio",
+    "07-housing-life",
+    "08-coffee-food-routine",
+    "09-health",
+    "10-entertainment",
+    "11-private-purchases",
+    "12-growth-people",
 }
 
 
@@ -110,7 +119,9 @@ def main() -> None:
             from datetime import date
 
             dst_meta["updated"] = date.today().isoformat()
-            service.store._write(dst_path, dst_meta, dst_body.rstrip() + "\n" + "\n".join(entry_lines) + "\n")
+            service.store._write(
+                dst_path, dst_meta, dst_body.rstrip() + "\n" + "\n".join(entry_lines) + "\n"
+            )
             src_path.unlink()
 
     # ---- pending.jsonl 的 topic 同步映射 ----

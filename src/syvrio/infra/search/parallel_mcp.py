@@ -1,4 +1,5 @@
 """Parallel Streamable HTTP MCP 搜索适配器：匿名可用，Key 仅作为 Bearer。"""
+
 from __future__ import annotations
 
 import asyncio
@@ -48,9 +49,7 @@ class ParallelMcpProvider:
 
     def search(self, query: SearchQuery) -> list[SearchResult]:
         timeout = max(0.05, min(self._timeout, query.timeout or self._timeout))
-        headers = (
-            {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
-        )
+        headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
         objective = query.query
         if query.context_terms:
             objective += " — context: " + ", ".join(query.context_terms[:5])
@@ -59,22 +58,16 @@ class ParallelMcpProvider:
             "search_queries": [query.query],
         }
         try:
-            result = _run_async(
-                lambda: self._call(arguments, headers, timeout)
-            )
+            result = _run_async(lambda: self._call(arguments, headers, timeout))
         except ProviderError:
             raise
         except Exception as exc:
             raise _translate_error(exc) from exc
         if getattr(result, "is_error", False):
-            raise ProviderError(
-                NAME, ProviderErrorKind.BAD_RESPONSE, "MCP 工具返回错误"
-            )
+            raise ProviderError(NAME, ProviderErrorKind.BAD_RESPONSE, "MCP 工具返回错误")
         items = _extract_results(result)
         if items is None:
-            raise ProviderError(
-                NAME, ProviderErrorKind.BAD_RESPONSE, "无法解析 MCP 搜索响应"
-            )
+            raise ProviderError(NAME, ProviderErrorKind.BAD_RESPONSE, "无法解析 MCP 搜索响应")
         return _map_results(items, min(MAX_RESULTS, max(1, query.limit)))
 
     async def _call(
@@ -88,7 +81,10 @@ class ParallelMcpFetchProvider:
     capabilities = {"fetch"}
 
     def __init__(
-        self, api_key: str = "", timeout: float = 45.0, client_factory: ClientFactory | None = None,
+        self,
+        api_key: str = "",
+        timeout: float = 45.0,
+        client_factory: ClientFactory | None = None,
     ):
         self._api_key = api_key.strip()
         self._timeout = max(0.05, timeout)
@@ -99,8 +95,12 @@ class ParallelMcpFetchProvider:
         try:
             result = _run_async(
                 lambda: _call_tool(
-                    self._client_factory, headers, self._timeout, "web_fetch",
-                    {"urls": [query.url], "full_content": True}, raise_on_error=False,
+                    self._client_factory,
+                    headers,
+                    self._timeout,
+                    "web_fetch",
+                    {"urls": [query.url], "full_content": True},
+                    raise_on_error=False,
                 )
             )
         except ProviderError:
@@ -115,8 +115,12 @@ class ParallelMcpFetchProvider:
                 if not isinstance(text, str):
                     continue
                 error = _fetch_error(RuntimeError(text))
-                if error.kind in (ProviderErrorKind.AUTH, ProviderErrorKind.QUOTA,
-                                  ProviderErrorKind.RATE_LIMIT, ProviderErrorKind.UNAVAILABLE):
+                if error.kind in (
+                    ProviderErrorKind.AUTH,
+                    ProviderErrorKind.QUOTA,
+                    ProviderErrorKind.RATE_LIMIT,
+                    ProviderErrorKind.UNAVAILABLE,
+                ):
                     raise error
             raise ProviderError(NAME, ProviderErrorKind.BAD_RESPONSE, "MCP web_fetch 工具返回错误")
         items = _extract_results(result)
@@ -132,8 +136,11 @@ class ParallelMcpFetchProvider:
         if not content and isinstance(excerpts, list):
             content = "\n\n".join(filter(None, map(extract_text, excerpts)))
         return extracted_result(
-            NAME, query, url=item.get("final_url") or item.get("url"),
-            title=item.get("title"), content=content,
+            NAME,
+            query,
+            url=item.get("final_url") or item.get("url"),
+            title=item.get("title"),
+            content=content,
         )
 
 
@@ -170,7 +177,9 @@ def _fetch_error(exc: Exception) -> ProviderError:
         if code in (-32600, -32601, -32602, -32603, -32700):
             return ProviderError(NAME, ProviderErrorKind.BAD_RESPONSE, "MCP web_fetch RPC 响应错误")
     if error.kind == ProviderErrorKind.QUOTA:
-        return ProviderError(NAME, error.kind, error.detail, pause_reason="official_quota_exhausted")
+        return ProviderError(
+            NAME, error.kind, error.detail, pause_reason="official_quota_exhausted"
+        )
     return error
 
 

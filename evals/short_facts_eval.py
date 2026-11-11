@@ -1,4 +1,5 @@
 """Measure short-field retrieval on a deterministic Vault with over 1,200 records."""
+
 from __future__ import annotations
 
 import argparse
@@ -9,7 +10,6 @@ from tempfile import TemporaryDirectory
 from time import perf_counter
 
 from evals.retrieval_eval import load_data
-
 from syvrio.infra.config import Config
 from syvrio.memory.schema import Core, render_record
 from syvrio.memory.service import MemoryService
@@ -105,7 +105,9 @@ def seed_vault(vault: Path) -> int:
 
 def metrics(ranks: list[int | None], durations: list[float]) -> dict[str, float]:
     return {
-        **{f"hit@{k}": sum(r is not None and r <= k for r in ranks) / len(ranks) for k in (1, 3, 5)},
+        **{
+            f"hit@{k}": sum(r is not None and r <= k for r in ranks) / len(ranks) for k in (1, 3, 5)
+        },
         "mrr@10": sum(1 / r if r is not None and r <= 10 else 0.0 for r in ranks) / len(ranks),
         "median_ms": median(durations),
     }
@@ -125,18 +127,21 @@ def main() -> None:
         service.retriever.vector.sync()
         if service.retriever.vector.degraded:
             raise SystemExit("local embedding could not build the index")
-        print(f"records={count} index_seconds={perf_counter()-start:.3f}", flush=True)
+        print(f"records={count} index_seconds={perf_counter() - start:.3f}", flush=True)
         rows = defaultdict(list)
-        checks = [
-            ("short", query, f"short-{key}", []) for key, query in SHORT_CASES
-        ] + [("legacy", query, ident, []) for _, query, ident in legacy_cases()]
+        checks = [("short", query, f"short-{key}", []) for key, query in SHORT_CASES] + [
+            ("legacy", query, ident, []) for _, query, ident in legacy_cases()
+        ]
         for group, query, ident, subs in checks:
             start = perf_counter()
             hits = service.recall(query, 10)
             ms = (perf_counter() - start) * 1000
             rank = next(
-                (i for i, hit in enumerate(hits, 1)
-                 if (hit.id == ident if ident else any(s in hit.text for s in subs))),
+                (
+                    i
+                    for i, hit in enumerate(hits, 1)
+                    if (hit.id == ident if ident else any(s in hit.text for s in subs))
+                ),
                 None,
             )
             rows[group].append((rank, ms))
@@ -144,7 +149,7 @@ def main() -> None:
             if args.details:
                 print(group, query, rank)
         for group, measures in rows.items():
-            print(group, {k: round(v, 4) for k, v in metrics(*zip(*measures)).items()})
+            print(group, {k: round(v, 4) for k, v in metrics(*zip(*measures, strict=True)).items()})
 
 
 if __name__ == "__main__":

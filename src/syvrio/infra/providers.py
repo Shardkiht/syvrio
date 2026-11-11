@@ -2,17 +2,13 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, replace
+from functools import lru_cache
 from pathlib import Path
 from urllib.parse import urlsplit
-
-import questionary
-from prompt_toolkit.styles import Style
-from rich.console import Console
 
 from .config import (
     CONFIG_FILENAME,
     KEYRING_SERVICE,
-    ChatConfig,
     Config,
     LLMConfig,
     default_config_path,
@@ -23,23 +19,39 @@ from .config import (
     usage_limits_toml,
     write_example_config,
 )
-from .dialogs import ask
 from .tokens import format_tokens
 
-console = Console()
 
-_MENU_STYLE = Style.from_dict(
-    {
-        "qmark": "bold #d0d0d0",
-        "question": "bold #e0e0e0",
-        "pointer": "bold #d0d0d0",
-        "highlighted": "bg:#3a3a3a #ffffff",
-        "selected": "#d0d0d0",
-        "separator": "#808080",
-        "instruction": "#808080",
-        "text": "#d8d8d8",
-    }
-)
+# The setup wizard loads terminal UI dependencies only when it is used.
+def ask(question):
+    from .dialogs import ask as ask_dialog
+
+    return ask_dialog(question)
+
+
+@lru_cache(maxsize=1)
+def _menu_style():
+    from prompt_toolkit.styles import Style
+
+    return Style.from_dict(
+        {
+            "qmark": "bold #d0d0d0",
+            "question": "bold #e0e0e0",
+            "pointer": "bold #d0d0d0",
+            "highlighted": "bg:#3a3a3a #ffffff",
+            "selected": "#d0d0d0",
+            "separator": "#808080",
+            "instruction": "#808080",
+            "text": "#d8d8d8",
+        }
+    )
+
+
+@lru_cache(maxsize=1)
+def _console():
+    from rich.console import Console
+
+    return Console()
 
 
 @dataclass(frozen=True)
@@ -52,11 +64,28 @@ class ProviderPreset:
 
 PRESETS: tuple[ProviderPreset, ...] = (
     ProviderPreset("deepseek", "DeepSeek", "https://api.deepseek.com/v1", "DEEPSEEK_API_KEY"),
-    ProviderPreset("siliconflow", "硅基流动 SiliconFlow", "https://api.siliconflow.cn/v1", "SILICONFLOW_API_KEY"),
-    ProviderPreset("dashscope", "阿里云百炼", "https://dashscope.aliyuncs.com/compatible-mode/v1", "DASHSCOPE_API_KEY"),
-    ProviderPreset("spark", "讯飞星火 Spark（MaaS）", "https://maas-api.cn-huabei-1.xf-yun.com/v2", "SPARK_API_KEY"),
+    ProviderPreset(
+        "siliconflow",
+        "硅基流动 SiliconFlow",
+        "https://api.siliconflow.cn/v1",
+        "SILICONFLOW_API_KEY",
+    ),
+    ProviderPreset(
+        "dashscope",
+        "阿里云百炼",
+        "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "DASHSCOPE_API_KEY",
+    ),
+    ProviderPreset(
+        "spark",
+        "讯飞星火 Spark（MaaS）",
+        "https://maas-api.cn-huabei-1.xf-yun.com/v2",
+        "SPARK_API_KEY",
+    ),
     ProviderPreset("openai", "OpenAI", "https://api.openai.com/v1", "OPENAI_API_KEY"),
-    ProviderPreset("openrouter", "OpenRouter", "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY"),
+    ProviderPreset(
+        "openrouter", "OpenRouter", "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY"
+    ),
     ProviderPreset("custom", "自定义 OpenAI 兼容接口", "", "OPENAI_API_KEY"),
 )
 
@@ -103,27 +132,43 @@ def provider_base_url(config: LLMConfig, preset: ProviderPreset) -> str:
 def normalize_provider_url(value: str) -> str:
     url = value.strip().rstrip("/")
     parts = urlsplit(url)
-    if (parts.scheme not in ("http", "https") or not parts.hostname
-            or parts.username is not None or parts.query or parts.fragment):
-        raise ValueError("Base URL must be an HTTP(S) endpoint without credentials, query or fragment.")
+    if (
+        parts.scheme not in ("http", "https")
+        or not parts.hostname
+        or parts.username is not None
+        or parts.query
+        or parts.fragment
+    ):
+        raise ValueError(
+            "Base URL must be an HTTP(S) endpoint without credentials, query or fragment."
+        )
     return url
 
 
 def _choose_model(models: list[str], current: str) -> str:
+    import questionary
+
     if models:
-        ordered = ([current] if current in models else []) + [model for model in models if model != current]
-        selected = ask(questionary.select(
-            "选择模型",
-            choices=[questionary.Choice(model, value=model) for model in ordered]
-                    + [questionary.Choice("手动输入模型 ID", value="")],
-            style=_MENU_STYLE, qmark="›", pointer="❯", instruction="↑↓ 选择 · Enter 确认",
-        ))
+        ordered = ([current] if current in models else []) + [
+            model for model in models if model != current
+        ]
+        selected = ask(
+            questionary.select(
+                "选择模型",
+                choices=[questionary.Choice(model, value=model) for model in ordered]
+                + [questionary.Choice("手动输入模型 ID", value="")],
+                style=_menu_style(),
+                qmark="›",
+                pointer="❯",
+                instruction="↑↓ 选择 · Enter 确认",
+            )
+        )
         if selected is None:
             raise KeyboardInterrupt
         if selected:
             return selected
     else:
-        console.print("[dim]API 未返回模型列表，可手动输入已确认的模型 ID。[/dim]")
+        _console().print("[dim]API 未返回模型列表，可手动输入已确认的模型 ID。[/dim]")
     value = ask(questionary.text("模型名称", default=current))
     if value is None or not value.strip():
         raise KeyboardInterrupt
@@ -131,8 +176,10 @@ def _choose_model(models: list[str], current: str) -> str:
 
 
 def _choose_reasoning(params: tuple[str, ...], current: str | None) -> str | None:
+    import questionary
+
     if "reasoning_effort" not in params:
-        console.print("[dim]该模型不支持 reasoning_effort，跳过思考强度。[/dim]")
+        _console().print("[dim]该模型不支持 reasoning_effort，跳过思考强度。[/dim]")
         return None
     efforts = list(EFFORT_CHOICES)
     if current:
@@ -141,7 +188,7 @@ def _choose_reasoning(params: tuple[str, ...], current: str | None) -> str | Non
         questionary.select(
             "思考强度",
             choices=[questionary.Choice(label, value=value) for label, value in efforts],
-            style=_MENU_STYLE,
+            style=_menu_style(),
             qmark="›",
             pointer="❯",
             instruction="↑↓ 选择 · Enter 确认",
@@ -153,6 +200,8 @@ def _choose_reasoning(params: tuple[str, ...], current: str | None) -> str | Non
 
 
 def _choose_context(max_input: int | None, current: int) -> int:
+    import questionary
+
     if max_input:
         options = [value for value in (16000, 32000, 64000, 128000, 256000) if value <= max_input]
         if not options:
@@ -165,7 +214,7 @@ def _choose_context(max_input: int | None, current: int) -> int:
         questionary.select(
             "上下文长度",
             choices=[questionary.Choice(format_tokens(value), value=value) for value in options],
-            style=_MENU_STYLE,
+            style=_menu_style(),
             qmark="›",
             pointer="❯",
             instruction="↑↓ 选择 · Enter 确认",
@@ -228,7 +277,7 @@ def write_config(path: Path, config: Config) -> None:
         f"{toml_literal(name)} = {toml_literal(url)}"
         for name, url in config.llm.provider_urls.items()
     )
-    content = f'''# Syvrio 配置（由 syvrio setup 生成）
+    content = f"""# Syvrio 配置（由 syvrio setup 生成）
 vault = {toml_literal(config.vault.as_posix())}
 runtime = {toml_literal(config.runtime or "~/.syvrio/runtime")}
 
@@ -245,7 +294,7 @@ provider = {toml_literal(config.llm.provider)}
 base_url = {toml_literal(config.llm.base_url)}
 model = {toml_literal(config.llm.model)}
 api_key_env = {toml_literal(config.llm.api_key_env)}
-reasoning_effort = {toml_literal(config.llm.reasoning_effort or '')}
+reasoning_effort = {toml_literal(config.llm.reasoning_effort or "")}
 spark_thinking = {toml_literal(config.llm.spark_thinking)}
 provider_urls = {{ {provider_urls} }}
 recent_models = {toml_literal(config.llm.recent_models)}
@@ -306,7 +355,7 @@ searxng_timeout = {config.search.searxng_timeout}
 {usage_limits_toml(config.search.usage_limits)}
 [fetch]
 providers = {toml_literal(config.fetch.providers)}
-'''
+"""
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(content, encoding="utf-8")
     # 先写临时文件再替换，避免中断时把现有配置截成空文件。
@@ -328,6 +377,8 @@ def resolve_config_path(config_path: Path | None) -> Path:
 
 def run_setup(config_path: Path | None = None, vault: Path | None = None) -> dict:
     """syvrio setup 顶层入口：先选配置内容，再进入对应向导。"""
+    import questionary
+
     path = resolve_config_path(config_path)
     config = load_config(path) if path.exists() else Config(vault=default_vault_path())
     if vault is not None:
@@ -340,7 +391,7 @@ def run_setup(config_path: Path | None = None, vault: Path | None = None) -> dic
                 questionary.Choice("模型与 LLM", value="llm"),
                 questionary.Choice("搜索与网页抓取 API", value="search"),
             ],
-            style=_MENU_STYLE,
+            style=_menu_style(),
             qmark="›",
             pointer="❯",
             instruction="↑↓ 选择 · Enter 确认",
@@ -390,6 +441,8 @@ def _ensure_usage_limit(config: Config, name: str, messages: list[str]) -> None:
 
 
 def _manage_usage(config: Config) -> None:
+    import questionary
+
     from .config import UsageLimit, default_usage_limits
     from .search.usage import UsageLimiter
 
@@ -399,28 +452,42 @@ def _manage_usage(config: Config) -> None:
         for name, default in defaults.items():
             effective = config.search.usage_limits.get(name, default)
             state = limiter.status(name)
+
             def display(value):
                 return str(value) if value else "不限"
+
             def remaining(value):
                 return "不限" if value is None else str(value)
-            console.print(f"{name}: 默认 daily={display(default.daily)}, monthly={display(default.monthly)}; "
-                          f"生效 daily={display(effective.daily)}, monthly={display(effective.monthly)}; "
-                          f"已使用/剩余 daily={state['daily']['used']}/{remaining(state['daily']['remaining'])}, "
-                          f"monthly={state['monthly']['used']}/{remaining(state['monthly']['remaining'])}; "
-                          f"官方暂停={state['paused'] or '无'}; 历史未知周期={state['legacy_unknown_period'] or '无'}")
-        name = _select("额度管理：选择厂商（本地请求次数不是厂商余额）", [
-            *[questionary.Choice(label, value=name) for name, label in SEARCH_PROVIDER_LABELS.items()],
-            questionary.Choice("返回", value=None),
-        ])
+
+            _console().print(
+                f"{name}: 默认 daily={display(default.daily)}, monthly={display(default.monthly)}; "
+                f"生效 daily={display(effective.daily)}, monthly={display(effective.monthly)}; "
+                f"已使用/剩余 daily={state['daily']['used']}/{remaining(state['daily']['remaining'])}, "
+                f"monthly={state['monthly']['used']}/{remaining(state['monthly']['remaining'])}; "
+                f"官方暂停={state['paused'] or '无'}; 历史未知周期={state['legacy_unknown_period'] or '无'}"
+            )
+        name = _select(
+            "额度管理：选择厂商（本地请求次数不是厂商余额）",
+            [
+                *[
+                    questionary.Choice(label, value=name)
+                    for name, label in SEARCH_PROVIDER_LABELS.items()
+                ],
+                questionary.Choice("返回", value=None),
+            ],
+        )
         if name is None:
             return
-        action = _select("额度操作", [
-            questionary.Choice("修改每日上限（0 不限）", value="daily"),
-            questionary.Choice("修改每月上限（0 不限）", value="monthly"),
-            questionary.Choice("恢复默认上限", value="defaults"),
-            questionary.Choice("解除官方暂停（不清空计数）", value="resume"),
-            questionary.Choice("返回", value=None),
-        ])
+        action = _select(
+            "额度操作",
+            [
+                questionary.Choice("修改每日上限（0 不限）", value="daily"),
+                questionary.Choice("修改每月上限（0 不限）", value="monthly"),
+                questionary.Choice("恢复默认上限", value="defaults"),
+                questionary.Choice("解除官方暂停（不清空计数）", value="resume"),
+                questionary.Choice("返回", value=None),
+            ],
+        )
         if action in ("daily", "monthly"):
             raw = ask(questionary.text("请求次数上限（非负整数，0 不限）"))
             if raw is None:
@@ -430,7 +497,7 @@ def _manage_usage(config: Config) -> None:
                 if value < 0:
                     raise ValueError
             except ValueError:
-                console.print("请输入非负整数。")
+                _console().print("请输入非负整数。")
                 continue
             old = config.search.usage_limits.get(name, defaults.get(name, UsageLimit()))
             values = {"daily": old.daily, "monthly": old.monthly, action: value}
@@ -456,11 +523,13 @@ def _move_provider(names: list[str], name: str, offset: int) -> None:
 
 
 def _select(message: str, choices: list):
+    import questionary
+
     return ask(
         questionary.select(
             message,
             choices=choices,
-            style=_MENU_STYLE,
+            style=_menu_style(),
             qmark="›",
             pointer="❯",
             instruction="↑↓ 选择 · Enter 确认",
@@ -478,6 +547,8 @@ def _provider_state(config: Config, name: str) -> str:
 
 
 def _configure_search_provider(config: Config, messages: list[str]) -> None:
+    import questionary
+
     from .search.fetch_router import FETCH_PROVIDERS
 
     choices = [
@@ -489,32 +560,26 @@ def _configure_search_provider(config: Config, messages: list[str]) -> None:
         raise KeyboardInterrupt
     env_name = SEARCH_KEY_ENVS.get(name)
     if name == "searxng":
-        console.print(
+        _console().print(
             "[dim]自托管 SearXNG 无需 API Key；请确认实例已在 settings.yml 启用 JSON 输出。[/dim]"
         )
         from .search.searxng import normalize_base_url
 
         current = config.search.searxng_base_url
-        raw = ask(
-            questionary.text(
-                f"SearXNG 实例地址（当前 {current}；留空保持不变）"
-            )
-        )
+        raw = ask(questionary.text(f"SearXNG 实例地址（当前 {current}；留空保持不变）"))
         if raw is not None and str(raw).strip():
             try:
                 config.search.searxng_base_url = normalize_base_url(str(raw))
-                messages.append(
-                    f"SearXNG 实例地址已设为 {config.search.searxng_base_url}。"
-                )
+                messages.append(f"SearXNG 实例地址已设为 {config.search.searxng_base_url}。")
             except ValueError as exc:
                 messages.append(f"SearXNG 地址未保存：{exc}")
     elif env_name is None:
-        console.print("[dim]open-websearch 免费且无需 Key，本地 daemon 即可用。[/dim]")
+        _console().print("[dim]open-websearch 免费且无需 Key，本地 daemon 即可用。[/dim]")
     else:
         current_key = read_api_key(env_name)
         if name in ANONYMOUS_SEARCH_PROVIDERS:
             state = "已配置" if current_key else "未配置（匿名模式）"
-            console.print("[dim]不填写 Key 也可以启用并使用匿名搜索。[/dim]")
+            _console().print("[dim]不填写 Key 也可以启用并使用匿名搜索。[/dim]")
         else:
             state = "已配置" if current_key else "未配置"
         api_key = ask(
@@ -524,9 +589,7 @@ def _configure_search_provider(config: Config, messages: list[str]) -> None:
         )
         if api_key and api_key.strip():
             if save_api_key(env_name, api_key.strip()):
-                messages.append(
-                    f"{name} 的 API Key 已保存到系统凭据（环境变量 {env_name} 优先）。"
-                )
+                messages.append(f"{name} 的 API Key 已保存到系统凭据（环境变量 {env_name} 优先）。")
             else:
                 messages.append(
                     f"系统凭据存储不可用，{name} 的 Key 未保存明文，请改用环境变量 {env_name}。"
@@ -537,15 +600,17 @@ def _configure_search_provider(config: Config, messages: list[str]) -> None:
         action = _select(
             f"配置 {SEARCH_PROVIDER_LABELS[name]}",
             [
-                questionary.Choice(
-                    f"{'禁用' if search_on else '启用'} Search", value="search"
+                questionary.Choice(f"{'禁用' if search_on else '启用'} Search", value="search"),
+                *(
+                    [questionary.Choice(f"{'禁用' if fetch_on else '启用'} Fetch", value="fetch")]
+                    if name in FETCH_PROVIDERS
+                    else []
                 ),
-                *([questionary.Choice(
-                    f"{'禁用' if fetch_on else '启用'} Fetch", value="fetch"
-                )] if name in FETCH_PROVIDERS else []),
-                *([questionary.Choice("清除 API Key（恢复匿名）", value="clear_key")]
-                  if env_name and name in ANONYMOUS_SEARCH_PROVIDERS
-                  and read_api_key(env_name) else []),
+                *(
+                    [questionary.Choice("清除 API Key（恢复匿名）", value="clear_key")]
+                    if env_name and name in ANONYMOUS_SEARCH_PROVIDERS and read_api_key(env_name)
+                    else []
+                ),
                 questionary.Choice("返回上级", value="back"),
             ],
         )
@@ -568,33 +633,31 @@ def _configure_search_provider(config: Config, messages: list[str]) -> None:
                 and name not in ANONYMOUS_SEARCH_PROVIDERS
                 and not read_api_key(env_name)
             ):
-                messages.append(
-                    f"{name} 未检测到有效 Key（环境变量或系统凭据），无法启用。"
-                )
+                messages.append(f"{name} 未检测到有效 Key（环境变量或系统凭据），无法启用。")
                 continue
-            names = (
-                config.search.providers if action == "search" else config.fetch.providers
-            )
+            names = config.search.providers if action == "search" else config.fetch.providers
             _toggle_provider(names, name, enable)
-            if enable and env_name and name in ANONYMOUS_SEARCH_PROVIDERS \
-                    and not read_api_key(env_name):
+            if (
+                enable
+                and env_name
+                and name in ANONYMOUS_SEARCH_PROVIDERS
+                and not read_api_key(env_name)
+            ):
                 messages.append(f"{name} 未配置 Key，将以匿名模式运行。")
             if enable and env_name:
                 _ensure_usage_limit(config, name, messages)
 
 
 def _adjust_order(names: list[str], label: str) -> None:
+    import questionary
+
     if not names:
-        console.print(f"[dim]{label} 当前没有启用的 provider。[/dim]")
+        _console().print(f"[dim]{label} 当前没有启用的 provider。[/dim]")
         return
     while True:
-        current = " → ".join(
-            SEARCH_PROVIDER_LABELS.get(name, name) for name in names
-        )
+        current = " → ".join(SEARCH_PROVIDER_LABELS.get(name, name) for name in names)
         choices = [
-            questionary.Choice(
-                f"{SEARCH_PROVIDER_LABELS.get(name, name)}", value=name
-            )
+            questionary.Choice(f"{SEARCH_PROVIDER_LABELS.get(name, name)}", value=name)
             for name in names
         ]
         choices.append(questionary.Choice("完成", value=None))
@@ -615,6 +678,8 @@ def _adjust_order(names: list[str], label: str) -> None:
 
 def run_search_setup(config: Config, path: Path) -> dict:
     """搜索与网页抓取向导：Key、启停与优先级；TOML 只写非敏感配置。"""
+    import questionary
+
     messages: list[str] = []
     while True:
         action = _select(
@@ -648,11 +713,13 @@ def run_search_setup(config: Config, path: Path) -> dict:
 
 
 def _run_llm_setup(config: Config, path: Path) -> dict:
+    import questionary
+
     choice = ask(
         questionary.select(
             "选择模型供应商",
             choices=[questionary.Choice(title=preset.label, value=preset) for preset in PRESETS],
-            style=_MENU_STYLE,
+            style=_menu_style(),
             qmark="›",
             pointer="❯",
             instruction="↑↓ 选择 · Enter 确认",
@@ -665,9 +732,14 @@ def _run_llm_setup(config: Config, path: Path) -> dict:
     from ..llm import fetch_provider_models
 
     provider = preset.key
-    base_url = ask(questionary.text("Base URL", default=provider_base_url(config.llm, preset) or "https://"))
-    env_name = (ask(questionary.text("API Key 环境变量名", default=config.llm.api_key_env))
-                if provider == "custom" else preset.api_key_env)
+    base_url = ask(
+        questionary.text("Base URL", default=provider_base_url(config.llm, preset) or "https://")
+    )
+    env_name = (
+        ask(questionary.text("API Key 环境变量名", default=config.llm.api_key_env))
+        if provider == "custom"
+        else preset.api_key_env
+    )
     if base_url is None or env_name is None:
         raise KeyboardInterrupt
     while True:
@@ -675,10 +747,10 @@ def _run_llm_setup(config: Config, path: Path) -> dict:
             base_url = normalize_provider_url(base_url)
             break
         except ValueError as exc:
-            console.print(str(exc))
+            _console().print(str(exc))
             base_url = ask(questionary.text("Base URL", default=base_url))
             if base_url is None:
-                raise KeyboardInterrupt
+                raise KeyboardInterrupt from None
     env_name = env_name.strip()
     api_key = ask(questionary.password("API Key（不会写入配置文件；留空使用已配置的密钥）"))
     if api_key is None:
@@ -686,7 +758,9 @@ def _run_llm_setup(config: Config, path: Path) -> dict:
     api_key = api_key.strip()
     source = replace(config.llm, provider=provider, base_url=base_url, api_key_env=env_name)
     current_model = config.llm.model if config.llm.provider == provider else ""
-    model = _choose_model(fetch_provider_models(source, refresh=True, api_key=api_key or None), current_model)
+    model = _choose_model(
+        fetch_provider_models(source, refresh=True, api_key=api_key or None), current_model
+    )
 
     metadata, params = _capabilities(provider, base_url.strip(), model, env_name.strip())
     max_input = metadata.get("max_input_tokens")
@@ -696,12 +770,11 @@ def _run_llm_setup(config: Config, path: Path) -> dict:
         except (TypeError, ValueError):
             max_input = None
     if max_input:
-        console.print(f"模型上下文上限：{format_tokens(max_input)} tokens")
+        _console().print(f"模型上下文上限：{format_tokens(max_input)} tokens")
     effort = _choose_reasoning(params, config.llm.reasoning_effort)
     context_window = _choose_context(max_input, config.chat.context_window)
-    console.print(
-        f"使用 {preset.label}：{model} · 上下文 {context_window} · "
-        f"思考强度 {effort or '默认'}"
+    _console().print(
+        f"使用 {preset.label}：{model} · 上下文 {context_window} · 思考强度 {effort or '默认'}"
     )
 
     key_saved = False
@@ -718,8 +791,11 @@ def _run_llm_setup(config: Config, path: Path) -> dict:
         api_key_env=env_name.strip(),
         reasoning_effort=effort,
         spark_thinking=config.llm.spark_thinking,
-        provider_urls={**({config.llm.provider: config.llm.base_url} if config.llm.base_url else {}),
-                       **config.llm.provider_urls, provider: base_url},
+        provider_urls={
+            **({config.llm.provider: config.llm.base_url} if config.llm.base_url else {}),
+            **config.llm.provider_urls,
+            provider: base_url,
+        },
         recent_models=config.llm.recent_model_ids(),
         fallbacks=config.llm.fallbacks,
         num_retries=config.llm.num_retries,

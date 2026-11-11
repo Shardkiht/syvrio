@@ -3,6 +3,7 @@
 Everything runs against an isolated Vault and a fake model: no real API keys,
 no network, no reads of the user's configuration or memory files.
 """
+
 from __future__ import annotations
 
 import keyring
@@ -25,7 +26,13 @@ from syvrio.application.commands import (
 from syvrio.application.contracts import ModelOption, SettingsResult
 from syvrio.application.conversation import SAFE_COMMANDS
 from syvrio.application.settings import SettingsUseCases
-from syvrio.infra.config import ChatConfig, Config, LLMConfig, RetrievalConfig, SearchConfig
+from syvrio.infra.config import (
+    ChatConfig,
+    Config,
+    LLMConfig,
+    RetrievalConfig,
+    SearchConfig,
+)
 from syvrio.llm import AssistantTurn, LiteLLMChatModel
 from syvrio.memory.extractor import StaticExtractor
 from syvrio.memory.models import ExtractionResult
@@ -58,8 +65,12 @@ def backend(tmp_path, monkeypatch):
     )
     config = Config(
         vault=tmp_path / "vault",
-        llm=LLMConfig(provider="custom", model="fake", api_key_env="SYVRIO_WEB_TEST_KEY", base_url=""),
-        chat=ChatConfig(auto_recall=0, recall_rewrite=False, extract_on_exit=False, max_tool_steps=4),
+        llm=LLMConfig(
+            provider="custom", model="fake", api_key_env="SYVRIO_WEB_TEST_KEY", base_url=""
+        ),
+        chat=ChatConfig(
+            auto_recall=0, recall_rewrite=False, extract_on_exit=False, max_tool_steps=4
+        ),
         retrieval=RetrievalConfig(method="keyword"),
         search=SearchConfig(enabled=False),
     )
@@ -83,6 +94,7 @@ def run(client, line, **extra):
 
 
 # ---------- shared catalog ----------
+
 
 def test_tui_catalog_is_a_thin_forward_of_the_shared_definition():
     from syvrio.application.commands import SLASH_COMMANDS, SLASH_SUBCOMMANDS
@@ -118,6 +130,7 @@ def test_web_busy_policy_stays_within_tui_safe_commands():
 
 
 # ---------- routing and safety ----------
+
 
 def test_unknown_command_is_never_forwarded_to_the_llm(client, backend):
     response = run(client, "/this-does-not-exist")
@@ -183,7 +196,8 @@ def test_session_mismatch_rejects_a_stale_tab(client, backend):
 
 def test_command_api_rejects_cross_site_writes(client):
     response = client.post(
-        "/api/commands", json={"line": "/status"},
+        "/api/commands",
+        json={"line": "/status"},
         headers={"Origin": "http://evil.example"},
     )
     assert response.status_code == 403
@@ -191,6 +205,7 @@ def test_command_api_rejects_cross_site_writes(client):
 
 
 # ---------- busy policy ----------
+
 
 def test_busy_allows_read_only_commands_and_blocks_mutating_ones(backend):
     commands = backend._commands
@@ -206,8 +221,13 @@ def test_busy_blocks_mutating_forms_of_otherwise_safe_names(backend):
     commands = backend._commands
     # The name alone is read-only-ish, but these forms write data or run jobs and
     # must not run concurrently with a streaming reply.
-    for line in ("/dream 1", "/profile refresh", "/git sync",
-                 "/pending approve x", "/inferences confirm x"):
+    for line in (
+        "/dream 1",
+        "/profile refresh",
+        "/git sync",
+        "/pending approve x",
+        "/inferences confirm x",
+    ):
         assert commands.execute(line, busy=True, confirmed=True).status == "busy", line
     # Read-only forms of the same names stay available (even if dispatch errors,
     # the busy gate must not be what rejects them).
@@ -232,6 +252,7 @@ def test_is_mutating_distinguishes_command_forms():
 
 # ---------- option panels ----------
 
+
 def test_listing_produces_options_but_applying_does_not(client):
     listing = run(client, "/model").json()
     assert listing["status"] == "ok"
@@ -254,14 +275,16 @@ def test_empty_model_catalog_still_lists_the_current_model(client, monkeypatch):
     assert "Current model: custom/fake" in body["message"]
     assert "Models:\n\n" not in body["message"]
     assert body["data"]["options"][0] == {
-        "provider": "custom", "model": "fake", "label": "custom/fake", "current": True,
+        "provider": "custom",
+        "model": "fake",
+        "label": "custom/fake",
+        "current": True,
     }
     assert "No cached model list" in body["message"]
 
 
 def test_model_refresh_reports_an_empty_provider_catalog(client, monkeypatch):
-    monkeypatch.setattr(SettingsUseCases, "model_catalog",
-                        lambda self, *a, **k: {"custom": []})
+    monkeypatch.setattr(SettingsUseCases, "model_catalog", lambda self, *a, **k: {"custom": []})
     monkeypatch.setattr(SettingsUseCases, "model_options", lambda self, *a, **k: [])
     body = run(client, "/model refresh").json()
     assert body["status"] == "ok"
@@ -272,9 +295,11 @@ def test_model_refresh_reports_an_empty_provider_catalog(client, monkeypatch):
 
 def test_explicit_model_id_is_switchable_without_a_catalog(client, monkeypatch):
     monkeypatch.setattr(SettingsUseCases, "model_options", lambda self, *a, **k: [])
-    monkeypatch.setattr(SettingsUseCases, "apply_model",
-                        lambda self, provider, model: SettingsResult(
-                            True, f"Model switched: {provider}/{model}"))
+    monkeypatch.setattr(
+        SettingsUseCases,
+        "apply_model",
+        lambda self, provider, model: SettingsResult(True, f"Model switched: {provider}/{model}"),
+    )
     body = run(client, "/model custom/other-model").json()
     assert body["status"] == "ok"
     assert "Model switched: custom/other-model" in body["message"]

@@ -122,7 +122,10 @@ class VectorRetriever:
                 if vectors.shape[1] == 0 or not np.isfinite(vectors).all():
                     raise ValueError("embedding 返回空维度或非有限数值")
                 if expected_dim is not None and vectors.shape[1] != expected_dim:
-                    record_event("retrieval.vector_dimension_failed", ValueError("Embedding dimensions differ."))
+                    record_event(
+                        "retrieval.vector_dimension_failed",
+                        ValueError("Embedding dimensions differ."),
+                    )
                     self._mark_degraded()
                     return
                 if keep and expected_dim is None and vectors.shape[1] != cached.shape[1]:

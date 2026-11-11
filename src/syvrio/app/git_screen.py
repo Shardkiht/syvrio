@@ -3,9 +3,8 @@
 Ctrl+S 只注册在 GitScreen 内；同步由 ChatApp 的后台 Worker 执行，
 关闭界面不会取消正在进行的 Git 操作。
 """
-from __future__ import annotations
 
-from datetime import datetime
+from __future__ import annotations
 
 from rich.markup import escape
 from textual.app import ComposeResult
@@ -15,16 +14,11 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Static
 
 from ..infra.gitsync import SyncResult, SyncStage
+from ..time import format_local_timestamp
 
 
 def _stamp(value: str | None) -> str:
-    if not value:
-        return "Unknown"
-    try:
-        moment = datetime.fromisoformat(value)
-    except ValueError:
-        return value
-    return moment.astimezone().strftime("%Y-%m-%d %H:%M")
+    return format_local_timestamp(value) or "Unknown"
 
 
 def _plural(count: int, noun: str) -> str:
@@ -46,7 +40,9 @@ def status_text(status: dict | None) -> str:
     branch = status.get("branch") or "Unknown"
     modified = _plural(int(status.get("modified") or 0), "modified file")
     unpushed = status.get("unpushed")
-    unpushed_text = "Unknown (no upstream)" if unpushed is None else _plural(int(unpushed), "commit")
+    unpushed_text = (
+        "Unknown (no upstream)" if unpushed is None else _plural(int(unpushed), "commit")
+    )
     last_commit = _stamp(status.get("last_commit_at"))
     last_push = _stamp(status.get("last_push_at"))
     auto_sync = "Enabled" if status.get("auto_sync") else "Disabled"
@@ -80,7 +76,9 @@ def status_text(status: dict | None) -> str:
         lines.append("")
         lines.append("[#6cb6ff]Synchronization is running…[/]")
     lines.append("")
-    lines.append("[#818181]Status is read from the local repository; external Git operations may require a refresh.[/]")
+    lines.append(
+        "[#818181]Status is read from the local repository; external Git operations may require a refresh.[/]"
+    )
     return "\n".join(lines)
 
 
@@ -107,7 +105,9 @@ def progress_text(stages: list[SyncStage]) -> str:
     lines = ["Git Synchronization", ""]
     lines.extend(_stage_line(stage) for stage in stages)
     lines.append("")
-    lines.append("[#818181]Git operations run in the background; closing this screen does not cancel them.[/]")
+    lines.append(
+        "[#818181]Git operations run in the background; closing this screen does not cancel them.[/]"
+    )
     return "\n".join(lines)
 
 
@@ -132,7 +132,9 @@ def result_text(result: SyncResult, status: dict | None) -> str:
         if result.committed:
             lines.append("[#818181]Local commit has been preserved.[/]")
     if result.committed and not result.pushed:
-        lines.append("[#818181]The next synchronize attempt will retry the push without creating another commit.[/]")
+        lines.append(
+            "[#818181]The next synchronize attempt will retry the push without creating another commit.[/]"
+        )
     return "\n".join(lines)
 
 
@@ -242,7 +244,9 @@ class GitConfirmScreen(ModalScreen):
     def compose(self) -> ComposeResult:
         modified = int(self._status.get("modified") or 0)
         unpushed = self._status.get("unpushed")
-        unpushed_text = "Unknown (no upstream)" if unpushed is None else _plural(int(unpushed), "commit")
+        unpushed_text = (
+            "Unknown (no upstream)" if unpushed is None else _plural(int(unpushed), "commit")
+        )
         upstream = self._status.get("upstream")
         push_note = "" if upstream else "\n- Push will be skipped until an upstream is configured"
         body = (

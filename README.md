@@ -630,6 +630,7 @@ README 的界面演示与截图保存在 `docs/assets/`，不包含个人记忆�
 
 ```bash
 uv sync --frozen
+uv run ruff check src tests scripts evals
 uv run pytest
 ```
 

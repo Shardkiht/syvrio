@@ -3,6 +3,7 @@
 界面层只做展示与选择收集；模型/思考/上下文的判定与落盘在 actions.py，
 会话与记忆操作走 AgentRuntime / MemoryService。
 """
+
 from __future__ import annotations
 
 import json
@@ -14,39 +15,40 @@ from urllib.parse import urlsplit
 from rich.markup import escape
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.events import MouseDown, MouseUp
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.widgets import Input, Label, ListView, ListItem, Markdown, Static
+from textual.events import MouseDown, MouseUp
+from textual.widgets import Input, Label, ListItem, ListView, Markdown, Static
 from textual.worker import Worker, WorkerState
 
 from ..agent.runtime import AgentRuntime
 from ..agent.session import Session, SessionStore
 from ..application.service import ApplicationService
-from ..infra.tokens import format_tokens
 from ..infra.diagnostics import record_event
+from ..infra.tokens import format_tokens
 from ..llm import warm_model_metadata
 from ..memory.service import MemoryService
+from ..time import format_local_timestamp
 from .chat_commands import ChatCommandsMixin
-from .chat_git import ChatGitMixin
-from .chat_reflection import ChatReflectionMixin
 from .chat_flow import ChatFlowMixin
+from .chat_git import ChatGitMixin
 from .chat_input import BarInput
+from .chat_reflection import ChatReflectionMixin
 from .chat_theme import APP_CSS
 from .chat_widgets import (
     ASSISTANT_NAME,
+    ChatReply,
     CommandPalette,
     HomePanel,
+    ModelPickerScreen,
     NewSessionButton,
     PickScreen,
-    ModelPickerScreen,
     SessionItem,
     SessionPickerScreen,
     SidebarToggle,
-    ChatReply,
     TranscriptView,
 )
-from .session_ui import visible_sessions
 from .command_catalog import SLASH_COMMANDS, SLASH_SUBCOMMANDS
+from .session_ui import visible_sessions
 
 
 class ChatApp(ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixin, App):
@@ -98,11 +100,19 @@ class ChatApp(ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixi
     # ---------- 应用层兼容访问面（仅供旧 UI 测试与只读视图） ----------
 
     _STATE_ALIASES = {
-        "_queue": "queue", "_queue_paused_after_undo": "queue_paused_after_undo",
-        "_pending_new": "pending_new", "_pending_switch": "pending_switch", "_pending_command": "pending_command",
-        "_navigation_busy": "_navigation_busy", "_ask_active": "_ask_active", "_ask_in_flight": "_ask_in_flight",
-        "_ask_user_message_id": "_ask_user_message_id", "_cancel_generation": "_cancel",
-        "_undo_requested": "_undo_requested", "_undo_target_session_id": "_undo_target_session_id", "_undo_target_message_id": "_undo_target_message_id",
+        "_queue": "queue",
+        "_queue_paused_after_undo": "queue_paused_after_undo",
+        "_pending_new": "pending_new",
+        "_pending_switch": "pending_switch",
+        "_pending_command": "pending_command",
+        "_navigation_busy": "_navigation_busy",
+        "_ask_active": "_ask_active",
+        "_ask_in_flight": "_ask_in_flight",
+        "_ask_user_message_id": "_ask_user_message_id",
+        "_cancel_generation": "_cancel",
+        "_undo_requested": "_undo_requested",
+        "_undo_target_session_id": "_undo_target_session_id",
+        "_undo_target_message_id": "_undo_target_message_id",
     }
 
     @property
@@ -134,6 +144,7 @@ class ChatApp(ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixi
                 setattr(application.conversation, alias, value)
             return
         super().__setattr__(name, value)
+
     # ---------- 布局 ----------
 
     def compose(self) -> ComposeResult:
@@ -153,7 +164,9 @@ class ChatApp(ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixi
                 with Horizontal(id="status-row"):
                     yield self._model_status
                     yield Static("", id="status")
-                yield Static("Enter send   Ctrl+P commands   Ctrl+B conversations", id="composer-hint")
+                yield Static(
+                    "Enter send   Ctrl+P commands   Ctrl+B conversations", id="composer-hint"
+                )
 
     def on_mount(self) -> None:
         self.set_interval(0.15, self._render_model_status)
@@ -172,25 +185,37 @@ class ChatApp(ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixi
         self._run_catchup()
         self._warm_search()
         # 首次 /model、/context 会同步导入 LiteLLM；启动预热避免开屏空白期。
-        self.run_worker(partial(warm_model_metadata, self.application.config.llm.litellm_model()),
-                        group="warm", thread=True, exit_on_error=False)
+        self.run_worker(
+            partial(warm_model_metadata, self.application.config.llm.litellm_model()),
+            group="warm",
+            thread=True,
+            exit_on_error=False,
+        )
         self._start_auto_reflection()
         self._start_git_scheduler()
 
     def _handle_exception(self, error: Exception) -> None:
-        record_event("tui.failed", error, busy=self.busy, streaming=self._ask_active,
-                     queued=self.application.conversation.queue_snapshot().count)
+        record_event(
+            "tui.failed",
+            error,
+            busy=self.busy,
+            streaming=self._ask_active,
+            queued=self.application.conversation.queue_snapshot().count,
+        )
         super()._handle_exception(error)
 
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
         if event.state == WorkerState.ERROR:
-            record_event("tui.failed", event.worker.error, busy=self.busy,
-                         streaming=self._ask_active, queued=self.application.conversation.queue_snapshot().count)
+            record_event(
+                "tui.failed",
+                event.worker.error,
+                busy=self.busy,
+                streaming=self._ask_active,
+                queued=self.application.conversation.queue_snapshot().count,
+            )
 
     def _warm_search(self) -> None:
-        self.run_worker(
-            self._warm_search_work, group="search", thread=True, exit_on_error=False
-        )
+        self.run_worker(self._warm_search_work, group="search", thread=True, exit_on_error=False)
 
     def _warm_search_work(self) -> None:
         try:
@@ -203,9 +228,7 @@ class ChatApp(ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixi
             self.call_from_thread(self.notify, "Web search started")
 
     def _run_catchup(self) -> None:
-        self.run_worker(
-            self._catchup_work, group="catchup", thread=True, exit_on_error=False
-        )
+        self.run_worker(self._catchup_work, group="catchup", thread=True, exit_on_error=False)
 
     def _catchup_work(self) -> None:
         try:
@@ -260,7 +283,8 @@ class ChatApp(ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixi
         if len(self.screen_stack) > 1:
             for widget in self.screen.query(Input):
                 if widget.can_focus and widget.display and not widget.disabled:
-                    widget.focus(); return
+                    widget.focus()
+                    return
             return
         self.query_one("#input", Input).focus()
 
@@ -280,8 +304,12 @@ class ChatApp(ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixi
         if len(self.screen_stack) == 1:
             widget = self.query_one("#input", Input)
             value = widget.value
-            if (widget.has_focus and widget.cursor_at_end and widget.selection.is_empty
-                    and value.startswith("/")):
+            if (
+                widget.has_focus
+                and widget.cursor_at_end
+                and widget.selection.is_empty
+                and value.startswith("/")
+            ):
                 palette = self.query_one("#cmd-palette", CommandPalette)
                 prefix = value[1:]
                 if palette.prefix != prefix:
@@ -316,13 +344,15 @@ class ChatApp(ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixi
         current_id = self.application.conversation.current_id
         last_date = None
         for row in visible_sessions(self.application.conversation.list_sessions(100)):
-            stamp = row.get("updated_at") or row.get("started_at") or ""
+            stamp = format_local_timestamp(row.get("last_message_at") or row.get("started_at"))
             date = stamp[:10] or "Unknown date"
             if date != last_date:
                 view.append(ListItem(Label(date, classes="group-label"), disabled=True))
                 last_date = date
             time_text = stamp[11:16] if len(stamp) >= 16 else ""
-            meta = f"{time_text} · {row['messages']} msgs" if time_text else f"{row['messages']} msgs"
+            meta = (
+                f"{time_text} · {row['messages']} msgs" if time_text else f"{row['messages']} msgs"
+            )
             item = SessionItem({**row, "meta": meta})
             if row["id"] == current_id:
                 item.add_class("current")
@@ -437,7 +467,9 @@ class ChatApp(ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixi
         except Exception as exc:
             # 会话文件损坏/被删等异常不能让 busy 卡死：留在原会话并提示。
             record_event("session.failed", exc)
-            self.call_from_thread(self._finish_navigation_error, f"Session switch failed: {exc}", drop_pending=True)
+            self.call_from_thread(
+                self._finish_navigation_error, f"Session switch failed: {exc}", drop_pending=True
+            )
             return
         self.call_from_thread(self._after_session_switch, stats, label)
         # 沉淀延后到后台：刚切走的会话标记 distill_deferred，这里立即补；
@@ -471,7 +503,11 @@ class ChatApp(ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixi
             message = "New session · created after your first message"
         else:
             self.build_transcript()
-            if self._ask_active and self._ask_in_flight is not None and self.application.conversation.current_id == self._ask_in_flight:
+            if (
+                self._ask_active
+                and self._ask_in_flight is not None
+                and self.application.conversation.current_id == self._ask_in_flight
+            ):
                 # 切回生成中的会话：磁盘重建负责已完成轮次，活跃段从状态重放。
                 self._replay_stream()
         if stats.get("admitted") or stats.get("queued"):
@@ -491,7 +527,7 @@ class ChatApp(ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixi
             return
         self.push_screen(
             PickScreen(
-                f"Delete session \"{escape(row['title'])}\" permanently?\nThis cannot be undone.",
+                f'Delete session "{escape(row["title"])}" permanently?\nThis cannot be undone.',
                 [("Cancel", False), ("Delete permanently", True)],
                 partial(self._delete_session_result, row),
             )
@@ -559,6 +595,7 @@ class ChatApp(ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixi
             chat = self._chat()
             if not chat.reading_paused:
                 chat.scroll_end(animate=False, immediate=True)
+
         self.call_after_refresh(follow)
 
     def on_mouse_down(self, event: MouseDown) -> None:
@@ -646,7 +683,11 @@ class ChatApp(ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixi
         self.pending_count = self.application.pending_count
 
     def _usage_key(self) -> tuple | None:
-        session = self.application.conversation.current if self.application.conversation.has_session else None
+        session = (
+            self.application.conversation.current
+            if self.application.conversation.has_session
+            else None
+        )
         if session is None:
             return None
         try:
@@ -654,7 +695,13 @@ class ChatApp(ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixi
             persona = (stat.st_mtime_ns, stat.st_size)
         except OSError:
             persona = None
-        return (session.id, len(session.records), self.application.conversation.model_label, persona, date.today())
+        return (
+            session.id,
+            len(session.records),
+            self.application.conversation.model_label,
+            persona,
+            date.today(),
+        )
 
     def _request_usage(self, key: tuple) -> None:
         if key == self._usage_request or key == self._usage_failed:
@@ -663,8 +710,13 @@ class ChatApp(ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixi
         # 固定本次估算的事件快照；切换或继续输入后，旧结果不得覆盖新会话。
         snapshot = Session(session.id, session.started_at, session.path, list(session.records))
         self._usage_request = key
-        self.run_worker(partial(self._usage_work, key, snapshot), group="usage",
-                        thread=True, exclusive=True, exit_on_error=False)
+        self.run_worker(
+            partial(self._usage_work, key, snapshot),
+            group="usage",
+            thread=True,
+            exclusive=True,
+            exit_on_error=False,
+        )
 
     def _usage_work(self, key: tuple, session: Session) -> None:
         try:
@@ -710,9 +762,7 @@ class ChatApp(ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixi
         used_text = format_tokens(used) if used else "0"
         if estimating:
             used_text = "Unavailable" if key == self._usage_failed else "Calculating"
-        text = (
-            f"[#8a8b90]Context[/] {bar} [#8a8b90]{used_text}/{format_tokens(total)}[/]"
-        )
+        text = f"[#8a8b90]Context[/] {bar} [#8a8b90]{used_text}/{format_tokens(total)}[/]"
         if self.pending_count:
             text += f"   [#b08a6a]Pending {self.pending_count}[/]"
         if percent >= self.application.conversation.compact_threshold():
@@ -737,7 +787,9 @@ class ChatApp(ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixi
         self._release_input_if_idle()
 
     def _begin_ask(self, session_id: str | None) -> None:
-        record_event("generation.started", queued=self.application.conversation.queue_snapshot().count)
+        record_event(
+            "generation.started", queued=self.application.conversation.queue_snapshot().count
+        )
         self._reflection_activity()
         self.application.conversation.begin_turn(session_id)
         self._progress_started = time.monotonic()
@@ -748,8 +800,11 @@ class ChatApp(ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixi
     def _end_ask(self, turn_id: int | None) -> bool:
         if turn_id is None or not self.application.conversation.end_turn(turn_id):
             return False
-        record_event("generation.finished", queued=self.application.conversation.queue_snapshot().count,
-                     elapsed_ms=round((time.monotonic() - self._progress_started) * 1000))
+        record_event(
+            "generation.finished",
+            queued=self.application.conversation.queue_snapshot().count,
+            elapsed_ms=round((time.monotonic() - self._progress_started) * 1000),
+        )
         self._stream_widget = None
         self._stream_buffer = ""
         if self._thinking_widget is not None:
@@ -816,8 +871,12 @@ class ChatApp(ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixi
             return
         palette = self.query_one("#cmd-palette", CommandPalette)
         if line.startswith("/"):
-            if (palette.display and palette.current
-                    and palette.prefix == event.value[1:] and " " not in event.value):
+            if (
+                palette.display
+                and palette.current
+                and palette.prefix == event.value[1:]
+                and " " not in event.value
+            ):
                 self.run_command_from_palette(palette.current)
                 return
             palette.close()

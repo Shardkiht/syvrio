@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
+from datetime import UTC, datetime
+
 import pytest
 
-pytestmark = pytest.mark.agent
-
 from syvrio.agent.session import SessionStore, new_message_id
+
+pytestmark = pytest.mark.agent
 
 
 def make_store(tmp_path):
@@ -32,10 +35,14 @@ def test_create_append_and_reload(tmp_path):
 def test_session_redacts_credentials_in_nested_records(tmp_path):
     store, session = make_store(tmp_path)
     secret = "SYNTHETIC-ONLY-12345"
-    record = store.append(session, {
-        "type": "assistant", "content": f"密码是 {secret}",
-        "tool_calls": [{"arguments": {"text": f"API key: {secret}"}}],
-    })
+    record = store.append(
+        session,
+        {
+            "type": "assistant",
+            "content": f"密码是 {secret}",
+            "tool_calls": [{"arguments": {"text": f"API key: {secret}"}}],
+        },
+    )
     store.rename(session, f"密码是 {secret}")
     assert secret not in session.path.read_text(encoding="utf-8")
     assert secret not in str(record)
@@ -44,7 +51,7 @@ def test_session_redacts_credentials_in_nested_records(tmp_path):
     assert "敏感信息已隐藏" in record["content"]
 
 
-@pytest.mark.parametrize("ending", [b'', b'\n', "合".encode("utf-8")[:2]])
+@pytest.mark.parametrize("ending", [b"", b"\n", "合".encode("utf-8")[:2]])
 def test_session_recovers_torn_tail_without_rewriting_original(tmp_path, ending):
     store, session = make_store(tmp_path)
     store.append(session, {"type": "message", "id": "m1", "role": "user", "content": "合成陈述"})
@@ -88,7 +95,12 @@ def test_rename_and_list(tmp_path):
     store, session = make_store(tmp_path)
     store.append(
         session,
-        {"type": "message", "id": new_message_id(), "role": "user", "content": "一段很长的对话内容"},
+        {
+            "type": "message",
+            "id": new_message_id(),
+            "role": "user",
+            "content": "一段很长的对话内容",
+        },
     )
     store.rename(session, "口味偏好")
 
@@ -96,6 +108,86 @@ def test_rename_and_list(tmp_path):
     assert rows[0]["id"] == session.id
     assert rows[0]["title"] == "口味偏好"
     assert rows[0]["messages"] == 1
+
+
+@pytest.mark.parametrize("count", [1, 10, 50])
+def test_session_listing_scans_archive_once(tmp_path, monkeypatch, count):
+    store = SessionStore(tmp_path)
+    for _ in range(count):
+        store.create()
+    scans = 0
+    files = store._files
+
+    def count_files():
+        nonlocal scans
+        scans += 1
+        return files()
+
+    monkeypatch.setattr(store, "_files", count_files)
+    assert len(store.list(limit=count, with_tokens=False)) == count
+    assert scans == 1
+    assert len(store.list(limit=count, with_tokens=True)) == count
+    assert scans == 2
+
+
+def test_session_listing_rejects_duplicate_ids(tmp_path):
+    store, session = make_store(tmp_path)
+    legacy = store.root / "legacy" / "undated"
+    legacy.mkdir(parents=True)
+    (legacy / session.path.name).write_bytes(session.path.read_bytes())
+    with pytest.raises(ValueError, match="duplicate session ID"):
+        store.list()
+
+
+def test_session_listing_rejects_symlinks(tmp_path):
+    store, session = make_store(tmp_path)
+    link = session.path.with_name("linked-session.jsonl")
+    try:
+        link.symlink_to(session.path)
+    except (OSError, NotImplementedError):
+        pytest.skip("Creating symlinks is unavailable")
+    with pytest.raises(ValueError, match="symlink in session archive"):
+        store.list()
+
+
+def test_session_listing_orders_by_last_message_before_limiting(tmp_path):
+    store = SessionStore(tmp_path)
+    older = store.create()
+    newer = store.create()
+    legacy = store.root / "legacy" / "undated"
+    legacy.mkdir(parents=True)
+    old_path = legacy / older.path.name
+    older.path.rename(old_path)
+    older = store.load(older.id)
+    for session, stamp in ((older, "2025-01-01"), (newer, "2025-01-02")):
+        store.append(
+            session,
+            {
+                "type": "message",
+                "role": "user",
+                "content": "Synthetic turn",
+                "at": stamp + "T00:00:00+00:00",
+            },
+        )
+    store.append(
+        older, {"type": "summary", "content": "Summary", "at": "2025-01-03T00:00:00+00:00"}
+    )
+    store.append(older, {"type": "title", "title": "Renamed", "at": "2025-01-04T00:00:00+00:00"})
+    assert [row["id"] for row in store.list(limit=1)] == [newer.id]
+    older_row = store.list()[1]
+    assert older_row["title"] == "Renamed"
+    assert older_row["updated_at"] == "2025-01-04T00:00:00+00:00"
+    assert older_row["last_message_at"] == "2025-01-01T00:00:00+00:00"
+    store.append(
+        older,
+        {
+            "type": "message",
+            "role": "user",
+            "content": "Synthetic follow-up",
+            "at": "2025-01-05T00:00:00+00:00",
+        },
+    )
+    assert [row["id"] for row in store.list()] == [older.id, newer.id]
 
 
 def test_summary_covers_records(tmp_path):
@@ -120,10 +212,87 @@ def test_summary_covers_records(tmp_path):
     assert loaded.user_texts_after_summary() == ["第二句"]
 
 
+@pytest.mark.parametrize(
+    ("older_at", "newer_at"),
+    [
+        ("2025-01-01T09:00:00+08:00", "2025-01-01T02:00:00+00:00"),
+        ("2025-01-02T01:00:00+08:00", "2025-01-01T19:00:00Z"),
+        ("2025-01-01T01:00:00-05:00", "2025-01-01T02:00:00-05:00"),
+        ("", "2025-01-01T00:00:00Z"),
+    ],
+)
+def test_session_listing_sorts_timestamps_before_limiting(tmp_path, older_at, newer_at):
+    store = SessionStore(tmp_path)
+    older, newer = store.create(), store.create()
+    for session, stamp in ((older, older_at), (newer, newer_at)):
+        if stamp:
+            store.append(
+                session, {"type": "message", "role": "user", "content": "Turn", "at": stamp}
+            )
+    if not older_at:
+        older.path.write_text('{"type": "meta"}\n', encoding="utf-8")
+    assert [row["id"] for row in store.list()] == [newer.id, older.id]
+    assert store.list(limit=1)[0]["id"] == newer.id
+
+
+@pytest.mark.parametrize("invalid", ["2025-07-01T12:00:00", "not-a-timestamp"])
+def test_session_rejects_invalid_timestamp_on_append_and_load(tmp_path, invalid):
+    store, session = make_store(tmp_path)
+    assert session.started_at.endswith("+00:00")
+    record = {"type": "message", "role": "user", "content": "Turn", "at": invalid}
+    before = session.path.read_bytes()
+    with pytest.raises(ValueError):
+        store.append(session, record)
+    assert session.path.read_bytes() == before
+    with session.path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record) + "\n")
+    with pytest.raises(ValueError):
+        store.load(session.id)
+
+
+def test_session_listing_keeps_archive_order_for_equal_times(tmp_path):
+    store = SessionStore(tmp_path)
+    first, second = store.create(), store.create()
+    for session, stamp in (
+        (first, "2025-01-01T09:00:00+08:00"),
+        (second, "2025-01-01T01:00:00Z"),
+    ):
+        store.append(session, {"type": "message", "role": "user", "content": "Turn", "at": stamp})
+    archive_order = sorted([first.id, second.id])
+    assert [row["id"] for row in store.list()] == archive_order
+    assert store.list(limit=1)[0]["id"] == archive_order[0]
+
+
+def test_session_listing_reorders_after_undo(tmp_path):
+    store = SessionStore(tmp_path)
+    edited, other = store.create(), store.create()
+    for session, message_id, stamp in (
+        (edited, "first", "2025-01-01T09:00:00+08:00"),
+        (other, "other", "2025-01-01T02:00:00Z"),
+        (edited, "latest", "2025-01-01T11:00:00+08:00"),
+    ):
+        store.append(
+            session,
+            {"type": "message", "id": message_id, "role": "user", "content": "Turn", "at": stamp},
+        )
+    assert store.list(limit=1)[0]["id"] == edited.id
+
+    store.append(edited, {"type": "undo", "message_id": "latest"})
+    rows = store.list()
+    assert [row["id"] for row in rows] == [other.id, edited.id]
+    assert rows[1]["last_message_at"] == "2025-01-01T01:00:00+00:00"
+
+    store.append(edited, {"type": "undo", "message_id": "first"})
+    row = next(row for row in store.list() if row["id"] == edited.id)
+    assert row["last_message_at"] == edited.started_at
+
+
 def test_undo_persists_and_allows_reedited_message(tmp_path):
     store, session = make_store(tmp_path)
     for message_id, text in (("m1", "第一问"), ("m2", "第二问")):
-        store.append(session, {"type": "message", "id": message_id, "role": "user", "content": text})
+        store.append(
+            session, {"type": "message", "id": message_id, "role": "user", "content": text}
+        )
         store.append(
             session,
             {"type": "assistant", "id": f"a{message_id[1:]}", "content": f"{text}的回答"},
@@ -171,16 +340,9 @@ def test_delete_session_file(tmp_path):
 
 
 def test_create_retries_id_collision_without_overwrite(tmp_path, monkeypatch):
-    from datetime import datetime
-
     from syvrio.agent import session as session_module
 
-    class FixedDateTime:
-        @staticmethod
-        def now():
-            return datetime(2026, 1, 1, 0, 0, 0)
-
-    monkeypatch.setattr(session_module, "datetime", FixedDateTime)
+    monkeypatch.setattr(session_module, "utc_now", lambda: datetime(2026, 1, 1, tzinfo=UTC))
     tokens = iter(["aaaa", "aaaa", "ffff"])
     monkeypatch.setattr(session_module.secrets, "token_hex", lambda _: next(tokens))
     store = SessionStore(tmp_path)
@@ -200,11 +362,16 @@ def test_unconsolidated_filters_threshold_before_limit(tmp_path):
         session = store.create()
         sessions.append(session)
         for number in range(count):
-            store.append(session, {
-                "type": "message", "id": f"m{index}-{number}", "role": "user",
-                "content": f"合成陈述 {index}-{number}",
-                "at": f"2026-01-0{index + 1}T12:00:00",
-            })
+            store.append(
+                session,
+                {
+                    "type": "message",
+                    "id": f"m{index}-{number}",
+                    "role": "user",
+                    "content": f"合成陈述 {index}-{number}",
+                    "at": f"2026-01-0{index + 1}T12:00:00+00:00",
+                },
+            )
 
     assert [s.id for s in store.unconsolidated(3, min_new_messages=3)] == [sessions[0].id]
     assert [s.id for s in store.unconsolidated(3)] == [s.id for s in reversed(sessions[1:])]
@@ -215,14 +382,30 @@ def test_distillation_tracks_ids_separately_from_new_summary_boundaries(tmp_path
     store, session = make_store(tmp_path)
     store.append(session, {"type": "message", "id": "m1", "role": "user", "content": "旧版已沉淀"})
     store.append(session, {"type": "summary", "content": "旧版摘要", "covered_records": 2})
-    store.append(session, {"type": "message", "id": "m2", "role": "user", "content": "首次抽取失败"})
-    store.append(session, {
-        "type": "summary", "content": "失败后仍压缩", "covered_records": 4, "distilled_ids": [],
-    })
-    store.append(session, {"type": "message", "id": "m3", "role": "user", "content": "后续抽取成功"})
-    store.append(session, {
-        "type": "summary", "content": "后续摘要", "covered_records": 6, "distilled_ids": ["m3"],
-    })
+    store.append(
+        session, {"type": "message", "id": "m2", "role": "user", "content": "首次抽取失败"}
+    )
+    store.append(
+        session,
+        {
+            "type": "summary",
+            "content": "失败后仍压缩",
+            "covered_records": 4,
+            "distilled_ids": [],
+        },
+    )
+    store.append(
+        session, {"type": "message", "id": "m3", "role": "user", "content": "后续抽取成功"}
+    )
+    store.append(
+        session,
+        {
+            "type": "summary",
+            "content": "后续摘要",
+            "covered_records": 6,
+            "distilled_ids": ["m3"],
+        },
+    )
     store.append(session, {"type": "message", "id": "m4", "role": "user", "content": "新消息"})
 
     loaded = store.load(session.id)
@@ -237,10 +420,15 @@ def test_undo_preserves_distillation_receipts_but_excludes_undone_messages(tmp_p
     store, session = make_store(tmp_path)
     store.append(session, {"type": "message", "id": "m1", "role": "user", "content": "保留陈述"})
     store.append(session, {"type": "message", "id": "m2", "role": "user", "content": "撤销陈述"})
-    store.append(session, {
-        "type": "summary", "content": "撤销后失效的摘要", "covered_records": 2,
-        "distilled_ids": ["m1"] if succeeded else [],
-    })
+    store.append(
+        session,
+        {
+            "type": "summary",
+            "content": "撤销后失效的摘要",
+            "covered_records": 2,
+            "distilled_ids": ["m1"] if succeeded else [],
+        },
+    )
     store.append(session, {"type": "undo", "message_id": "m2"})
 
     loaded = store.load(session.id)
@@ -251,28 +439,40 @@ def test_undo_preserves_distillation_receipts_but_excludes_undone_messages(tmp_p
 
 def test_list_reuses_cached_summary_until_file_changes(tmp_path, monkeypatch):
     store, session = make_store(tmp_path)
-    store.append(session, {
-        "type": "message", "id": new_message_id(), "role": "user", "content": "第一条",
-    })
+    store.append(
+        session,
+        {
+            "type": "message",
+            "id": new_message_id(),
+            "role": "user",
+            "content": "第一条",
+        },
+    )
     calls = 0
-    original = store.load
+    original = store._load_path
 
-    def counting(session_id, *, include_reasoning=True):
+    def counting(path, *, include_reasoning):
         nonlocal calls
         calls += 1
         assert not include_reasoning
-        return original(session_id, include_reasoning=include_reasoning)
+        return original(path, include_reasoning=include_reasoning)
 
-    monkeypatch.setattr(store, "load", counting)
+    monkeypatch.setattr(store, "_load_path", counting)
 
     first = store.list()
     second = store.list()
     assert calls == 1
     assert first == second
 
-    store.append(session, {
-        "type": "message", "id": new_message_id(), "role": "user", "content": "第二条",
-    })
+    store.append(
+        session,
+        {
+            "type": "message",
+            "id": new_message_id(),
+            "role": "user",
+            "content": "第二条",
+        },
+    )
     third = store.list()
     assert calls == 2
     assert third[0]["messages"] == 2
@@ -281,20 +481,26 @@ def test_list_reuses_cached_summary_until_file_changes(tmp_path, monkeypatch):
 def test_unconsolidated_skips_unchanged_consolidated_files(tmp_path, monkeypatch):
     store, session = make_store(tmp_path)
     message_id = new_message_id()
-    store.append(session, {
-        "type": "message", "id": message_id, "role": "user", "content": "已经沉淀",
-    })
+    store.append(
+        session,
+        {
+            "type": "message",
+            "id": message_id,
+            "role": "user",
+            "content": "已经沉淀",
+        },
+    )
     store.append(session, {"type": "distilled", "up_to": message_id})
     calls = 0
-    original = store.load
+    original = store._load_path
 
-    def counting(session_id, *, include_reasoning=True):
+    def counting(path, *, include_reasoning):
         nonlocal calls
         calls += 1
         assert not include_reasoning
-        return original(session_id, include_reasoning=include_reasoning)
+        return original(path, include_reasoning=include_reasoning)
 
-    monkeypatch.setattr(store, "load", counting)
+    monkeypatch.setattr(store, "_load_path", counting)
 
     assert store.unconsolidated(3) == []
     assert store.unconsolidated(3, min_new_messages=3) == []
@@ -304,25 +510,40 @@ def test_unconsolidated_skips_unchanged_consolidated_files(tmp_path, monkeypatch
 def test_distilled_high_water_mark_does_not_move_backwards(tmp_path):
     store, session = make_store(tmp_path)
     for number in range(3):
-        store.append(session, {
-            "type": "message", "id": f"m{number}", "role": "user", "content": f"陈述{number}",
-        })
+        store.append(
+            session,
+            {
+                "type": "message",
+                "id": f"m{number}",
+                "role": "user",
+                "content": f"陈述{number}",
+            },
+        )
     store.append(session, {"type": "distilled", "up_to": "m1"})
     store.append(session, {"type": "distilled", "up_to": "m0"})
     assert store.load(session.id).user_texts_after_distilled() == ["陈述2"]
 
 
-@pytest.mark.parametrize("bad", [
-    b'\xff', b'[]', b'null', b'42', b'{"type":"title","title":[]}',
-    b'{"type":"message","role":"user","content":{}}',
-    b'{"type":"summary","covered_records":"bad"}',
-    b'{"type":"summary","distilled_ids":[{}]}',
-    b'{"type":"assistant","tool_calls":[null]}',
-    b'{"type":"meta","at":12}',
-])
+@pytest.mark.parametrize(
+    "bad",
+    [
+        b"\xff",
+        b"[]",
+        b"null",
+        b"42",
+        b'{"type":"title","title":[]}',
+        b'{"type":"message","role":"user","content":{}}',
+        b'{"type":"summary","covered_records":"bad"}',
+        b'{"type":"summary","distilled_ids":[{}]}',
+        b'{"type":"assistant","tool_calls":[null]}',
+        b'{"type":"meta","at":12}',
+    ],
+)
 def test_bad_session_is_reported_without_blocking_healthy_files(tmp_path, caplog, bad):
     store, healthy = make_store(tmp_path)
-    store.append(healthy, {"type": "message", "id": "m-good", "role": "user", "content": "Synthetic fact"})
+    store.append(
+        healthy, {"type": "message", "id": "m-good", "role": "user", "content": "Synthetic fact"}
+    )
     broken = store.create()
     with broken.path.open("ab") as handle:
         handle.write(bad + b'\n{"type":"closed"}\n')
@@ -339,7 +560,7 @@ def test_bad_session_is_reported_without_blocking_healthy_files(tmp_path, caplog
 def test_complete_nonobject_tail_is_not_treated_as_torn_write(tmp_path):
     store, session = make_store(tmp_path)
     with session.path.open("ab") as handle:
-        handle.write(b'[]\n')
+        handle.write(b"[]\n")
     original = session.path.read_bytes()
     with pytest.raises(ValueError, match="Session record"):
         store.load(session.id)
@@ -348,14 +569,17 @@ def test_complete_nonobject_tail_is_not_treated_as_torn_write(tmp_path):
 
 def test_create_retries_exclusive_open_race(tmp_path, monkeypatch):
     from pathlib import Path
+
     original_open = Path.open
     collided = []
+
     def race(path, mode="r", *args, **kwargs):
         if mode == "x" and not collided:
             collided.append(path)
             with original_open(path, "wb") as handle:
                 handle.write(b"synthetic competing session\n")
         return original_open(path, mode, *args, **kwargs)
+
     monkeypatch.setattr(Path, "open", race)
     created = SessionStore(tmp_path).create()
     assert created.path != collided[0]

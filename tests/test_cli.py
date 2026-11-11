@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-import pytest
 import sys
 
-pytestmark = pytest.mark.cli
-
+import pytest
 from typer.testing import CliRunner
 
 from syvrio.app.cli import app
+
+pytestmark = pytest.mark.cli
 
 runner = CliRunner()
 
@@ -20,7 +20,6 @@ def test_bare_invocation_falls_back_to_help_without_tty():
     result = invoke([])
     assert result.exit_code == 0
     assert "Usage:" in result.output
-
 
 
 def test_format_tokens_uses_km_units():
@@ -113,10 +112,6 @@ def test_escape_cancels_questionary_prompt():
         assert ask(question) is None
 
 
-
-
-
-
 def test_init_note_recall_commit(tmp_path):
     config = tmp_path / "syvrio.toml"
     vault = tmp_path / "vault"
@@ -127,7 +122,16 @@ def test_init_note_recall_commit(tmp_path):
     assert (vault / ".git").is_dir()
 
     result = invoke(
-        ["note", "喝咖啡偏好清淡风味", "--topic", "preferences", "--title", "偏好", "--config", str(config)]
+        [
+            "note",
+            "喝咖啡偏好清淡风味",
+            "--topic",
+            "preferences",
+            "--title",
+            "偏好",
+            "--config",
+            str(config),
+        ]
     )
     assert result.exit_code == 0, result.output
     assert "已记录" in result.output
@@ -278,8 +282,9 @@ def test_cli_help_with_western_pipe_encoding():
 
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "cp1252:strict"
-    result = subprocess.run([sys.executable, "-m", "syvrio.app.cli", "--help"],
-                            capture_output=True, env=env, timeout=30)
+    result = subprocess.run(
+        [sys.executable, "-m", "syvrio.app.cli", "--help"], capture_output=True, env=env, timeout=30
+    )
     assert result.returncode == 0, result.stderr.decode("utf-8", errors="replace")
     assert "Usage:" in result.stdout.decode("utf-8")
     assert "记忆" in result.stdout.decode("utf-8")

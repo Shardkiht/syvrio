@@ -123,7 +123,13 @@ class LLMExtractor:
             message = str(exc).lower()
             if not any(
                 token in message
-                for token in ("response_format", "json_object", "json mode", "unsupported", "invalid parameter")
+                for token in (
+                    "response_format",
+                    "json_object",
+                    "json mode",
+                    "unsupported",
+                    "invalid parameter",
+                )
             ):
                 raise ExtractorError(f"LLM 调用失败：{exc}") from exc
             # 部分 OpenAI 兼容服务不支持 JSON mode，退回普通对话。
@@ -189,7 +195,13 @@ def parse_import(content: str) -> ExtractionResult:
 class ImportExtractor:
     """导入抽取：输出必须通过严格校验，失败带着错误回传重出，连续失败整块放弃。"""
 
-    def __init__(self, config: LLMConfig, completer=complete, max_attempts: int = 3, topics: list[str] | None = None):
+    def __init__(
+        self,
+        config: LLMConfig,
+        completer=complete,
+        max_attempts: int = 3,
+        topics: list[str] | None = None,
+    ):
         self.config = config
         self.completer = completer
         self.max_attempts = max_attempts
@@ -210,7 +222,11 @@ class ImportExtractor:
         user_content = f"待整理内容：\n{text}{topic_hint}"
         feedback = ""
         for _ in range(self.max_attempts):
-            content = user_content if not feedback else f"{user_content}\n\n上一轮输出被拒绝：{feedback}\n请修正后重新输出完整 JSON。"
+            content = (
+                user_content
+                if not feedback
+                else f"{user_content}\n\n上一轮输出被拒绝：{feedback}\n请修正后重新输出完整 JSON。"
+            )
             response = self._complete(content)
             try:
                 return parse_import(response.choices[0].message.content or "")
@@ -234,7 +250,13 @@ class ImportExtractor:
             message = str(exc).lower()
             if not any(
                 token in message
-                for token in ("response_format", "json_object", "json mode", "unsupported", "invalid parameter")
+                for token in (
+                    "response_format",
+                    "json_object",
+                    "json mode",
+                    "unsupported",
+                    "invalid parameter",
+                )
             ):
                 raise ExtractorError(f"LLM 调用失败：{exc}") from exc
             # 部分 OpenAI 兼容服务不支持 JSON mode，退回普通对话。

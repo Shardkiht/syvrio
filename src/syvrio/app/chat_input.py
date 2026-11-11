@@ -57,7 +57,10 @@ class BarInput(Input):
     @property
     def cursor_screen_offset(self) -> Offset:
         viewport = self.scrollable_content_region
-        return Offset(viewport.x + self._position_to_cell(self.cursor_position) - self.scroll_offset.x, viewport.y)
+        return Offset(
+            viewport.x + self._position_to_cell(self.cursor_position) - self.scroll_offset.x,
+            viewport.y,
+        )
 
     def _sync_caret(self) -> None:
         viewport = self.scrollable_content_region
@@ -92,7 +95,12 @@ class BarInput(Input):
         self.call_after_refresh(self._show_native_cursor)
 
     def _show_native_cursor(self) -> None:
-        if self._uses_native_cursor and self.has_focus and not self.disabled and not self._cursor_suspended:
+        if (
+            self._uses_native_cursor
+            and self.has_focus
+            and not self.disabled
+            and not self._cursor_suspended
+        ):
             # IME preedit belongs to the terminal; a painted glyph cannot follow it.
             app = self.app
             app.cursor_position = self.cursor_screen_offset
@@ -131,8 +139,13 @@ class BarInput(Input):
 
     def _record_cursor_state(self) -> None:
         position = self.cursor_screen_offset
-        record_event("cursor.changed", native=self._native_cursor_active,
-                     suspended=self._cursor_suspended, cursor_x=position.x, cursor_y=position.y)
+        record_event(
+            "cursor.changed",
+            native=self._native_cursor_active,
+            suspended=self._cursor_suspended,
+            cursor_x=position.x,
+            cursor_y=position.y,
+        )
 
     def on_mouse_down(self) -> None:
         self._resume_cursor()
@@ -153,7 +166,13 @@ class BarInput(Input):
 
     def render_line(self, y: int) -> Strip:
         strip = super().render_line(y)
-        if self._cursor_suspended or self._uses_native_cursor or y != 0 or not self.has_focus or not self._cursor_visible:
+        if (
+            self._cursor_suspended
+            or self._uses_native_cursor
+            or y != 0
+            or not self.has_focus
+            or not self._cursor_visible
+        ):
             return strip
 
         # 在渲染结果里插竖线，不能改 _value：额外字符会让 Textual 的输入框重绘

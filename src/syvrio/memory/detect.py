@@ -54,7 +54,7 @@ def has_literal_bigrams(text: str) -> bool:
 @lru_cache(maxsize=2048)
 def _literal_bigrams(text: str) -> frozenset[str]:
     return frozenset(
-        run[i:i + 2] for run in _CJK_RUN_RE.findall(text) for i in range(len(run) - 1)
+        run[i : i + 2] for run in _CJK_RUN_RE.findall(text) for i in range(len(run) - 1)
     )
 
 
@@ -77,7 +77,9 @@ def find_conflicts(candidate: Candidate, entries: list[Entry]) -> list[Entry]:
             conflicts.append(entry)
             continue
         entry_numbers = set(NUMBER_RE.findall(entry.text))
-        numbers_differ = bool(candidate_numbers and entry_numbers and candidate_numbers != entry_numbers)
+        numbers_differ = bool(
+            candidate_numbers and entry_numbers and candidate_numbers != entry_numbers
+        )
         negation_differs = bool(NEGATION_RE.search(candidate.text)) != bool(
             NEGATION_RE.search(entry.text)
         )

@@ -8,6 +8,8 @@ import subprocess
 from contextlib import contextmanager
 from pathlib import Path
 
+from ..time import format_local_timestamp, parse_timestamp, serialize_timestamp
+
 LOCAL_TIMEOUT = 15.0
 PUSH_TIMEOUT = 120.0
 
@@ -103,7 +105,9 @@ class GitError(RuntimeError):
 
 
 class GitRepo:
-    def __init__(self, path: Path, timeout: float = LOCAL_TIMEOUT, push_timeout: float = PUSH_TIMEOUT):
+    def __init__(
+        self, path: Path, timeout: float = LOCAL_TIMEOUT, push_timeout: float = PUSH_TIMEOUT
+    ):
         self.path = Path(path)
         self.timeout = timeout
         self.push_timeout = push_timeout
@@ -252,7 +256,9 @@ class GitRepo:
         self._run(["add", "-A"], check=True)
 
     def _index_path(self) -> Path:
-        result = self._run(["rev-parse", "--path-format=absolute", "--git-path", "index"], check=True)
+        result = self._run(
+            ["rev-parse", "--path-format=absolute", "--git-path", "index"], check=True
+        )
         return Path(result.stdout.rstrip("\r\n"))
 
     @staticmethod
@@ -264,7 +270,9 @@ class GitRepo:
                 try:
                     current = path.read_bytes() if path.exists() else None
                     if current != staged:
-                        raise GitError("Git index changed during sensitive-path validation.", kind="sensitive")
+                        raise GitError(
+                            "Git index changed during sensitive-path validation.", kind="sensitive"
+                        )
                     if previous is not None:
                         handle.write(previous)
                         handle.close()
@@ -324,7 +332,9 @@ class GitRepo:
         sensitive = self.sensitive_staged_paths()
         if sensitive:
             paths = "、".join(sensitive[:5])
-            raise GitError(f"拒绝提交疑似敏感文件：{paths}。请移出 vault 或加入 .gitignore。", kind="sensitive")
+            raise GitError(
+                f"拒绝提交疑似敏感文件：{paths}。请移出 vault 或加入 .gitignore。", kind="sensitive"
+            )
 
     def has_commits(self) -> bool:
         return self._run(["rev-parse", "--verify", "HEAD"]).returncode == 0
@@ -332,14 +342,18 @@ class GitRepo:
     def history(self, limit: int = 10) -> list[dict[str, str]]:
         if not self.is_repo:
             return []
-        completed = self._run(
-            ["log", f"-{limit}", "--pretty=format:%h%x1f%ad%x1f%s", "--date=format:%Y-%m-%d %H:%M"]
-        )
+        completed = self._run(["log", f"-{limit}", "--pretty=format:%h%x1f%aI%x1f%s"])
         result: list[dict[str, str]] = []
         for line in completed.stdout.splitlines():
             parts = line.split("\x1f")
             if len(parts) == 3:
-                result.append({"hash": parts[0], "date": parts[1], "subject": parts[2]})
+                result.append(
+                    {
+                        "hash": parts[0],
+                        "date": format_local_timestamp(parts[1]),
+                        "subject": parts[2],
+                    }
+                )
         return result
 
     def last_commit_info(self) -> dict[str, str] | None:
@@ -349,7 +363,7 @@ class GitRepo:
         parts = completed.stdout.strip().split("\x1f")
         if len(parts) != 2:
             return None
-        return {"hash": parts[0], "at": parts[1]}
+        return {"hash": parts[0], "at": serialize_timestamp(parse_timestamp(parts[1]))}
 
     def branch(self) -> str | None:
         completed = self._run(["rev-parse", "--abbrev-ref", "HEAD"])
@@ -367,9 +381,7 @@ class GitRepo:
         return self.remote_name() is not None
 
     def upstream(self) -> str | None:
-        completed = self._run(
-            ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]
-        )
+        completed = self._run(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
         if completed.returncode != 0:
             return None
         return completed.stdout.strip() or None

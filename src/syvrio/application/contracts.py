@@ -1,4 +1,5 @@
 """应用层稳定数据契约：不依赖 Textual/Rich，也不重复领域模型。"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

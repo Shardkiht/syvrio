@@ -1,12 +1,9 @@
 """SearXNG 适配器离线回归：MockTransport，不访问真实实例。"""
-from __future__ import annotations
 
-import json
+from __future__ import annotations
 
 import httpx
 import pytest
-
-pytestmark = pytest.mark.search
 
 from syvrio.infra.config import SearchConfig, UsageLimit
 from syvrio.infra.search.base import (
@@ -21,6 +18,8 @@ from syvrio.infra.search.searxng import (
     SearxngProvider,
     normalize_base_url,
 )
+
+pytestmark = pytest.mark.search
 
 BASE = "http://127.0.0.1:8888"
 
@@ -83,9 +82,7 @@ def test_success_maps_fields_and_keeps_provider_separate_from_engine():
 
 
 def test_empty_results_are_normal_not_error():
-    assert _provider(lambda request: _json({"results": []})).search(
-        SearchQuery("nothing")
-    ) == []
+    assert _provider(lambda request: _json({"results": []})).search(SearchQuery("nothing")) == []
 
 
 def test_invalid_records_are_filtered_and_title_falls_back_to_url():
@@ -222,9 +219,7 @@ def test_non_json_and_oversized_responses_fail_loudly():
 
 def test_partial_engine_failures_are_kept_as_diagnostics():
     payload = {
-        "results": [
-            {"title": "ok", "url": "https://example.com/a", "content": "x"}
-        ],
+        "results": [{"title": "ok", "url": "https://example.com/a", "content": "x"}],
         "unresponsive_engines": [
             ["bing", "timeout"],
             ["duckduckgo", "HTTP 429 too many requests"],

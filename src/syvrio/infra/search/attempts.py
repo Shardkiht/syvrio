@@ -1,4 +1,5 @@
 """Bounded, staggered dispatch for one search's upstream requests."""
+
 from __future__ import annotations
 
 import time
@@ -7,9 +8,14 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, replace
 from threading import BoundedSemaphore
 
-from .base import ProviderError, SearchFailure, SearchProvider, SearchQuery, SearchResult
+from .base import (
+    ProviderError,
+    SearchFailure,
+    SearchProvider,
+    SearchQuery,
+    SearchResult,
+)
 from .usage import UsageLimiter
-
 
 MAX_IN_FLIGHT = 4
 HEDGE_DELAY = 0.25
@@ -42,8 +48,12 @@ def _request(
 
 class SearchRun:
     def __init__(
-        self, attempts: list[SearchAttempt], timeout: float, max_requests: int,
-        limiter: UsageLimiter | None, failures: list[SearchFailure],
+        self,
+        attempts: list[SearchAttempt],
+        timeout: float,
+        max_requests: int,
+        limiter: UsageLimiter | None,
+        failures: list[SearchFailure],
     ) -> None:
         self.pending = attempts
         self.deadline = time.perf_counter() + timeout
@@ -68,18 +78,29 @@ class SearchRun:
                 remaining = self.deadline - time.perf_counter()
                 if remaining <= 0:
                     self.timed_out = True
-                    self.failures.append(SearchFailure(last_name, "timeout", "搜索总超时预算已用尽"))
+                    self.failures.append(
+                        SearchFailure(last_name, "timeout", "搜索总超时预算已用尽")
+                    )
                     return
-                if (active and hedge_at is not None and time.perf_counter() >= hedge_at
-                        and not any(future.done() for future in active)):
+                if (
+                    active
+                    and hedge_at is not None
+                    and time.perf_counter() >= hedge_at
+                    and not any(future.done() for future in active)
+                ):
                     parallel = True
                 width = MAX_IN_FLIGHT if parallel else 1
                 while len(active) < width and self.pending and sent < self.max_requests:
-                    if any(future.done() for future in active) or not _SLOTS.acquire(blocking=False):
+                    if any(future.done() for future in active) or not _SLOTS.acquire(
+                        blocking=False
+                    ):
                         break
                     # Prefer an independent provider before speculating on more requests to one already running.
                     active_names = {attempt.name for attempt in active.values()}
-                    index = next((i for i, item in enumerate(self.pending) if item.name not in active_names), 0)
+                    index = next(
+                        (i for i, item in enumerate(self.pending) if item.name not in active_names),
+                        0,
+                    )
                     attempt = self.pending.pop(index)
                     last_name = attempt.name
                     remaining = self.deadline - time.perf_counter()
@@ -89,11 +110,17 @@ class SearchRun:
                         break
                     try:
                         if self.limiter is not None and not self.limiter.acquire(attempt.name):
-                            self.failures.append(SearchFailure(attempt.name, "quota", self.limiter.reason(attempt.name)))
+                            self.failures.append(
+                                SearchFailure(
+                                    attempt.name, "quota", self.limiter.reason(attempt.name)
+                                )
+                            )
                             self.skip_provider(attempt.name)
                             _SLOTS.release()
                             continue
-                        future = _POOL.submit(_request, attempt, round(max(remaining, 0.05), 3), self.limiter)
+                        future = _POOL.submit(
+                            _request, attempt, round(max(remaining, 0.05), 3), self.limiter
+                        )
                     except BaseException:
                         _SLOTS.release()
                         raise
@@ -110,9 +137,13 @@ class SearchRun:
                         return
                     if sent >= self.max_requests:
                         self.budget_exhausted = True
-                        self.failures.append(SearchFailure(
-                            self.pending[0].name, "budget_exhausted", "单次搜索请求次数预算已用尽"
-                        ))
+                        self.failures.append(
+                            SearchFailure(
+                                self.pending[0].name,
+                                "budget_exhausted",
+                                "单次搜索请求次数预算已用尽",
+                            )
+                        )
                         return
                     time.sleep(min(0.025, max(0.0, remaining)))
                     continue
@@ -129,12 +160,15 @@ class SearchRun:
                     self.failures.extend(failures)
                     if not ok:
                         self.pending[:] = [
-                            item for item in self.pending
+                            item
+                            for item in self.pending
                             if (item.name, item.engine_slot) != (attempt.name, attempt.engine_slot)
                         ]
                     yield attempt, results
                 if self.timed_out:
-                    self.failures.append(SearchFailure(last_name, "timeout", "搜索总超时预算已用尽"))
+                    self.failures.append(
+                        SearchFailure(last_name, "timeout", "搜索总超时预算已用尽")
+                    )
                     return
         finally:
             for future in active:

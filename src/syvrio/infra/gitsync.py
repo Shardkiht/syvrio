@@ -3,6 +3,7 @@
 状态写入 `runtime/state/git-sync.json`，只记录本机实际执行结果；
 Git 不保存 Push 时间，因此“最近成功 Push”只来自这里的成功记录。
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -14,6 +15,7 @@ from datetime import datetime, time, timedelta
 from pathlib import Path
 from typing import Callable
 
+from ..time import parse_timestamp, serialize_timestamp, utc_now
 from .config import Config
 from .gitops import GitError, GitRepo
 from .locking import LockTimeout, git_operation_lock, vault_write_lock
@@ -28,17 +30,11 @@ RETRYABLE = frozenset({"network", "timeout", "busy", "vault_busy"})
 
 
 def _now() -> datetime:
-    return datetime.now().astimezone()
+    return utc_now().astimezone()
 
 
 def _parse_stamp(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    try:
-        stamp = datetime.fromisoformat(value)
-    except ValueError:
-        return None
-    return stamp if stamp.tzinfo is not None else stamp.astimezone()
+    return parse_timestamp(value) if value is not None else None
 
 
 @dataclass
@@ -88,7 +84,15 @@ class GitSyncService:
             data = json.loads(self.state_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return {}
-        return data if isinstance(data, dict) else {}
+        if not isinstance(data, dict):
+            return {}
+        for key in ("last_commit_at", "last_push_at", "last_sync_at", "retry_after"):
+            if (value := data.get(key)) is not None:
+                try:
+                    data[key] = serialize_timestamp(parse_timestamp(value))
+                except ValueError as exc:
+                    raise ValueError(f"Invalid Git sync timestamp: {key}") from exc
+        return data
 
     def _write_state(self, state: dict) -> None:
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -100,7 +104,7 @@ class GitSyncService:
         """CLI 等入口实际 push 成功后记录时间；不能从 Commit 时间推断。"""
         state = self._read_state()
         state["version"] = 1
-        state["last_push_at"] = (now or _now()).isoformat(timespec="seconds")
+        state["last_push_at"] = serialize_timestamp((now or utc_now()).replace(microsecond=0))
         try:
             self._write_state(state)
         except OSError:
@@ -127,7 +131,10 @@ class GitSyncService:
         if target > now:
             return target
         today = now.date().isoformat()
-        if state.get("last_daily_success_date") == today or state.get("last_daily_blocked_date") == today:
+        if (
+            state.get("last_daily_success_date") == today
+            or state.get("last_daily_blocked_date") == today
+        ):
             return target + timedelta(days=1)
         return now
 
@@ -138,7 +145,10 @@ class GitSyncService:
         now = now or _now()
         state = self._read_state()
         today = now.date().isoformat()
-        if state.get("last_daily_success_date") == today or state.get("last_daily_blocked_date") == today:
+        if (
+            state.get("last_daily_success_date") == today
+            or state.get("last_daily_blocked_date") == today
+        ):
             return False
         if now.time() < self._schedule_time():
             return False
@@ -152,11 +162,7 @@ class GitSyncService:
         branch = self.repo.branch() if initialized else None
         upstream = self.repo.upstream() if initialized else None
         configured_remote = self.repo.remote_name() if initialized else None
-        remote = (
-            upstream.split("/", 1)[0]
-            if upstream and "/" in upstream
-            else configured_remote
-        )
+        remote = upstream.split("/", 1)[0] if upstream and "/" in upstream else configured_remote
         counts = self.repo.ahead_behind(upstream) if upstream else None
         last_commit = self.repo.last_commit_info() if initialized else None
         next_sync = self.next_sync_at(now) if self.config.git.auto_sync else None
@@ -178,7 +184,9 @@ class GitSyncService:
             "auto_sync": self.config.git.auto_sync,
             "schedule": self.config.git.sync_time,
             "retry_interval_minutes": self.config.git.retry_interval_minutes,
-            "next_sync": next_sync.isoformat(timespec="seconds") if next_sync else None,
+            "next_sync": serialize_timestamp(next_sync.replace(microsecond=0))
+            if next_sync
+            else None,
             "running": self.running,
         }
 
@@ -358,7 +366,12 @@ class GitSyncService:
             result.status = "success"
         elif result.error_kind in {"no_remote", "no_upstream"}:
             result.status = "partial"
-        elif result.error_kind == "git" and result.committed and not result.pushed and upstream is None:
+        elif (
+            result.error_kind == "git"
+            and result.committed
+            and not result.pushed
+            and upstream is None
+        ):
             result.status = "partial"
         else:
             result.status = "partial" if result.committed else "failed"
@@ -388,7 +401,7 @@ class GitSyncService:
     ) -> None:
         state = self._read_state()
         state["version"] = 1
-        state["last_sync_at"] = now.isoformat(timespec="seconds")
+        state["last_sync_at"] = serialize_timestamp(now.replace(microsecond=0))
         state["last_sync_trigger"] = result.trigger
         state["last_result"] = result.status
         state["last_error"] = result.error
@@ -396,10 +409,10 @@ class GitSyncService:
         if result.commit_hash:
             state["last_commit_hash"] = result.commit_hash
         if commit_at:
-            state["last_commit_at"] = commit_at
+            state["last_commit_at"] = serialize_timestamp(parse_timestamp(commit_at))
         if result.pushed:
             # 只有实际 push 成功才更新；不能用 Commit 时间代替。
-            state["last_push_at"] = now.isoformat(timespec="seconds")
+            state["last_push_at"] = serialize_timestamp(now.replace(microsecond=0))
         if result.trigger == "scheduled":
             state["last_daily_attempt_date"] = now.date().isoformat()
             # 成功与不可重试失败分别记录；不可重试只暂停当日重复尝试。
@@ -412,7 +425,7 @@ class GitSyncService:
                 state["last_daily_blocked_date"] = None
             if result.error_kind in RETRYABLE:
                 retry = now + timedelta(minutes=self.config.git.retry_interval_minutes)
-                state["retry_after"] = retry.isoformat(timespec="seconds")
+                state["retry_after"] = serialize_timestamp(retry.replace(microsecond=0))
             else:
                 state["retry_after"] = None
         elif result.status == "success":

@@ -3,13 +3,17 @@ from __future__ import annotations
 from functools import partial
 from pathlib import Path
 
-from rich.markup import escape
 from textual.widgets import Input, Static
 
 from ..infra.diagnostics import record_event
 from ..infra.tokens import format_tokens
 from ..memory.models import PendingItem
-from .chat_widgets import ModelPickerScreen, PickScreen, SessionPickerScreen, TextInputScreen
+from .chat_widgets import (
+    ModelPickerScreen,
+    PickScreen,
+    SessionPickerScreen,
+    TextInputScreen,
+)
 from .command_catalog import SLASH_COMMANDS
 from .inference_screen import InferenceScreen
 from .pending_screen import PendingScreen
@@ -29,7 +33,10 @@ class ChatCommandsMixin:
         if command in ("/exit", "/quit"):
             self.exit()
         elif command == "/help":
-            self.add_card("\n".join(f"{usage:<24}{description}" for _, usage, description in SLASH_COMMANDS), "Commands")
+            self.add_card(
+                "\n".join(f"{usage:<24}{description}" for _, usage, description in SLASH_COMMANDS),
+                "Commands",
+            )
         elif command == "/model":
             self._open_models(argument.lower() in ("refresh", "--refresh", "-r"))
         elif command == "/think":
@@ -37,7 +44,9 @@ class ChatCommandsMixin:
         elif command == "/context":
             self._pick_context()
         elif command == "/setup":
-            self.add_card("Use Ctrl+P in /model to manage providers. Run syvrio setup in a terminal for full configuration.")
+            self.add_card(
+                "Use Ctrl+P in /model to manage providers. Run syvrio setup in a terminal for full configuration."
+            )
         elif command == "/new":
             self._new_session()
         elif command == "/sessions":
@@ -51,7 +60,9 @@ class ChatCommandsMixin:
                 self.add_card("This new session has no summary yet.")
             else:
                 summary = self.application.conversation.summary_text()
-                self.add_markdown_card(summary, "Session summary") if summary else self.add_card("This session has no summary yet.")
+                self.add_markdown_card(summary, "Session summary") if summary else self.add_card(
+                    "This session has no summary yet."
+                )
         elif command == "/status":
             self._show_status()
         elif command == "/git":
@@ -67,7 +78,12 @@ class ChatCommandsMixin:
                 self._open_rename_prompt()
         elif command == "/import":
             if not argument:
-                self.push_screen(TextInputScreen("File or directory path (preview by default; add --apply to save)", on_result=lambda value: self._run_import(value) if value else None))
+                self.push_screen(
+                    TextInputScreen(
+                        "File or directory path (preview by default; add --apply to save)",
+                        on_result=lambda value: self._run_import(value) if value else None,
+                    )
+                )
             else:
                 self._run_import(argument)
         elif command == "/pending":
@@ -83,11 +99,16 @@ class ChatCommandsMixin:
 
     # ---------- Pending交互处理（issue #1） ----------
 
-    def _run_inference_review(self, item_id: str | None = None,
-                              action: str | None = None, text: str | None = None) -> None:
+    def _run_inference_review(
+        self, item_id: str | None = None, action: str | None = None, text: str | None = None
+    ) -> None:
         self._begin_navigation()
-        self.run_worker(partial(self._inference_work, item_id, action, text),
-                        thread=True, group="inference", exit_on_error=False)
+        self.run_worker(
+            partial(self._inference_work, item_id, action, text),
+            thread=True,
+            group="inference",
+            exit_on_error=False,
+        )
 
     def _inference_work(self, item_id: str | None, action: str | None, text: str | None) -> None:
         try:
@@ -98,7 +119,9 @@ class ChatCommandsMixin:
             )
         except Exception as exc:
             record_event("command.failed", exc)
-            message = f"Inference action failed: {exc}" if action else f"Could not load inferences: {exc}"
+            message = (
+                f"Inference action failed: {exc}" if action else f"Could not load inferences: {exc}"
+            )
             self.call_from_thread(self._inference_failed, message)
             return
         self.call_from_thread(
@@ -110,7 +133,11 @@ class ChatCommandsMixin:
         )
 
     def _show_inferences(
-        self, items: list, sources: dict, focus_id: str | None = None, feedback: str | None = None,
+        self,
+        items: list,
+        sources: dict,
+        focus_id: str | None = None,
+        feedback: str | None = None,
     ) -> None:
         self._end_navigation()
         if self._pending_new or self._pending_switch:
@@ -141,20 +168,30 @@ class ChatCommandsMixin:
     def _open_pending(self) -> None:
         self._run_pending_review()
 
-    def _run_pending_review(self, action: str | None = None, item_id: str = "",
-                            override: str | None = None) -> None:
+    def _run_pending_review(
+        self, action: str | None = None, item_id: str = "", override: str | None = None
+    ) -> None:
         if self._pending_review_busy:
             self.notify("Pending review is already in progress.")
             return
         self._pending_review_busy = True
         session_id = self.application.conversation.current_id
         screen = self.screen if isinstance(self.screen, PendingScreen) else None
-        self.run_worker(partial(self._pending_work, session_id, screen, action, item_id, override),
-                        thread=True, group="pending", exit_on_error=False)
+        self.run_worker(
+            partial(self._pending_work, session_id, screen, action, item_id, override),
+            thread=True,
+            group="pending",
+            exit_on_error=False,
+        )
 
-    def _pending_work(self, session_id: str | None, screen: PendingScreen | None,
-                      action: str | None, item_id: str,
-                      override: str | None) -> None:
+    def _pending_work(
+        self,
+        session_id: str | None,
+        screen: PendingScreen | None,
+        action: str | None,
+        item_id: str,
+        override: str | None,
+    ) -> None:
         finish = partial(self._finish_pending, session_id, screen)
         message = None
         try:
@@ -177,9 +214,14 @@ class ChatCommandsMixin:
             return
         self.call_from_thread(finish, items, message)
 
-    def _finish_pending(self, session_id: str | None, screen: PendingScreen | None,
-                        items: list[PendingItem] | None, message: str | None,
-                        error: str | None = None) -> None:
+    def _finish_pending(
+        self,
+        session_id: str | None,
+        screen: PendingScreen | None,
+        items: list[PendingItem] | None,
+        message: str | None,
+        error: str | None = None,
+    ) -> None:
         self._pending_review_busy = False
         if items is not None:
             self.pending_count = len(items)
@@ -193,7 +235,10 @@ class ChatCommandsMixin:
                 return
             screen.dismiss()
         feedback = "\n".join(part for part in (message, error) if part)
-        if self.screen is not self.default_screen or self.application.conversation.current_id != session_id:
+        if (
+            self.screen is not self.default_screen
+            or self.application.conversation.current_id != session_id
+        ):
             if feedback:
                 self.notify(feedback, markup=False)
             return
@@ -206,7 +251,9 @@ class ChatCommandsMixin:
             self.add_card("Pending queue is empty." if message else "No pending items.")
             widget.focus()
         elif screen is None and not widget.value.strip() and not self._navigation_busy:
-            self.push_screen(PendingScreen(items, self._run_pending_review), lambda _: widget.focus())
+            self.push_screen(
+                PendingScreen(items, self._run_pending_review), lambda _: widget.focus()
+            )
 
     def _show_topics(self, name: str | None = None) -> None:
         topics = self.application.memory.topics()
@@ -230,7 +277,10 @@ class ChatCommandsMixin:
             self.add_card("\n".join(lines), "Topic entries")
             return
         self.add_card(
-            "\n".join(f"{t['topic']:<24} {t['title']} · {t['entries']} entries · updated {t['updated']}" for t in topics),
+            "\n".join(
+                f"{t['topic']:<24} {t['title']} · {t['entries']} entries · updated {t['updated']}"
+                for t in topics
+            ),
             "Memory topics",
         )
 
@@ -240,9 +290,7 @@ class ChatCommandsMixin:
             self.add_card("No sessions to choose from.")
             return
         current_id = self.application.conversation.current_id
-        self.push_screen(
-            SessionPickerScreen(rows, current_id, self._picker_selected)
-        )
+        self.push_screen(SessionPickerScreen(rows, current_id, self._picker_selected))
 
     def _picker_selected(self, session_id) -> None:
         if session_id is None:
@@ -291,7 +339,9 @@ class ChatCommandsMixin:
                 self.refresh_sessions()
                 for screen in self.screen_stack:
                     if isinstance(screen, SessionPickerScreen):
-                        screen.set_rows(visible_sessions(self.application.conversation.list_sessions(100)))
+                        screen.set_rows(
+                            visible_sessions(self.application.conversation.list_sessions(100))
+                        )
                 self.notify("Session renamed.")
         # 重命名弹窗关闭后，焦点回到选择器而不是主输入框。
         if isinstance(self.screen, SessionPickerScreen):
@@ -372,18 +422,20 @@ class ChatCommandsMixin:
             return
         path = Path(filename).expanduser()
         if apply:
-            self.push_screen(PickScreen(
-                "Confirm Memory Import",
-                [("Cancel", False), ("Import and save", True)],
-                partial(self._import_confirmed, path),
-                detail=(
-                    f"Source: {path}\n\n"
-                    "This batch will write admitted memories directly to the Vault. "
-                    "The configured model may be called and may incur charges.\n\n"
-                    "If a later file or chunk fails, completed writes are retained. "
-                    "Cancel starts neither document parsing nor model calls."
-                ),
-            ))
+            self.push_screen(
+                PickScreen(
+                    "Confirm Memory Import",
+                    [("Cancel", False), ("Import and save", True)],
+                    partial(self._import_confirmed, path),
+                    detail=(
+                        f"Source: {path}\n\n"
+                        "This batch will write admitted memories directly to the Vault. "
+                        "The configured model may be called and may incur charges.\n\n"
+                        "If a later file or chunk fails, completed writes are retained. "
+                        "Cancel starts neither document parsing nor model calls."
+                    ),
+                )
+            )
             return
         self._start_import(path, False)
 
@@ -399,28 +451,45 @@ class ChatCommandsMixin:
             self.notify("An import is already running.")
             return
         self._import_running = True
-        self.add_card("Starting import: parsing is local; extraction calls the configured model and may incur charges. " + ("Memories will be saved." if apply else "Preview only; memories will not be saved."))
-        self.run_worker(partial(self._import_work, path, apply),
-                        group="import", thread=True, exit_on_error=False)
+        self.add_card(
+            "Starting import: parsing is local; extraction calls the configured model and may incur charges. "
+            + ("Memories will be saved." if apply else "Preview only; memories will not be saved.")
+        )
+        self.run_worker(
+            partial(self._import_work, path, apply),
+            group="import",
+            thread=True,
+            exit_on_error=False,
+        )
 
     def _import_work(self, path: Path, apply: bool) -> None:
         try:
             result = self.application.memory.import_path(
-                path, apply, on_progress=lambda item: self.call_from_thread(self._show_import_progress, item)
+                path,
+                apply,
+                on_progress=lambda item: self.call_from_thread(self._show_import_progress, item),
             )
         except Exception as exc:
             record_event("command.failed", exc)
             self.call_from_thread(self._after_import, f"Import failed: {exc}")
             return
         self.call_from_thread(self.refresh_pending)
-        message = "Import complete." if apply else "Preview complete; use /import <path> --apply to analyze again and save."
+        message = (
+            "Import complete."
+            if apply
+            else "Preview complete; use /import <path> --apply to analyze again and save."
+        )
         if result.errors:
-            message += f" {len(result.errors)} file/chunk(s) failed; completed changes were retained."
+            message += (
+                f" {len(result.errors)} file/chunk(s) failed; completed changes were retained."
+            )
         self.call_from_thread(self._after_import, message)
 
     def _show_import_progress(self, progress) -> None:
         if progress.chunk:
-            self.add_card(f"Analyzing {progress.file}: chunk {progress.chunk}/{progress.total_chunks}")
+            self.add_card(
+                f"Analyzing {progress.file}: chunk {progress.chunk}/{progress.total_chunks}"
+            )
         if progress.error:
             self.add_card(f"{progress.file} import failed: {progress.error}")
             return
@@ -460,8 +529,11 @@ class ChatCommandsMixin:
     ) -> list[tuple]:
         options = self.application.settings.model_options(fetched, capabilities)
         return [
-            (f"Recent · {option.label}" if option.recent else option.label,
-             (option.provider, option.model), option.current)
+            (
+                f"Recent · {option.label}" if option.recent else option.label,
+                (option.provider, option.model),
+                option.current,
+            )
             for option in options
         ]
 
@@ -501,11 +573,18 @@ class ChatCommandsMixin:
             self.call_from_thread(self._apply_fetched_models, picker, [], "Model discovery failed")
             return
         unavailable = [provider for provider, models in catalog.items() if not models]
-        status = ("No configured providers" if not catalog else
-                  f"No API models: {', '.join(unavailable)}" if unavailable else "")
+        status = (
+            "No configured providers"
+            if not catalog
+            else f"No API models: {', '.join(unavailable)}"
+            if unavailable
+            else ""
+        )
         self.call_from_thread(self._apply_fetched_models, picker, entries, status)
 
-    def _apply_fetched_models(self, picker: PickScreen, entries: list[tuple], status: str = "") -> None:
+    def _apply_fetched_models(
+        self, picker: PickScreen, entries: list[tuple], status: str = ""
+    ) -> None:
         # 异步刷新完成时用户可能已离开 /model；只更新仍然打开的这一屏。
         if self.screen is not picker:
             return
@@ -519,12 +598,18 @@ class ChatCommandsMixin:
             return
         provider, model = value
         if provider == "__providers__":
-            self.push_screen(PickScreen(
-                "Providers (Esc to return to models)",
-                [("Add provider", "add"), ("Update provider key", "update"), ("Set provider Base URL", "endpoint"),
-                 ("Remove provider", "remove")],
-                self._provider_management_picked,
-            ))
+            self.push_screen(
+                PickScreen(
+                    "Providers (Esc to return to models)",
+                    [
+                        ("Add provider", "add"),
+                        ("Update provider key", "update"),
+                        ("Set provider Base URL", "endpoint"),
+                        ("Remove provider", "remove"),
+                    ],
+                    self._provider_management_picked,
+                )
+            )
             return
         if provider == "__refresh__":
             self._open_models(True)
@@ -570,7 +655,9 @@ class ChatCommandsMixin:
             title = "Set provider Base URL"
             empty = "No built-in providers."
         else:
-            candidates = [option for option in options if option.configured and option.key != current]
+            candidates = [
+                option for option in options if option.configured and option.key != current
+            ]
             title = "Remove provider"
             empty = "Switch to another model before removing the current provider."
         if not candidates:
@@ -593,10 +680,13 @@ class ChatCommandsMixin:
             return
         provider_key, label, _ = value
         if action == "endpoint":
-            self.push_screen(TextInputScreen(
-                f"{label} Base URL", default=self.application.settings.provider_endpoint(provider_key),
-                on_result=partial(self._provider_endpoint_entered, provider_key),
-            ))
+            self.push_screen(
+                TextInputScreen(
+                    f"{label} Base URL",
+                    default=self.application.settings.provider_endpoint(provider_key),
+                    on_result=partial(self._provider_endpoint_entered, provider_key),
+                )
+            )
             return
         if action == "remove":
             self.push_screen(
@@ -662,11 +752,15 @@ class ChatCommandsMixin:
     def _pick_reasoning(self) -> None:
         options = self.application.settings.reasoning_options()
         if not options:
-            self.add_card(f"{self.application.conversation.model_label} does not support reasoning effort; use /model to switch to a reasoning-capable model.")
+            self.add_card(
+                f"{self.application.conversation.model_label} does not support reasoning effort; use /model to switch to a reasoning-capable model."
+            )
             return
         title, current = self.application.settings.reasoning_selection()
         entries = [(label, value, value == current) for value, label in options]
-        self.push_screen(PickScreen(f"{title}: {current or 'default'}", entries, self._reasoning_picked))
+        self.push_screen(
+            PickScreen(f"{title}: {current or 'default'}", entries, self._reasoning_picked)
+        )
 
     def _reasoning_picked(self, value) -> None:
         if value is None:
@@ -696,7 +790,9 @@ class ChatCommandsMixin:
         current = self.application.settings.context_window
         entries = [(format_tokens(size), size, size == current) for size in options]
         entries.append(("Custom…", 0, False))
-        self.push_screen(PickScreen(f"Context window: {format_tokens(current)}", entries, self._context_picked))
+        self.push_screen(
+            PickScreen(f"Context window: {format_tokens(current)}", entries, self._context_picked)
+        )
 
     def _context_failed(self, message: str) -> None:
         self._context_loading = False
@@ -709,7 +805,9 @@ class ChatCommandsMixin:
         if value == 0:
             current = self.application.settings.context_window
             self.push_screen(
-                TextInputScreen("Context window (tokens)", default=str(current), on_result=self._context_custom)
+                TextInputScreen(
+                    "Context window (tokens)", default=str(current), on_result=self._context_custom
+                )
             )
             return
         self.add_card(self.application.settings.apply_context(value).message)

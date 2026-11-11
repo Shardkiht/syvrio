@@ -635,6 +635,7 @@ Install locked dependencies into the project's own virtual environment, then run
 
 ```bash
 uv sync --frozen
+uv run ruff check src tests scripts evals
 uv run pytest
 ```
 

@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import pytest
 
-pytestmark = pytest.mark.agent
-
 from syvrio.agent.context import ContextManager, records_to_messages
 from syvrio.agent.session import SessionStore, new_message_id
 from syvrio.infra.config import ChatConfig
 from syvrio.infra.tokens import estimate_messages_tokens
+
+pytestmark = pytest.mark.agent
 
 
 class FakeSummarizer:
@@ -72,7 +72,13 @@ def test_tool_replay_drops_orphans_and_duplicates_and_closes_each_batch():
     ]
     messages = records_to_messages(records)
     assert [message["role"] for message in messages] == [
-        "assistant", "tool", "assistant", "tool", "user", "assistant", "tool",
+        "assistant",
+        "tool",
+        "assistant",
+        "tool",
+        "user",
+        "assistant",
+        "tool",
     ]
     results = [message for message in messages if message["role"] == "tool"]
     assert [message["tool_call_id"] for message in results] == ["a", "b", "c"]
@@ -84,7 +90,9 @@ def test_force_compact_summarizes_and_flushes(tmp_path):
     store = SessionStore(tmp_path)
     session = build_session(store)
     current_id = new_message_id()
-    store.append(session, {"type": "message", "id": current_id, "role": "user", "content": "当前问题"})
+    store.append(
+        session, {"type": "message", "id": current_id, "role": "user", "content": "当前问题"}
+    )
     flushed = []
 
     def flush(texts, session):
@@ -201,7 +209,9 @@ def test_failed_flush_still_compacts_and_keeps_messages_for_retry(tmp_path, rais
     store = SessionStore(tmp_path)
     session = build_session(store, repeat=80)
     original_texts = session.user_texts()
-    store.append(session, {"type": "message", "id": "current", "role": "user", "content": "当前问题"})
+    store.append(
+        session, {"type": "message", "id": "current", "role": "user", "content": "当前问题"}
+    )
 
     def failed_flush(texts, session):
         if raise_error:
@@ -210,7 +220,9 @@ def test_failed_flush_still_compacts_and_keeps_messages_for_retry(tmp_path, rais
 
     manager = ContextManager(
         ChatConfig(context_window=4096, reserve_output_tokens=512, keep_recent_tokens=1500),
-        FakeSummarizer(), store, flush=failed_flush,
+        FakeSummarizer(),
+        store,
+        flush=failed_flush,
     )
     plan = manager.prepare(session, "系统提示", "当前问题", current_id="current")
 
@@ -237,16 +249,23 @@ def test_later_successful_compaction_does_not_cover_an_earlier_failed_flush(tmp_
 
     manager = ContextManager(
         ChatConfig(context_window=4096, reserve_output_tokens=512, keep_recent_tokens=1500),
-        FakeSummarizer(), store, flush=flush,
+        FakeSummarizer(),
+        store,
+        flush=flush,
     )
     manager.prepare(session, "系统提示", "继续", force=True)
     failed_texts = list(attempts[0])
     loaded = store.load(session.id)
     for number in range(3):
-        store.append(loaded, {
-            "type": "message", "id": f"later-{number}", "role": "user",
-            "content": f"后续合成陈述 {number}：" + "合成陈述" * 80,
-        })
+        store.append(
+            loaded,
+            {
+                "type": "message",
+                "id": f"later-{number}",
+                "role": "user",
+                "content": f"后续合成陈述 {number}：" + "合成陈述" * 80,
+            },
+        )
     plan = manager.prepare(loaded, "系统提示", "继续", force=True)
 
     assert plan.compacted
@@ -261,7 +280,8 @@ def test_compaction_without_flush_does_not_acknowledge_messages(tmp_path):
     session = build_session(store)
     manager = ContextManager(
         ChatConfig(context_window=1000, reserve_output_tokens=100, keep_recent_tokens=100),
-        FakeSummarizer(), store,
+        FakeSummarizer(),
+        store,
     )
     plan = manager.prepare(session, "系统提示", "继续", force=True)
     assert plan.compacted
@@ -275,7 +295,9 @@ def test_compaction_does_not_flush_already_distilled_messages(tmp_path):
     flushed = []
     manager = ContextManager(
         ChatConfig(context_window=1000, reserve_output_tokens=100, keep_recent_tokens=100),
-        FakeSummarizer(), store, flush=lambda texts, session: flushed.append(texts),
+        FakeSummarizer(),
+        store,
+        flush=lambda texts, session: flushed.append(texts),
     )
     plan = manager.prepare(session, "系统提示", "继续", force=True)
     assert plan.compacted

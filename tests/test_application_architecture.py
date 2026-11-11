@@ -1,7 +1,10 @@
 """依赖边界：Application 纯 Python，核心层不反向依赖它。"""
+
 from __future__ import annotations
 
 import ast
+import subprocess
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1] / "src" / "syvrio"
@@ -80,7 +83,9 @@ def test_relative_import_detection_handles_levels(tmp_path):
         path.write_text(source, encoding="utf-8")
 
     app_paths = [root / "application/mod.py", root / "application/sub/mod.py"]
-    app_violations = [item.replace("\\", "/") for item in _violations(app_paths, FORBIDDEN_APP, root)]
+    app_violations = [
+        item.replace("\\", "/") for item in _violations(app_paths, FORBIDDEN_APP, root)
+    ]
     assert any("application/mod.py" in item for item in app_violations)
     assert any("application/sub/mod.py" in item for item in app_violations)
     assert any("syvrio.app.chat_widgets" in item for item in app_violations)
@@ -98,6 +103,37 @@ def test_multilevel_relative_import_resolution(tmp_path):
     path.write_text("from ...app import chat_widgets\n", encoding="utf-8")
 
     assert "syvrio.app.chat_widgets" in _imports(path, root)
+
+
+def test_application_settings_does_not_load_the_setup_wizard():
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            """
+import builtins
+import sys
+
+class BlockInteractiveImports:
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.split('.')[0] in {'questionary', 'prompt_toolkit', 'textual', 'typer'}:
+            raise AssertionError(f'Unexpected interactive dependency: {fullname}')
+
+def check_import(name, globals=None, locals=None, fromlist=(), level=0):
+    caller = (globals or {}).get('__name__', '')
+    if caller == 'syvrio.infra.providers' and name.split('.')[0] == 'rich':
+        raise AssertionError('The settings import loaded the wizard console')
+    return original_import(name, globals, locals, fromlist, level)
+
+original_import = builtins.__import__
+builtins.__import__ = check_import
+sys.meta_path.insert(0, BlockInteractiveImports())
+import syvrio.application.settings
+""",
+        ],
+        check=True,
+        timeout=15,
+    )
 
 
 def test_application_imports_without_textual_or_app():

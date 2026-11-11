@@ -9,7 +9,7 @@ from syvrio.agent.session import SessionStore
 from syvrio.agent.tools import build_tools
 from syvrio.infra.documents import document_paths
 from syvrio.infra.tokens import estimate_tokens
-from syvrio.memory.models import Candidate, ExtractionResult
+from syvrio.memory.models import Candidate
 
 pytestmark = pytest.mark.agent
 
@@ -17,7 +17,7 @@ pytestmark = pytest.mark.agent
 def test_paths_require_explicit_absolute_path_and_preserve_spaces(tmp_path):
     path = tmp_path / "synthetic conversation.JSONL"
     assert document_paths(f'分析 "{path}"，只读不写') == [path.resolve()]
-    assert document_paths('分析 relative.txt 和 https://example.invalid/file.pdf') == []
+    assert document_paths("分析 relative.txt 和 https://example.invalid/file.pdf") == []
 
 
 def test_file_reads_are_paged_losslessly_and_scoped(service, tmp_path):
@@ -51,7 +51,11 @@ def test_import_is_preview_by_default_and_reports_remaining_chunks(service, tmp_
 
     def extract(text, **kwargs):
         calls.append(kwargs)
-        return service._adjudicate([Candidate(text="合成用户偏好茶饮", confidence=0.95)], kwargs["source"], dry_run=kwargs["dry_run"])
+        return service._adjudicate(
+            [Candidate(text="合成用户偏好茶饮", confidence=0.95)],
+            kwargs["source"],
+            dry_run=kwargs["dry_run"],
+        )
 
     monkeypatch.setattr(service, "import_text", extract)
     handler = file_handlers(service, [path])["import_file"]

@@ -2,11 +2,10 @@
 
 全部使用假 provider 与合成标题/摘要，不发真实网络请求。
 """
+
 from __future__ import annotations
 
 import pytest
-
-pytestmark = pytest.mark.search
 
 from syvrio.infra.search.base import (
     ProviderError,
@@ -14,9 +13,11 @@ from syvrio.infra.search.base import (
     SearchQuery,
     SearchResult,
 )
-from syvrio.infra.search.quality import analyze_query, result_relevance
 from syvrio.infra.search.cache import SearchCache
+from syvrio.infra.search.quality import analyze_query, result_relevance
 from syvrio.infra.search.router import SearchRouter
+
+pytestmark = pytest.mark.search
 
 
 class EngineProvider:
@@ -61,9 +62,7 @@ def test_context_hit_alone_does_not_stop_engine_fallback():
         fallback_engines=("baidu",),
         max_engines=2,
     )
-    outcome = router.search(
-        SearchQuery("Tibo 最近的公告", context_terms=("OpenAI", "Codex"))
-    )
+    outcome = router.search(SearchQuery("Tibo 最近的公告", context_terms=("OpenAI", "Codex")))
     assert any(query.engines == ("baidu",) for query in provider.calls)
     assert outcome.results[0].title.startswith("Tibo")
     assert outcome.results[0].engine == "baidu"
@@ -93,9 +92,7 @@ def test_freshness_and_intent_words_are_not_core_terms():
     analysis = analyze_query("Tibo 最近有什么新消息", context_terms=("OpenAI",))
     assert analysis.freshness_requested
     assert "tibo" in [term.text for term in analysis.core_terms]
-    assert not any(
-        term.text in ("最近", "消息", "什么", "新") for term in analysis.core_terms
-    )
+    assert not any(term.text in ("最近", "消息", "什么", "新") for term in analysis.core_terms)
     assert "消息" in analysis.intent_terms
     assert [term.text for term in analysis.context_terms] == ["openai"]
 
@@ -106,9 +103,7 @@ def test_entity_free_query_is_ambiguous_and_not_gated():
     assert analysis.ambiguous
     assert not analysis.core_terms
     assert analysis.freshness_requested
-    provider = EngineProvider(
-        {"bing": [SearchResult("随便一条结果", "https://example.com/x", "")]}
-    )
+    provider = EngineProvider({"bing": [SearchResult("随便一条结果", "https://example.com/x", "")]})
     router = SearchRouter({"fake": provider}, engines=["bing"])
     outcome = router.search(SearchQuery("最近有什么消息"))
     assert outcome.hint == ""
@@ -160,8 +155,7 @@ def test_ranking_is_deterministic_for_identical_candidates():
 
     def ranked() -> list[str]:
         scored = [
-            (result_relevance(item, analysis), index, item)
-            for index, item in enumerate(candidates)
+            (result_relevance(item, analysis), index, item) for index, item in enumerate(candidates)
         ]
         scored.sort(key=lambda entry: (-entry[0], entry[1]))
         return [entry[2].url for entry in scored]
@@ -226,9 +220,7 @@ def test_two_strong_hits_stop_after_first_request():
             ]
         }
     )
-    router = SearchRouter(
-        {"fake": provider}, engines=["bing"], fallback_engines=(), max_engines=1
-    )
+    router = SearchRouter({"fake": provider}, engines=["bing"], fallback_engines=(), max_engines=1)
     outcome = router.search(SearchQuery("tibo codex"))
     assert len(provider.calls) == 1
     assert outcome.hint == ""
@@ -239,9 +231,7 @@ def test_single_weak_pool_keeps_low_confidence_hint():
     provider = EngineProvider(
         {"bing": [SearchResult("Unrelated candidate", "https://example.com/c", "")]}
     )
-    router = SearchRouter(
-        {"fake": provider}, engines=["bing"], fallback_engines=(), max_engines=1
-    )
+    router = SearchRouter({"fake": provider}, engines=["bing"], fallback_engines=(), max_engines=1)
     outcome = router.search(SearchQuery("tibo"))
     assert outcome.results
     assert "未找到" in outcome.hint
@@ -265,7 +255,10 @@ def test_multi_engine_request_preserves_real_engine():
         def search(self, query):
             self.calls.append(query)
             assert query.engines == ("bing", "baidu")
-            return [result.model_copy() if hasattr(result, "model_copy") else result for result in results]
+            return [
+                result.model_copy() if hasattr(result, "model_copy") else result
+                for result in results
+            ]
 
     provider = MixedProvider()
     router = SearchRouter({"fake": provider})
@@ -277,13 +270,9 @@ def test_mapped_result_keeps_daemon_engine():
     """T07：daemon 逐条返回的 engine/source 必须映射进结果，不能全标成槽位引擎。"""
     from syvrio.infra.search.open_websearch import _map_result
 
-    mapped = _map_result(
-        {"title": "t", "url": "https://example.com/a", "engine": "baidu"}
-    )
+    mapped = _map_result({"title": "t", "url": "https://example.com/a", "engine": "baidu"})
     assert mapped is not None and mapped.engine == "baidu"
-    mapped_source = _map_result(
-        {"title": "t", "url": "https://example.com/b", "source": "sogou"}
-    )
+    mapped_source = _map_result({"title": "t", "url": "https://example.com/b", "source": "sogou"})
     assert mapped_source is not None and mapped_source.engine == "sogou"
 
 
@@ -333,9 +322,7 @@ def test_partial_failures_surfaced_with_results():
         def search(self, query):
             return [SearchResult("Tibo update", "https://example.com/t", "")]
 
-    router = SearchRouter(
-        {"fake": PartialProvider()}, engines=["bing"], fallback_engines=()
-    )
+    router = SearchRouter({"fake": PartialProvider()}, engines=["bing"], fallback_engines=())
     outcome = router.search(SearchQuery("tibo"))
     assert outcome.results
     assert any(failure.kind == "rate_limit" for failure in outcome.failed)
@@ -402,9 +389,7 @@ def test_published_boost_only_for_freshness_queries():
     plain = analyze_query("Tibo announcement")
     assert score_entry(result, fresh).published > 0.0
     assert score_entry(result, plain).published == 0.0
-    no_date = score_entry(
-        SearchResult("Tibo announcement", "https://example.com/b", ""), fresh
-    )
+    no_date = score_entry(SearchResult("Tibo announcement", "https://example.com/b", ""), fresh)
     assert no_date.published == 0.0
 
 
@@ -413,9 +398,7 @@ def test_score_breakdown_sums_to_total():
     from syvrio.infra.search.quality import score_entry
 
     analysis = analyze_query("tibo codex announcement", context_terms=("openai",))
-    result = SearchResult(
-        "Tibo codex announcement", "https://example.com/a", "openai notes"
-    )
+    result = SearchResult("Tibo codex announcement", "https://example.com/a", "openai notes")
     breakdown = score_entry(
         result,
         analysis,
@@ -500,9 +483,7 @@ def test_gate_stop_with_mixed_pool_reports_weak_share():
             ]
         }
     )
-    router = SearchRouter(
-        {"fake": provider}, engines=["bing"], fallback_engines=(), max_engines=1
-    )
+    router = SearchRouter({"fake": provider}, engines=["bing"], fallback_engines=(), max_engines=1)
     outcome = router.search(SearchQuery("智谱 最新消息"))
     assert outcome.results[0].title == "智谱清言"
     assert "无关" in outcome.hint
@@ -518,9 +499,7 @@ def test_single_strong_hit_stays_hint_free():
             ]
         }
     )
-    router = SearchRouter(
-        {"fake": provider}, engines=["bing"], fallback_engines=(), max_engines=1
-    )
+    router = SearchRouter({"fake": provider}, engines=["bing"], fallback_engines=(), max_engines=1)
     outcome = router.search(SearchQuery("tibo"))
     assert outcome.hint == ""
 
@@ -613,9 +592,7 @@ def test_provider_budget_shared_across_providers(monkeypatch):
 
 def test_request_count_budget_stops_across_providers():
     """请求次数预算跨 provider 共享：用尽后返回最佳候选并显式提示截断。"""
-    weak = NamedProvider(
-        "weak_one", [SearchResult("Unrelated", "https://example.com/w", "")]
-    )
+    weak = NamedProvider("weak_one", [SearchResult("Unrelated", "https://example.com/w", "")])
     strong = NamedProvider(
         "strong_two", [SearchResult("Tibo roadmap", "https://example.com/s", "")]
     )
@@ -656,9 +633,7 @@ def test_query_variants_run_on_first_provider_only():
 
 def test_default_request_budget_preserves_single_provider_worst_case():
     """默认预算覆盖单 provider 最坏情况：首槽位 3 个查询 + 2 个候补槽位。"""
-    weak = NamedProvider(
-        "weak_one", [SearchResult("Unrelated", "https://example.com/w", "")]
-    )
+    weak = NamedProvider("weak_one", [SearchResult("Unrelated", "https://example.com/w", "")])
     router = SearchRouter({"weak_one": weak}, engines=["bing"], max_engines=3)
     router.search(SearchQuery("tibo", context_terms=("OpenAI", "Codex")))
     # 变体只跑第一个引擎槽位：3（原始+2 变体）+ 1 + 1 = 5 次。
@@ -682,9 +657,7 @@ class QuotaProvider:
 def test_budget_exhausted_distinct_from_provider_quota():
     """本地请求预算耗尽与厂商账户配额是两类错误，不得混用。"""
     quota = QuotaProvider()
-    second = NamedProvider(
-        "second", [SearchResult("Tibo roadmap", "https://example.com/s", "")]
-    )
+    second = NamedProvider("second", [SearchResult("Tibo roadmap", "https://example.com/s", "")])
     router = SearchRouter(
         {"quota_one": quota, "second": second},
         order=["quota_one", "second"],
@@ -700,10 +673,10 @@ def test_budget_exhausted_distinct_from_provider_quota():
 
 @pytest.mark.parametrize("requested,expected", [(5, 5), (15, 15), (100, 15)])
 def test_explicit_limit_overrides_default_with_hard_cap(requested, expected):
-    provider = NamedProvider("fake", [
-        SearchResult(f"Synthetic entity {i}", f"https://example.com/{i}", "")
-        for i in range(20)
-    ])
+    provider = NamedProvider(
+        "fake",
+        [SearchResult(f"Synthetic entity {i}", f"https://example.com/{i}", "") for i in range(20)],
+    )
     router = SearchRouter({"fake": provider}, max_results=5)
     assert len(router.search(SearchQuery("Synthetic entity", limit=requested)).results) == expected
 
@@ -715,12 +688,8 @@ def test_proper_noun_phrase_outranks_partial_word_match():
 
     analysis = analyze_query("Clash of Clans Town Hall 15 meta")
     assert any(term.kind == "latin_phrase" for term in analysis.core_terms)
-    game = SearchResult(
-        "Clash of Clans Town Hall 15 Meta Guide", "https://example.com/game", ""
-    )
-    proxy = SearchResult(
-        "Clash of Clans proxy 使用教程", "https://example.com/proxy", "Clash meta"
-    )
+    game = SearchResult("Clash of Clans Town Hall 15 Meta Guide", "https://example.com/game", "")
+    proxy = SearchResult("Clash of Clans proxy 使用教程", "https://example.com/proxy", "Clash meta")
     assert is_strong_hit(game, analysis)
     assert not is_strong_hit(proxy, analysis)
     pool = CandidatePool()
@@ -733,9 +702,7 @@ def test_partial_proper_noun_match_does_not_stop_fallback():
     from syvrio.infra.search.quality import is_strong_hit
 
     analysis = analyze_query("GPT-6.2 Astra 是否正式发布")
-    rumor = SearchResult(
-        "GPT-6.2 rumor roundup", "https://example.com/rumor", "unconfirmed"
-    )
+    rumor = SearchResult("GPT-6.2 rumor roundup", "https://example.com/rumor", "unconfirmed")
     official = SearchResult(
         "GPT-6.2 Astra 正式发布公告",
         "https://example.com/official",

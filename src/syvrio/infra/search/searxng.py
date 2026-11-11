@@ -3,6 +3,7 @@
 只访问配置里的实例地址，不解析用户查询中的 URL，也不跟随重定向；
 SearXNG 内部的百度/Bing 等引擎由实例自行聚合，Syvrio 不再逐家适配。
 """
+
 from __future__ import annotations
 
 import json
@@ -52,7 +53,7 @@ def normalize_base_url(value: str) -> str:
         raise ValueError("SearXNG 实例地址不能为空")
     try:
         parts = urlsplit(text)
-        port = parts.port
+        _ = parts.port
     except ValueError as exc:
         raise ValueError("SearXNG 实例地址端口不合法") from exc
     if parts.scheme.lower() not in ("http", "https"):
@@ -129,9 +130,8 @@ class SearxngProvider:
             raise ProviderError(
                 NAME,
                 _aggregate_kind(partial),
-                "内部引擎均无响应：" + "; ".join(
-                    f"{item.provider}: {item.detail}" for item in partial[:5]
-                ),
+                "内部引擎均无响应："
+                + "; ".join(f"{item.provider}: {item.detail}" for item in partial[:5]),
             )
         self._search_state.partial_failures = partial
         return mapped

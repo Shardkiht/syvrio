@@ -1,4 +1,5 @@
 """Local request protection; calendar counters are not provider billing balances."""
+
 from __future__ import annotations
 
 import json
@@ -20,14 +21,19 @@ def window_key(period: str, now: float) -> str:
 
 
 class UsageLimiter:
-    def __init__(self, limits: dict, path: Path | None = None,
-                 clock: Callable[[], float] = time.time):
+    def __init__(
+        self, limits: dict, path: Path | None = None, clock: Callable[[], float] = time.time
+    ):
         self._limits = limits
         self._path = path
         self._clock = clock
         self._counts: dict[str, dict] = {}
         with _LOCKS_GUARD:
-            self._lock = _LOCKS.setdefault(os.path.normcase(str(path.resolve())), RLock()) if path else RLock()
+            self._lock = (
+                _LOCKS.setdefault(os.path.normcase(str(path.resolve())), RLock())
+                if path
+                else RLock()
+            )
         with self._lock:
             self._load()
 
@@ -54,7 +60,9 @@ class UsageLimiter:
         # Old records identify their one known period by the window shape.
         old_window = entry.get("window", "")
         if isinstance(old_window, str) and isinstance(entry.get("count"), int):
-            period = "daily" if len(old_window) == 10 else "monthly" if len(old_window) == 7 else None
+            period = (
+                "daily" if len(old_window) == 10 else "monthly" if len(old_window) == 7 else None
+            )
             if period and period not in entry:
                 entry[period] = {"window": old_window, "count": entry["count"]}
                 entry["legacy_unknown_period"] = "monthly" if period == "daily" else "daily"
@@ -76,21 +84,29 @@ class UsageLimiter:
             self._load()
             entry = self._entry(provider)
             limit = self._limits.get(provider)
-            result = {"paused": dict(entry.get("paused") or {}),
-                      "legacy_unknown_period": entry.get("legacy_unknown_period")}
+            result = {
+                "paused": dict(entry.get("paused") or {}),
+                "legacy_unknown_period": entry.get("legacy_unknown_period"),
+            }
             for period in ("daily", "monthly"):
                 maximum = getattr(limit, period, 0)
                 count = entry[period]["count"]
-                result[period] = {"limit": maximum, "used": count,
-                                  "remaining": max(0, maximum - count) if maximum > 0 else None}
+                result[period] = {
+                    "limit": maximum,
+                    "used": count,
+                    "remaining": max(0, maximum - count) if maximum > 0 else None,
+                }
             return result
 
     def remaining(self, provider: str) -> int | None:
         status = self.status(provider)
         if status["paused"]:
             return 0
-        values = [status[p]["remaining"] for p in ("daily", "monthly")
-                  if status[p]["remaining"] is not None]
+        values = [
+            status[p]["remaining"]
+            for p in ("daily", "monthly")
+            if status[p]["remaining"] is not None
+        ]
         return min(values) if values else None
 
     def allows(self, provider: str) -> bool:

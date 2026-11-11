@@ -10,25 +10,26 @@ from syvrio.app.chat_widgets import ASSISTANT_NAME
 from syvrio.infra.config import (
     CONFIG_FILENAME,
     KEYRING_SERVICE,
+    Config,
+    LLMConfig,
+    RetrievalConfig,
     default_config_path,
     default_vault_path,
 )
 from syvrio.memory.extractor import StaticExtractor
 from syvrio.memory.models import ExtractionResult
 from syvrio.memory.service import MemoryService
-from syvrio.infra.config import Config, LLMConfig, RetrievalConfig
 
 
 def test_only_syvrio_console_script():
-    scripts = {
-        entry.name: entry.value
-        for entry in metadata.entry_points(group="console_scripts")
-    }
+    scripts = {entry.name: entry.value for entry in metadata.entry_points(group="console_scripts")}
     assert scripts["syvrio"] == "syvrio.app.cli:main"
 
 
 def test_version_and_assistant_branding():
-    project = tomllib.loads((Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(encoding="utf-8"))
+    project = tomllib.loads(
+        (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(encoding="utf-8")
+    )
     assert syvrio.__version__ == project["project"]["version"]
     assert ASSISTANT_NAME == "Syvrio"
 

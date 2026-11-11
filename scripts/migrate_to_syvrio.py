@@ -9,6 +9,7 @@ Usage:
     uv run python scripts/migrate_to_syvrio.py --dry-run
     uv run python scripts/migrate_to_syvrio.py --apply
 """
+
 from __future__ import annotations
 
 import argparse
@@ -99,9 +100,9 @@ def _memory_files(vault: Path) -> list[Path]:
 
 def _decoded_tag_value(value: str) -> str:
     if value.startswith(OLD_TAG_PREFIX):
-        return unquote(value[len(OLD_TAG_PREFIX):])
+        return unquote(value[len(OLD_TAG_PREFIX) :])
     if value.startswith(NEW_TAG_PREFIX):
-        return unquote(value[len(NEW_TAG_PREFIX):])
+        return unquote(value[len(NEW_TAG_PREFIX) :])
     return value
 
 
@@ -127,8 +128,13 @@ def _memory_fingerprint(vault: Path) -> dict[str, object]:
             match = re.search(r"`id=([^`]+)`", raw)
             if match:
                 ids.add(match.group(1))
-    return {"files": len(files), "lines": lines, "entries": entries,
-            "ids": ids, "digest": digest.hexdigest()}
+    return {
+        "files": len(files),
+        "lines": lines,
+        "entries": entries,
+        "ids": ids,
+        "digest": digest.hexdigest(),
+    }
 
 
 def _session_fingerprint(vault: Path) -> dict[str, int]:
@@ -149,7 +155,7 @@ def _jsonl_stats(path: Path) -> tuple[int, int, int]:
             valid += 1
         except (json.JSONDecodeError, UnicodeDecodeError):
             if index != len(raw_lines) - 1:
-                raise MigrationError(f"中间行损坏，拒绝迁移：{path} 第 {index + 1} 行")
+                raise MigrationError(f"中间行损坏，拒绝迁移：{path} 第 {index + 1} 行") from None
     return len(raw_lines), valid, len(raw_lines) - valid
 
 
@@ -183,7 +189,7 @@ def _plan_tags(vault: Path) -> list[TagPlan]:
                 if not value.startswith(OLD_TAG_PREFIX):
                     return match.group(0)
                 changes += 1
-                return match.group(1) + NEW_TAG_PREFIX + value[len(OLD_TAG_PREFIX):] + "`"
+                return match.group(1) + NEW_TAG_PREFIX + value[len(OLD_TAG_PREFIX) :] + "`"
 
             return TAG_RE.sub(replace, line)
 
@@ -264,8 +270,10 @@ def _backup(vault: Path, source: Path, config: Path | None, backup_root: Path) -
         "vault": str(vault),
         "source_meta": str(source),
         "config": str(config) if config else None,
-        "memory": {k: (sorted(v) if isinstance(v, set) else v)
-                   for k, v in _memory_fingerprint(vault).items()},
+        "memory": {
+            k: (sorted(v) if isinstance(v, set) else v)
+            for k, v in _memory_fingerprint(vault).items()
+        },
         "sessions": _session_fingerprint(vault),
         "metadata": _metadata_fingerprint(source),
     }
@@ -294,7 +302,9 @@ def _migrate_config(old: Path, new: Path, apply: bool) -> str:
         shutil.copy2(old, tmp)
         os.chmod(tmp, 0o600)
         os.replace(tmp, new)
-        if tomllib.loads(new.read_text(encoding="utf-8")) != tomllib.loads(old.read_text(encoding="utf-8")):
+        if tomllib.loads(new.read_text(encoding="utf-8")) != tomllib.loads(
+            old.read_text(encoding="utf-8")
+        ):
             raise MigrationError("配置迁移后内容不一致")
     finally:
         tmp.unlink(missing_ok=True)
@@ -344,9 +354,12 @@ def _migrate_keyring(apply: bool) -> str:
         if not apply:
             return f"将迁移 {len(planned)} 个 Keyring 条目：{', '.join(planned)}"
         for name in planned:
-            keyring.set_password(NEW_KEYRING_SERVICE, name,
-                                 keyring.get_password(OLD_KEYRING_SERVICE, name))
-            if keyring.get_password(NEW_KEYRING_SERVICE, name) != keyring.get_password(OLD_KEYRING_SERVICE, name):
+            keyring.set_password(
+                NEW_KEYRING_SERVICE, name, keyring.get_password(OLD_KEYRING_SERVICE, name)
+            )
+            if keyring.get_password(NEW_KEYRING_SERVICE, name) != keyring.get_password(
+                OLD_KEYRING_SERVICE, name
+            ):
                 raise MigrationError(f"Keyring 校验失败：{name}")
             migrated.append(name)
         for name in planned:
@@ -379,8 +392,15 @@ def _run_keyring(apply: bool, enabled: bool) -> tuple[str, bool]:
     return message, complete
 
 
-def migrate(vault: Path, old_config: Path, new_config: Path, *,
-            apply: bool, backup_root: Path | None, keyring: bool) -> dict[str, object]:
+def migrate(
+    vault: Path,
+    old_config: Path,
+    new_config: Path,
+    *,
+    apply: bool,
+    backup_root: Path | None,
+    keyring: bool,
+) -> dict[str, object]:
     source = vault / OLD_META
     target = vault / NEW_META
     if source.exists() and target.exists():
@@ -416,8 +436,10 @@ def migrate(vault: Path, old_config: Path, new_config: Path, *,
             raise
         report["keyring"], report["keyring_complete"] = _run_keyring(apply, keyring)
         report["validation"] = {
-            "memory": {k: (sorted(v) if isinstance(v, set) else v)
-                       for k, v in _memory_fingerprint(vault).items()},
+            "memory": {
+                k: (sorted(v) if isinstance(v, set) else v)
+                for k, v in _memory_fingerprint(vault).items()
+            },
             "sessions": _session_fingerprint(vault),
             "metadata": _metadata_fingerprint(target),
         }
@@ -429,16 +451,18 @@ def migrate(vault: Path, old_config: Path, new_config: Path, *,
     tags = _plan_tags(vault)
     report["tag_files"] = len(tags)
     report["tag_values"] = sum(item.changes for item in tags)
-    report["metadata_files"] = len([p for p in source.iterdir()
-                                    if p.is_file() and not p.name.endswith(LOCK_SUFFIX)])
+    report["metadata_files"] = len(
+        [p for p in source.iterdir() if p.is_file() and not p.name.endswith(LOCK_SUFFIX)]
+    )
     report["config"] = _migrate_config(old_config, new_config, False)
     report["keyring"] = _migrate_keyring(False) if keyring else "已跳过 Keyring"
 
     if not apply:
         return report
 
-    backup = _backup(vault, source, old_config if old_config.exists() else None,
-                     backup_root or vault.parent)
+    backup = _backup(
+        vault, source, old_config if old_config.exists() else None, backup_root or vault.parent
+    )
     report["backup"] = str(backup)
     staging = target.with_name(f"{NEW_META}.migrating")
     if staging.exists():
@@ -452,12 +476,12 @@ def migrate(vault: Path, old_config: Path, new_config: Path, *,
         after_sessions = _session_fingerprint(vault)
         after_meta = _metadata_fingerprint(target)
         if {k: (sorted(v) if isinstance(v, set) else v) for k, v in before_memory.items()} != {
-                k: (sorted(v) if isinstance(v, set) else v) for k, v in after_memory.items()}:
+            k: (sorted(v) if isinstance(v, set) else v) for k, v in after_memory.items()
+        }:
             raise MigrationError("记忆条目/ID 校验失败，旧元数据已保留")
         if before_sessions != after_sessions:
             raise MigrationError("会话数量校验失败，旧元数据已保留")
-        expected = {name: value for name, value in before_meta.items()
-                    if name not in CACHE_FILES}
+        expected = {name: value for name, value in before_meta.items() if name not in CACHE_FILES}
         if expected != after_meta:
             raise MigrationError("元数据文件校验失败，旧元数据已保留")
         shutil.rmtree(source)
@@ -494,8 +518,7 @@ def migrate(vault: Path, old_config: Path, new_config: Path, *,
         raise
     report["keyring"], report["keyring_complete"] = _run_keyring(True, keyring)
     report["validation"] = {
-        "memory": {k: (sorted(v) if isinstance(v, set) else v)
-                   for k, v in after_memory.items()},
+        "memory": {k: (sorted(v) if isinstance(v, set) else v) for k, v in after_memory.items()},
         "sessions": after_sessions,
         "metadata": after_meta,
     }
@@ -521,8 +544,10 @@ def _print_report(report: dict[str, object], apply: bool) -> None:
     validation = report.get("validation") or {}
     if validation:
         memory = validation.get("memory", {})
-        print(f"  validated: files={memory.get('files')} entries={memory.get('entries')} "
-              f"sessions={validation.get('sessions')}")
+        print(
+            f"  validated: files={memory.get('files')} entries={memory.get('entries')} "
+            f"sessions={validation.get('sessions')}"
+        )
     print("  no secret values are printed; backup is retained for rollback")
 
 
@@ -545,8 +570,14 @@ def main(argv: list[str] | None = None) -> int:
     else:
         backup_root = vault.parent
     try:
-        report = migrate(vault, old_config, new_config, apply=apply,
-                         backup_root=backup_root, keyring=not args.skip_keyring)
+        report = migrate(
+            vault,
+            old_config,
+            new_config,
+            apply=apply,
+            backup_root=backup_root,
+            keyring=not args.skip_keyring,
+        )
     except MigrationError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1

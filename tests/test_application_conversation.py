@@ -1,4 +1,5 @@
 """Application Conversation 用例：不启动 Textual。"""
+
 from __future__ import annotations
 
 import threading
@@ -144,15 +145,21 @@ def test_generation_stays_bound_to_original_session_after_switch(tmp_path):
     loaded_a = runtime.sessions.load(a.id)
     assert "question A" in loaded_a.user_texts()
     assert loaded_a.title() != ""
-    assert [record["content"] for record in loaded_a.records if record.get("type") == "assistant"] == ["reply for A"]
+    assert [
+        record["content"] for record in loaded_a.records if record.get("type") == "assistant"
+    ] == ["reply for A"]
     assert runtime.sessions.load(b.id).user_texts() == []
 
 
 def test_undo_targets_only_bound_user_message(tmp_path):
     runtime, conv = build(tmp_path, [])
     session = runtime.ensure_session()
-    runtime.sessions.append(session, {"type": "message", "id": "u0", "role": "user", "content": "earlier"})
-    runtime.sessions.append(session, {"type": "message", "id": "u1", "role": "user", "content": "current"})
+    runtime.sessions.append(
+        session, {"type": "message", "id": "u0", "role": "user", "content": "earlier"}
+    )
+    runtime.sessions.append(
+        session, {"type": "message", "id": "u1", "role": "user", "content": "current"}
+    )
     conv.begin_turn(session.id)
     conv.bind_user_message("u1")
 
@@ -166,7 +173,9 @@ def test_undo_targets_only_bound_user_message(tmp_path):
 def test_undo_without_bound_message_keeps_earlier_turn(tmp_path):
     runtime, conv = build(tmp_path, [])
     session = runtime.ensure_session()
-    runtime.sessions.append(session, {"type": "message", "id": "u0", "role": "user", "content": "earlier"})
+    runtime.sessions.append(
+        session, {"type": "message", "id": "u0", "role": "user", "content": "earlier"}
+    )
     conv.begin_turn(session.id)
 
     outcome = conv.perform_undo(session.id, None)
@@ -178,7 +187,9 @@ def test_undo_without_bound_message_keeps_earlier_turn(tmp_path):
 def test_queue_pauses_after_successful_undo(tmp_path):
     runtime, conv = build(tmp_path, [])
     session = runtime.ensure_session()
-    runtime.sessions.append(session, {"type": "message", "id": "u1", "role": "user", "content": "current"})
+    runtime.sessions.append(
+        session, {"type": "message", "id": "u1", "role": "user", "content": "current"}
+    )
     conv.begin_turn(session.id)
     conv.enqueue(session.id, "queued")
     conv.bind_user_message("u1")

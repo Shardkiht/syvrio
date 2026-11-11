@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ..time import format_local_timestamp
 from .ui import console, styled_table
 
 
@@ -14,7 +15,7 @@ def print_sessions(rows: list[dict]) -> None:
         return
     table = styled_table("会话")
     table.add_column("ID")
-    table.add_column("更新时间")
+    table.add_column("最近消息")
     table.add_column("消息")
     table.add_column("tokens")
     table.add_column("摘要")
@@ -22,7 +23,9 @@ def print_sessions(rows: list[dict]) -> None:
     for row in rows:
         table.add_row(
             row["id"],
-            row["updated_at"].replace("T", " "),
+            format_local_timestamp(
+                row.get("last_message_at") or row.get("started_at"), "%Y-%m-%d %H:%M:%S"
+            ),
             str(row["messages"]),
             str(row["tokens"]),
             str(row["summaries"]),

@@ -19,7 +19,9 @@ def test_text_import_preserves_roles_and_dates(tmp_path, suffix, encoding):
     assert read_document(path) == text
 
 
-@pytest.mark.parametrize("suffix", [".pdf", ".docx", ".xlsx", ".xls", ".pptx", ".html", ".epub", ".msg", ".ipynb"])
+@pytest.mark.parametrize(
+    "suffix", [".pdf", ".docx", ".xlsx", ".xls", ".pptx", ".html", ".epub", ".msg", ".ipynb"]
+)
 def test_document_delegates_to_local_converter(tmp_path, monkeypatch, suffix):
     path = tmp_path / ("synthetic" + suffix)
     path.write_bytes(b"synthetic")
@@ -60,6 +62,7 @@ def test_unsupported_format_is_not_sent_as_text(tmp_path):
 
 def test_conversion_errors_do_not_echo_document_content(tmp_path, monkeypatch):
     (tmp_path / "synthetic.pdf").write_bytes(b"synthetic")
+
     class Converter:
         def __init__(self, **kwargs):
             pass
@@ -76,7 +79,9 @@ def test_conversion_errors_do_not_echo_document_content(tmp_path, monkeypatch):
 def test_real_html_conversion(tmp_path):
     pytest.importorskip("markitdown")
     path = tmp_path / "synthetic.html"
-    path.write_text("<html><body><h1>合成笔记</h1><p>用户明确表示偏好茶饮。</p></body></html>", encoding="utf-8")
+    path.write_text(
+        "<html><body><h1>合成笔记</h1><p>用户明确表示偏好茶饮。</p></body></html>", encoding="utf-8"
+    )
     text = read_document(path)
     assert "合成笔记" in text
     assert "偏好茶饮" in text
@@ -90,9 +95,18 @@ def test_real_docx_conversion(tmp_path):
 
     path = tmp_path / "synthetic.docx"
     with ZipFile(path, "w") as archive:
-        archive.writestr("[Content_Types].xml", '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>')
-        archive.writestr("_rels/.rels", '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>')
-        archive.writestr("word/document.xml", '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>合成用户偏好茶饮</w:t></w:r></w:p></w:body></w:document>')
+        archive.writestr(
+            "[Content_Types].xml",
+            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>',
+        )
+        archive.writestr(
+            "_rels/.rels",
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>',
+        )
+        archive.writestr(
+            "word/document.xml",
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>合成用户偏好茶饮</w:t></w:r></w:p></w:body></w:document>',
+        )
     assert "合成用户偏好茶饮" in read_document(path)
 
 

@@ -1,4 +1,5 @@
 """Application Layer 组合入口：只协调核心服务，不包含界面逻辑。"""
+
 from __future__ import annotations
 
 from ..agent.runtime import AgentRuntime

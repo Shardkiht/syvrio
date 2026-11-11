@@ -34,8 +34,14 @@ def test_chained_error_retains_traceback_and_reason_without_credentials(tmp_path
         except ValueError as cause:
             raise RuntimeError("Request failed: synthetic-credential-123") from cause
     except RuntimeError as error:
-        diagnostics.record_event("chat.failed", error, busy=True, queued=2,
-                                 content="private conversation", follow="private memory")
+        diagnostics.record_event(
+            "chat.failed",
+            error,
+            busy=True,
+            queued=2,
+            content="private conversation",
+            follow="private memory",
+        )
     diagnostics.stop_diagnostics()
     events = read_events(path)
     assert [event["event"] for event in events] == ["app.start", "chat.failed", "app.stop"]
@@ -92,13 +98,16 @@ def test_chat_latency_separates_stream_and_tool_completion_without_payloads(tmp_
             pass
 
     tool_call = {
-        "index": 0, "id": "test-tool-id",
+        "index": 0,
+        "id": "test-tool-id",
         "function": {"name": "memorize", "arguments": '{"text": "private synthetic memory"}'},
     }
-    rounds = iter([
-        [{"reasoning_content": "private synthetic reasoning"}, {"tool_calls": [tool_call]}],
-        [{"content": "private synthetic answer"}, {"content": " again"}],
-    ])
+    rounds = iter(
+        [
+            [{"reasoning_content": "private synthetic reasoning"}, {"tool_calls": [tool_call]}],
+            [{"content": "private synthetic answer"}, {"content": " again"}],
+        ]
+    )
     tool_requests = []
 
     async def acompletion(**kwargs):
@@ -106,17 +115,25 @@ def test_chat_latency_separates_stream_and_tool_completion_without_payloads(tmp_
 
     def completion(**kwargs):
         tool_requests.append(True)
-        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='{"memories": []}'))])
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content='{"memories": []}'))]
+        )
 
-    monkeypatch.setattr(client, "_litellm", lambda: SimpleNamespace(acompletion=acompletion, completion=completion))
+    monkeypatch.setattr(
+        client, "_litellm", lambda: SimpleNamespace(acompletion=acompletion, completion=completion)
+    )
     path = diagnostics.start_diagnostics()
     config = Config(
-        vault=tmp_path / "vault", llm=LLMConfig(provider="local"),
-        chat=ChatConfig(auto_recall=0), retrieval=RetrievalConfig(method="keyword"),
+        vault=tmp_path / "vault",
+        llm=LLMConfig(provider="local"),
+        chat=ChatConfig(auto_recall=0),
+        retrieval=RetrievalConfig(method="keyword"),
     )
     service = MemoryService(config)
     service.init_vault()
-    runtime = AgentRuntime(service, client.LiteLLMChatModel(config.llm), SessionStore(config.paths()))
+    runtime = AgentRuntime(
+        service, client.LiteLLMChatModel(config.llm), SessionStore(config.paths())
+    )
     reply = runtime.ask("private synthetic prompt", on_delta=lambda _: None, cancel=Event())
     assert reply.steps == 2 and tool_requests == [True]
     diagnostics.stop_diagnostics()
@@ -125,12 +142,30 @@ def test_chat_latency_separates_stream_and_tool_completion_without_payloads(tmp_
     events = read_events(latency_path)
     names = [event["event"].removeprefix("latency.") for event in events]
     assert names == [
-        "turn.started", "recall.started", "recall.finished", "context.started", "context.finished",
-        "model.started", "model.request", "model.stream_open", "model.first_chunk",
-        "model.first_reasoning", "model.first_tool", "model.finished", "tools.started",
-        "completion.started", "completion.finished", "tool.finished", "tools.finished",
-        "model.started", "model.request", "model.stream_open", "model.first_chunk",
-        "model.first_text", "model.finished", "turn.finished",
+        "turn.started",
+        "recall.started",
+        "recall.finished",
+        "context.started",
+        "context.finished",
+        "model.started",
+        "model.request",
+        "model.stream_open",
+        "model.first_chunk",
+        "model.first_reasoning",
+        "model.first_tool",
+        "model.finished",
+        "tools.started",
+        "completion.started",
+        "completion.finished",
+        "tool.finished",
+        "tools.finished",
+        "model.started",
+        "model.request",
+        "model.stream_open",
+        "model.first_chunk",
+        "model.first_text",
+        "model.finished",
+        "turn.finished",
     ]
     assert len({event["state"]["turn"] for event in events}) == 1
     assert events[names.index("completion.finished")]["state"]["step"] == 1

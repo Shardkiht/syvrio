@@ -1,9 +1,11 @@
 """Reflection 调度判定与运行用例；TUI 生命周期仍负责触发定时器。"""
+
 from __future__ import annotations
 
 from threading import Event
 
 from ..memory.service import MemoryService
+from ..time import format_local_timestamp
 from .contracts import ReflectionSchedule
 
 
@@ -48,8 +50,8 @@ class ReflectionUseCases:
         return ReflectionSchedule(
             running=False,
             enabled=bool(config.auto_reflect),
-            profile_next=str(profile.get("next_attempt_at") or "")[:16].replace("T", " "),
-            dream_next=str(dream.get("next_attempt_at") or "")[:16].replace("T", " "),
+            profile_next=format_local_timestamp(profile.get("next_attempt_at")),
+            dream_next=format_local_timestamp(dream.get("next_attempt_at")),
             profile_pending=(
                 f"{profile.get('pending', 0)} pending changes"
                 + (", inference batch pending" if profile.get("pending_inferences") else "")

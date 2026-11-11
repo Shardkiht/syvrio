@@ -1,4 +1,5 @@
 """聊天、会话生命周期、FIFO 与撤销状态机（纯 Python，不依赖 Textual）。"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -9,8 +10,8 @@ from ..agent.session import Session, SessionStore
 from ..infra.diagnostics import record_event
 from ..llm import ChatModelError, GenerationCancelled
 from .contracts import (
-    QueueSnapshot,
     QueuedItem,
+    QueueSnapshot,
     Submission,
     SwitchResult,
     TurnCallbacks,
@@ -18,11 +19,29 @@ from .contracts import (
     UndoOutcome,
 )
 
-SAFE_COMMANDS = frozenset({
-    "/new", "/sessions", "/exit", "/quit", "/help", "/model",
-    "/status", "/topics", "/summary", "/pending", "/git",
-    "/think", "/context", "/setup", "/rename", "/import", "/inferences", "/profile", "/dream",
-})
+SAFE_COMMANDS = frozenset(
+    {
+        "/new",
+        "/sessions",
+        "/exit",
+        "/quit",
+        "/help",
+        "/model",
+        "/status",
+        "/topics",
+        "/summary",
+        "/pending",
+        "/git",
+        "/think",
+        "/context",
+        "/setup",
+        "/rename",
+        "/import",
+        "/inferences",
+        "/profile",
+        "/dream",
+    }
+)
 
 
 @dataclass
@@ -123,7 +142,9 @@ class ConversationUseCases:
     def plan_is_current(self) -> bool:
         if self.runtime.last_plan_session is None:
             return True
-        return self.runtime.has_session and self.runtime.last_plan_session == self.runtime.current.id
+        return (
+            self.runtime.has_session and self.runtime.last_plan_session == self.runtime.current.id
+        )
 
     def queue_snapshot(self) -> QueueSnapshot:
         with self._lock:
@@ -189,7 +210,9 @@ class ConversationUseCases:
             kept = [item for item in self.queue if not self._is_undo(item.line)]
             removed = len(self.queue) - len(kept)
             self.queue[:] = kept
-            pending_removed = bool(self.pending_command and self._is_undo(self.pending_command.line))
+            pending_removed = bool(
+                self.pending_command and self._is_undo(self.pending_command.line)
+            )
             if pending_removed:
                 self.pending_command = None
             return removed, pending_removed

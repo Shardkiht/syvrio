@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from .paths import SyvrioPaths, runtime_path, syvrio_home
-
 import json
 import math
 import os
@@ -11,6 +9,7 @@ import tomllib
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from .paths import SyvrioPaths, runtime_path, syvrio_home
 
 DEFAULT_BASE_URL = "https://api.deepseek.com/v1"
 DEFAULT_MODEL = "deepseek-flash"
@@ -53,8 +52,13 @@ class LLMConfig:
 
     def recent_model_ids(self) -> list[tuple[str, str]]:
         models = [(self.provider, self.model), *self.recent_models]
-        return list(dict.fromkeys((provider, model) for provider, model in models
-                                  if provider.strip() and model.strip()))[:RECENT_MODEL_LIMIT]
+        return list(
+            dict.fromkeys(
+                (provider, model)
+                for provider, model in models
+                if provider.strip() and model.strip()
+            )
+        )[:RECENT_MODEL_LIMIT]
 
     @property
     def is_spark(self) -> bool:
@@ -192,18 +196,25 @@ class UsageLimit:
 
 
 DEFAULT_USAGE_LIMITS = {
-    "baidu_search": (50, 0), "tavily": (0, 800), "exa": (0, 1000),
-    "you": (0, 1500), "volcengine": (0, 450), "open_websearch": (0, 0),
+    "baidu_search": (50, 0),
+    "tavily": (0, 800),
+    "exa": (0, 1000),
+    "you": (0, 1500),
+    "volcengine": (0, 450),
+    "open_websearch": (0, 0),
     # 匿名服务也可用；本地默认仅作请求量保护，不代表服务商额度。
-    "anysearch": (20, 0), "parallel_mcp": (20, 0),
+    "anysearch": (20, 0),
+    "parallel_mcp": (20, 0),
     # 自托管实例默认不限制本地计数，实际调用仍受全局请求/超时预算约束。
     "searxng": (0, 0),
 }
 
 
 def default_usage_limits() -> dict[str, UsageLimit]:
-    return {name: UsageLimit(daily=day, monthly=month)
-            for name, (day, month) in DEFAULT_USAGE_LIMITS.items()}
+    return {
+        name: UsageLimit(daily=day, monthly=month)
+        for name, (day, month) in DEFAULT_USAGE_LIMITS.items()
+    }
 
 
 @dataclass(slots=True)
@@ -226,7 +237,9 @@ class Config:
     runtime: str = ""
 
     def paths(self, config_file: Path | None = None) -> SyvrioPaths:
-        return SyvrioPaths(self.vault, runtime_path(self.runtime), config_file or default_config_path())
+        return SyvrioPaths(
+            self.vault, runtime_path(self.runtime), config_file or default_config_path()
+        )
 
 
 def _default_config_dir() -> Path:
@@ -288,11 +301,14 @@ def _validate_types(data: dict, defaults: dict, prefix: str = "") -> None:
         elif isinstance(default, list):
             if name == "llm.recent_models":
                 if not isinstance(value, list) or any(
-                    not isinstance(pair, list) or len(pair) != 2
+                    not isinstance(pair, list)
+                    or len(pair) != 2
                     or any(not isinstance(part, str) or not part.strip() for part in pair)
                     for pair in value
                 ):
-                    raise ConfigError("配置字段 llm.recent_models 必须是 [供应商, 模型] 字符串对的数组。")
+                    raise ConfigError(
+                        "配置字段 llm.recent_models 必须是 [供应商, 模型] 字符串对的数组。"
+                    )
                 continue
             if not isinstance(value, list):
                 raise ConfigError(f"配置字段 {name} 必须是字符串数组。")
@@ -339,23 +355,39 @@ def _validate_range(
 
 def _validate_config(data: dict) -> None:
     _validate_types(data, asdict(Config(vault=Path("."))))
-    if any(not isinstance(url, str) or not url.strip()
-           for url in data.get("llm", {}).get("provider_urls", {}).values()):
+    if any(
+        not isinstance(url, str) or not url.strip()
+        for url in data.get("llm", {}).get("provider_urls", {}).values()
+    ):
         raise ConfigError("配置字段 llm.provider_urls 的值必须是非空字符串。")
     if data.get("llm", {}).get("spark_thinking", "") not in ("", *SPARK_THINKING_MODES):
         raise ConfigError("配置字段 llm.spark_thinking 必须为空或为 enabled、auto、disabled。")
     for name in (
-        "llm.timeout", "chat.context_window", "chat.max_tool_steps", "chat.tool_timeout",
-        "search.timeout", "search.max_results", "search.fetch_timeout",
-        "chat.reflect_idle_seconds", "chat.reflect_interval_seconds",
-        "search.max_engines", "search.timeout_budget", "search.max_requests",
+        "llm.timeout",
+        "chat.context_window",
+        "chat.max_tool_steps",
+        "chat.tool_timeout",
+        "search.timeout",
+        "search.max_results",
+        "search.fetch_timeout",
+        "chat.reflect_idle_seconds",
+        "chat.reflect_interval_seconds",
+        "search.max_engines",
+        "search.timeout_budget",
+        "search.max_requests",
         "git.retry_interval_minutes",
     ):
         _validate_range(data, name, positive=True)
     for name in (
-        "llm.num_retries", "llm.temperature", "chat.reserve_output_tokens",
-        "chat.keep_recent_tokens", "chat.auto_recall", "chat.recall_context_turns",
-        "search.cache_ttl", "search.max_search_engines", "chat.reflect_request_budget",
+        "llm.num_retries",
+        "llm.temperature",
+        "chat.reserve_output_tokens",
+        "chat.keep_recent_tokens",
+        "chat.auto_recall",
+        "chat.recall_context_turns",
+        "search.cache_ttl",
+        "search.max_search_engines",
+        "chat.reflect_request_budget",
     ):
         _validate_range(data, name)
     for name in ("confidence_threshold", "chat.compact_threshold"):
@@ -497,9 +529,7 @@ def load_config(path: Path | str | None = None) -> Config:
         max_requests=int(search_raw.get("max_requests", 9)),
         anysearch_zone=str(search_raw.get("anysearch_zone", "cn")),
         anysearch_language=str(search_raw.get("anysearch_language", "zh-CN")),
-        searxng_base_url=str(
-            search_raw.get("searxng_base_url", "http://127.0.0.1:8888")
-        ),
+        searxng_base_url=str(search_raw.get("searxng_base_url", "http://127.0.0.1:8888")),
         searxng_timeout=float(search_raw.get("searxng_timeout", 10.0)),
         usage_limits=usage_limits,
     )
@@ -507,9 +537,7 @@ def load_config(path: Path | str | None = None) -> Config:
     fetch_providers = fetch_raw.get("providers", ["open_websearch"])
     if not isinstance(fetch_providers, list):
         fetch_providers = ["open_websearch"]
-    fetch = FetchConfig(
-        providers=[str(item) for item in fetch_providers if str(item).strip()]
-    )
+    fetch = FetchConfig(providers=[str(item) for item in fetch_providers if str(item).strip()])
     return Config(
         vault=Path(vault_raw).expanduser(),
         llm=llm,
@@ -529,15 +557,13 @@ def usage_limits_toml(limits: dict[str, "UsageLimit"]) -> str:
     parts = []
     for name, limit in limits.items():
         parts.append(
-            f"\n[search.usage_limits.{name}]"
-            f"\ndaily = {limit.daily}"
-            f"\nmonthly = {limit.monthly}\n"
+            f"\n[search.usage_limits.{name}]\ndaily = {limit.daily}\nmonthly = {limit.monthly}\n"
         )
     return "".join(parts)
 
 
 def write_example_config(path: Path, vault: Path) -> None:
-    content = f'''# Syvrio 配置
+    content = f"""# Syvrio 配置
 vault = {toml_literal(vault.as_posix())}
 runtime = "~/.syvrio/runtime"
 
@@ -633,7 +659,7 @@ searxng_timeout = 10.0
 [fetch]
 # 网页抓取的 provider 顺序；与搜索的 providers 相互独立。
 providers = {toml_literal(["open_websearch"])}
-'''
+"""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(content, encoding="utf-8")

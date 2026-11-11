@@ -1,11 +1,10 @@
 """轻量额度限制（UsageLimiter）的回归测试：全部用假时钟与临时文件。"""
+
 from __future__ import annotations
 
 import json
 
 import pytest
-
-pytestmark = pytest.mark.search
 
 from syvrio.infra.config import FetchConfig, SearchConfig, UsageLimit
 from syvrio.infra.search.base import (
@@ -18,6 +17,8 @@ from syvrio.infra.search.base import (
 from syvrio.infra.search.fetch_router import FetchRouter, build_fetch_router
 from syvrio.infra.search.router import SearchRouter
 from syvrio.infra.search.usage import UsageLimiter
+
+pytestmark = pytest.mark.search
 
 
 class _SearchProvider:
@@ -121,7 +122,9 @@ def test_corrupted_usage_file_restarts_empty(tmp_path):
 
 def _limited_router(tmp_path, pre_used: int = 0):
     limited = _SearchProvider("limited", [SearchResult("无关", "https://example.com/w", "")])
-    fallback = _SearchProvider("fallback", [SearchResult("Tibo roadmap", "https://example.com/s", "d")])
+    fallback = _SearchProvider(
+        "fallback", [SearchResult("Tibo roadmap", "https://example.com/s", "d")]
+    )
     limiter = UsageLimiter(
         {"limited": UsageLimit(period="daily", max_calls=1)},
         tmp_path / "usage.json",
@@ -145,13 +148,14 @@ def test_search_falls_back_when_provider_limit_reached(tmp_path):
     assert fallback.calls
     assert outcome.results[0].url == "https://example.com/s"
     assert any(
-        failure.kind == "quota" and failure.provider == "limited"
-        for failure in outcome.failed
+        failure.kind == "quota" and failure.provider == "limited" for failure in outcome.failed
     )
 
 
 def test_search_counts_failed_requests(tmp_path):
-    broken = _SearchProvider("limited", error=ProviderError("limited", ProviderErrorKind.NETWORK, "reset"))
+    broken = _SearchProvider(
+        "limited", error=ProviderError("limited", ProviderErrorKind.NETWORK, "reset")
+    )
     fallback = _SearchProvider("fallback", [SearchResult("Tibo", "https://example.com/s", "d")])
     limiter = UsageLimiter(
         {"limited": UsageLimit(period="daily", max_calls=1)},
@@ -179,12 +183,8 @@ def test_fetch_and_search_share_provider_pool(tmp_path):
         tmp_path / "usage.json",
         clock=lambda: 0.0,
     )
-    search_router = SearchRouter(
-        {"tavily": search_provider}, usage_limiter=limiter
-    )
-    fetch_router = FetchRouter(
-        {"tavily": fetch_provider}, order=["tavily"], usage_limiter=limiter
-    )
+    search_router = SearchRouter({"tavily": search_provider}, usage_limiter=limiter)
+    fetch_router = FetchRouter({"tavily": fetch_provider}, order=["tavily"], usage_limiter=limiter)
 
     search_router.search(SearchQuery("tibo"))  # Search 用掉唯一一次额度
     outcome = search_router.search(SearchQuery("tibo"))
@@ -220,14 +220,10 @@ def test_fetch_router_falls_back_when_limit_reached(tmp_path):
 
 
 def test_build_routers_wire_limiter_from_config(tmp_path):
-    search_config = SearchConfig(
-        usage_limits={"tavily": UsageLimit(period="daily", max_calls=5)}
-    )
+    search_config = SearchConfig(usage_limits={"tavily": UsageLimit(period="daily", max_calls=5)})
     from syvrio.infra.config import load_config
 
-    router = build_fetch_router(
-        FetchConfig(), search_config, tmp_path / "vault"
-    )
+    router = build_fetch_router(FetchConfig(), search_config, tmp_path / "vault")
     assert router.usage_limiter is not None
     assert router.usage_limiter.remaining("tavily") == 5
 
@@ -243,8 +239,12 @@ def test_build_routers_wire_limiter_from_config(tmp_path):
 def test_request_budget_does_not_charge_unattempted_provider(tmp_path):
     first, second = _SearchProvider("first"), _SearchProvider("second")
     limiter = UsageLimiter({name: UsageLimit(max_calls=5) for name in ("first", "second")})
-    router = SearchRouter({"first": first, "second": second}, order=["first", "second"],
-                          max_requests=1, usage_limiter=limiter)
+    router = SearchRouter(
+        {"first": first, "second": second},
+        order=["first", "second"],
+        max_requests=1,
+        usage_limiter=limiter,
+    )
     router.search(SearchQuery("synthetic query"))
     assert len(first.calls) == 1 and not second.calls
     assert limiter.remaining("first") == 4
@@ -263,16 +263,19 @@ def test_legacy_fetch_keeps_usage_protection():
 
 @pytest.mark.parametrize("name", ["exa", "tavily"])
 def test_normal_agent_fetch_uses_independent_config(service, monkeypatch, name):
-    from syvrio.agent.tools import build_tools
     from syvrio.agent.session import SessionStore
+    from syvrio.agent.tools import build_tools
     from syvrio.infra import config as config_module
     from syvrio.infra.search import fetch_router as module
+
     provider = _FetchProvider(name)
     monkeypatch.setattr(config_module, "read_api_key", lambda _: "synthetic-key")
     seen = []
+
     def build(provider_name, key, timeout):
         seen.append((provider_name, timeout))
         return provider
+
     monkeypatch.setattr(module, "_build_external_fetch_provider", build)
     service.config.search.enabled = True
     service.config.search.providers = ["open_websearch"]
@@ -287,12 +290,20 @@ def test_normal_agent_fetch_uses_independent_config(service, monkeypatch, name):
     assert seen == [(name, 47)]
 
 
-@pytest.mark.parametrize("name,daily,monthly", [
-    ("baidu_search", 50, 0), ("tavily", 0, 800), ("exa", 0, 1000),
-    ("you", 0, 1500), ("volcengine", 0, 450), ("open_websearch", 0, 0),
-])
+@pytest.mark.parametrize(
+    "name,daily,monthly",
+    [
+        ("baidu_search", 50, 0),
+        ("tavily", 0, 800),
+        ("exa", 0, 1000),
+        ("you", 0, 1500),
+        ("volcengine", 0, 450),
+        ("open_websearch", 0, 0),
+    ],
+)
 def test_runtime_defaults_without_setup(tmp_path, name, daily, monthly):
     from syvrio.infra.config import load_config
+
     path = tmp_path / "config.toml"
     path.write_text(f"[search]\nproviders = ['{name}']\n", encoding="utf-8")
     limit = load_config(path).search.usage_limits[name]
@@ -301,9 +312,13 @@ def test_runtime_defaults_without_setup(tmp_path, name, daily, monthly):
 
 def test_explicit_zero_and_legacy_override_defaults(tmp_path):
     from syvrio.infra.config import load_config
+
     path = tmp_path / "config.toml"
-    path.write_text('[search.usage_limits.tavily]\ndaily=0\nmonthly=0\n'
-                    '[search.usage_limits.exa]\nperiod="daily"\nmax_calls=7\n', encoding="utf-8")
+    path.write_text(
+        "[search.usage_limits.tavily]\ndaily=0\nmonthly=0\n"
+        '[search.usage_limits.exa]\nperiod="daily"\nmax_calls=7\n',
+        encoding="utf-8",
+    )
     limits = load_config(path).search.usage_limits
     assert (limits["tavily"].daily, limits["tavily"].monthly) == (0, 0)
     assert (limits["exa"].daily, limits["exa"].monthly) == (7, 0)
@@ -311,6 +326,7 @@ def test_explicit_zero_and_legacy_override_defaults(tmp_path):
 
 def test_dual_windows_and_restart(tmp_path):
     from datetime import datetime
+
     now = [datetime(2025, 1, 15, 12).timestamp()]
     path = tmp_path / "usage.json"
     limits = {"exa": UsageLimit(daily=1, monthly=2)}
@@ -328,20 +344,27 @@ def test_dual_windows_and_restart(tmp_path):
 @pytest.mark.parametrize("window,period", [("2025-01-15", "daily"), ("2025-01", "monthly")])
 def test_legacy_usage_preserves_known_period(tmp_path, window, period):
     from datetime import datetime
+
     path = tmp_path / "usage.json"
     path.write_text(json.dumps({"exa": {"window": window, "count": 6}}), encoding="utf-8")
-    limiter = UsageLimiter({"exa": UsageLimit(daily=10, monthly=20)}, path,
-                           clock=lambda: datetime(2025, 1, 15, 12).timestamp())
+    limiter = UsageLimiter(
+        {"exa": UsageLimit(daily=10, monthly=20)},
+        path,
+        clock=lambda: datetime(2025, 1, 15, 12).timestamp(),
+    )
     state = limiter.status("exa")
     other = "monthly" if period == "daily" else "daily"
     assert state[period]["used"] == 6 and state[other]["used"] == 0
     assert state["legacy_unknown_period"] == other
     assert limiter.acquire("exa")
-    assert UsageLimiter(limiter._limits, path, clock=limiter._clock).status("exa")[period]["used"] == 7
+    assert (
+        UsageLimiter(limiter._limits, path, clock=limiter._clock).status("exa")[period]["used"] == 7
+    )
 
 
 def test_concurrent_instances_cannot_exceed_limit(tmp_path):
     from concurrent.futures import ThreadPoolExecutor
+
     path = tmp_path / "usage.json"
     limits = {"exa": UsageLimit(daily=7, monthly=10)}
     instances = [UsageLimiter(limits, path) for _ in range(4)]
@@ -368,16 +391,28 @@ def test_pause_restart_expiry_and_manual_resume(tmp_path):
 
 
 def test_build_tools_official_pause_shared_across_search_fetch(service, monkeypatch):
-    from syvrio.agent.tools import build_tools
     from syvrio.agent.session import SessionStore
-    from syvrio.infra import config as config_module
-    from syvrio.infra.search import router as search_module, fetch_router as fetch_module
-    from syvrio.infra.search.base import FetchQuery
-    search = _SearchProvider("exa", error=ProviderError("exa", "quota", "NO_MORE_CREDITS",
-                            code="NO_MORE_CREDITS", pause_reason="NO_MORE_CREDITS"))
-    fallback = _SearchProvider("fallback", [SearchResult("Synthetic entity", "https://example.com", "")])
+    from syvrio.agent.tools import build_tools
+    from syvrio.infra.search import fetch_router as fetch_module
+    from syvrio.infra.search import router as search_module
+
+    search = _SearchProvider(
+        "exa",
+        error=ProviderError(
+            "exa",
+            "quota",
+            "NO_MORE_CREDITS",
+            code="NO_MORE_CREDITS",
+            pause_reason="NO_MORE_CREDITS",
+        ),
+    )
+    fallback = _SearchProvider(
+        "fallback", [SearchResult("Synthetic entity", "https://example.com", "")]
+    )
     fetch = _FetchProvider("exa")
-    monkeypatch.setattr(search_module, "build_registry", lambda config: {"exa": search, "fallback": fallback})
+    monkeypatch.setattr(
+        search_module, "build_registry", lambda config: {"exa": search, "fallback": fallback}
+    )
     monkeypatch.setattr(fetch_module, "build_fetch_registry", lambda *args: {"exa": fetch})
     service.config.search.providers = ["exa", "fallback"]
     service.config.fetch.providers = ["exa"]
@@ -388,18 +423,23 @@ def test_build_tools_official_pause_shared_across_search_fetch(service, monkeypa
     assert not tools.execute("fetch_web", {"url": "https://example.com"}).ok
     assert not fetch.calls
     from syvrio.infra.search.router import build_search_router
+
     rebuilt = build_search_router(service.config.search, service.config.vault)
     outcome = rebuilt.search(SearchQuery("Synthetic entity", engine="exa"))
     assert not outcome.results and outcome.failed[0].kind == "quota"
     assert len(search.calls) == 1 and len(fallback.calls) == 1
 
 
-
 def test_search_cache_does_not_charge_or_dispatch(tmp_path):
     from syvrio.infra.search.cache import SearchCache
-    provider = _SearchProvider("exa", [SearchResult("Synthetic entity", "https://example.com/a", "")])
+
+    provider = _SearchProvider(
+        "exa", [SearchResult("Synthetic entity", "https://example.com/a", "")]
+    )
     limiter = UsageLimiter({"exa": UsageLimit(daily=1, monthly=2)}, tmp_path / "usage.json")
-    router = SearchRouter({"exa": provider}, cache=SearchCache(tmp_path / "cache.json", 60), usage_limiter=limiter)
+    router = SearchRouter(
+        {"exa": provider}, cache=SearchCache(tmp_path / "cache.json", 60), usage_limiter=limiter
+    )
     assert router.search(SearchQuery("Synthetic entity")).results
     limiter.pause("exa", "balance")
     assert router.search(SearchQuery("Synthetic entity")).cached

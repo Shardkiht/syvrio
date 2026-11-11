@@ -1,4 +1,5 @@
 /** Pure completion / palette logic over the shared server command catalog. */
+import { formatLocalTimestamp } from '../time';
 import type { CommandInfo, CommandResponse } from '../types';
 
 export interface Suggestion {
@@ -139,5 +140,16 @@ export function commandMessage(result: CommandResponse): string {
     error: `/${result.command} failed`,
   };
   const title = heading[result.status] ?? result.status;
-  return result.message ? `${title}\n${result.message}` : title;
+  let message = result.message;
+  const timestamps = result.intent === 'git_status' ? result.data?.timestamps : null;
+  if (timestamps && typeof timestamps === 'object') {
+    message = message.split('\n').map((line) => {
+      const key = line.split(': ', 1)[0];
+      const stamp: unknown = Object.hasOwn(timestamps, key)
+        ? (timestamps as Record<string, unknown>)[key]
+        : null;
+      return typeof stamp === 'string' ? key + ': ' + formatLocalTimestamp(stamp) : line;
+    }).join('\n');
+  }
+  return message ? title + '\n' + message : title;
 }

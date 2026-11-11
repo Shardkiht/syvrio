@@ -61,7 +61,8 @@ def ensure_daemon(
     def default_spawn() -> None:
         installed = shutil.which("open-websearch")
         command = (
-            npx_command(installed, ()) if installed
+            npx_command(installed, ())
+            if installed
             else npx_command("npx", ("-y", "open-websearch@latest"))
         ) + [
             "serve",
@@ -108,9 +109,7 @@ def _spawn_daemon(command: list[str], log_path: Path) -> None:
         # 两层校验必须共用合成 DNS 段，否则本地通过后仍会被 daemon 拒绝。
         # 这里不只是补齐默认值：daemon 的豁免判定对顺序敏感（IPv4 段在前会让
         # IPv6 地址直接失败），所以无论用户是否自定义都重新排一次序。
-        env["FAKE_IP_CIDRS"] = order_fake_ip_cidrs(
-            env.get("FAKE_IP_CIDRS", DEFAULT_FAKE_IP_CIDRS)
-        )
+        env["FAKE_IP_CIDRS"] = order_fake_ip_cidrs(env.get("FAKE_IP_CIDRS", DEFAULT_FAKE_IP_CIDRS))
         with open(log_path, "ab") as log:
             subprocess.Popen(
                 command,
