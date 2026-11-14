@@ -1,3 +1,3 @@
 """Syvrio: local-first personal AI agent with persistent memory."""
 
-__version__ = "0.5.1"
+__version__ = "0.5.2"
