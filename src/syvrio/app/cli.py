@@ -69,6 +69,38 @@ def _service(config: Path | None, vault: Path | None) -> MemoryService:
 
 
 @app.command()
+def update() -> None:
+    """从 PyPI 更新受管理的 Syvrio Web 服务。"""
+    import subprocess
+    import tomllib
+
+    import httpx
+
+    from ..infra.paths import syvrio_home
+    from ..infra.update import update as apply_update
+
+    root = syvrio_home() / "update"
+    try:
+        with (root / "config.toml").open("rb") as file:
+            config = tomllib.load(file)
+        result = apply_update(root, config["channel"], config["service"], config.get("port", 8765))
+    except FileNotFoundError:
+        fail("更新配置或启动文件缺失，请先按 Web 文档配置受管理的服务。")
+        return
+    except (
+        OSError,
+        ValueError,
+        KeyError,
+        TypeError,
+        subprocess.SubprocessError,
+        httpx.HTTPError,
+    ) as exc:
+        typer.echo(f"更新失败：{exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(result)
+
+
+@app.command()
 def init(
     vault: Annotated[Path | None, typer.Option("--vault", help="记忆库目录")] = None,
     config: Path | None = CONFIG_OPTION,

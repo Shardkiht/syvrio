@@ -313,3 +313,33 @@ python scripts/build_web.py --check  # 校验已暂存静态资源
 ```
 
 命令相关自动化覆盖：目录与 TUI 一致性、能力标记、未知命令不转发 LLM、`/import` 不读取浏览器路径、`/undo` 服务端确认、忙期策略、会话错配 409、跨站写拒绝、选项面板不重开；前端覆盖前缀/子命令补全、`Tab`/`Enter`/`Escape`、方向键、IME 组字、快捷键冲突、命令面板、设置面板（模型切换、思考强度、上下文、供应商分区、About 不泄露 Key）、危险确认、命令失败后输入框恢复、生成中只读命令不打断流式回复。
+
+
+## PyPI 自动更新
+
+`syvrio update` 切换由 Linux/WSL 用户级 systemd 管理的 Web 服务。需要 Python 3.12、`uv`、可访问的用户 systemd 实例以及带 Web 资源的 PyPI wheel。
+
+首次接入时，在 `~/.syvrio/update/` 下创建 `current` 符号链接，指向已安装且包含 Web 前端的版本的 `bin/syvrio`。建立用户级服务（如 `syvrio-web.service`），让其 `ExecStart` 使用该链接，例如：
+
+```ini
+[Service]
+ExecStart=%h/.syvrio/update/current web --host 127.0.0.1 --port 8765 --no-hosts
+TimeoutStopSec=5min
+
+[Install]
+WantedBy=default.target
+```
+
+将现有 Web 服务的配置、凭据环境、域名白名单和启动参数迁入该服务。切换前停掉旧的源码服务，再启用此 unit，核对 `/api/health` 中的版本和前端状态。跨 Windows 重启仍需确保 WSL 和用户 systemd 实例会启动。
+
+创建 `~/.syvrio/update/config.toml`：
+
+```toml
+channel = "evo"
+service = "syvrio-web.service"
+port = 8765
+```
+
+`stable` 只选正式版，`evo` 只选形如 `0.5.2rc1` 的候选版。更新不会降级。首次切换到 Evo 时，初始安装版本必须低于目标预发布版本。服务正常启动以后，停用旧的源码拉取任务，定时任务只运行 `syvrio update`。定时任务的 PATH 须包含 `syvrio` 和 `uv`，并可访问对应的用户 systemd 实例。更新命令应在 Web unit 外运行。
+
+新版先安装在独立环境，校验通过后才停止旧版。新版健康检查失败会切回旧链接并启动旧版。更新保留旧安装目录用于回滚，配置和 Vault 继续使用服务定义的原有路径。

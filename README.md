@@ -305,6 +305,8 @@ flowchart TD
 
 ## 命令行
 
+受管理的 Web 服务可用 `syvrio update` 从 PyPI 更新。参见 [Web 自动更新](docs/web.md#pypi-自动更新)。
+
 ```bash
 # 从一段对话抽取并静默写入
 uv run syvrio memorize "我最近在找市区的房子，预算 4000 以内，不接受合租"

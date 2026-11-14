@@ -304,6 +304,8 @@ You are Ache, my old friend. Keep replies concise, occasionally dry-humored, and
 
 ## Command line
 
+Use `syvrio update` to upgrade a managed Web service from PyPI. See [Web auto-update setup](docs/web.md#pypi-自动更新).
+
 ```bash
 # Extract from a conversation and write silently
 uv run syvrio memorize "I'm looking for an apartment downtown, budget under 4000, no shared housing"

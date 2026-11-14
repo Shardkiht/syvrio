@@ -8,6 +8,7 @@ permissions:
 
 jobs:
   publish:
+    if: github.ref == 'refs/heads/feature-memory-evolution'
     # PyPI trusted publisher for syvrio must be configured before manual dispatch.
     runs-on: ubuntu-latest
     container: debian:13-slim
@@ -31,6 +32,19 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: "3.12"
+
+      - name: Require an Evo prerelease version
+        run: |
+          uv run --frozen python - <<'PYTHON'
+          import re
+          import tomllib
+          from packaging.version import Version
+
+          with open("pyproject.toml", "rb") as file:
+              version = Version(tomllib.load(file)["project"]["version"])
+          if not re.fullmatch(r"\d+\.\d+\.\d+rc\d+", str(version)):
+              raise SystemExit(f"Evo must use a PyPI prerelease version, such as 0.5.2rc1; got {version}")
+          PYTHON
 
       - name: Enable Corepack
         run: corepack enable

@@ -1,5 +1,10 @@
 # 开发交接
 
+## PyPI 发布频道
+
+- PyPI 共用 `syvrio` 包名和 `workflow.yml` Trusted Publisher（环境 `pypi`）。稳定线从 main 发布正式版本；Evo 工作流只允许从 `feature-memory-evolution` 手动触发发布，且会拒绝正式版本号。Evo 发版时同步更新 `pyproject.toml`、`src/syvrio/__init__.py` 和 `uv.lock`，使用 PEP 440 预发布版本，例如 `0.5.2rc1`。
+- GitHub Release 的预发布标记不影响 PyPI 的版本选择。普通用户按默认规则安装正式版，Evo 用户安装指定的预发布版本。
+
 ## Web 会话切换与延迟沉淀
 
 - Web 新建、切换及 `/new` 共用 Application 的快速切换路径。单个后台 worker 合并重复调度，沿用 TUI 的三条消息阈值；未处理的会话由启动补记接手。
@@ -10,6 +15,8 @@
 
 - 无候补的 OpenAI 兼容流复用 LiteLLM 的传输构造，并关闭本次调用拥有的传输。配置候补且启用 aiohttp 时，各次尝试借用同一请求拥有的会话；SDK 客户端、凭据与模型仍由 LiteLLM 选择。外部共享客户端沿用原所有权。
 - 本地 HTTP 覆盖主模型成功、实际候补、重试、失败、超时和取消；真实 Spark 在隔离 Web/TUI 验证了主模型失败后的候补。其他供应商不保证使用同一传输。
+
+- 自更新入口为 `syvrio update`。它按本地频道从 PyPI 选 wheel，在独立环境准备新版，然后通过用户 systemd 切换并检查健康状态。首次部署见 Web 文档。
 
 ## Evo 工程规范
 
