@@ -7,17 +7,10 @@ permissions:
   contents: read
 
 jobs:
-  publish:
+  build:
     if: github.ref == 'refs/heads/feature-memory-evolution'
-    # PyPI trusted publisher for syvrio must be configured before manual dispatch.
     runs-on: ubuntu-latest
     container: debian:13-slim
-    environment:
-      name: pypi
-      url: https://pypi.org/p/syvrio
-    permissions:
-      id-token: write
-      contents: read
     steps:
       - name: Install Debian prerequisites
         run: |
@@ -71,6 +64,26 @@ jobs:
       # Fail the release before publishing if the wheel would ship without the UI.
       - name: Verify wheel contains Web assets
         run: uv run python scripts/build_web.py --wheel dist/*.whl
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pypi-distributions
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/syvrio
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: pypi-distributions
+          path: dist/
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
