@@ -1,6 +1,6 @@
 [project]
 name = "syvrio"
-version = "0.5.2"
+version = "0.5.3rc1"
 description = "Local-first personal AI agent with persistent memory"
 readme = "README.md"
 requires-python = ">=3.12"
