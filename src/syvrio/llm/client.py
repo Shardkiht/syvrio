@@ -6,6 +6,7 @@ import json
 import os
 import time
 from collections.abc import Callable, Sequence
+from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from functools import lru_cache
 from threading import Event
@@ -486,22 +487,66 @@ class LiteLLMChatModel:
                 close()
         return parser.finish()
 
-    async def _cancellable_stream(self, kwargs, parser, litellm, cancel: Event) -> AssistantTurn:
+    async def _cancellable_stream(self, request, parser, litellm, cancel: Event) -> AssistantTurn:
         # Async transport cancellation also interrupts waiting for the first token.
         async def consume() -> AssistantTurn:
-            mark_model("request")
-            stream = await litellm.acompletion(**kwargs)
-            if not _primary_response(stream, self.config.fallbacks):
-                parser.source = ""
-            mark_model("stream_open")
-            try:
-                async for chunk in stream:
-                    if cancel.is_set():
-                        raise GenerationCancelled("Stopped by user")
-                    parser.feed(chunk)
-                return parser.finish()
-            finally:
-                await stream.aclose()
+            async with AsyncExitStack() as resources:
+                kwargs = request
+                if getattr(litellm, "aclient_session", None) is None:
+                    from litellm.llms.openai.common_utils import BaseOpenAILLM
+
+                    # Let LiteLLM choose the SDK client and credentials for each
+                    # attempt. Borrow one request-owned aiohttp session on this
+                    # event loop while preserving LiteLLM's transport settings.
+                    if request.get("fallbacks"):
+                        from litellm.llms.custom_httpx.http_handler import (
+                            AsyncHTTPHandler,
+                            get_ssl_configuration,
+                        )
+
+                        if AsyncHTTPHandler.should_use_aiohttp_transport():
+                            import ssl
+
+                            verify = get_ssl_configuration()
+                            transport = AsyncHTTPHandler.create_aiohttp_transport(
+                                ssl_context=verify if isinstance(verify, ssl.SSLContext) else None,
+                                ssl_verify=verify if isinstance(verify, bool) else None,
+                            )
+                            resources.push_async_callback(transport.aclose)
+                            session = transport.get_valid_client_session()
+                            # LiteLLM deep-copies fallback kwargs. A live connection
+                            # pool is shared by reference, like a caller-owned client.
+                            object.__setattr__(session, "__deepcopy__", lambda memo: session)
+                            resources.callback(object.__delattr__, session, "__deepcopy__")
+                            kwargs = {**request, "shared_session": session}
+                    elif self.config.litellm_model().startswith("openai/") and request.get(
+                        "api_key"
+                    ):
+                        from openai import AsyncOpenAI
+
+                        http_client = BaseOpenAILLM.get_async_http_client()
+                        resources.push_async_callback(http_client.aclose)
+                        client = AsyncOpenAI(
+                            api_key=request["api_key"],
+                            base_url=request.get("api_base"),
+                            timeout=request["timeout"],
+                            max_retries=request["num_retries"],
+                            http_client=http_client,
+                        )
+                        kwargs = {**request, "client": client}
+                mark_model("request")
+                stream = await litellm.acompletion(**kwargs)
+                if not _primary_response(stream, self.config.fallbacks):
+                    parser.source = ""
+                mark_model("stream_open")
+                try:
+                    async for chunk in stream:
+                        if cancel.is_set():
+                            raise GenerationCancelled("Stopped by user")
+                        parser.feed(chunk)
+                    return parser.finish()
+                finally:
+                    await stream.aclose()
 
         if cancel.is_set():
             raise GenerationCancelled("Stopped by user")

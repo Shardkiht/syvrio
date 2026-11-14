@@ -669,6 +669,186 @@ def test_cancellable_stream_with_installed_litellm_mock_transport(monkeypatch):
         assert "".join(deltas) == reply.content
 
 
+@pytest.mark.parametrize("outcome", ["done", "cancel", "error", "timeout", "shared"])
+def test_stream_respects_litellm_transport_ownership(monkeypatch, outcome):
+    import asyncio
+    from threading import Event
+    from types import SimpleNamespace
+
+    import openai
+    from litellm.llms.openai.common_utils import BaseOpenAILLM
+
+    from syvrio.llm import client
+
+    token = Event()
+    events = []
+
+    class Transport:
+        async def aclose(self):
+            events.append("transport closed")
+
+    transport = Transport()
+
+    class OwnedClient:
+        def __init__(self, **kwargs):
+            assert kwargs["http_client"] is transport
+
+    async def completion(**kwargs):
+        if outcome == "shared":
+            assert "client" not in kwargs
+        else:
+            assert isinstance(kwargs["client"], OwnedClient)
+        if outcome == "cancel":
+            token.set()
+            await asyncio.Future()
+        if outcome == "error":
+            raise RuntimeError("synthetic provider failure")
+        if outcome == "timeout":
+            raise TimeoutError("synthetic timeout")
+        return EmptyStream()
+
+    class EmptyStream:
+        async def __aiter__(self):
+            for chunk in ():
+                yield chunk
+
+        async def aclose(self):
+            events.append("stream closed")
+
+    monkeypatch.setattr(BaseOpenAILLM, "get_async_http_client", lambda: transport)
+    monkeypatch.setattr(openai, "AsyncOpenAI", OwnedClient)
+    fake = SimpleNamespace(
+        acompletion=completion, aclient_session=transport if outcome == "shared" else None
+    )
+    monkeypatch.setattr(client, "_litellm", lambda: fake)
+    monkeypatch.setenv("SYVRIO_TEST_STREAM_KEY", "synthetic")
+    model = client.LiteLLMChatModel(
+        LLMConfig(provider="openai", model="gpt-4o-mini", api_key_env="SYVRIO_TEST_STREAM_KEY")
+    )
+
+    def run():
+        return model.chat(
+            [{"role": "user", "content": "synthetic"}], [], on_delta=lambda _: None, cancel=token
+        )
+
+    if outcome == "cancel":
+        with pytest.raises(client.GenerationCancelled):
+            run()
+    elif outcome in {"error", "timeout"}:
+        with pytest.raises(RuntimeError if outcome == "error" else TimeoutError, match="synthetic"):
+            run()
+    else:
+        run()
+
+    expected = ["stream closed"] if outcome in {"done", "shared"} else []
+    if outcome != "shared":
+        expected.append("transport closed")
+    assert events == expected
+
+
+@pytest.mark.parametrize("scenario", ["primary", "fallback", "retry", "error", "timeout", "cancel"])
+def test_fallback_stream_releases_real_aiohttp_session(monkeypatch, scenario):
+    import json
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from threading import Event, Thread
+
+    from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler
+
+    from syvrio.llm import client
+
+    hits = []
+    sessions = []
+    token = Event()
+    release = Event()
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *_):
+            pass
+
+        def do_POST(self):
+            payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            hits.append(payload["model"])
+            if scenario == "cancel":
+                token.set()
+            if scenario in {"timeout", "cancel"}:
+                release.wait(timeout=3)
+                return
+            if scenario == "error" or (
+                payload["model"] == "gpt-4o"
+                and (scenario == "fallback" or (scenario == "retry" and len(hits) == 1))
+            ):
+                self.send_error(500)
+                return
+            chunk = {
+                "id": "synthetic",
+                "object": "chat.completion.chunk",
+                "created": 1,
+                "model": payload["model"],
+                "choices": [{"index": 0, "delta": {"content": "ok"}, "finish_reason": None}],
+            }
+            body = f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n".encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    factory = AsyncHTTPHandler.create_aiohttp_transport
+
+    def track(*args, **kwargs):
+        transport = factory(*args, **kwargs)
+        sessions.append(transport)
+        return transport
+
+    monkeypatch.setattr(AsyncHTTPHandler, "create_aiohttp_transport", track)
+    monkeypatch.setattr(AsyncHTTPHandler, "should_use_aiohttp_transport", lambda: True)
+    monkeypatch.setenv("SYVRIO_TEST_STREAM_KEY", "synthetic")
+    with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+        server_thread = Thread(target=server.serve_forever, daemon=True)
+        server_thread.start()
+        model = client.LiteLLMChatModel(
+            LLMConfig(
+                provider="custom",
+                model="gpt-4o",
+                base_url=f"http://127.0.0.1:{server.server_port}/v1",
+                api_key_env="SYVRIO_TEST_STREAM_KEY",
+                fallbacks=["openai/gpt-4o-mini"],
+                num_retries=int(scenario == "retry"),
+                timeout=0.2 if scenario == "timeout" else 5,
+            )
+        )
+        try:
+
+            def run():
+                return model.chat(
+                    [{"role": "user", "content": "synthetic"}],
+                    [],
+                    on_delta=lambda _: None,
+                    cancel=token,
+                )
+
+            if scenario == "cancel":
+                with pytest.raises(client.GenerationCancelled):
+                    run()
+            elif scenario in {"error", "timeout"}:
+                with pytest.raises(Exception, match="All fallback attempts failed"):
+                    run()
+            else:
+                assert run().content == "ok"
+        finally:
+            release.set()
+            server.shutdown()
+            server_thread.join()
+
+    expected = {
+        "primary": ["gpt-4o"],
+        "retry": ["gpt-4o", "gpt-4o"],
+        "cancel": ["gpt-4o"],
+    }.get(scenario, ["gpt-4o", "gpt-4o-mini"])
+    assert hits == expected
+    assert sessions and all(transport.client.closed for transport in sessions)
+
+
 class _FakeChoice:
     def __init__(self, label, value=None):
         self.title = label
