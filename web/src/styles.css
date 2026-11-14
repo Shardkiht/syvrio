@@ -158,16 +158,10 @@ textarea, input, select { touch-action: manipulation; }
 }
 
 .brand-mark {
-  width: 28px;
-  height: 28px;
-  display: grid;
-  place-items: center;
-  border-radius: 9px;
-  background: var(--text);
-  color: var(--bg);
-  font-size: 13.5px;
-  font-weight: 700;
-  letter-spacing: .01em;
+  display: block;
+  flex: 0 0 30px;
+  width: 30px;
+  height: 30px;
 }
 
 .new-chat {

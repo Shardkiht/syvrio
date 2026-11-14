@@ -27,7 +27,7 @@ export function Sidebar({
       {open && <div className="sidebar-scrim" onClick={onClose} data-testid="sidebar-scrim" />}
       <aside className={`sidebar${open ? ' open' : ''}`} data-testid="sidebar">
         <div className="sidebar-head">
-          <span className="brand-mark" aria-hidden="true">S</span>
+          <img className="brand-mark" src="/syvrio.svg" alt="Syvrio" width={30} height={30} />
           <button
             type="button"
             className="icon-button sidebar-close"
