@@ -125,7 +125,8 @@ class ConversationUseCases:
 
     @property
     def current_id(self) -> str | None:
-        return self.runtime.current.id if self.runtime.has_session else None
+        session = self.runtime.session
+        return session.id if session is not None else None
 
     @property
     def model_label(self) -> str:
@@ -457,14 +458,17 @@ class ConversationUseCases:
     def switch(self, session_id: str | None) -> SwitchResult:
         stats: dict = {}
         if session_id is None:
-            stats = self.runtime.close(distill=False)
-            self.runtime.start()
+            with self.runtime.service.write_lock:
+                stats = self.runtime.close(distill=False)
+                self.runtime.start()
             return SwitchResult(None, None, stats)
         session = self.runtime.resume(session_id, close_current=True)
         return SwitchResult(session, f"{session.id} · {session.title()}", stats)
 
-    def consolidate_deferred(self) -> dict:
-        return self.runtime.consolidate_pending(min_new_messages=3)
+    def consolidate_deferred(self, stop: Event | None = None) -> dict:
+        if stop is None:
+            return self.runtime.consolidate_pending(min_new_messages=3)
+        return self.runtime.consolidate_pending(min_new_messages=3, stop=stop)
 
     def rename_current(self, title: str) -> None:
         self.runtime.rename(title)

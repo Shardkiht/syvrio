@@ -92,7 +92,7 @@ python scripts/build_web.py --wheel dist/*.whl  # 校验实际 wheel 内含静�
 
 FastAPI 自动提供 `/openapi.json` 与 `/docs`。
 
-`POST /api/chat` 请求体：`{"message":"...","session_id":null}`。每个 SSE 帧带单调递增的 `id`/`seq` 和 `event` 类型，`data` 为 JSON：
+`POST /api/chat` 请求体：`{"message":"...","session_id":null}`。`session_id` 必须匹配服务端当前会话，只有尚未发送首条消息的新会话使用 `null`。过期标签页收到 `409 session_mismatch`，消息不会写入。每个 SSE 帧带单调递增的 `id`/`seq` 和 `event` 类型，`data` 为 JSON：
 
 | event | 关键字段 | 含义 |
 | --- | --- | --- |

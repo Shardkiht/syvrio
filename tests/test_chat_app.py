@@ -3451,12 +3451,13 @@ async def test_startup_catchup_does_not_block_switching(tmp_path):
         assert app.busy is False
         assert app.query_one("#input", Input).disabled is False
 
-        app._switch_session(crashed.id)
+        other = app.sessions.create()
+        app._switch_session(other.id)
         for _ in range(200):
             await pilot.pause()
-            if app.runtime.has_session and app.runtime.current.id == crashed.id and not app.busy:
+            if app.runtime.has_session and app.runtime.current.id == other.id and not app.busy:
                 break
-        assert app.runtime.current.id == crashed.id
+        assert app.runtime.current.id == other.id
 
         blocker.release.set()
         for _ in range(300):

@@ -253,7 +253,7 @@ class ContextManager:
                     events.append(
                         f"Memory distillation during compaction failed: {flushed['error']}"
                     )
-                else:
+                elif not flushed.get("deferred"):
                     distilled_ids = [record["id"] for record in user_records]
 
             summary_text = self.summarizer.summarize(

@@ -352,7 +352,6 @@ class CommandUseCases:
         if name == "new":
             # Reuse the runtime's lazy start: the session file is written with the
             # first message, so an abandoned "new" leaves nothing on disk.
-            conversation.runtime.close(distill=True)
             conversation.switch(None)
             return CommandResult(
                 "ok",

@@ -480,6 +480,11 @@ class SessionStore:
         sessions.sort(key=lambda item: _session_sort_time(item["last_message_at"]), reverse=True)
         return sessions[:limit]
 
+    @staticmethod
+    def revision(path: Path) -> tuple[int, int, int]:
+        stat = path.stat()
+        return stat.st_ino, stat.st_mtime_ns, stat.st_size
+
     def unconsolidated(
         self, limit: int = 3, exclude: str | None = None, min_new_messages: int = 1
     ) -> list[Session]:

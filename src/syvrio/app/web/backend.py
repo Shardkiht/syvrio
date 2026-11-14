@@ -191,6 +191,10 @@ class WebBackend:
         # Serializes mutating commands/session ops; held across slow LLM/Git work
         # so ``_lock`` itself stays free for health/cancel/turn bookkeeping.
         self._command_lock = threading.Lock()
+        self._navigation_lock = threading.Lock()
+        self._distill_stop = threading.Event()
+        self._distill_worker: threading.Thread | None = None
+        self._distill_requested = False
         self._operation: str | None = None
         self._active: ActiveTurn | None = None
         self._client_lock: VaultLock = client_instance_lock(self._service.paths)
@@ -226,15 +230,52 @@ class WebBackend:
             active = self._active
             if active is not None:
                 self._conversation.request_cancel()
+        self._distill_stop.set()
+        worker = self._distill_worker
+        if worker is not None:
+            worker.join()
         if active is not None:
-            active.finished.wait(timeout=5.0)
-        try:
-            self._runtime.close(distill=True)
-        except Exception as exc:
-            record_event("web.shutdown_distill_failed", exc)
-        if self._started:
-            self._client_lock.release()
-            self._started = False
+            active.finished.wait()
+        # Keep the client lock until every writer has stopped. Shutdown records
+        # the remaining work for startup, without launching another model call.
+        with self._command_lock:
+            try:
+                self._runtime.close(distill=False)
+            except Exception as exc:
+                record_event("web.shutdown_distill_failed", exc)
+            finally:
+                if self._started:
+                    self._client_lock.release()
+                    self._started = False
+
+    def _schedule_distill(self) -> None:
+        with self._lock:
+            if self._closed or not self._runtime.config.extract_on_exit:
+                return
+            self._distill_requested = True
+            if self._distill_worker is None:
+                self._distill_worker = threading.Thread(
+                    target=self._run_distill, name="syvrio-web-distill", daemon=True
+                )
+                try:
+                    self._distill_worker.start()
+                except RuntimeError as exc:
+                    self._distill_worker = None
+                    record_event("catchup.failed", exc)
+
+    def _run_distill(self) -> None:
+        while True:
+            with self._lock:
+                if self._closed or not self._distill_requested:
+                    self._distill_worker = None
+                    return
+                self._distill_requested = False
+            try:
+                result = self._conversation.consolidate_deferred(self._distill_stop)
+                for error in result["errors"]:
+                    record_event("catchup.failed", error)
+            except Exception as exc:
+                record_event("catchup.failed", exc)
 
     # ---------- queries ----------
 
@@ -290,14 +331,17 @@ class WebBackend:
             result = self._commands.execute(line, busy=busy, confirmed=confirmed)
             return self._command_response(result)
         if not self._command_lock.acquire(blocking=False):
-            raise WebError("busy", "Another command is still running. Wait or cancel it.", 409)
+            raise WebError("busy", "Another command is still running. Wait for it to finish.", 409)
         try:
             with self._lock:
+                self._require_open()
                 self._check_session_match(session_id)
                 busy = self._active is not None
                 self._operation = name or "command"
             try:
                 result = self._commands.execute(line, busy=busy, confirmed=confirmed)
+                if result.status == "ok" and result.intent == "new_session":
+                    self._schedule_distill()
             finally:
                 with self._lock:
                     self._operation = None
@@ -305,11 +349,11 @@ class WebBackend:
             self._command_lock.release()
         return self._command_response(result)
 
-    def _check_session_match(self, session_id: str | None) -> None:
+    def _check_session_match(self, session_id: str | None, *, exact: bool = False) -> None:
         current = self._conversation.current_id
-        # A stale tab must not act on another tab's session. A null current means
-        # the backend sits on an unstarted "new" view, so any concrete id is stale.
-        if session_id is not None and session_id != current:
+        # Chat binds even the empty view. Commands can omit the session for
+        # compatibility with API callers issuing global commands.
+        if (exact or session_id is not None) and session_id != current:
             raise WebError(
                 "session_mismatch", "This tab is viewing a different session. Refresh first.", 409
             )
@@ -336,7 +380,9 @@ class WebBackend:
         mutex keeps two mutating ops from overlapping.
         """
         if not self._command_lock.acquire(blocking=False):
-            raise WebError("busy", "Another operation is still running. Wait or cancel it.", 409)
+            raise WebError(
+                "busy", "Another operation is still running. Wait for it to finish.", 409
+            )
         try:
             with self._lock:
                 self._require_idle()
@@ -447,22 +493,22 @@ class WebBackend:
         (``AgentRuntime.start``), so creating a file here would only produce an
         empty session — the exact behaviour users see as clutter in the sidebar.
         """
-        with self._operation_scope("new"):
-            self._runtime.close(distill=True)
+        with self._navigation_lock, self._operation_scope("new"):
             self._conversation.switch(None)
+            self._schedule_distill()
         return CreateSessionResponse(session_id=None, title="")
 
     def switch_session(self, session_id: str) -> SwitchSessionResponse:
         self._validate_session_id(session_id)
-        with self._operation_scope("switch"):
+        with self._navigation_lock, self._operation_scope("switch"):
             if not self._conversation.session_exists(session_id):
                 raise WebError("session_not_found", "Session not found.", 404)
-            self._runtime.close(distill=True)
             try:
                 result = self._conversation.switch(session_id)
-            except (KeyError, ValueError) as exc:
+            except (KeyError, ValueError, OSError) as exc:
                 record_event("web.switch_failed", exc)
                 raise WebError("session_unreadable", "Session could not be restored.", 500) from exc
+            self._schedule_distill()
         session = result.session
         return SwitchSessionResponse(session_id=session.id, title=session.title())
 
@@ -571,7 +617,7 @@ class WebBackend:
         queue: asyncio.Queue[StreamEvent | None] = asyncio.Queue()
         with self._lock:
             self._require_idle()
-            self._check_session_match(session_id)
+            self._check_session_match(session_id, exact=True)
             token = self._conversation.begin_turn(session_id)
             turn_id = self._conversation.active_turn_id
             if turn_id is None:
@@ -679,12 +725,17 @@ class WebBackend:
                 self._active = None
             self._conversation.end_turn(turn_id)
 
+    def _require_open(self) -> None:
+        if self._closed:
+            raise WebError("shutting_down", "The Web service is shutting down.", 503)
+
     def _require_idle(self) -> None:
-        if self._active is not None or self._operation is not None:
+        self._require_open()
+        if self._active is not None:
+            raise WebError("busy", "A reply is being generated. Stop it or wait.", 409)
+        if self._operation is not None:
             raise WebError(
-                "busy",
-                "A reply or command is still running. Stop it or wait before starting another request.",
-                409,
+                "busy", "Another operation is still running. Wait for it to finish.", 409
             )
 
     @staticmethod

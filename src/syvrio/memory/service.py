@@ -247,6 +247,11 @@ class MemoryService:
         message_id: str | None = None,
         observed_at: str | None = None,
     ) -> MemorizeResult:
+        candidates = self.extract_candidates(text, observed_at)
+        return self._adjudicate(candidates, source, session_id, message_id)
+
+    def extract_candidates(self, text: str, observed_at: str | None = None) -> list[Candidate]:
+        """Run extraction before acquiring the Vault write lock."""
         # 分块边界可能落在空白处；保留输入字节对应的文本，避免拼接后粘连单词。
         if not text.strip():
             raise ValueError("对话内容为空。")
@@ -264,7 +269,7 @@ class MemoryService:
                     resolved = resolve_relative(metadata.time_text, observed_at)
                     if resolved:
                         metadata.event_time = resolved
-        return self._adjudicate(extraction.memories, source, session_id, message_id)
+        return extraction.memories
 
     def import_text(
         self,
@@ -282,6 +287,11 @@ class MemoryService:
             topics = [topic.topic for topic in self.store.topics()]
             extractor = ImportExtractor(self.config.llm, topics=topics)
         return self._adjudicate(extractor.extract(text).memories, source, dry_run=dry_run)
+
+    def adjudicate_extracted(
+        self, candidates: list[Candidate], *, source: str, session_id: str, message_id: str | None
+    ) -> MemorizeResult:
+        return self._adjudicate(candidates, source, session_id, message_id)
 
     def _adjudicate(
         self,

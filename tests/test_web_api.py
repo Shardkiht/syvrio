@@ -423,7 +423,7 @@ def test_failed_turn_reports_error_and_recovers(client, backend):
     assert client.get("/api/health").json()["busy"] is False
 
     backend._runtime.model = FakeModel([AssistantTurn(content="recovered")])
-    assert collect(client, "again")[-1]["type"] == "done"
+    assert collect(client, "again", events[-1]["session_id"])[-1]["type"] == "done"
 
 
 # ---------- cancellation, FIFO, disconnect ----------
@@ -509,7 +509,7 @@ def test_switch_rejected_while_generating(backend):
     created = backend._sessions.create().id
     controller.post(f"/api/sessions/{created}/switch")
     with ThreadPoolExecutor(max_workers=1) as pool:
-        future = pool.submit(collect, streamer, "first")
+        future = pool.submit(collect, streamer, "first", created)
         wait_active(backend)
         response = controller.post(f"/api/sessions/{created}/switch")
         assert response.status_code == 409
@@ -669,3 +669,174 @@ def test_chat_rejects_a_stale_session_id(client, backend):
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "session_mismatch"
     assert backend.active_turn_id() is None
+
+
+class GatedExtractor:
+    def __init__(self, *, fail=False):
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self.calls = 0
+        self.fail = fail
+
+    def extract(self, text, context):
+        self.calls += 1
+        self.entered.set()
+        assert self.release.wait(timeout=10)
+        if self.fail:
+            raise RuntimeError("synthetic extraction failure")
+        return ExtractionResult(memories=[])
+
+
+def seed_distillation(backend):
+    session = backend._runtime.ensure_session()
+    for index in range(3):
+        backend._sessions.append(
+            session,
+            {"type": "message", "role": "user", "id": f"m-seed-{index}", "content": "synthetic"},
+        )
+    backend._runtime.config.extract_on_exit = True
+    return session
+
+
+def wait_for_distillation(backend):
+    with backend._lock:
+        worker = backend._distill_worker
+    if worker is not None:
+        worker.join(timeout=5)
+        assert not worker.is_alive()
+
+
+@pytest.mark.parametrize("entry", ["create", "switch", "command"])
+def test_navigation_and_chat_finish_while_distillation_waits(client, backend, entry):
+    session = seed_distillation(backend)
+    target = backend._sessions.create()
+    extractor = GatedExtractor()
+    backend._service.extractor = extractor
+    try:
+        if entry == "create":
+            assert client.post("/api/sessions").status_code == 201
+        elif entry == "switch":
+            assert client.post(f"/api/sessions/{target.id}/switch").status_code == 200
+        else:
+            response = client.post("/api/commands", json={"line": "/new", "session_id": session.id})
+            assert response.json()["intent"] == "new_session"
+        assert extractor.entered.wait(timeout=3)
+        assert client.get("/api/health").json()["busy"] is False
+        assert client.post(f"/api/sessions/{target.id}/switch").status_code == 200
+        assert client.post("/api/sessions").status_code == 201
+        assert "done" in types(collect(client, "synthetic next conversation"))
+        assert extractor.calls == 1
+    finally:
+        extractor.release.set()
+    wait_for_distillation(backend)
+    loaded = backend._sessions.load(session.id)
+    assert loaded.user_texts_after_distilled() == []
+    assert [row["up_to"] for row in loaded.records if row["type"] == "distilled"] == ["m-seed-2"]
+    assert extractor.calls == 1
+
+
+def test_background_does_not_publish_stale_snapshot_after_resuming(client, backend):
+    session = seed_distillation(backend)
+    extractor = GatedExtractor()
+    backend._service.extractor = extractor
+    try:
+        assert client.post("/api/sessions").status_code == 201
+        assert extractor.entered.wait(timeout=3)
+        assert client.post(f"/api/sessions/{session.id}/switch").status_code == 200
+        assert "done" in types(collect(client, "new synthetic message", session.id))
+    finally:
+        extractor.release.set()
+    wait_for_distillation(backend)
+    assert len(backend._sessions.load(session.id).undistilled_messages()) == 4
+    assert client.post("/api/sessions").status_code == 201
+    wait_for_distillation(backend)
+    loaded = backend._sessions.load(session.id)
+    assert not loaded.undistilled_messages()
+    assert [row["up_to"] for row in loaded.records if row["type"] == "distilled"] == [
+        loaded.last_user_message_id()
+    ]
+
+
+def test_background_failure_leaves_cursor_for_startup_catchup(client, backend):
+    session = seed_distillation(backend)
+    extractor = GatedExtractor(fail=True)
+    backend._service.extractor = extractor
+    extractor.release.set()
+    assert client.post("/api/sessions").status_code == 201
+    wait_for_distillation(backend)
+    loaded = backend._sessions.load(session.id)
+    assert any(row["type"] == "extraction_error" for row in loaded.records)
+    assert len(loaded.undistilled_messages()) == 3
+    backend._service.extractor = StaticExtractor(ExtractionResult(memories=[]))
+    assert backend._app_service.startup_catchup()["consolidated"] == 1
+    assert backend._app_service.startup_catchup()["consolidated"] == 0
+
+
+def test_shutdown_stops_background_publication_and_keeps_client_lock(client, backend):
+    session = seed_distillation(backend)
+    extractor = GatedExtractor()
+    backend._service.extractor = extractor
+    assert client.post("/api/sessions").status_code == 201
+    try:
+        assert extractor.entered.wait(timeout=3)
+
+        def release_on_shutdown():
+            assert backend._distill_stop.wait(timeout=3)
+            assert backend._client_lock.locked
+            assert client.post("/api/sessions").status_code == 503
+            extractor.release.set()
+
+        with ThreadPoolExecutor() as pool:
+            future = pool.submit(release_on_shutdown)
+            backend.shutdown()
+            future.result(timeout=5)
+    finally:
+        extractor.release.set()
+    assert not backend._client_lock.locked
+    assert len(backend._sessions.load(session.id).undistilled_messages()) == 3
+
+
+def test_chat_rejects_stale_empty_view(client, backend):
+    session = backend._sessions.create()
+    assert client.post(f"/api/sessions/{session.id}/switch").status_code == 200
+    response = client.post("/api/chat", json={"message": "synthetic", "session_id": None})
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "session_mismatch"
+    assert not backend._sessions.load(session.id).messages
+
+
+def test_stopping_runtime_catchup_does_not_write_after_release(backend):
+    session = seed_distillation(backend)
+    backend._conversation.switch(None)
+    extractor = GatedExtractor(fail=True)
+    backend._service.extractor = extractor
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        catchup = pool.submit(backend._runtime.consolidate_pending)
+        try:
+            assert extractor.entered.wait(timeout=3)
+            shutdown = pool.submit(backend._runtime.stop_catchup)
+            assert backend._runtime._catchup_stopped.wait(timeout=3)
+            assert not shutdown.done()
+        finally:
+            extractor.release.set()
+        shutdown.result(timeout=5)
+        catchup.result(timeout=5)
+
+    loaded = backend._sessions.load(session.id)
+    assert len(loaded.undistilled_messages()) == 3
+    assert not any(row["type"] == "extraction_error" for row in loaded.records)
+    assert backend._runtime.consolidate_pending()["scanned"] == 0
+
+
+def test_empty_view_accepts_first_message_after_new_and_refresh(client, backend):
+    previous = collect(client, "synthetic first")[-1]["session_id"]
+    assert previous
+    response = client.post("/api/commands", json={"line": "/new", "session_id": previous})
+    assert response.json()["status"] == "ok"
+    assert not any(row["current"] for row in client.get("/api/sessions").json()["items"])
+    fresh = collect(client, "synthetic after refresh", None)[-1]["session_id"]
+    assert fresh and fresh != previous
+    assert [row["content"] for row in backend._sessions.load(fresh).messages] == [
+        "synthetic after refresh"
+    ]

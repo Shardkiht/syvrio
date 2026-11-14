@@ -49,6 +49,11 @@ export function useChat() {
   const [panel, setPanel] = useState<CommandPanel | null>(null);
   const [focusSignal, setFocusSignal] = useState(0);
   const pendingHistoryRef = useRef(false);
+  const navigation = useRef<Promise<void> | null>(null);
+  const navigationVersion = useRef(0);
+  const navigationHistory = useRef<Promise<void> | null>(null);
+  const sessionsVersion = useRef(0);
+  const newCommand = useRef<Promise<void> | null>(null);
 
   // Crossing the mobile breakpoint must fold the drawer away; otherwise a
   // desktop window narrowed to phone width leaves the scrim covering the chat.
@@ -89,11 +94,12 @@ export function useChat() {
   }, [update]);
 
   const refreshSessions = useCallback(async () => {
+    const version = ++sessionsVersion.current;
     try {
       const result = await api.listSessions();
-      setSessions(result.items);
+      if (version === sessionsVersion.current) setSessions(result.items);
     } catch {
-      setOnline(false);
+      if (version === sessionsVersion.current) setOnline(false);
     }
   }, []);
 
@@ -107,9 +113,12 @@ export function useChat() {
 
   const reloadHistory = useCallback(async (sessionId: string | null) => {
     if (!sessionId) return;
+    const version = navigationVersion.current;
     try {
       const history = await api.history(sessionId);
-      update((prev) => loadHistory(prev, history));
+      if (version === navigationVersion.current && chatRef.current.sessionId === sessionId) {
+        update((prev) => loadHistory(prev, history));
+      }
     } catch {
       // Keep the current view; a failed refresh must never disable the composer.
     }
@@ -118,12 +127,24 @@ export function useChat() {
   const runCommand = useCallback(async (line: string, confirmed = false) => {
     const requestLine = line.trim();
     if (!requestLine) return;
+    while (navigation.current || newCommand.current) await (navigation.current ?? newCommand.current);
+    const version = navigationVersion.current;
+    const sessionId = chatRef.current.sessionId;
     try {
-      const result = await api.runCommand({
+      const request = api.runCommand({
         line: requestLine,
-        session_id: chatRef.current.sessionId,
+        session_id: sessionId,
         confirmed,
       });
+      if (requestLine.split(/\s+/, 1)[0].toLowerCase() === '/new') {
+        const settled = request.then(() => {}, () => {});
+        newCommand.current = settled;
+        void settled.finally(() => {
+          if (newCommand.current === settled) newCommand.current = null;
+        });
+      }
+      const result = await request;
+      if (version !== navigationVersion.current) return;
       if (result.status === 'confirm_required') {
         setConfirm({ line: requestLine, message: result.message });
         return;
@@ -145,8 +166,8 @@ export function useChat() {
       // /model, /think and /context can change the active model; keep the
       // header label in sync without a full page reload.
       if (result.data?.model_changed === true) void refreshHealth();
-      if (result.refresh_sessions) await refreshSessions();
-      if (result.intent === 'new_session') {
+      if (result.refresh_sessions) void refreshSessions();
+      if (result.status === 'ok' && result.intent === 'new_session') {
         // The file appears with the first message; until then this is just the
         // empty home view, so no session id is expected and there is no history
         // to reload (reading the old one would only flash before this reset).
@@ -184,8 +205,20 @@ export function useChat() {
       await runCommand(trimmed);
       return;
     }
-    if (chatRef.current.busy) return;
+    const version = navigationVersion.current;
+    while (navigation.current || newCommand.current) {
+      await (navigation.current ?? newCommand.current);
+    }
     const sessionId = chatRef.current.sessionId;
+    const history = navigationHistory.current;
+    if (history) await history;
+    // The submit belongs to the view where the user pressed Send.
+    if (version !== navigationVersion.current || navigation.current || newCommand.current
+        || chatRef.current.sessionId !== sessionId) {
+      update((prev) => ({ ...prev, error: '会话已切换，请在目标会话重新发送' }));
+      return;
+    }
+    if (chatRef.current.busy) return;
     update((prev) => startTurn(prev, trimmed, sessionId));
     terminalRef.current = false;
     turnRef.current = null;
@@ -232,44 +265,62 @@ export function useChat() {
     }
   }, [update]);
 
-  const newSession = useCallback(async () => {
+  const navigate = useCallback((sessionId: string | null) => {
     if (chatRef.current.busy) {
-      update((prev) => ({ ...prev, error: '请先停止当前回复，再新建会话' }));
+      update((prev) => ({ ...prev, error: '请先停止当前回复，或等回复结束后再切换会话' }));
       return;
     }
-    try {
-      // Detach only: the runtime writes the session file with the first
-      // message, so an abandoned "new" must not leave an empty one behind.
-      await api.createSession();
-      update(() => ({ ...initialChatState }));
-      await refreshSessions();
-      if (window.innerWidth < 768) setSidebarOpen(false);
-    } catch (error) {
-      update((prev) => ({
-        ...prev,
-        error: error instanceof Error ? error.message : '新建会话失败',
-      }));
-    }
+    const version = ++navigationVersion.current;
+    navigationHistory.current = null;
+    const previous = navigation.current ?? newCommand.current;
+    const next = (async () => {
+      await previous;
+      if (version !== navigationVersion.current) return;
+      try {
+        if (sessionId === null) await api.createSession();
+        else await api.switchSession(sessionId);
+        // Apply the committed selection before fetching history. If the read
+        // fails, the composer still targets the session the server selected.
+        update(() => ({ ...initialChatState, sessionId }));
+        if (sessionId !== null && version === navigationVersion.current) {
+          const loading = api.history(sessionId).then((history) => {
+            if (version === navigationVersion.current && !chatRef.current.busy
+                && chatRef.current.sessionId === sessionId && chatRef.current.messages.length === 0) {
+              update((prev) => loadHistory(prev, history));
+            }
+          }).catch((error: unknown) => {
+            if (version === navigationVersion.current && chatRef.current.sessionId === sessionId) {
+              update((prev) => ({
+                ...prev,
+                error: error instanceof Error ? error.message : '会话历史加载失败',
+              }));
+            }
+          }).finally(() => {
+            if (navigationHistory.current === loading) navigationHistory.current = null;
+          });
+          navigationHistory.current = loading;
+        }
+        if (version === navigationVersion.current && window.innerWidth < 768) setSidebarOpen(false);
+      } catch (error) {
+        if (version === navigationVersion.current) {
+          update((prev) => ({
+            ...prev,
+            error: error instanceof Error ? error.message : '会话切换失败',
+          }));
+        }
+      } finally {
+        void refreshSessions();
+      }
+    })();
+    navigation.current = next;
+    void next.finally(() => {
+      if (navigation.current === next) navigation.current = null;
+    });
+    return next;
   }, [refreshSessions, update]);
 
-  const selectSession = useCallback(async (sessionId: string) => {
-    if (chatRef.current.busy) {
-      update((prev) => ({ ...prev, error: '请先停止当前回复，再切换会话' }));
-      return;
-    }
-    try {
-      await api.switchSession(sessionId);
-      const history = await api.history(sessionId);
-      update((prev) => loadHistory(prev, history));
-      await refreshSessions();
-      if (window.innerWidth < 768) setSidebarOpen(false);
-    } catch (error) {
-      update((prev) => ({
-        ...prev,
-        error: error instanceof Error ? error.message : '会话恢复失败',
-      }));
-    }
-  }, [refreshSessions, update]);
+  const newSession = useCallback(() => navigate(null), [navigate]);
+  const selectSession = useCallback((sessionId: string) => navigate(sessionId), [navigate]);
 
   const requestDeleteSession = useCallback((session: SessionInfo) => {
     if (chatRef.current.busy) {
@@ -287,9 +338,10 @@ export function useChat() {
       // The Application guard (same as TUI) refuses to delete the live
       // session. Detach to the empty view first (no file is created), then
       // remove the old JSONL file.
-      if (target.current) {
-        await api.createSession();
-        update(() => ({ ...initialChatState }));
+      while (navigation.current) await navigation.current;
+      if (target.id === chatRef.current.sessionId) {
+        await navigate(null);
+        if (chatRef.current.sessionId === target.id) return;
       }
       await api.deleteSession(target.id);
       await refreshSessions();
@@ -301,10 +353,11 @@ export function useChat() {
     } finally {
       setFocusSignal((value) => value + 1);
     }
-  }, [deleteTarget, refreshSessions, update]);
+  }, [deleteTarget, navigate, refreshSessions, update]);
 
   useEffect(() => {
     let alive = true;
+    const version = navigationVersion.current;
     void (async () => {
       try {
         const [info, listing, commands] = await Promise.all([
@@ -314,16 +367,18 @@ export function useChat() {
         ]);
         if (!alive) return;
         setHealth(info);
-        setSessions(listing.items);
+        if (version === navigationVersion.current) setSessions(listing.items);
         setCatalog(commands.items);
         setOnline(true);
         if (!info.static_ready) {
           update((prev) => ({ ...prev, error: 'Web 静态资源未构建，请运行 scripts/build_web.py' }));
         }
         const current = listing.items.find((item) => item.current);
-        if (current) {
+        if (current && version === navigationVersion.current && !chatRef.current.busy) {
           const history = await api.history(current.id);
-          if (alive) update((prev) => loadHistory(prev, history));
+          if (alive && version === navigationVersion.current && !chatRef.current.busy) {
+            update((prev) => loadHistory(prev, history));
+          }
         }
       } catch {
         if (alive) setOnline(false);

@@ -7,7 +7,7 @@ from copy import copy
 from dataclasses import dataclass, field, replace
 from datetime import date
 from itertools import groupby, islice
-from threading import Event
+from threading import Event, Lock
 
 from ..infra.config import ChatConfig, Config, load_config
 from ..infra.documents import document_paths
@@ -187,6 +187,9 @@ class AgentRuntime:
         # 请求进行中的会话与被延迟打关闭标记的会话（切换不阻塞生成）。
         self._active_ask: Session | None = None
         self._deferred_close: Session | None = None
+        self._catchup_lock = Lock()
+        self._catchup_stopped = Event()
+        self._catchup_session: str | None = None
 
     def start(self) -> None:
         """进入新对话。会话文件在第一条消息发送时才创建。"""
@@ -206,14 +209,24 @@ class AgentRuntime:
         return self.session is not None
 
     def resume(self, session_id: str, *, close_current: bool = False) -> Session:
-        session = self.sessions.load(session_id)
-        if close_current:
-            self.close(distill=False)
-        self.session = session
-        self.last_plan = None
-        self.last_plan_session = None
-        self._closed = False
-        return self.session
+        with self.service.write_lock:
+            if close_current and self.session is not None and self.session.id == session_id:
+                return self.session
+            active = self._active_ask
+            session = (
+                active
+                if active is not None and active.id == session_id
+                else self.sessions.load(session_id)
+            )
+            if close_current:
+                self.close(distill=False)
+            if self._deferred_close is session:
+                self._deferred_close = None
+            self.session = session
+            self.last_plan = None
+            self.last_plan_session = None
+            self._closed = False
+            return session
 
     def reload_llm(self, config: "Config | None" = None) -> None:
         """配置变更后热更新模型、抽取器和摘要器，不重启会话。
@@ -270,12 +283,13 @@ class AgentRuntime:
         text = redact_secrets(text.strip())
         if not text:
             raise ValueError("消息为空。")
-        if session is None:
-            session = self.ensure_session()
-        if on_session is not None:
-            on_session(session)
-        self._active_ask = session
+        with self.service.write_lock:
+            if session is None:
+                session = self.ensure_session()
+            self._active_ask = session
         try:
+            if on_session is not None:
+                on_session(session)
             with track_turn(cancel) as latency:
                 return self._run_ask(
                     session,
@@ -302,15 +316,16 @@ class AgentRuntime:
             )
             raise
         finally:
-            self._active_ask = None
-            deferred = self._deferred_close
-            self._deferred_close = None
-            if deferred is session:
-                # 切走/新建时该会话仍在生成：关闭标记延迟到此刻补打，
-                # 保证排在最后的 assistant 记录之后；沉淀由启动补记兜底。
-                if session.user_texts_after_distilled():
-                    self.sessions.append(session, {"type": "distill_deferred"})
-                self.sessions.append(session, {"type": "closed"})
+            with self.service.write_lock:
+                self._active_ask = None
+                deferred = self._deferred_close
+                self._deferred_close = None
+                if deferred is session:
+                    # 切走/新建时该会话仍在生成：关闭标记延迟到此刻补打，
+                    # 保证排在最后的 assistant 记录之后；沉淀由启动补记兜底。
+                    if session.user_texts_after_distilled():
+                        self.sessions.append(session, {"type": "distill_deferred"})
+                    self.sessions.append(session, {"type": "closed"})
 
     def _run_ask(
         self,
@@ -530,12 +545,12 @@ class AgentRuntime:
         if self.session is None or self._closed:
             return empty
         session = self.session
-        self._closed = True
         stats = dict(empty)
-        if session is self._active_ask:
+        if self._active_ask is not None and session.id == self._active_ask.id:
             # 该会话仍有请求在写：不在此处落标记/抽取，延迟到请求结束（ask finally）
             # 补打，保证 closed 排在最后的 assistant 记录之后；沉淀由启动补记兜底。
-            self._deferred_close = session
+            self._deferred_close = self._active_ask
+            self._closed = True
             return stats
         # 游标感知：只抽取上次成功沉淀之后的新内容，反复切换不重复抽取。
         user_texts = session.distillation_texts()
@@ -544,8 +559,11 @@ class AgentRuntime:
             if user_texts:
                 self.sessions.append(session, {"type": "distill_deferred"})
             self.sessions.append(session, {"type": "closed"})
+            self._closed = True
             return stats
-        if self.config.extract_on_exit and user_texts:
+        if self.config.extract_on_exit and user_texts and self._catchup_session == session.id:
+            self.sessions.append(session, {"type": "distill_deferred"})
+        elif self.config.extract_on_exit and user_texts:
             joined = "\n---\n".join(user_texts)
             try:
                 # 分块抽完再推进游标；直接截断会把最旧的内容永久跳过。
@@ -569,57 +587,93 @@ class AgentRuntime:
                 # 留下失败标记：启动补沉淀据此识别"有 closed 但没沉淀成"的会话。
                 self.sessions.append(session, {"type": "extraction_error", "error": str(exc)[:200]})
         self.sessions.append(session, {"type": "closed"})
+        self._closed = True
         return stats
 
-    def consolidate_pending(self, limit: int = 3, min_new_messages: int = 1) -> dict:
-        """补沉淀：抽取异常终止、退出抽取失败或切换时延后的会话。
+    def stop_catchup(self) -> None:
+        self._catchup_stopped.set()
+        with self._catchup_lock:
+            pass
 
-        游标之后新用户消息不足 min_new_messages 的会话跳过（标记保留，零成本
-        攒批），避免频繁切换触发大量小抽取。当前活跃会话不参与。
-        """
+    def consolidate_pending(
+        self, limit: int = 3, min_new_messages: int = 1, stop: Event | None = None
+    ) -> dict:
+        """Extract inactive sessions without holding the Vault lock during model calls."""
         result = {"scanned": 0, "consolidated": 0, "admitted": 0, "queued": 0, "errors": []}
-        if not self.config.extract_on_exit:
+        stop = stop if stop is not None else self._catchup_stopped
+        if not self.config.extract_on_exit or not self._catchup_lock.acquire(blocking=False):
             return result
-        exclude = self.session.id if self.session is not None else None
-        for session in self.sessions.unconsolidated(
-            limit, exclude=exclude, min_new_messages=min_new_messages
-        ):
-            if self.session is not None and session.id == self.session.id:
-                # 后台补记期间用户可能切进这个会话；活跃会话不在后台追加记录。
-                continue
-            result["scanned"] += 1
-            texts = session.distillation_texts()
-            if not texts:
-                # 空会话没有可抽取内容，直接标记收尾，避免每次启动都重复扫描。
-                self.sessions.append(session, {"type": "consolidated"})
-                continue
-            if len(texts) < min_new_messages:
-                continue
-            if texts:
-                joined = "\n---\n".join(texts)
-                try:
-                    for chunk in split_chunks(joined, max_chars=DISTILL_MAX_CHARS):
-                        extracted = self.service.memorize(
-                            chunk,
-                            source=f"session:{session.id}:catchup",
-                            session_id=session.id,
-                            message_id=session.last_user_message_id(),
-                        )
-                        result["admitted"] += len(extracted.admitted)
-                        result["queued"] += len(extracted.queued)
-                except Exception as exc:
-                    result["errors"].append(f"{session.id}: {exc}")
-                    self.sessions.append(
-                        session, {"type": "extraction_error", "error": str(exc)[:200]}
-                    )
-                    continue
-                self.sessions.append(
-                    session,
-                    {"type": "distilled", "up_to": session.last_user_message_id()},
-                )
-            self.sessions.append(session, {"type": "consolidated"})
-            result["consolidated"] += 1
+        try:
+            if stop.is_set():
+                return result
+            current = self.session
+            for session in self.sessions.unconsolidated(
+                limit, exclude=current.id if current else None, min_new_messages=min_new_messages
+            ):
+                if stop.is_set():
+                    break
+                self._consolidate_session(session.id, min_new_messages, stop, result)
+        finally:
+            self._catchup_lock.release()
         return result
+
+    def _session_in_use(self, session_id: str) -> bool:
+        return any(
+            session is not None and session.id == session_id
+            for session in (self.session, self._active_ask)
+        )
+
+    def _consolidate_session(
+        self, session_id: str, minimum: int, stop: Event, result: dict
+    ) -> None:
+        with self.service.write_lock:
+            if self._session_in_use(session_id) or not self.sessions.exists(session_id):
+                return
+            session = self.sessions.load(session_id, include_reasoning=False)
+            texts = session.distillation_texts()
+            if len(texts) < max(1, minimum):
+                return
+            cursor = session.last_user_message_id()
+            signature = self.sessions.revision(session.path)
+            self._catchup_session = session_id
+        result["scanned"] += 1
+        try:
+            candidates = []
+            for chunk in split_chunks("\n---\n".join(texts), max_chars=DISTILL_MAX_CHARS):
+                if stop.is_set():
+                    return
+                candidates.extend(self.service.extract_candidates(chunk))
+            with self.service.write_lock:
+                if stop.is_set() or self._session_in_use(session_id):
+                    return
+                if not session.path.exists() or self.sessions.revision(session.path) != signature:
+                    return
+                extracted = self.service.adjudicate_extracted(
+                    candidates,
+                    source=f"session:{session_id}:catchup",
+                    session_id=session_id,
+                    message_id=cursor,
+                )
+                self.sessions.append(session, {"type": "distilled", "up_to": cursor})
+                self.sessions.append(session, {"type": "consolidated"})
+                result["admitted"] += len(extracted.admitted)
+                result["queued"] += len(extracted.queued)
+                result["consolidated"] += 1
+        except Exception as exc:
+            result["errors"].append(f"{session_id}: {exc}")
+            with self.service.write_lock:
+                if (
+                    not stop.is_set()
+                    and not self._session_in_use(session_id)
+                    and session.path.exists()
+                ):
+                    if self.sessions.revision(session.path) == signature:
+                        self.sessions.append(
+                            session, {"type": "extraction_error", "error": str(exc)[:200]}
+                        )
+        finally:
+            with self.service.write_lock:
+                self._catchup_session = None
 
     def status(self) -> dict:
         session = self.current
@@ -744,6 +798,8 @@ class AgentRuntime:
         return text + ("\n\n" + profile if profile else "")
 
     def _flush_memories(self, texts: list[str], session: Session) -> dict:
+        if self._catchup_session == session.id:
+            return {"deferred": True}
         # 沉淀来源绑定发起压缩的会话：prepare 期间切走会话不得关联错来源。
         joined = "\n---\n".join(texts)
         totals = {"admitted": 0, "queued": 0, "duplicates": 0, "blocked": 0}
