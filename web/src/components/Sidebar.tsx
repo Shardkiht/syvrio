@@ -77,7 +77,7 @@ export function Sidebar({
         </div>
 
         <div className="sidebar-foot">
-          <span className="foot-avatar" aria-hidden="true">S</span>
+          <img className="foot-avatar" src="/syvrio.svg" alt="" width={24} height={24} />
           <span className="foot-model" title={model}>{model}</span>
           <span
             className={`foot-dot ${online ? 'online' : 'offline'}`}

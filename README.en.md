@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="web/public/syvrio.svg" alt="Syvrio logo" width="112" />
+
 # Syvrio
 
 **A local-first memory agent that remembers you.**
@@ -27,7 +29,7 @@ The stable source branch is `main`. Ongoing experiments are developed on `featur
 
 Requires Python 3.12+, uv, and git.
 
-**Publication status:** The published stable package is `0.3.4` ([PyPI](https://pypi.org/project/syvrio/0.3.4/) / [Release](https://github.com/Shardkiht/syvrio/releases/tag/v0.3.4)). Use the source instructions below to try the Foundation Web client or Vault V2 before the next stable release.
+Stable packages are published on [PyPI](https://pypi.org/project/syvrio/) and [GitHub Releases](https://github.com/Shardkiht/syvrio/releases). The package includes the Web client starting with `0.4.0`. Read the upgrade guide below before opening an older Vault.
 
 ```bash
 uv tool install syvrio
