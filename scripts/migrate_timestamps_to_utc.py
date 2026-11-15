@@ -246,6 +246,37 @@ def targets(args: argparse.Namespace) -> Iterator[Target]:
             yield Target("runtime", runtime, runtime / name, fields)
 
 
+def migrate_session_jsonl(
+    raw: bytes, target: Target, zone: ZoneInfo | None, label: str
+) -> tuple[bytes, int]:
+    """Keep repaired physical lines byte-for-byte, as the session reader does."""
+    rows = raw.splitlines(keepends=True)
+    damaged: set[int] = set()
+    recovered: set[int] = set()
+    changed = 0
+    for number, row in enumerate(rows, 1):
+        if not row.strip():
+            continue
+        try:
+            line = row.decode("utf-8")
+            record = json.loads(line)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            damaged.add(number)
+            continue
+        # Keep the usual strict object and duplicate-key checks for complete records.
+        updated, count = migrate_object(line, target, zone, f"{label}:{number}", {})
+        if count:
+            rows[number - 1] = updated.encode("utf-8")
+            changed += count
+        if record.get("type") == "recovery":
+            ignored = record.get("ignored_line")
+            if type(ignored) is int and ignored in damaged:
+                recovered.add(ignored)
+    if unrecovered := damaged - recovered:
+        raise ValueError(f"{label}:{min(unrecovered)}: unmarked corrupt session line")
+    return b"".join(rows), changed
+
+
 def inspect_target(
     target: Target, zone: ZoneInfo | None, evidence: dict[str, tuple[str, str]]
 ) -> Change | None:
@@ -257,8 +288,11 @@ def inspect_target(
     if not path.is_file():
         raise ValueError(f"{target.scope}/{target.relative}: expected a regular file")
     old = path.read_bytes()
-    raw = old.decode("utf-8")
     label = f"{target.scope}/{target.relative}"
+    if target.scope == "sessions" and path.suffix == ".jsonl":
+        after, changed = migrate_session_jsonl(old, target, zone, label)
+        return Change(target, old, after, changed) if changed else None
+    raw = old.decode("utf-8")
     if path.suffix == ".md":
         updated, changed = migrate_markdown(raw, label, zone, evidence)
     elif path.suffix == ".jsonl":

@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from syvrio.agent.session import SessionStore
 from syvrio.memory.inference import InferenceStore, source_fingerprint
 from syvrio.memory.schema import Core, parse_document, render_record
 from syvrio.memory.store import MemoryStore
@@ -177,3 +178,42 @@ def test_inference_revisions_keep_only_matching_evidence_current(tmp_path):
     assert updated.created_at == updated.updated_at == "2026-11-11T09:00:00+00:00"
     assert updated.source_fingerprints == {"mem-1": source_fingerprint(entry)}
     assert outdated.source_fingerprints == {"mem-1": "0" * 64}
+
+
+@pytest.mark.parametrize("recovered", [True, False])
+def test_session_migration_preserves_physical_lines(tmp_path, recovered):
+    vault = tmp_path / "vault"
+    session = SessionStore(vault).create()
+    initial = b'{"type":"meta","started_at":"2026-01-01T12:00:00"}\r\n{\xff\r\n'
+    if recovered:
+        initial += b'{"type":"recovery","ignored_line":2,"at":"2026-01-01T12:00:01"}\n'
+    initial += json.dumps(
+        {"type": "message", "role": "user", "content": "one\u2028two", "at": "2026-01-01T12:00:02"},
+        ensure_ascii=False,
+    ).encode("utf-8")
+    session.path.write_bytes(initial)
+    sibling = write(
+        vault / "sessions/other.jsonl", '{"type":"meta","started_at":"2026-01-01T12:00:00"}'
+    )
+    sibling_before = sibling.read_bytes()
+    backup = tmp_path / "backup"
+    result = migrate(
+        "--vault", vault, "--source-timezone", "Asia/Shanghai", "--apply", "--backup-dir", backup
+    )
+    if not recovered:
+        assert result.returncode != 0
+        assert "unmarked corrupt session line" in result.stderr
+        assert session.path.read_bytes() == initial
+        assert sibling.read_bytes() == sibling_before
+        assert not backup.exists()
+        return
+    assert result.returncode == 0, result.stderr
+    assert session.path.read_bytes().splitlines(keepends=True)[1] == b"{\xff\r\n"
+    assert not session.path.read_bytes().endswith(b"\n")
+    assert (
+        backup / "sessions" / session.path.relative_to(vault / "sessions")
+    ).read_bytes() == initial
+    loaded = SessionStore(vault).load(session.id)
+    assert loaded.started_at == "2026-01-01T04:00:00+00:00"
+    assert loaded.messages[0]["content"] == "one\u2028two"
+    assert loaded.messages[0]["at"] == "2026-01-01T04:00:02+00:00"
