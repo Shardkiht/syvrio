@@ -463,7 +463,13 @@ def test_update_rollback_success_discards_failed_install(tmp_path, monkeypatch):
     link.symlink_to(old)
     patch_release_transport(monkeypatch)
     monkeypatch.setattr(update, "_install", lambda *args: new)
-    monkeypatch.setattr(update, "_healthy", lambda c, u, version, seconds=20: version == "0.3.4")
+    health_checks = []
+
+    def healthy(client, url, version, seconds=20):
+        health_checks.append((version, seconds))
+        return version == "0.3.4"
+
+    monkeypatch.setattr(update, "_healthy", healthy)
 
     def run(*args, **kwargs):
         if args == (str(old), "--version"):
@@ -476,6 +482,11 @@ def test_update_rollback_success_discards_failed_install(tmp_path, monkeypatch):
     # 回滚成功：current 回到旧版，新环境安全清理；旧版本目录保留。
     assert not new_env.exists() and old_env.exists()
     assert link.resolve() == old
+    assert health_checks == [
+        ("0.3.4", 20),
+        ("0.5.2rc1", update.STARTUP_SECONDS),
+        ("0.3.4", update.STARTUP_SECONDS),
+    ]
 
 
 def test_update_install_failure_keeps_running_service(tmp_path, monkeypatch):
@@ -534,3 +545,104 @@ def test_healthy_fails_after_deadline(monkeypatch):
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
         assert not update._healthy(client, "http://127.0.0.1:8765/api/health", "0.5.4", seconds=1)
     assert len(attempts) > 1
+
+# --- Rollback when the initial executable switch itself fails. ---
+
+
+def _switch_failure_setup(tmp_path, monkeypatch):
+    old_env, old, new_env, new = make_versions(tmp_path)
+    link = tmp_path / "current"
+    link.symlink_to(old)
+    patch_release_transport(monkeypatch)
+    monkeypatch.setattr(update, "_install", lambda *args: new)
+    health_checks = []
+
+    def healthy(client, url, version, seconds=20):
+        health_checks.append((version, seconds))
+        return version == "0.3.4"
+
+    monkeypatch.setattr(update, "_healthy", healthy)
+    events = []
+
+    def run(*args, **kwargs):
+        if args == (str(old), "--version"):
+            return "Syvrio 0.3.4"
+        events.append((args[2], link.resolve(strict=False)))
+        return ""
+
+    monkeypatch.setattr(update, "_run", run)
+    return old_env, old, new_env, new, link, events, health_checks
+
+
+def test_update_switch_error_restores_old_without_second_switch(tmp_path, monkeypatch):
+    old_env, old, new_env, new, link, events, health = _switch_failure_setup(
+        tmp_path, monkeypatch
+    )
+    switches = []
+
+    def switch(path, target):
+        switches.append(target)
+        raise OSError("read-only filesystem")
+
+    monkeypatch.setattr(update, "_switch", switch)
+    with pytest.raises(ValueError, match="restored"):
+        update.update(tmp_path, "evo", "syvrio-web.service", 8765)
+
+    assert switches == [new]
+    assert link.resolve() == old
+    assert events == [("stop", old), ("start", old)]
+    assert health == [("0.3.4", 20), ("0.3.4", update.STARTUP_SECONDS)]
+    assert not new_env.exists() and old_env.exists()
+
+
+def test_update_switch_partial_change_and_failed_rollback(tmp_path, monkeypatch):
+    old_env, old, new_env, new, link, events, health = _switch_failure_setup(
+        tmp_path, monkeypatch
+    )
+    switches = []
+
+    def switch(path, target):
+        switches.append(target)
+        if len(switches) == 1:
+            path.unlink()
+            path.symlink_to(new)
+        raise OSError("filesystem error")
+
+    monkeypatch.setattr(update, "_switch", switch)
+    with pytest.raises(update.UpdateError, match="restoring") as raised:
+        update.update(tmp_path, "evo", "syvrio-web.service", 8765)
+
+    assert raised.value.stage == "rollback"
+    assert switches == [new, old]
+    assert link.resolve() == new
+    assert events == [("stop", old), ("stop", new)]
+    assert new_env.exists() and old_env.exists()
+
+
+@pytest.mark.parametrize("link_kind", ["unknown", "dangling"])
+def test_update_switch_failure_with_unexpected_link_aborts(tmp_path, monkeypatch, link_kind):
+    old_env, old, new_env, new, link, events, health = _switch_failure_setup(
+        tmp_path, monkeypatch
+    )
+    other = tmp_path / "other"
+    if link_kind == "unknown":
+        other.touch()
+    switches = []
+
+    def switch(path, target):
+        switches.append(target)
+        path.unlink()
+        path.symlink_to(other)
+        raise OSError("switch interrupted")
+
+    monkeypatch.setattr(update, "_switch", switch)
+    with pytest.raises(update.UpdateError) as raised:
+        update.update(tmp_path, "evo", "syvrio-web.service", 8765)
+
+    assert raised.value.stage == "rollback"
+    expected = "unexpected executable" if link_kind == "unknown" else "cannot resolve"
+    assert expected in str(raised.value)
+    assert switches == [new]
+    assert not any(event[0] == "start" for event in events)
+    assert link.resolve(strict=False) == other
+    assert new_env.exists() and old_env.exists()

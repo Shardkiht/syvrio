@@ -404,11 +404,28 @@ def update(root: Path, channel: str, unit: str, port: int, python: str | None = 
                     )
             except (UpdateError, OSError, KeyboardInterrupt) as error:
                 try:
-                    # Stop the failed version before repointing its executable.
-                    _stop_service(unit)
-                    _switch(link, previous)
+                    # A failed switch may leave the old executable selected.
+                    # Inspect the actual target before changing the link again.
+                    try:
+                        current = link.resolve(strict=True)
+                    except (OSError, RuntimeError) as state_error:
+                        raise UpdateError(
+                            "rollback",
+                            f"cannot resolve current executable {link}: {state_error}",
+                        ) from state_error
+                    if current == new:
+                        # The new executable is selected; stop it before restoring old.
+                        _stop_service(unit)
+                        _switch(link, previous)
+                    elif current != previous:
+                        raise UpdateError(
+                            "rollback",
+                            f"{link} points to unexpected executable {current}; "
+                            "refusing to overwrite it",
+                        )
+                    # The old target needs no second link write.
                     _run(*service, "start", unit)
-                    if not _healthy(local, url, installed):
+                    if not _healthy(local, url, installed, seconds=STARTUP_SECONDS):
                         raise UpdateError(
                             "health", f"the restored Syvrio {installed} failed its Web health check"
                         ) from None
@@ -416,12 +433,14 @@ def update(root: Path, channel: str, unit: str, port: int, python: str | None = 
                     UpdateError,
                     OSError,
                     subprocess.SubprocessError,
+                    RuntimeError,
                     KeyboardInterrupt,
                 ) as rollback:
                     raise UpdateError(
                         "rollback",
                         f"the update failed ({error}) and restoring Syvrio {installed} also failed "
-                        f"({rollback}); repoint {link} at {previous} and start {unit} manually",
+                        f"({rollback}); check {link} (expected {previous}) "
+                        f"and start {unit} manually",
                     ) from error
                 # Rollback succeeded: current is back on the old version, so the fresh
                 # environment is unreachable and safe to remove.
