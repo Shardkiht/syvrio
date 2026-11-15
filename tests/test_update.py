@@ -546,6 +546,7 @@ def test_healthy_fails_after_deadline(monkeypatch):
         assert not update._healthy(client, "http://127.0.0.1:8765/api/health", "0.5.4", seconds=1)
     assert len(attempts) > 1
 
+
 # --- Rollback when the initial executable switch itself fails. ---
 
 
@@ -575,9 +576,7 @@ def _switch_failure_setup(tmp_path, monkeypatch):
 
 
 def test_update_switch_error_restores_old_without_second_switch(tmp_path, monkeypatch):
-    old_env, old, new_env, new, link, events, health = _switch_failure_setup(
-        tmp_path, monkeypatch
-    )
+    old_env, old, new_env, new, link, events, health = _switch_failure_setup(tmp_path, monkeypatch)
     switches = []
 
     def switch(path, target):
@@ -596,9 +595,7 @@ def test_update_switch_error_restores_old_without_second_switch(tmp_path, monkey
 
 
 def test_update_switch_partial_change_and_failed_rollback(tmp_path, monkeypatch):
-    old_env, old, new_env, new, link, events, health = _switch_failure_setup(
-        tmp_path, monkeypatch
-    )
+    old_env, old, new_env, new, link, events, health = _switch_failure_setup(tmp_path, monkeypatch)
     switches = []
 
     def switch(path, target):
@@ -621,9 +618,7 @@ def test_update_switch_partial_change_and_failed_rollback(tmp_path, monkeypatch)
 
 @pytest.mark.parametrize("link_kind", ["unknown", "dangling"])
 def test_update_switch_failure_with_unexpected_link_aborts(tmp_path, monkeypatch, link_kind):
-    old_env, old, new_env, new, link, events, health = _switch_failure_setup(
-        tmp_path, monkeypatch
-    )
+    old_env, old, new_env, new, link, events, health = _switch_failure_setup(tmp_path, monkeypatch)
     other = tmp_path / "other"
     if link_kind == "unknown":
         other.touch()
