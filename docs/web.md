@@ -317,7 +317,9 @@ python scripts/build_web.py --check  # 校验已暂存静态资源
 
 ## PyPI 自动更新
 
-`syvrio update` 切换由 Linux/WSL 用户级 systemd 管理的 Web 服务。需要 Python 3.12、`uv`、可访问的用户 systemd 实例以及带 Web 资源的 PyPI wheel。
+`syvrio update` 切换由 Linux/WSL 用户级 systemd 管理的 Web 服务。需要本机已装有 Python ≥ 3.12（任意补丁版本即可，不要求 3.12）、`uv`、可访问的用户 systemd 实例以及带 Web 资源的 PyPI wheel。
+
+新版环境基于「当前版本 venv 的基础解释器」创建：更新器先在本机验证解释器存在、可执行且满足目标 wheel 的 `requires-python`，再以显式路径调用 `uv venv --no-python-downloads`，uv 绝不联网下载解释器。找不到兼容解释器时立即报错（错误中会列出尝试过的候选），可通过更新配置指定其他本地 Python。
 
 首次接入时，在 `~/.syvrio/update/` 下创建 `current` 符号链接，指向已安装且包含 Web 前端的版本的 `bin/syvrio`。建立用户级服务（如 `syvrio-web.service`），让其 `ExecStart` 使用该链接，例如：
 
@@ -338,8 +340,46 @@ WantedBy=default.target
 channel = "evo"
 service = "syvrio-web.service"
 port = 8765
+# 可选：显式指定本地解释器；默认用当前版本 venv 的基础解释器
+# python = "/usr/bin/python3.13"
 ```
 
 `stable` 只选正式版，`evo` 只选形如 `0.5.2rc1` 的候选版。更新不会降级。首次切换到 Evo 时，初始安装版本必须低于目标预发布版本。服务正常启动以后，停用旧的源码拉取任务，定时任务只运行 `syvrio update`。定时任务的 PATH 须包含 `syvrio` 和 `uv`，并可访问对应的用户 systemd 实例。更新命令应在 Web unit 外运行。
 
-新版先安装在独立环境，校验通过后才停止旧版。新版健康检查失败会切回旧链接并启动旧版。更新保留旧安装目录用于回滚，配置和 Vault 继续使用服务定义的原有路径。
+新版先安装在独立环境，校验通过后才停止旧版。新版启动后健康检查最多等待 120 秒（容忍慢启动的初始化与记忆补记），失败自动切回旧链接并启动旧版；停止单元最多等待 6 分钟并确认单元确实停下，避免「更新器以为停止失败、旧服务却被继续停掉」的半停止状态。更新保留旧安装目录用于回滚，配置和 Vault 继续使用服务定义的原有路径。
+
+### 旧版更新器的一次性手工升级
+
+早于解释器修复的版本（如 0.5.3rc1）在 `_install` 中硬编码 Python 3.12，本机只有 3.13 时 `syvrio update` 会超时；这类旧版本需手工升级一次，之后的 `syvrio update` 恢复自动。`current` 始终指向可执行文件 `<版本目录>/bin/syvrio`（不是版本目录本身），启动脚本经 `readlink -f current` 取可执行路径、再用其同目录的 `bin/python` 启动，因此链接目标必须一致。步骤（服务名、端口、路径以实际部署为准；旧版本目录全程保留）：
+
+```bash
+# 0. 记录现状（回滚凭据）
+readlink -f ~/.syvrio/update/current    # → ~/.syvrio/update/versions/<旧版本>/bin/syvrio
+systemctl --user is-active syvrio-web.service
+
+# 1. 显式用本地解释器建新环境并安装；禁止 uv 下载解释器
+UV_PYTHON_DOWNLOADS=never uv venv --no-python-downloads \
+  --python /usr/bin/python3.13 ~/.syvrio/update/versions/<新版本>
+uv pip install --python ~/.syvrio/update/versions/<新版本>/bin/python "syvrio==<新版本>"
+
+# 2. 切换前校验（旧服务仍在运行）
+~/.syvrio/update/versions/<新版本>/bin/syvrio --version
+~/.syvrio/update/versions/<新版本>/bin/python -c \
+  "from importlib.resources import files; assert files('syvrio.app.web').joinpath('static', 'index.html').is_file()"
+
+# 3. 停旧服务 → 原子切换（临时链接 + mv -T，等价 os.replace）→ 启动 → 健康检查
+systemctl --user stop syvrio-web.service
+ln -s ~/.syvrio/update/versions/<新版本>/bin/syvrio ~/.syvrio/update/.current.next
+mv -T ~/.syvrio/update/.current.next ~/.syvrio/update/current
+readlink -f ~/.syvrio/update/current     # 确认指向 <新版本>/bin/syvrio
+systemctl --user start syvrio-web.service
+curl -fsS http://127.0.0.1:8765/api/health   # 启动慢可等几秒重试；核对 version 与 static_ready
+
+# 4. 失败回滚：停 → 指回旧版本可执行文件 → 启动 → 健康检查
+systemctl --user stop syvrio-web.service
+ln -s ~/.syvrio/update/versions/<旧版本>/bin/syvrio ~/.syvrio/update/.current.next
+mv -T ~/.syvrio/update/.current.next ~/.syvrio/update/current
+systemctl --user start syvrio-web.service
+```
+
+配置（`config.toml`）、启动脚本（`start-web`、`web_entry.py`）、Vault 与 Runtime 都不在版本目录内，升级不触碰。

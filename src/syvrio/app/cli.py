@@ -83,7 +83,9 @@ def update() -> None:
     try:
         with (root / "config.toml").open("rb") as file:
             config = tomllib.load(file)
-        result = apply_update(root, config["channel"], config["service"], config.get("port", 8765))
+        result = apply_update(
+            root, config["channel"], config["service"], config.get("port", 8765), config.get("python")
+        )
     except FileNotFoundError:
         fail("更新配置或启动文件缺失，请先按 Web 文档配置受管理的服务。")
         return
