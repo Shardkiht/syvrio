@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content"
+    />
+    <meta name="color-scheme" content="light dark" />
+    <!-- Updated by state/theme.ts so the mobile address bar matches the UI. -->
+    <meta name="theme-color" content="#f6f7f9" />
+    <script>
+      // Set an explicit preference before the stylesheet paints. "auto" needs
+      // no attribute because the CSS media query already follows the browser.
+      try {
+        const theme = localStorage.getItem('syvrio.theme');
+        if (theme === 'light' || theme === 'dark') {
+          document.documentElement.dataset.theme = theme;
+        }
+      } catch {
+        // Storage may be blocked; the system theme remains the fallback.
+      }
+    </script>
+    <link rel="icon" href="/syvrio.svg" type="image/svg+xml" />
+    <title>Syvrio</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

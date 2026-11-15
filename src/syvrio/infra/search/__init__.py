@@ -1,7 +1,7 @@
 from .base import (
+    MAX_SEARCH_ENGINES,
     FetchQuery,
     FetchResult,
-    MAX_SEARCH_ENGINES,
     ProviderError,
     ProviderErrorKind,
     SearchFailure,
@@ -11,9 +11,9 @@ from .base import (
     SearchResult,
     normalize_search_engines,
 )
-from .open_websearch import OpenWebSearchProvider, SEARCH_ENGINES
-from .router import SearchRouter, build_search_router
 from .fetch_router import FetchProvider, FetchRouter, build_fetch_router
+from .open_websearch import SEARCH_ENGINES, OpenWebSearchProvider
+from .router import SearchRouter, build_search_router
 
 __all__ = [
     "FetchProvider",

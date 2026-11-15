@@ -21,13 +21,13 @@
 
 演示操作实际 Textual 界面，使用合成数据与固定模型回复回放；记忆写入和跨会话检索走真实代码，不产生模型费用。[查看静态截图](docs/assets/syvrio-demo.png)。
 
-稳定展示：`main` 在最终验收后冻结，使用 `portfolio-2026-11-01` 标识本轮源码快照。当前源码与发行版本为 `0.3.4`（PyPI 与 GitHub Release `v0.3.4` 均已发布）；较早的 `v0.3.3`、`v0.3.2` Release 属于其他快照。后续常规开发仅在 `feature-memory-evolution` 进行。
+稳定源码分支是 `main`，实验性开发在 `feature-memory-evolution` 上进行。稳定发行包以此处的发布链接为准。
 
 ## 快速开始
 
 需要 Python 3.12+、uv、git。
 
-**发布状态：** `syvrio` 最新发行版为 `0.3.4`（[PyPI](https://pypi.org/project/syvrio/0.3.4/) / [GitHub Release](https://github.com/Shardkiht/syvrio/releases/tag/v0.3.4)），实际最新版本以 [项目页面](https://pypi.org/project/syvrio/) 为准。可直接安装；从源码开发见下文。
+**发布状态：** 已发布稳定包为 `0.3.4`（[PyPI](https://pypi.org/project/syvrio/0.3.4/) / [Release](https://github.com/Shardkiht/syvrio/releases/tag/v0.3.4)）。下一次稳定发行前，Foundation 的 Web 客户端与 Vault V2 请按照下文从源码运行。
 
 ```bash
 uv tool install syvrio
@@ -37,16 +37,9 @@ syvrio
 
 `syvrio setup` 选择模型供应商并配置 API Key，也可进入「搜索与网页抓取 API」向导：为百度千帆、Tavily、Exa、You.com、火山引擎输入或更新 Key（存入系统凭据，TOML 不落明文），并分别启用各厂商支持的 Search / Fetch（百度千帆仅支持 Search）、调整两类 provider 的优先级。官方厂商即使已有 Key 也不会自动启用，必须在此显式开启；未配置有效 Key 时无法启用。open-websearch 免费且始终是默认项。标准安装不需要下载本地向量模型；未安装向量后端时自动使用关键词检索。之后可用 `uv tool upgrade syvrio` 更新。
 
-### 从 QuietMemo 迁移
+### 升级现有 Syvrio Vault
 
-已有 QuietMemo 配置或 Vault 时，先备份，再运行一次性迁移工具（默认 dry-run）：
-
-```bash
-uv run python scripts/migrate_to_syvrio.py --dry-run
-uv run python scripts/migrate_to_syvrio.py --apply
-```
-
-工具会把 Vault 内 `.quiet-memo/` 元数据迁移到 `.syvrio/`，把旧转义标签前缀改写为新前缀，迁移配置与可选 Keyring 条目；锁文件不迁移，可重建缓存不复制。重复执行幂等；新旧目录并存时停止并报告。备份默认保留在 Vault 同级目录。
+仍在旧版（v1）Vault 布局上的用户，请按 [docs/vault-v2.md](docs/vault-v2.md) 先用 `scripts/migrate_vault_v2.py` 显式迁移到 v2 布局（新版启动会拒绝旧布局并提示本指南）。
 
 ## 为什么用 Syvrio
 
@@ -99,7 +92,9 @@ base_url = "https://api.deepseek.com/v1"
 model = "deepseek-flash"
 api_key_env = "DEEPSEEK_API_KEY"
 reasoning_effort = ""         # low / medium / high；仅模型支持时生效
-fallbacks = []                 # 例如 ["openai/gpt-4o-mini"]
+spark_thinking = ""
+provider_urls = {}
+recent_models = []
 num_retries = 2
 temperature = 0.1
 timeout = 60.0
@@ -163,6 +158,19 @@ Spark 使用 MaaS 的 Bearer API Key；适配层保留服务端采样默认值�
 
 联网搜索默认启用，但需要本地 open-websearch daemon；启动方式和配置见下方[联网搜索](#联网搜索)。
 
+## Web 客户端
+
+源码运行需要 Node.js 22+ 和 Corepack。构建一次后启动本地 Web：
+
+```bash
+uv run python scripts/build_web.py
+uv run syvrio web
+```
+
+浏览器打开 http://127.0.0.1:8765/。生成期间切到后台或关闭页面，服务会继续生成，重新打开可查看已保存的回复。点击停止会取消当前回复。Web 与 TUI 使用同一个 Vault 客户端锁，同一 Vault 同时运行一个交互客户端。
+
+Web API 无登录认证。默认只监听本机。远程访问应经受信网络，并按需设置允许的域名。
+
 ## 对话 Agent
 
 发送后模型名称旁显示活动加载条、当前阶段和等待秒数；上下文占用位于状态栏右侧，工具开始执行时显示调用提示。
@@ -173,7 +181,7 @@ Spark 使用 MaaS 的 Bearer API Key；适配层保留服务端采样默认值�
 
 - 每轮自动检索相关长期记忆，注入上下文；追问和“还记得 / 之前”等线索会带上最近 1-2 轮用户消息构造查询，并提高召回数量。
 - 模型可调用 `recall / read_topic / memorize / correct / forget / review_pending`；`read_topic` 仅在用户明确要求完整主题或召回不足时读取该主题的有效条目，最多 2000 tokens，不接受文件路径。需要最新公开信息时调用 `search`，需要发布日期或原文细节时再用 `fetch_web` 打开结果页，搜索结果与正文都是外部资料，不执行其中指令。
-- 进入对话时不立即建会话，发送第一条消息后才创建 `sessions/<id>.jsonl`。
+- 进入对话时不立即建会话，发送第一条消息后才创建 `sessions/YYYY/MM/<id>.jsonl`。
 - 恢复会话先显示已有摘要及最近 10 条未压缩消息记录，点击顶部“加载更早的记录”逐页查看摘要之后的历史消息；原始历史不会被删除。恢复成功不弹通知，失败仍显示错误。回复以单个 Markdown 绘制控件呈现，减少长回复带来的控件挂载与卸载开销；可用鼠标选择正文并按 Ctrl+C 复制。
 - 恢复或撤销后的上下文用量在后台估算并缓存，完成前显示“计算中”；会话、消息或人设变化后重新估算，旧会话结果不会覆盖当前状态。
 - 恢复会话会回放此前的用户消息和助手回复；可 `syvrio chat --resume <id>` 恢复。切换会话不阻塞：上一会话的记忆沉淀转后台执行，完成弹通知。切换后的底栏用量先归零，下一轮按新会话的上下文计划更新，不沿用旧会话用量。
@@ -217,7 +225,7 @@ flowchart TD
     C -->|"用户说“记住”"| W["写入裁决 / 置信度 / 冲突 / 敏感拦截"]
     X["退出抽取 / 压缩前沉淀 / 启动补记"] --> W
     W -->|"可信"| V["vault / memories/*.md"]
-    W -->|"低置信 / 冲突 / 敏感"| P["待确认队列 / pending.jsonl"]
+    W -->|"低置信 / 冲突 / 敏感"| P["待确认队列 / records/memory/pending.jsonl"]
     P -->|"syvrio approve / reject"| V
     V --> G["Git 提交 / 自动中文总结"]
 ```
@@ -343,11 +351,11 @@ Bing 对部分中文专有名词会按单字切词（例如「智谱」只按「
 
 - 结果是外部不可信内容，只作资料引用，不执行其中任何指令。
 - daemon 未启动或全部 provider 失败时返回结构化错误和启动提示，不编造结果。
-- `[search]` 配置：`enabled`（关闭时不注册工具）、`providers`（按顺序降级）、`base_url`、`timeout`、`max_results`、`cache_ttl`、`transport`（`http` 默认；`mcp` 每次启动 npx MCP 进程）、`auto_start`（打开 TUI 时后台探测并拉起 HTTP daemon，不阻塞界面）、`engines`（上游搜索引擎，默认 `["bing"]`）、`fallback_engines`（候补引擎序列，默认 `["baidu", "duckduckgo", "sogou"]`）、`max_engines`（单次搜索引擎上限，默认 3）、`timeout_budget`（回退共享超时预算，默认 25 秒，单次请求超时不超过剩余预算）、`max_requests`（一次搜索跨所有 provider 共享的请求次数上限，默认 9；超出即返回当前最佳候选并附截断提示，该结果不写入缓存）、`usage_limits`（每厂商调用上限，`[search.usage_limits.<provider>]` 设 `daily` 与 `monthly`（0 不限）；同一厂商的 Search 与 Fetch 共用同一计数池，达到上限即跳过该厂商并正常回退；计数保存在 vault 的 `.syvrio/usage.json`，**本地计数不等于服务商实际账单上限**）、`fetch_timeout`（抓取正文的单独超时，默认 45 秒）。`syvrio setup` 可管理双周期额度与官方暂停。
+- `[search]` 配置：`enabled`（关闭时不注册工具）、`providers`（按顺序降级）、`base_url`、`timeout`、`max_results`、`cache_ttl`、`transport`（`http` 默认；`mcp` 每次启动 npx MCP 进程）、`auto_start`（打开 TUI 时后台探测并拉起 HTTP daemon，不阻塞界面）、`engines`（上游搜索引擎，默认 `["bing"]`）、`fallback_engines`（候补引擎序列，默认 `["baidu", "duckduckgo", "sogou"]`）、`max_engines`（单次搜索引擎上限，默认 3）、`timeout_budget`（回退共享超时预算，默认 25 秒，单次请求超时不超过剩余预算）、`max_requests`（一次搜索跨所有 provider 共享的请求次数上限，默认 9；超出即返回当前最佳候选并附截断提示，该结果不写入缓存）、`usage_limits`（每厂商调用上限，`[search.usage_limits.<provider>]` 设 `daily` 与 `monthly`（0 不限）；同一厂商的 Search 与 Fetch 共用同一计数池，达到上限即跳过该厂商并正常回退；计数保存在 Runtime 的 `runtime/state/usage.json`，**本地计数不等于服务商实际账单上限**）、`fetch_timeout`（抓取正文的单独超时，默认 45 秒）。`syvrio setup` 可管理双周期额度与官方暂停。
 
 受控真实冒烟：`scripts/smoke_search_apis.py` 默认只做本地检查（Key 是否可读、厂商是否会注册），不发任何请求；加 `--provider <厂商> --operation search|fetch --live` 才对单一厂商发起最多 `--max-requests`（默认 1，上限 10）次真实请求，输出脱敏报告（成功与否、结果数或正文长度、错误类型、耗时与待验证字段）。Key 只从环境变量或系统凭据读取，不回显。网页抓取由独立的 `[fetch]` 配置控制：`providers` 是抓取正文用的 provider 顺序（默认 `["open_websearch"]`），与搜索的 provider 顺序相互独立；配置了 Key 的官方厂商（tavily / exa / you / volcengine）加入该列表后才参与抓取。
 - `auto_start` 启动的 daemon 在 Windows 下隐藏控制台窗口；退出 TUI 后继续常驻，下次直接复用。
-- 搜索结果缓存为 `.syvrio/search-cache.json`，属于派生数据，可删除。普通成功结果缓存 24 小时（`cache_ttl`）；「今天/最新/latest」等时效性查询与空结果只短缓存（10/5 分钟），上游失败一律不入缓存。
+- 搜索结果缓存为 `runtime/cache/search/search-cache.json`，属于派生数据，可删除。普通成功结果缓存 24 小时（`cache_ttl`）；「今天/最新/latest」等时效性查询与空结果只短缓存（10/5 分钟），上游失败一律不入缓存。
 
 
 抓取按 `[fetch].providers` 独立选择厂商；官方抓取与 open-websearch 抓取均使用 `search.fetch_timeout`，搜索仍使用 `search.timeout`。open-websearch 抓取要求 HTTP transport，其他已配置的官方抓取不受其 transport 限制。
@@ -363,17 +371,25 @@ Bing 对部分中文专有名词会按单字切词（例如「智谱」只按「
 | 密码、验证码、API Key | 直接拦截，不落盘 |
 | 文本完全重复 | 跳过 |
 
-记忆按主题存为 `memories/<topic>.md`，条目带稳定 ID、状态、时间戳、来源和置信度：
+记忆采用 [Schema v2 和 Vault Layout v2](docs/vault-v2.md)：按主题存为 `memories/<category>/<topic>.md`，每个顶层 Markdown 列表项是一条记录，包含正文、必填 Core（稳定 ID、状态、来源、置信度）和可选的 Context、Extensions；记录时间统一为 UTC。召回时，选中的原始 Markdown 作为非可信引用交给模型。旧 Vault 必须按指南用 `scripts/migrate_vault_v2.py` 显式迁移。
 
 ```markdown
-- 2026-10-22T19:42:50 — 在找市区的房子  `id=mem-20261022-194250-8f1e` `status=active` `source=session:s-...` `confidence=0.95` `session=s-...` `message=m-...`
+# 找房
+
+* 在找市区的房子。
+
+  **Core**
+  * `id`: `mem-20261022-194250-8f1e`
+  * `status`: `active`
+  * `source`: `session`
+  * `confidence`: `0.95`
 ```
 
-更正采用“新条目 + `supersedes`”，旧条目状态改为 `superseded`；删除是软删除 `deleted`，操作写入 `.syvrio/audit.jsonl`，Git 可回滚。
+更正采用“新条目 + `syvrio.supersedes`”，旧条目状态改为 `superseded`；删除是软删除 `deleted`，操作写入 `records/memory/audit.jsonl`，Git 可回滚。
 
-来源等行尾标签值含反引号或换行时，以 `~syvrio-escaped~` 前缀加百分号编码存储，读取时还原；普通标签格式不变，条目 ID 保持稳定。
+字段值含反引号或换行时，以 `~syvrio-escaped~` 前缀加百分号编码存储，读取时还原；条目 ID 保持稳定。
 
-抽取与导入支持可选的 `context` JSON 行尾标签。无依据时字段缺省，旧 Markdown 无需迁移：
+抽取与导入支持可选的 `context` 字段（写入记录的 `**Context**` 段）。无依据时字段缺省：
 
 | 字段 | 含义 |
 | --- | --- |
@@ -385,11 +401,11 @@ Bing 对部分中文专有名词会按单字切词（例如「智谱」只按「
 
 事实日期只接受 `YYYY`、`YYYY-MM`、`YYYY-MM-DD`，保留原有精度，不补猜月日或转换时区。地点不从设备采集，语气推断、反讽和模糊情绪不作为情绪事实写入。正文仍保留这些限定，上下文目前不参与检索过滤或重排。上下文与正文一起检查凭据，正常确认会保留上下文；改写后确认或手动更正不会沿用可能已过期的旧上下文，原候选仍可审计。
 
-推断基础接口 `MemoryService.propose_inference(text, source_ids, kind)` 将假设单独追加到 `.syvrio/inferences.jsonl`，类型为 `profile` 或 `emotion`，新记录始终为 `hypothesis`。只接受当前有效的事实条目 ID，来源去重；同类型、同规范化文本、同一组证据重复提交返回原记录，不增加置信度或重复追加。推断 ID、已删除或已被更正的来源不能作为新证据。
+推断基础接口 `MemoryService.propose_inference(text, source_ids, kind)` 将假设单独追加到 `records/memory/inferences.jsonl`，类型为 `profile` 或 `emotion`，新记录始终为 `hypothesis`。只接受当前有效的事实条目 ID，来源去重；同类型、同规范化文本、同一组证据重复提交返回原记录，不增加置信度或重复追加。推断 ID、已删除或已被更正的来源不能作为新证据。
 
 这是后端基础能力，尚无 CLI/TUI/MCP 推断入口，不自动生成、确认或注入聊天。模型声明保留 `confirmed / rejected / superseded` 状态，但用户确认流程、已有推断的来源失效处理与损坏日志恢复尚待实现；推断不会进入事实检索。
 
-`/pending` 的“改写后确认”先校验最终文本，再直接写入一条记忆，不先写原文再更正；冲突候选仍通过 `supersedes` 替代旧条目。原候选保留在 `resolved.jsonl`，审计记录以 `text_override` 保存改写文本。空白或识别出的凭据被拒绝时，候选与旧条目保持不变。
+`/pending` 的“改写后确认”先校验最终文本，再直接写入一条记忆，不先写原文再更正；冲突候选仍通过 `supersedes` 替代旧条目。原候选保留在 `records/memory/resolved.jsonl`，审计记录以 `text_override` 保存改写文本。空白或识别出的凭据被拒绝时，候选与旧条目保持不变。
 
 确认过期的冲突候选时，沿替代链更正当前有效版本；原记忆已删除、缺失或替代链不明确时拒绝写入并保留候选。会话中的用户消息、助手回复、摘要、标题及工具参数在追加落盘前隐藏已识别凭据；用户新消息也会先脱敏再送模型。不自动改写已有会话或 Git 历史。
 
@@ -401,8 +417,9 @@ Bing 对部分中文专有名词会按单字切词（例如「智谱」只按「
 src/syvrio/
 ├── app/          cli.py, server.py, tui.py, chat_app.py, chat_commands.py, chat_flow.py,
 │                 chat_widgets.py, chat_input.py, chat_theme.py, command_catalog.py,
-│                 actions.py, ui.py, session_ui.py
-│                                                   # CLI / Textual TUI / FastMCP 入口
+│                 actions.py, ui.py, session_ui.py, web/
+│                                                   # CLI / Textual TUI / Web / FastMCP 入口
+├── application/  界面共用的应用用例
 ├── agent/        runtime.py, prompts.py, context.py, tools.py,
 │                 session.py, recall.py, file_tools.py # Agent 循环、工具、会话与文件分析
 ├── memory/       service.py, store.py, models.py, queue.py,
@@ -416,13 +433,13 @@ src/syvrio/
                   layout.py, dialogs.py, documents.py, search/ # 配置、文档转换、联网搜索
 ```
 
-依赖方向：`app → agent → memory → retrieval → infra`，`memory/agent → llm → infra`。
+依赖方向：`app → application → agent → memory → retrieval → infra`，`memory/agent → llm → infra`。
 `retrieval` 会只读 `memory` 的 `models`、`store`、`detect`（条目读取、归一化与字面覆盖判断），这是 `memory ↔ retrieval` 的已知回读；写入与裁决仍只由 `memory` 负责。
 开发约定（代码风格、存储不变量、测试与文档同步）见 [AGENTS.md](AGENTS.md)。
 
 README 的界面演示与截图保存在 `docs/assets/`，不包含个人记忆库数据。
 
-- 检索默认 hybrid：jieba + rank-bm25 与向量余弦两路结果做 RRF 融合；向量由 fastembed 本地推理（可选 extra）或 embedding API 计算，缓存为 `.syvrio/vectors.npz` 派生数据（vault 内已 gitignore，删除后自动重建；换 embedding 模型自动失效）。向量后端不可用时回退纯 BM25，`/status` 和 `syvrio status` 显示当前检索模式。
+- 检索默认 hybrid：jieba + rank-bm25 与向量余弦两路结果做 RRF 融合；向量由 fastembed 本地推理（可选 extra）或 embedding API 计算，缓存为 `runtime/indexes/vectors.npz` 派生数据（不进入 Git，删除后自动重建；换 embedding 模型自动失效）。向量后端不可用时回退纯 BM25，`/status` 和 `syvrio status` 显示当前检索模式。
 - token 预算用 tiktoken 估算，离线失败时回退字符估算。
 - 会话压缩、记忆裁决、来源链是自研核心；模型适配交给 LiteLLM，供应商选择与密码输入用 questionary，Key 用 keyring。
 
@@ -437,7 +454,7 @@ uv run pytest
 
 `uv.toml` 将依赖缓存放在已忽略的 `.cache/uv`；缓存齐全后可用 `uv sync --frozen --offline`。VS Code 打开项目后选择 `.venv`，测试面板支持 pytest，并提供“调试当前测试文件”和“调试全部测试”配置。测试夹具隔离配置、vault 与凭据，不需要真实 API Key。
 
-如果受限 Windows 环境禁止回环 TCP，默认 asyncio 可能卡在 `socketpair`。使用锁定的 pytest-asyncio，可在 PowerShell 中先设置 `$env:SYVRIO_TEST_PIPE_LOOP = "1"` 再运行测试，改用本地管道唤醒 Proactor；仅影响测试，不开放网络权限，也不修改应用运行时。普通 Windows 和 Ubuntu 继续使用默认事件循环。
+GitHub Actions 在 Debian 13 上运行 Python 测试、前端测试和打包检查。
 
 局部改动按影响范围运行分类测试，提交前再跑全量：
 
@@ -519,7 +536,7 @@ Windows 交互终端输入框使用原生细竖线光标，以配合中文输入
 | volcengine | 0 | 450 |
 | open_websearch | 0 | 0 |
 
-0 表示该周期不限。配置以 `[search.usage_limits.<provider>]` 的 `daily`、`monthly` 覆盖默认值，显式 0 会保留；两周期任意一项耗尽即跳过。Search/Fetch 共池，缓存命中不计数，已发出的失败请求保守计数。按运行机器本地时区的自然日/月重置；状态保存在 `.syvrio/usage.json`，同进程检查与记账互斥，跨进程不保证严格上限。
+0 表示该周期不限。配置以 `[search.usage_limits.<provider>]` 的 `daily`、`monthly` 覆盖默认值，显式 0 会保留；两周期任意一项耗尽即跳过。Search/Fetch 共池，缓存命中不计数，已发出的失败请求保守计数。按运行机器本地时区的自然日/月重置；状态保存在 `runtime/state/usage.json`，同进程检查与记账互斥，跨进程不保证严格上限。
 
 ```toml
 [search.usage_limits.tavily]

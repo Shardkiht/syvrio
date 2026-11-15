@@ -2,11 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-pytestmark = pytest.mark.agent
-
 from syvrio.agent.session import SessionStore, new_message_id
 
-
+pytestmark = pytest.mark.agent
 def make_store(tmp_path):
     return SessionStore(tmp_path), SessionStore(tmp_path).create()
 
@@ -171,16 +169,13 @@ def test_delete_session_file(tmp_path):
 
 
 def test_create_retries_id_collision_without_overwrite(tmp_path, monkeypatch):
-    from datetime import datetime
+    from datetime import UTC, datetime
 
     from syvrio.agent import session as session_module
 
-    class FixedDateTime:
-        @staticmethod
-        def now():
-            return datetime(2026, 1, 1, 0, 0, 0)
-
-    monkeypatch.setattr(session_module, "datetime", FixedDateTime)
+    monkeypatch.setattr(
+        session_module, "utc_now", lambda: datetime(2026, 1, 1, 0, 0, 0, tzinfo=UTC)
+    )
     tokens = iter(["aaaa", "aaaa", "ffff"])
     monkeypatch.setattr(session_module.secrets, "token_hex", lambda _: next(tokens))
     store = SessionStore(tmp_path)
@@ -203,7 +198,7 @@ def test_unconsolidated_filters_threshold_before_limit(tmp_path):
             store.append(session, {
                 "type": "message", "id": f"m{index}-{number}", "role": "user",
                 "content": f"合成陈述 {index}-{number}",
-                "at": f"2026-01-0{index + 1}T12:00:00",
+                "at": f"2026-01-0{index + 1}T12:00:00+00:00",
             })
 
     assert [s.id for s in store.unconsolidated(3, min_new_messages=3)] == [sessions[0].id]
@@ -255,14 +250,14 @@ def test_list_reuses_cached_summary_until_file_changes(tmp_path, monkeypatch):
         "type": "message", "id": new_message_id(), "role": "user", "content": "第一条",
     })
     calls = 0
-    original = store.load
+    original = store._load_file
 
-    def counting(session_id):
+    def counting(path):
         nonlocal calls
         calls += 1
-        return original(session_id)
+        return original(path)
 
-    monkeypatch.setattr(store, "load", counting)
+    monkeypatch.setattr(store, "_load_file", counting)
 
     first = store.list()
     second = store.list()
@@ -285,14 +280,14 @@ def test_unconsolidated_skips_unchanged_consolidated_files(tmp_path, monkeypatch
     })
     store.append(session, {"type": "distilled", "up_to": message_id})
     calls = 0
-    original = store.load
+    original = store._load_file
 
-    def counting(session_id):
+    def counting(path):
         nonlocal calls
         calls += 1
-        return original(session_id)
+        return original(path)
 
-    monkeypatch.setattr(store, "load", counting)
+    monkeypatch.setattr(store, "_load_file", counting)
 
     assert store.unconsolidated(3) == []
     assert store.unconsolidated(3, min_new_messages=3) == []

@@ -4,11 +4,11 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date
-from threading import Event
+from threading import Event, Lock
 
 from ..infra.config import ChatConfig, Config
-from ..infra.tokens import truncate_to_tokens
 from ..infra.documents import document_paths
+from ..infra.tokens import truncate_to_tokens
 from ..llm import (
     AssistantTurn,
     ChatModel,
@@ -19,15 +19,14 @@ from ..llm import (
     Summarizer,
     Usage,
 )
-from ..memory.extractor import split_chunks
 from ..memory.detect import redact_secrets
+from ..memory.extractor import split_chunks
 from ..memory.service import MemoryService, load_persona
 from .context import ContextManager
 from .prompts import build_system_prompt
 from .recall import RecallQueryBuilder, should_auto_recall
 from .session import Session, SessionStore, new_message_id
 from .tools import ToolOutcome, build_tools, compact_tool_outputs
-
 
 DISTILL_MAX_CHARS = 12000
 
@@ -40,6 +39,13 @@ class AgentReply:
     compacted: bool = False
     usage: Usage = field(default_factory=Usage)
     estimated_tokens: int = 0
+
+
+@dataclass(frozen=True)
+class ThinkingUpdate:
+    text: str
+    record_id: str | None = None
+    seconds: float | None = None
 
 
 class AgentRuntime:
@@ -75,6 +81,9 @@ class AgentRuntime:
         # 请求进行中的会话与被延迟打关闭标记的会话（切换不阻塞生成）。
         self._active_ask: Session | None = None
         self._deferred_close: Session | None = None
+        self._catchup_lock = Lock()
+        self._catchup_stopped = Event()
+        self._catchup_session: str | None = None
 
     def start(self) -> None:
         """进入新对话。会话文件在第一条消息发送时才创建。"""
@@ -94,14 +103,25 @@ class AgentRuntime:
         return self.session is not None
 
     def resume(self, session_id: str, *, close_current: bool = False) -> Session:
-        session = self.sessions.load(session_id)
-        if close_current:
-            self.close(distill=False)
-        self.session = session
-        self.last_plan = None
-        self.last_plan_session = None
-        self._closed = False
-        return self.session
+        with self.service.write_lock:
+            if close_current and self.session is not None and self.session.id == session_id:
+                return self.session
+            # 生成期间切回活动会话：复用内存对象，不能用磁盘旧快照顶替正在写的会话。
+            active = self._active_ask
+            session = (
+                active
+                if active is not None and active.id == session_id
+                else self.sessions.load(session_id)
+            )
+            if close_current:
+                self.close(distill=False)
+            if self._deferred_close is session:
+                self._deferred_close = None
+            self.session = session
+            self.last_plan = None
+            self.last_plan_session = None
+            self._closed = False
+            return session
 
     def reload_llm(self, config: "Config | None" = None) -> None:
         """配置变更后热更新模型、抽取器和摘要器，不重启会话。
@@ -109,7 +129,7 @@ class AgentRuntime:
         默认从 service 记住的配置路径重读；调用方持有新配置对象时直接传入，
         避免落盘与重读之间的竞态把切换回滚。
         """
-        from ..llm import LLMSummarizer, LiteLLMChatModel
+        from ..llm import LiteLLMChatModel, LLMSummarizer
         from ..memory.extractor import LLMExtractor
 
         if config is None:
@@ -147,8 +167,11 @@ class AgentRuntime:
         *,
         session: Session | None = None,
         on_session: Callable[[Session], None] | None = None,
+        on_user_message: Callable[[str], None] | None = None,
         on_event: Callable[[str], None] | None = None,
         on_delta: Callable[[str], None] | None = None,
+        on_thinking: Callable[[ThinkingUpdate], None] | None = None,
+        on_tool: Callable[[bool], None] | None = None,
         on_progress: Callable[[str], None] | None = None,
         cancel: Event | None = None,
     ) -> AgentReply:
@@ -160,29 +183,47 @@ class AgentRuntime:
         text = redact_secrets(text.strip())
         if not text:
             raise ValueError("消息为空。")
-        if session is None:
-            session = self.ensure_session()
-        if on_session is not None:
-            on_session(session)
-        self._active_ask = session
+        with self.service.write_lock:
+            if session is None:
+                session = self.ensure_session()
+            self._active_ask = session
         try:
-            return self._run_ask(session, text, on_event, on_delta, on_progress, cancel)
+            if on_session is not None:
+                on_session(session)
+            return self._run_ask(
+                session,
+                text,
+                on_event,
+                on_delta,
+                on_progress,
+                cancel,
+                on_user_message,
+                on_thinking,
+                on_tool,
+            )
         except GenerationCancelled as exc:
             partial = getattr(exc, "partial_content", "")
-            self._append_assistant(session, AssistantTurn(
-                content=partial + "\n\n*(generation stopped by user)*",
-            ))
+            self._append_assistant(
+                session,
+                AssistantTurn(
+                    content=partial + "\n\n*(generation stopped by user)*",
+                    reasoning_content=getattr(exc, "partial_reasoning", ""),
+                ),
+                on_thinking,
+                interrupted=True,
+            )
             raise
         finally:
-            self._active_ask = None
-            deferred = self._deferred_close
-            self._deferred_close = None
-            if deferred is session:
-                # 切走/新建时该会话仍在生成：关闭标记延迟到此刻补打，
-                # 保证排在最后的 assistant 记录之后；沉淀由启动补记兜底。
-                if session.user_texts_after_distilled():
-                    self.sessions.append(session, {"type": "distill_deferred"})
-                self.sessions.append(session, {"type": "closed"})
+            with self.service.write_lock:
+                self._active_ask = None
+                deferred = self._deferred_close
+                self._deferred_close = None
+                if deferred is session:
+                    # 切走/新建时该会话仍在生成：关闭标记延迟到此刻补打，
+                    # 保证排在最后的 assistant 记录之后；沉淀由启动补记兜底。
+                    if session.user_texts_after_distilled():
+                        self.sessions.append(session, {"type": "distill_deferred"})
+                    self.sessions.append(session, {"type": "closed"})
 
     def _run_ask(
         self,
@@ -192,7 +233,13 @@ class AgentRuntime:
         on_delta: Callable[[str], None] | None,
         on_progress: Callable[[str], None] | None,
         cancel: Event | None,
+        on_user_message: Callable[[str], None] | None = None,
+        on_thinking: Callable[[ThinkingUpdate], None] | None = None,
+        on_tool: Callable[[bool], None] | None = None,
     ) -> AgentReply:
+        # Settings can change while this turn waits on a model or tool.
+        model = self.model
+
         def progress(phase: str) -> None:
             if cancel is not None and cancel.is_set():
                 raise GenerationCancelled("Stopped by user")
@@ -206,6 +253,9 @@ class AgentRuntime:
             session,
             {"type": "message", "id": message_id, "role": "user", "content": text},
         )
+        if on_user_message is not None:
+            # 立即上报本条用户消息 ID；生成期间 /undo 用它精确撤销当前回合。
+            on_user_message(message_id)
 
         progress("Preparing context")
         memory_context = self._auto_recall(session, text)
@@ -248,12 +298,38 @@ class AgentRuntime:
         final = ""
         completed = False
 
+        def request_model(schemas: list[dict]) -> AssistantTurn:
+            try:
+                return self._chat_with_retry(
+                    model,
+                    messages,
+                    schemas,
+                    on_delta=on_delta,
+                    cancel=cancel,
+                    on_thinking=on_thinking,
+                )
+            except GenerationCancelled:
+                raise
+            except ChatModelError as exc:
+                if reasoning := getattr(exc, "partial_reasoning", ""):
+                    self._append_assistant(
+                        session,
+                        AssistantTurn(
+                            content=getattr(exc, "partial_content", "")
+                            + "\n\n*(generation interrupted)*",
+                            reasoning_content=reasoning,
+                        ),
+                        on_thinking,
+                        interrupted=True,
+                    )
+                raise
+
         while steps < self.config.max_tool_steps:
             progress("Waiting for model")
-            turn = self._chat_with_retry(messages, tools.schemas(), on_delta=on_delta, cancel=cancel)
+            turn = request_model(tools.schemas())
             usage.add(turn.usage)
             steps += 1
-            record = self._append_assistant(session, turn)
+            record = self._append_assistant(session, turn, on_thinking)
             messages.append(self._message_from_record(record))
             if not turn.tool_calls:
                 final = turn.content
@@ -283,6 +359,8 @@ class AgentRuntime:
                 messages.append(
                     {"role": "tool", "tool_call_id": call.id, "content": content}
                 )
+                if on_tool is not None:
+                    on_tool(outcome.ok)
                 emit(outcome.display)
             # 工具结果预算随上下文窗口走；200K 窗口下 8K 会过早丢证据。
             compact_tool_outputs(messages, max_tokens=max(8000, self.config.context_window // 4))
@@ -295,10 +373,10 @@ class AgentRuntime:
                     "content": "已达到工具调用上限。请基于以上信息直接给出最终回答，不要再调用工具。",
                 }
             )
-            turn = self._chat_with_retry(messages, [], on_delta=on_delta, cancel=cancel)
+            turn = request_model([])
             usage.add(turn.usage)
             steps += 1
-            record = self._append_assistant(session, turn)
+            record = self._append_assistant(session, turn, on_thinking)
             final = turn.content or "(no answer generated)"
             emit("Tool-step limit reached; forced wrap-up")
 
@@ -350,7 +428,9 @@ class AgentRuntime:
                 self.sessions.append(session, {"type": "distill_deferred"})
             self.sessions.append(session, {"type": "closed"})
             return stats
-        if self.config.extract_on_exit and user_texts:
+        if self.config.extract_on_exit and user_texts and self._catchup_session == session.id:
+            self.sessions.append(session, {"type": "distill_deferred"})
+        elif self.config.extract_on_exit and user_texts:
             joined = "\n---\n".join(user_texts)
             try:
                 # 分块抽完再推进游标；直接截断会把最旧的内容永久跳过。
@@ -378,55 +458,91 @@ class AgentRuntime:
         self.sessions.append(session, {"type": "closed"})
         return stats
 
-    def consolidate_pending(self, limit: int = 3, min_new_messages: int = 1) -> dict:
-        """补沉淀：抽取异常终止、退出抽取失败或切换时延后的会话。
+    def stop_catchup(self) -> None:
+        self._catchup_stopped.set()
+        with self._catchup_lock:
+            pass
 
-        游标之后新用户消息不足 min_new_messages 的会话跳过（标记保留，零成本
-        攒批），避免频繁切换触发大量小抽取。当前活跃会话不参与。
-        """
+    def consolidate_pending(
+        self, limit: int = 3, min_new_messages: int = 1, stop: Event | None = None
+    ) -> dict:
+        """Extract inactive sessions without holding the Vault lock during model calls."""
         result = {"scanned": 0, "consolidated": 0, "admitted": 0, "queued": 0, "errors": []}
-        if not self.config.extract_on_exit:
+        stop = stop if stop is not None else self._catchup_stopped
+        if not self.config.extract_on_exit or not self._catchup_lock.acquire(blocking=False):
             return result
-        exclude = self.session.id if self.session is not None else None
-        for session in self.sessions.unconsolidated(
-            limit, exclude=exclude, min_new_messages=min_new_messages
-        ):
-            if self.session is not None and session.id == self.session.id:
-                # 后台补记期间用户可能切进这个会话；活跃会话不在后台追加记录。
-                continue
-            result["scanned"] += 1
-            texts = session.user_texts_after_distilled()
-            if not texts:
-                # 空会话没有可抽取内容，直接标记收尾，避免每次启动都重复扫描。
-                self.sessions.append(session, {"type": "consolidated"})
-                continue
-            if len(texts) < min_new_messages:
-                continue
-            if texts:
-                joined = "\n---\n".join(texts)
-                try:
-                    for chunk in split_chunks(joined, max_chars=DISTILL_MAX_CHARS):
-                        extracted = self.service.memorize(
-                            chunk,
-                            source=f"session:{session.id}:catchup",
-                            session_id=session.id,
-                            message_id=session.last_user_message_id(),
-                        )
-                        result["admitted"] += len(extracted.admitted)
-                        result["queued"] += len(extracted.queued)
-                except Exception as exc:
-                    result["errors"].append(f"{session.id}: {exc}")
-                    self.sessions.append(
-                        session, {"type": "extraction_error", "error": str(exc)[:200]}
-                    )
-                    continue
-                self.sessions.append(
-                    session,
-                    {"type": "distilled", "up_to": session.last_user_message_id()},
-                )
-            self.sessions.append(session, {"type": "consolidated"})
-            result["consolidated"] += 1
+        try:
+            if stop.is_set():
+                return result
+            current = self.session
+            for session in self.sessions.unconsolidated(
+                limit, exclude=current.id if current else None, min_new_messages=min_new_messages
+            ):
+                if stop.is_set():
+                    break
+                self._consolidate_session(session.id, min_new_messages, stop, result)
+        finally:
+            self._catchup_lock.release()
         return result
+
+    def _session_in_use(self, session_id: str) -> bool:
+        return any(
+            session is not None and session.id == session_id
+            for session in (self.session, self._active_ask)
+        )
+
+    def _consolidate_session(
+        self, session_id: str, minimum: int, stop: Event, result: dict
+    ) -> None:
+        with self.service.write_lock:
+            if self._session_in_use(session_id) or not self.sessions.exists(session_id):
+                return
+            session = self.sessions.load(session_id, include_reasoning=False)
+            texts = session.user_texts_after_distilled()
+            if len(texts) < max(1, minimum):
+                return
+            cursor = session.last_user_message_id()
+            signature = self.sessions.revision(session.path)
+            self._catchup_session = session_id
+        result["scanned"] += 1
+        try:
+            batches = []
+            for chunk in split_chunks("\n---\n".join(texts), max_chars=DISTILL_MAX_CHARS):
+                if stop.is_set():
+                    return
+                batches.append(self.service.extract_candidates(chunk))
+            with self.service.write_lock:
+                if stop.is_set() or self._session_in_use(session_id):
+                    return
+                if not session.path.exists() or self.sessions.revision(session.path) != signature:
+                    return
+                for candidates in batches:
+                    extracted = self.service.adjudicate_extracted(
+                        candidates,
+                        source=f"session:{session_id}:catchup",
+                        session_id=session_id,
+                        message_id=cursor,
+                    )
+                    result["admitted"] += len(extracted.admitted)
+                    result["queued"] += len(extracted.queued)
+                self.sessions.append(session, {"type": "distilled", "up_to": cursor})
+                self.sessions.append(session, {"type": "consolidated"})
+                result["consolidated"] += 1
+        except Exception as exc:
+            result["errors"].append(f"{session_id}: {exc}")
+            with self.service.write_lock:
+                if (
+                    not stop.is_set()
+                    and not self._session_in_use(session_id)
+                    and session.path.exists()
+                ):
+                    if self.sessions.revision(session.path) == signature:
+                        self.sessions.append(
+                            session, {"type": "extraction_error", "error": str(exc)[:200]}
+                        )
+        finally:
+            with self.service.write_lock:
+                self._catchup_session = None
 
     def status(self) -> dict:
         session = self.current
@@ -459,26 +575,50 @@ class AgentRuntime:
     def rename(self, title: str) -> None:
         self.sessions.rename(self.current, title)
 
-    def undo(self) -> str | None:
-        target = next(
-            (
-                record
-                for record in reversed(self.current.active_records())
-                if record.get("type") == "message" and record.get("role") == "user"
-            ),
-            None,
-        )
+    def undo(
+        self,
+        session: Session | None = None,
+        message_id: str | None = None,
+    ) -> str | None:
+        """撤销指定会话的一轮用户消息；默认当前会话最后一条用户消息。
+
+        传入 message_id 时只撤销该条，避免生成期间切换会话后误伤其他回合。
+        """
+        target_session = session or self.current
+        records = target_session.active_records()
+        if message_id:
+            target = next(
+                (
+                    record
+                    for record in records
+                    if record.get("id") == message_id
+                    and record.get("type") == "message"
+                    and record.get("role") == "user"
+                ),
+                None,
+            )
+        else:
+            target = next(
+                (
+                    record
+                    for record in reversed(records)
+                    if record.get("type") == "message" and record.get("role") == "user"
+                ),
+                None,
+            )
         if target is None:
             return None
         self.sessions.append(
-            self.current,
+            target_session,
             {
                 "type": "undo",
                 "id": new_message_id(),
                 "message_id": target["id"],
             },
         )
-        self.last_plan = None
+        if self.session is not None and target_session.id == self.session.id:
+            self.last_plan = None
+            self.last_plan_session = None
         return str(target.get("content") or "")
 
     def _system_prompt(self) -> str:
@@ -518,19 +658,37 @@ class AgentRuntime:
                 totals[key] += len(getattr(result, key))
         return totals
 
-    def _append_assistant(self, session: Session, turn: AssistantTurn) -> dict:
-        return self.sessions.append(
-            session,
-            {
-                "type": "assistant",
-                "id": new_message_id(),
-                "content": turn.content,
-                "tool_calls": [
-                    {"id": call.id, "name": call.name, "arguments": call.arguments}
-                    for call in turn.tool_calls
-                ],
-            },
-        )
+    def _append_assistant(
+        self,
+        session: Session,
+        turn: AssistantTurn,
+        on_thinking: Callable[[ThinkingUpdate], None] | None = None,
+        *,
+        interrupted: bool = False,
+    ) -> dict:
+        record = {
+            "type": "assistant",
+            "id": new_message_id(),
+            "content": turn.content,
+            "tool_calls": [
+                {"id": call.id, "name": call.name, "arguments": call.arguments}
+                for call in turn.tool_calls
+            ],
+        }
+        if interrupted:
+            record["interrupted"] = True
+        if turn.reasoning_content or turn.reasoning_fragments:
+            record["reasoning"] = {
+                "text": turn.reasoning_content,
+                "fragments": turn.reasoning_fragments,
+                "source": turn.reasoning_source,
+                "seconds": turn.reasoning_seconds,
+            }
+        saved = self.sessions.append(session, record)
+        if on_thinking is not None and turn.reasoning_content:
+            reasoning = saved["reasoning"]
+            on_thinking(ThinkingUpdate(reasoning["text"], saved["id"], reasoning["seconds"]))
+        return saved
 
     @staticmethod
     def _message_from_record(record: dict) -> dict:
@@ -540,38 +698,61 @@ class AgentRuntime:
 
     def _chat_with_retry(
         self,
+        model: ChatModel,
         messages: list[dict],
         tools: list[dict],
         on_delta: Callable[[str], None] | None = None,
         cancel: Event | None = None,
+        on_thinking: Callable[[ThinkingUpdate], None] | None = None,
     ) -> AssistantTurn:
-        if on_delta is not None:
+        native_adapter = isinstance(model, LiteLLMChatModel)
+        if not native_adapter and any("reasoning_source" in message for message in messages):
+            messages = [
+                {
+                    key: value
+                    for key, value in message.items()
+                    if key not in {"reasoning_source", "reasoning_content"}
+                }
+                for message in messages
+            ]
+        if on_delta is not None or on_thinking is not None:
             # 流式不做循环级重试：中断重发会让界面收到重复 delta。
             parts: list[str] = []
+            thoughts: list[str] = []
 
             def delta(text: str) -> None:
                 if cancel is not None and cancel.is_set():
                     raise GenerationCancelled("Stopped by user")
                 parts.append(text)
-                on_delta(text)
+                if on_delta is not None:
+                    on_delta(text)
+
+            def reasoning(text: str) -> None:
+                if cancel is not None and cancel.is_set():
+                    raise GenerationCancelled("Stopped by user")
+                thoughts.append(text)
+                if on_thinking is not None:
+                    on_thinking(ThinkingUpdate(text))
 
             try:
-                kwargs = {"cancel": cancel} if isinstance(self.model, LiteLLMChatModel) else {}
-                turn = self.model.chat(messages, tools, on_delta=delta, **kwargs)
+                kwargs = {"cancel": cancel, "on_reasoning": reasoning} if native_adapter else {}
+                turn = model.chat(messages, tools, on_delta=delta, **kwargs)
                 if cancel is not None and cancel.is_set():
                     raise GenerationCancelled("Stopped by user")
                 return turn
-            except GenerationCancelled as exc:
+            except ChatModelError as exc:
                 exc.partial_content = "".join(parts)
-                raise
-            except ChatModelError:
+                exc.partial_reasoning = "".join(thoughts)
                 raise
             except Exception as exc:
-                raise ChatModelError(f"LLM call failed: {exc}") from exc
+                error = ChatModelError(f"LLM call failed: {exc}")
+                error.partial_content = "".join(parts)
+                error.partial_reasoning = "".join(thoughts)
+                raise error from exc
         last_error: Exception | None = None
         for attempt in range(3):
             try:
-                return self.model.chat(messages, tools)
+                return model.chat(messages, tools)
             except ChatModelError:
                 raise
             except Exception as exc:

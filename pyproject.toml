@@ -18,10 +18,12 @@ classifiers = [
 
 dependencies = [
     "fastmcp>=2.12",
+    "fastapi>=0.115",
     "httpx>=0.27",
     "jieba>=0.42",
     "keyring>=25.5",
     "litellm>=1.60",
+    "markdown-it-py>=3.0",
     "numpy>=1.26",
     "openai>=1.60",
     "prompt-toolkit>=3.0",
@@ -33,6 +35,7 @@ dependencies = [
     "tenacity>=8.2",
     "textual>=8.2.8",
     "tiktoken>=0.8",
+    "uvicorn>=0.30",
     "typer>=0.15",
 ]
 
@@ -62,13 +65,17 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/syvrio"]
+artifacts = ["src/syvrio/app/web/static/**"]
 
 [tool.hatch.build.targets.sdist]
 # Only distributable project content; local one-off scripts must never ship.
 include = [
-    "/src", "/tests", "/evals", "/docs", "/README.md", "/README.en.md",
+    "/src", "/tests", "/evals", "/docs", "/web", "/README.md", "/README.en.md",
     "/LICENSE", "/AGENTS.md", "/config.example.toml", "/pyproject.toml", "/uv.lock",
 ]
+
+[tool.hatch.build.targets.sdist.force-include]
+"src/syvrio/app/web/static" = "src/syvrio/app/web/static"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -82,4 +89,12 @@ markers = [
     "config: 配置与供应商测试",
     "mcp: MCP 服务接口测试",
     "search: 联网搜索与抓取测试",
+    "web: Web transport and application tests",
 ]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "B"]

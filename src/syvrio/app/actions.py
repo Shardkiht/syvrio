@@ -22,6 +22,7 @@ def model_options(
 ) -> list[ModelOption]:
     """枚举可选模型；fetched 是当前供应商的缓存/线上列表，空时退回预设模型。"""
     from dataclasses import replace
+
     from ..infra.providers import PRESETS, display_model, has_api_key, provider_label
 
     current = service.config.llm
@@ -167,7 +168,8 @@ def apply_model(
 ) -> str:
     """切换模型并落盘热更新；未配置 Key 等情况不生效，返回提示消息。"""
     from dataclasses import replace
-    from ..infra.providers import PRESETS, has_api_key, write_config
+
+    from ..infra.providers import PRESETS, write_config
 
     current = service.config.llm
     preset = next((item for item in PRESETS if item.key == provider), None)

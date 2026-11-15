@@ -5,8 +5,6 @@ import json
 
 import pytest
 
-pytestmark = pytest.mark.search
-
 from syvrio.infra.config import FetchConfig, SearchConfig, UsageLimit
 from syvrio.infra.search.base import (
     FetchResult,
@@ -19,7 +17,7 @@ from syvrio.infra.search.fetch_router import FetchRouter, build_fetch_router
 from syvrio.infra.search.router import SearchRouter
 from syvrio.infra.search.usage import UsageLimiter
 
-
+pytestmark = pytest.mark.search
 class _SearchProvider:
     def __init__(self, name: str, results=None, error: Exception | None = None):
         self.name = name
@@ -263,8 +261,8 @@ def test_legacy_fetch_keeps_usage_protection():
 
 @pytest.mark.parametrize("name", ["exa", "tavily"])
 def test_normal_agent_fetch_uses_independent_config(service, monkeypatch, name):
-    from syvrio.agent.tools import build_tools
     from syvrio.agent.session import SessionStore
+    from syvrio.agent.tools import build_tools
     from syvrio.infra import config as config_module
     from syvrio.infra.search import fetch_router as module
     provider = _FetchProvider(name)
@@ -368,11 +366,10 @@ def test_pause_restart_expiry_and_manual_resume(tmp_path):
 
 
 def test_build_tools_official_pause_shared_across_search_fetch(service, monkeypatch):
-    from syvrio.agent.tools import build_tools
     from syvrio.agent.session import SessionStore
-    from syvrio.infra import config as config_module
-    from syvrio.infra.search import router as search_module, fetch_router as fetch_module
-    from syvrio.infra.search.base import FetchQuery
+    from syvrio.agent.tools import build_tools
+    from syvrio.infra.search import fetch_router as fetch_module
+    from syvrio.infra.search import router as search_module
     search = _SearchProvider("exa", error=ProviderError("exa", "quota", "NO_MORE_CREDITS",
                             code="NO_MORE_CREDITS", pause_reason="NO_MORE_CREDITS"))
     fallback = _SearchProvider("fallback", [SearchResult("Synthetic entity", "https://example.com", "")])

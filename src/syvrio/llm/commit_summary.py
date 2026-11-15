@@ -5,7 +5,6 @@ import re
 from ..infra.config import LLMConfig
 from .client import complete
 
-
 SUMMARY_PROMPT = """你是个人记忆库的提交总结器。根据 git diff 生成给本人审阅的中文摘要。
 
 要求：

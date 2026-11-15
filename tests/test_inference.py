@@ -9,8 +9,6 @@ from pydantic import ValidationError
 from syvrio.memory.service import MemoryService
 
 pytestmark = pytest.mark.memory
-
-
 def test_inference_is_separate_from_facts_and_recall(service):
     source = service.note("喜欢在安静环境阅读", topic="preferences")
     before = service.store.topic_path("preferences").read_bytes()

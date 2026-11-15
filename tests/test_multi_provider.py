@@ -9,22 +9,17 @@ from pathlib import Path
 
 import pytest
 
-pytestmark = pytest.mark.search
-
 from syvrio.infra.config import Config, FetchConfig, LLMConfig, SearchConfig
 from syvrio.infra.search.base import (
     FetchResult,
-    ProviderError,
-    ProviderErrorKind,
-    SearchQuery,
     SearchResult,
 )
 from syvrio.infra.search.fetch_router import (
-    _EXTERNAL_FETCH_PROVIDERS,
     build_fetch_registry,
 )
 from syvrio.infra.search.router import _EXTERNAL_PROVIDERS, build_registry
 
+pytestmark = pytest.mark.search
 KEY = "test-key-placeholder"
 
 _SEARCH_EXTERNALS = {"baidu_search", "tavily", "exa", "you", "volcengine"}
@@ -32,7 +27,6 @@ _FETCH_EXTERNALS = {"tavily", "exa", "you", "volcengine"}
 
 
 def _install_keys_and_empty_keyring(monkeypatch):
-    import os
 
     fake = types.ModuleType("keyring")
     fake.get_password = lambda service, name: None

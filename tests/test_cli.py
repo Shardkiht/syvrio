@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-import pytest
 import sys
 
-pytestmark = pytest.mark.cli
-
+import pytest
 from typer.testing import CliRunner
 
 from syvrio.app.cli import app
 
+pytestmark = pytest.mark.cli
 runner = CliRunner()
 
 
@@ -218,12 +217,12 @@ def test_import_dry_run_then_apply(tmp_path, monkeypatch, suffix):
     assert result.exit_code == 0, result.output
     assert "dry-run" in result.output
     assert "直写 1" in result.output
-    assert not (vault / "memories" / "preferences.md").exists()
+    assert not (vault / "memories" / "general" / "preferences.md").exists()
 
     result = invoke(["import", str(source), "--apply", "--config", str(config)])
     assert result.exit_code == 0, result.output
     assert "已写入" in result.output
-    assert (vault / "memories" / "preferences.md").exists()
+    assert (vault / "memories" / "general" / "preferences.md").exists()
 
 
 def test_cli_correct_and_forget(tmp_path):
@@ -283,3 +282,44 @@ def test_cli_help_with_western_pipe_encoding():
     assert result.returncode == 0, result.stderr.decode("utf-8", errors="replace")
     assert "Usage:" in result.stdout.decode("utf-8")
     assert "记忆" in result.stdout.decode("utf-8")
+
+
+def test_tui_holds_client_lock_until_runtime_closes(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from syvrio.app import tui
+    from syvrio.infra.config import LLMConfig
+    from syvrio.infra.locking import client_instance_lock
+    from syvrio.infra.paths import SyvrioPaths
+
+    paths = SyvrioPaths(tmp_path / "vault", tmp_path / "runtime")
+    lock = client_instance_lock(paths)
+    service = SimpleNamespace(
+        paths=paths,
+        config=SimpleNamespace(vault=tmp_path / "vault", llm=LLMConfig(provider="ollama")),
+        init_vault=Mock(),
+    )
+    calls = []
+
+    def record(stage):
+        assert lock.locked
+        calls.append(stage)
+
+    runtime = SimpleNamespace(
+        start=lambda: record("start"),
+        stop_catchup=lambda: record("stop_catchup"),
+        close=lambda: record("close") or {},
+    )
+
+    def run():
+        record("run")
+        raise RuntimeError("synthetic TUI failure")
+
+    monkeypatch.setattr(tui, "AgentRuntime", lambda *_: runtime)
+    monkeypatch.setattr(tui, "ChatApp", lambda *_: SimpleNamespace(run=run))
+    monkeypatch.setattr(tui, "_print_exit_stats", lambda *_: None)
+    with pytest.raises(RuntimeError, match="synthetic TUI failure"):
+        tui.run_chat(service)
+    assert calls == ["start", "run", "stop_catchup", "close"]
+    assert not lock.locked

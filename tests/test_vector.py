@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-import pytest
-
-pytestmark = pytest.mark.retrieval
-
 import numpy as np
+import pytest
 
 from syvrio.infra.config import Config, EmbeddingConfig, RetrievalConfig
 from syvrio.memory import service as service_module
@@ -17,6 +14,7 @@ from syvrio.retrieval import (
 )
 
 # 同义词组：组内任一词命中即贡献该维度方向，模拟语义相近。
+pytestmark = pytest.mark.retrieval
 GROUPS = {
     "housing": ["房", "住", "租"],
     "coffee": ["咖啡", "清淡", "茶"],
@@ -65,7 +63,7 @@ def test_vector_search_finds_paraphrase(tmp_path):
 
     hits = retriever.search("住的地方", limit=3)
 
-    assert hits and hits[0].topic == "housing"
+    assert hits and hits[0].topic == "memories/general/housing.md"
 
 
 def test_incremental_sync_embeds_only_new_entries(tmp_path):
@@ -137,7 +135,7 @@ def test_sync_retries_after_embedding_failure(tmp_path):
     # 冷却到期后即使记忆文件没变也要重新同步，而不是一直返回空。
     clock.now += RETRY_COOLDOWN_SECONDS
     hits = retriever.search("房子", 3)
-    assert hits and hits[0].topic == "housing"
+    assert hits and hits[0].topic == "memories/general/housing.md"
     assert retriever.degraded is False
 
 
@@ -211,7 +209,7 @@ def test_hybrid_falls_back_to_keyword_when_vector_fails(tmp_path):
 
     hits = hybrid.search("咖啡", limit=3)
 
-    assert hits and hits[0].topic == "preferences"
+    assert hits and hits[0].topic == "memories/general/preferences.md"
 
 
 def test_build_retriever_falls_back_without_fastembed(tmp_path, monkeypatch):
@@ -259,17 +257,20 @@ def test_build_retriever_api_backend(tmp_path, monkeypatch):
     assert mode == "hybrid-fallback-keyword"
 
 
-def test_init_vault_gitignores_vector_cache(tmp_path):
+def test_init_vault_keeps_vector_cache_outside_vault(tmp_path):
     from syvrio.memory.service import MemoryService
 
     config = Config(vault=tmp_path / "vault", retrieval=RetrievalConfig(method="keyword"))
     service = MemoryService(config)
     service.init_vault()
 
-    assert "vectors.npz" in (tmp_path / "vault" / ".gitignore").read_text(encoding="utf-8")
+    # Runtime 与 Vault 分离：向量缓存落 Runtime 索引目录，Vault 内无 .syvrio，
+    # gitignore 也不再需要派生缓存条目。
+    assert "vectors.npz" not in (tmp_path / "vault" / ".gitignore").read_text(encoding="utf-8")
+    assert not (tmp_path / "vault" / ".syvrio").exists()
 
 
-def test_init_vault_appends_gitignore_after_missing_newline(tmp_path):
+def test_init_vault_preserves_existing_gitignore(tmp_path):
     from syvrio.memory.service import MemoryService
 
     config = Config(vault=tmp_path / "vault", retrieval=RetrievalConfig(method="keyword"))
@@ -279,9 +280,8 @@ def test_init_vault_appends_gitignore_after_missing_newline(tmp_path):
 
     service.init_vault()
 
-    lines = (tmp_path / "vault" / ".gitignore").read_text(encoding="utf-8").splitlines()
-    assert "*.log" in lines
-    assert ".syvrio/vectors.npz" in lines
+    # 用户已有 .gitignore 时原样保留，不追加、不改写。
+    assert (tmp_path / "vault" / ".gitignore").read_text(encoding="utf-8") == "*.log"
 
 
 def test_sync_dedupes_duplicate_entry_ids(tmp_path):

@@ -2,16 +2,14 @@ from __future__ import annotations
 
 import pytest
 
-pytestmark = pytest.mark.memory
-
 from syvrio.memory.models import PendingItem
 from syvrio.memory.queue import PendingQueue
 
-
+pytestmark = pytest.mark.memory
 def make_item(item_id: str = "p-1") -> PendingItem:
     return PendingItem(
         id=item_id,
-        created_at="2026-10-22T12:00:00",
+        created_at="2026-10-22T12:00:00+00:00",
         source="chat",
         text="候选事实",
         topic="preferences",
@@ -37,7 +35,7 @@ def test_resolve_removes_and_logs(tmp_path):
 
     assert resolved.id == "p-1"
     assert [item.id for item in queue.all()] == ["p-2"]
-    log = (tmp_path / ".syvrio" / "resolved.jsonl").read_text(encoding="utf-8")
+    log = queue.resolved_path.read_text(encoding="utf-8")
     assert '"status": "approved"' in log
     assert "p-1" in log
 

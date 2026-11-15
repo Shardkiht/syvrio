@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from pathlib import Path
 import re
-
+from pathlib import Path
 
 TEXT_SUFFIXES = frozenset({".md", ".markdown", ".txt", ".text", ".log", ".json", ".jsonl", ".ndjson", ".csv", ".tsv", ".yaml", ".yml", ".xml"})
 DOCUMENT_SUFFIXES = frozenset({".pdf", ".docx", ".xlsx", ".xls", ".pptx", ".html", ".htm", ".epub", ".msg", ".ipynb"})

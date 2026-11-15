@@ -1,21 +1,20 @@
 from __future__ import annotations
 
 import pytest
+from rich.cells import cell_len
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.text import Text
-from rich.cells import cell_len
 from textual.app import App, ComposeResult
 from textual.containers import VerticalScroll
 from textual.selection import SELECT_ALL
 from textual.widgets import Static
 
-from syvrio.app.chat_widgets import ChatReply, TranscriptView, _ReplyMarkdown
-from syvrio.app.chat_theme import MARKDOWN_THEME
 from syvrio.agent.session import SessionStore
+from syvrio.app.chat_theme import MARKDOWN_THEME
+from syvrio.app.chat_widgets import ChatReply, _ReplyMarkdown
 
 pytestmark = pytest.mark.ui
-
 SAMPLE = '''# 一级标题
 这个项目是**"架构轻量但功能完整"**的设计思路，*italic* 和 `inline_code`。
 

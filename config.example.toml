@@ -1,9 +1,11 @@
-# Syvrio configuration example (legacy Vault paths remain compatible)
-# 默认读取顺序：$SYVRIO_CONFIG → ./syvrio.toml → ~/.config/syvrio/config.toml
+# Syvrio configuration example
+# 默认读取顺序：$SYVRIO_CONFIG → ./syvrio.toml → ~/.config/syvrio/syvrio.toml
 
 # 记忆库位置（Markdown + Git）。此处配置的 vault 优先；未配置时用 SYVRIO_VAULT，
 # 再缺省 ~/.syvrio/vault；命令行 --vault 可临时覆盖。
 vault = "~/.syvrio/vault"
+# Runtime 与 Vault 分离，不进入 Git；SYVRIO_RUNTIME 可覆盖。
+runtime = "~/.syvrio/runtime"
 
 # 低于该置信度的候选不直接写入，进入待确认队列。
 confidence_threshold = 0.8
@@ -20,6 +22,9 @@ model = "deepseek-flash"
 api_key_env = "DEEPSEEK_API_KEY"
 # 支持该参数的模型可选 low / medium / high；留空表示默认
 reasoning_effort = ""
+spark_thinking = ""
+provider_urls = {}
+recent_models = []
 temperature = 0.1
 timeout = 60.0
 
@@ -53,7 +58,7 @@ model = "BAAI/bge-small-zh-v1.5"
 [search]
 # 联网搜索开关；关闭时不注册 search 工具，行为与旧版本一致。
 enabled = true
-# 按顺序尝试的 provider；当前只支持 open_websearch。
+# 按顺序尝试的 provider：open_websearch / baidu_search / tavily / exa / you / volcengine。
 providers = ["open_websearch"]
 # 本地 open-websearch daemon 地址。
 base_url = "http://127.0.0.1:3000"

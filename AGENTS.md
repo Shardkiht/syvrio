@@ -8,7 +8,7 @@ README 必须与当前代码架构保持一致；目录结构、依赖方向、C
 
 ## 命名规范
 
-正式品牌、Python 包、CLI、MCP Server、Keyring 服务名与缓存/日志前缀统一为 `syvrio`；不保留旧品牌别名或兼容入口。配置文件为 `syvrio.toml`，用户配置目录为 `~/.config/syvrio/`（Windows 为 `%APPDATA%\syvrio\`），默认数据目录与 Vault 为 `~/.syvrio/vault/`，Vault 元数据目录为 `.syvrio/`，环境变量统一使用 `SYVRIO_` 前缀。PyPI 发布必须由用户明确操作。
+正式品牌、Python 包、CLI、MCP Server、Keyring 服务名与缓存/日志前缀统一为 `syvrio`；不保留旧品牌别名或兼容入口。配置文件为 `syvrio.toml`，用户配置目录为 `~/.config/syvrio/`（Windows 为 `%APPDATA%\syvrio\`），默认 Vault 为 `~/.syvrio/vault/`，默认 Runtime 为 `~/.syvrio/runtime/`，环境变量统一使用 `SYVRIO_` 前缀。PyPI 发布必须由用户明确操作。
 
 ## 快速命令
 
@@ -34,11 +34,12 @@ Python 3.12+、uv、hatchling、Typer、FastMCP、LiteLLM、Pydantic v2、pytest
 ## 分层
 
 ```text
-app → agent → memory → retrieval → infra
+app → application → agent → memory → retrieval → infra
 memory/agent → llm → infra
 ```
 
-- `app/`：Typer CLI、TUI、FastMCP 入口，只做参数解析和界面编排。
+- `app/`：Typer CLI、Textual TUI、Web、FastMCP 入口，只做参数解析和界面编排。
+- `application/`：CLI、TUI、Web 共用的会话、命令、记忆和设置用例。
 - `agent/`：Agent 循环、上下文压缩、工具注册、会话记录。
 - `memory/`：抽取、裁决、存储、队列、审计。
 - `retrieval/`：检索接口与实现，`Retriever` 是替换点。
@@ -47,7 +48,7 @@ memory/agent → llm → infra
 
 新增代码不要制造新的反向依赖或循环依赖；跨模块使用相对导入。
 现有 `retrieval` 只读 `memory` 的 `models`、`store`、`detect` 获取条目与字面覆盖，这是已知例外；新增检索实现不要反向依赖 memory 的写入逻辑。
-`infra/search/` 包含 SearchQuery/SearchResult/Provider 契约、open-websearch adapter、registry/router/cache；上层只依赖 router，供应商字段映射只放在 adapter，HTTP 直接用 httpx，不引入 LangChain/LlamaIndex。
+`infra/search/` 包含 SearchQuery/SearchResult/Provider 契约、provider adapters、registry/router/cache；上层只依赖 router，供应商字段映射只放在 adapter，HTTP 直接用 httpx，不引入 LangChain/LlamaIndex。
 
 ## 代码风格
 
@@ -60,21 +61,21 @@ memory/agent → llm → infra
 
 ## 记忆与存储不变量
 
-- `memories/<topic>.md` 是长期记忆的唯一事实来源。
-- 文件头 front matter 只存文件级元数据：`topic`、`title`、`created`、`updated`。
-- 条目是 Markdown bullet 行加行尾反引号标签；条目 ID 必须稳定。
-- 标签值含反引号、换行或转义前缀本身时，以 `~syvrio-escaped~` 加百分号编码写入，读取时还原；普通值不变。
-- 更正采用“新条目 + `supersedes`”，旧条目置为 `superseded`；删除是软删除 `deleted`，不物理移除。
-- 待确认候选写 `.syvrio/pending.jsonl`，处理结果追加到 `resolved.jsonl`；更正、删除等操作写 `audit.jsonl`。
-- 可选事实上下文以行尾 `context` JSON 标签保存；日期精度由 YYYY / YYYY-MM / YYYY-MM-DD 保留，不以写入时间补猜事实时间。改写后确认与手动更正不继承旧上下文。
-- 推断单独追加到 `.syvrio/inferences.jsonl`，不参与事实检索；新假设只接受有效事实来源 ID，来源去重，重复证据不提升可信度。
-- `.syvrio/vectors.npz` 是向量检索的派生缓存（含 `model_id`，换模型自动失效），vault 内 gitignore，可删除重建，不进 Git 历史。
-- `.syvrio/search-cache.json` 是联网搜索的派生缓存（按 TTL 过期），vault 内 gitignore，可删除重建，不进 Git 历史。
-- `sessions/<id>.jsonl` 是追加写的事件流，不重写旧行；上下文压缩只追加 `summary` 记录，不删除原文。
+- `memories/<category>/<topic>.md` 是长期记忆的唯一事实来源，category 可以嵌套；同名 topic 用 Vault 相对路径区分。
+- 每个顶层 Markdown 无序列表项是一条独立记录，正文后依次是 `**Core**`、可选 `**Context**` 和 `**Extensions**` 段；不使用 front matter 或内嵌 JSON 元数据。
+- Core 只有 `id`、`status`、`source`、`confidence` 四个字段。ID 必须全局唯一且稳定，状态为 `active`、`superseded` 或 `deleted`；可选字段使用 snake_case，可用点分命名空间、重复字段和嵌套组。
+- 标量使用行内代码跨度；值含反引号、换行或转义前缀本身时，以 `~syvrio-escaped~` 加百分号编码写入，读取时还原。
+- 更正采用“新条目 + `syvrio.supersedes`”，旧条目置为 `superseded`；删除是软删除 `deleted`，不物理移除。状态编辑保留无关记录字节和原有换行风格。
+- 待确认候选写 `records/memory/pending.jsonl`，处理结果追加到 `records/memory/resolved.jsonl`；更正、删除等操作写 `records/memory/audit.jsonl`。
+- 可选事实上下文保存在记录的 `**Context**` 段；日期精度由 YYYY / YYYY-MM / YYYY-MM-DD 保留，不以写入时间补猜事实时间。改写后确认与手动更正不继承旧上下文。
+- 推断单独追加到 `records/memory/inferences.jsonl`，不参与事实检索；新假设只接受有效事实来源 ID，来源去重，重复证据不提升可信度。
+- `runtime/indexes/vectors.npz` 和 `runtime/cache/search/` 是派生缓存，可删除重建，不进 Vault 或 Git 历史。Runtime 还保存锁、用量状态和日志，必须与 Vault 分离且位于任何 Git 工作树之外。
+- `sessions/YYYY/MM/<id>.jsonl` 是追加写的事件流，不重写旧行；上下文压缩只追加 `summary` 记录，不删除原文。
+- 助手推理正文只写 `runtime/session-reasoning/<session-id>/<record-id>.json`，Vault 会话仅保留 `reasoning_local: true` 标记；缺失或损坏附件不得阻断正文读取，删除会话时删除对应附件。
 - 会话追加前递归隐藏已识别凭据；损坏尾行只读恢复，续写追加 `recovery` 标记记录 `ignored_line`（1 起始物理行号），保留原始字节；未标记的中间行损坏不能静默忽略。
 - `vault/SOUL.md` 是可选自定义人设：存在时替换系统提示词的人设段，机制规则固定拼接在后不可覆盖；它是指令不是记忆，不参与抽取与检索。
 - 密钥、验证码、API Key 在写入前拦截；不把密钥写入 vault、配置示例或测试。
-- 迁移 vault 存量数据用一次性脚本（放 `scripts/`，不随包发布）：**默认 dry-run** 出前后对照报告，`--apply` 才落盘；条目 ID 与行尾标签必须逐字节保留；落盘后自动验证（ID 集合一致、条数不变、无空正文）并提交 vault git 作为回滚点；向量缓存依赖哈希自动增量重建，不手动处理。
+- 迁移 Vault 存量数据用一次性脚本（放 `scripts/`，不随包发布）：默认 dry-run，`--apply` 才落盘；先停用写入方并备份，迁移后执行 verify 和程序读取。V2 迁移必须保持记忆 ID、会话 ID、正文和关键元数据，UTC 迁移必须保留未知字段与日历日期语义；重复 apply 应幂等，失败批次不得部分写入。V2/UTC 迁移脚本不自动提交或推送。
 - `syvrio.toml`、`vault/`、`sessions/`、`.env`、密钥文件都不提交。
 
 ## 测试
@@ -90,9 +91,9 @@ memory/agent → llm → infra
 
 ## 可移植性
 
-CI 在 ubuntu-latest 与 windows-latest 双矩阵运行，**本地全绿不等于 CI 绿**：
+CI 的 Python、Web 和构建测试统一在 Debian 13 容器中运行。Windows 专属行为仍可在 Windows 本机验证。
 
-- 禁用平台专属编码与 API（如 `mbcs`）——ubuntu 上直接 LookupError，英文 Windows 上行为不同；用全平台内置的替代（如 `gbk`），确需平台分支时以 `sys.platform` 显式守卫。
+- 禁用平台专属编码与 API（如 `mbcs`）——Debian 上直接 LookupError，英文 Windows 上行为不同；用全平台内置的替代（如 `gbk`），确需平台分支时以 `sys.platform` 显式守卫。
 - 文件路径、换行、终端转义同理：优先标准库可移植写法。
 
 ## 界面不变量
@@ -130,8 +131,8 @@ README 面向用户，必须始终与 `src/syvrio` 的当前架构一致。以�
 - 提交信息一律使用英文，沿用现有提交风格：`feat(scope): ...`、`fix(scope): ...`、`refactor(scope): ...`、`style(scope): ...`，主题行简短。
 - 不提交生成物、本地配置或用户数据。
 - **2026-11-01 起的默认开发分支：`feature-memory-evolution`。** 所有后续功能开发、试验、常规修复及相关文档更新均从此分支（或从此分支创建的短期任务分支）开展；Agent 开始执行前必须确认当前分支，不能因为仓库默认分支是 `main` 而直接开发。
-- **`main` 用作冻结的简历展示、稳定发布与长期维护基线。** 禁止自动将 `feature-memory-evolution`、`base/chat-stability` 或其他工作分支同步、合并、cherry-pick 到 `main`。只有用户**明确针对 main 授权**的严重缺陷、安全问题或发布维护，才能走隔离修复、回归测试与受保护分支的 PR 审核流程。
-- 长期远程分支只保留 `main` 和 `feature-memory-evolution`。历史 `base/chat-stability`、`feature/context-review-recall` 在本次冻结验收和祖先检查通过后删除，不再用于开发；旧的“先 base、再自动同步 main/evolution”流程完全失效。其他工作区存在未提交改动时不得覆盖、清理或捆绑提交。
+- `main` 是稳定源码与发布基线，稳定变更通过 PR 和 Debian CI 交付。将其他分支同步到 main 时须有用户针对该次集成的授权。
+- 长期远程分支为 `main` 和 `feature-memory-evolution`。保持其他工作树的未提交修改与当前提交范围独立。
 - 从 `main` 收尾分支修复的稳定性变更只按 `main` → `feature-memory-evolution` 方向同步，禁止反向合并演进功能。
 - 只有明确要求时才执行 `git push`。
 

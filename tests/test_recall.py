@@ -1,15 +1,13 @@
 from __future__ import annotations
 
-import pytest
-
-pytestmark = pytest.mark.agent
-
 from types import SimpleNamespace
+
+import pytest
 
 from syvrio.agent.recall import RecallQueryBuilder
 from syvrio.infra.config import LLMConfig
 
-
+pytestmark = pytest.mark.agent
 def response(text: str):
     return SimpleNamespace(
         choices=[SimpleNamespace(message=SimpleNamespace(content=text))]

@@ -2,12 +2,10 @@ from __future__ import annotations
 
 import pytest
 
-pytestmark = pytest.mark.retrieval
-
 from syvrio.memory.store import MemoryStore
 from syvrio.retrieval import KeywordRetriever, tokenize
 
-
+pytestmark = pytest.mark.retrieval
 def seed(tmp_path):
     store = MemoryStore(tmp_path)
     store.append("preferences", "喜欢清淡、像茶的风味")
@@ -20,7 +18,7 @@ def test_search_finds_keyword(tmp_path):
     store = seed(tmp_path)
     hits = KeywordRetriever(store).search("清淡")
     assert len(hits) == 1
-    assert hits[0].topic == "preferences"
+    assert hits[0].topic == "memories/general/preferences.md"
     assert "清淡" in hits[0].text
 
 

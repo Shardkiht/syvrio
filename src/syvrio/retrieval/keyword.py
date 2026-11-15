@@ -85,7 +85,7 @@ class KeywordRetriever:
         ranked = sorted(
             (
                 (score + (2.0 if lowered in entry.text.lower() else 0.0), index)
-                for index, (entry, score) in enumerate(zip(entries, scores))
+                for index, (entry, score) in enumerate(zip(entries, scores, strict=True))
             ),
             reverse=True,
         )

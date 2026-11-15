@@ -21,13 +21,13 @@ Stop repeating your preferences and plans every time you start a chat. Tell it �
 
 The demo operates the actual Textual UI with synthetic data and scripted model replies. Memory writes and cross-session retrieval run through the real implementation, with no paid model requests. [View the still screenshot](docs/assets/syvrio-demo.png).
 
-Stable showcase: `main` is frozen after final acceptance; use `portfolio-2026-11-01` to identify this source snapshot. The current source and released version is `0.3.4` (published on PyPI and as GitHub Release `v0.3.4`); the older `v0.3.3` and `v0.3.2` releases are separate snapshots. Routine development continues only on `feature-memory-evolution`.
+The stable source branch is `main`. Ongoing experiments are developed on `feature-memory-evolution`. See the release links below for the currently published stable package.
 
 ## Quick start
 
 Requires Python 3.12+, uv, and git.
 
-**Publication status:** The latest release is `0.3.4` ([PyPI](https://pypi.org/project/syvrio/0.3.4/) / [GitHub Release](https://github.com/Shardkiht/syvrio/releases/tag/v0.3.4)); check the [PyPI project page](https://pypi.org/project/syvrio/) for the authoritative latest version. Install from PyPI, or run from source as described below.
+**Publication status:** The published stable package is `0.3.4` ([PyPI](https://pypi.org/project/syvrio/0.3.4/) / [Release](https://github.com/Shardkiht/syvrio/releases/tag/v0.3.4)). Use the source instructions below to try the Foundation Web client or Vault V2 before the next stable release.
 
 ```bash
 uv tool install syvrio
@@ -37,16 +37,9 @@ syvrio
 
 `syvrio setup` selects a model provider and configures its API key, and also offers a "search & fetch API" wizard: enter or update keys for Baidu Qianfan, Tavily, Exa, You.com, and Volcengine (stored in the system credential store, never written as plaintext to TOML), enable each vendor's supported Search / Fetch separately (Baidu Qianfan supports Search only), and reorder both provider lists. Official vendors are never enabled automatically just because a key exists — enable them explicitly here; enabling without a valid key is refused. open-websearch is free and remains the default. The standard installation does not download a local embedding model; keyword retrieval is used when the vector backend is not installed. Update later with `uv tool upgrade syvrio`.
 
-### Migrating from QuietMemo
+### Upgrade an existing Syvrio Vault
 
-If you already have a QuietMemo config or Vault, back it up and run the one-shot migration tool (dry-run by default):
-
-```bash
-uv run python scripts/migrate_to_syvrio.py --dry-run
-uv run python scripts/migrate_to_syvrio.py --apply
-```
-
-It moves Vault `.quiet-memo/` metadata to `.syvrio/`, rewrites old escaped tag prefixes, and migrates the config file plus optional Keyring entries. Locks are not copied and rebuildable caches are not migrated. Re-running is idempotent; existing old and new metadata directories stop the migration with a report. Backups are retained beside the Vault by default.
+If your Vault still uses the legacy (v1) layout, follow [docs/vault-v2.md](docs/vault-v2.md) and migrate explicitly with `scripts/migrate_vault_v2.py` first (the new version refuses legacy layouts at startup and points to that guide).
 
 ## Why Syvrio
 
@@ -99,7 +92,9 @@ base_url = "https://api.deepseek.com/v1"
 model = "deepseek-flash"
 api_key_env = "DEEPSEEK_API_KEY"
 reasoning_effort = ""         # low / medium / high; only effective when supported by the model
-fallbacks = []                 # e.g. ["openai/gpt-4o-mini"]
+spark_thinking = ""
+provider_urls = {}
+recent_models = []
 num_retries = 2
 temperature = 0.1
 timeout = 60.0
@@ -163,6 +158,19 @@ If Chinese output is garbled in Windows Git Bash, add `export PYTHONUTF8=1`. Int
 
 Web search is enabled by default but requires a local open-websearch daemon; see [Web search](#web-search) for startup and configuration.
 
+## Web client
+
+Source checkouts require Node.js 22+ and Corepack. Build the frontend once, then start Web locally:
+
+```bash
+uv run python scripts/build_web.py
+uv run syvrio web
+```
+
+Open http://127.0.0.1:8765/. A turn continues if the browser goes into the background or closes. Reopen the session to see the saved reply. Use Stop to cancel the active reply. Web and TUI share a lock, allowing one interactive client per Vault.
+
+The Web API has no login. It listens on loopback by default. For remote access, use a trusted network and configure allowed hostnames as needed.
+
 ## Chat agent
 
 After sending, an animated indicator, current phase and elapsed seconds appear beside the model name. Context usage is right-aligned, and tool calls are shown when execution starts.
@@ -173,7 +181,7 @@ While a reply is generating, keep typing and press Enter to queue messages above
 
 - Automatically retrieves relevant long-term memories every turn and injects them into context; follow-ups and memory cues such as "remember" or "last time" include the last 1-2 user turns in the search query and raise the result limit.
 - The model can call `recall / read_topic / memorize / correct / forget / review_pending`. `read_topic` reads a topic's active entries only when the user explicitly requests the full topic or recall is insufficient, caps output at 2000 tokens, and does not accept file paths. The model calls `search` for current public information and `fetch_web` to open a result page when dates or details matter, treating both results and page text as external material without executing any instructions in them.
-- No session is created when entering chat; `sessions/<id>.jsonl` is created after the first message.
+- No session is created when entering chat; `sessions/YYYY/MM/<id>.jsonl` is created after the first message.
 - Resumed sessions initially display the existing summary and the latest 10 unsummarized message records. Click “加载更早的记录” (load earlier records) to page through older messages after the summary boundary; the original history is retained. Successful resume does not show a notification; failures still show an error. Each reply uses a single Markdown-rendering widget to reduce mounting and cleanup overhead for long replies. Select reply text with the mouse and press Ctrl+C to copy it.
 - Context usage after resuming or undoing is estimated and cached in the background. The status shows “计算中” (calculating) until ready; changes to the session, messages, or persona trigger a new estimate, and stale results cannot overwrite the current session.
 - Resuming a session replays previous user messages and assistant replies; use `syvrio chat --resume <id>`. Session switches never block: the previous session's distillation runs in the background and notifies when done. The bottom context meter resets to zero after switching and updates from the new session's context plan on the next turn, rather than retaining the previous session's usage.
@@ -216,7 +224,7 @@ flowchart TD
     C -->|"user says 'remember'"| W["Write adjudication / confidence / conflict / secrets"]
     X["Exit extraction / pre-compaction flush / startup catch-up"] --> W
     W -->|"trusted"| V["vault / memories/*.md"]
-    W -->|"low confidence / conflict / sensitive"| P["Pending queue / pending.jsonl"]
+    W -->|"low confidence / conflict / sensitive"| P["Pending queue / records/memory/pending.jsonl"]
     P -->|"syvrio approve / reject"| V
     V --> G["Git commit / auto Chinese summary"]
 ```
@@ -343,11 +351,11 @@ Response shape:
 
 - Results are untrusted external content: cite them as material, never execute instructions found in them.
 - If the daemon is down or every provider fails, the tool returns a structured error with a startup hint instead of inventing results.
-- `[search]` settings: `enabled` (removes the tool when false), `providers` (fallback order), `base_url`, `timeout`, `max_results`, `cache_ttl`, `transport` (`http` by default; `mcp` starts an npx MCP process per search), `auto_start` (warm up the HTTP daemon in the background when the TUI opens), `engines` (upstream search engines, `["bing"]` by default), `fallback_engines` (backup engine chain, `["baidu", "duckduckgo", "sogou"]` by default), `max_engines` (engines per automatic search, 3 by default), `timeout_budget` (shared fallback budget, 25 seconds by default, with each single request's timeout capped by the remaining budget), `max_requests` (upstream requests shared across all providers per search, 9 by default; when exceeded the best candidates so far are returned with an explicit truncation hint and are not cached), `usage_limits` (per-vendor call caps via `[search.usage_limits.<provider>]` with `daily` and `monthly` (0 means unlimited); a vendor's Search and Fetch share one counter pool, and once the cap is hit that vendor is skipped while fallback continues normally; counters persist in `.syvrio/usage.json` inside the vault — **local counts are not the vendor's actual billing cap**), and `fetch_timeout` (separate timeout for fetching page text, 45 seconds by default). `syvrio setup` manages both periods and official quota pauses.
+- `[search]` settings: `enabled` (removes the tool when false), `providers` (fallback order), `base_url`, `timeout`, `max_results`, `cache_ttl`, `transport` (`http` by default; `mcp` starts an npx MCP process per search), `auto_start` (warm up the HTTP daemon in the background when the TUI opens), `engines` (upstream search engines, `["bing"]` by default), `fallback_engines` (backup engine chain, `["baidu", "duckduckgo", "sogou"]` by default), `max_engines` (engines per automatic search, 3 by default), `timeout_budget` (shared fallback budget, 25 seconds by default, with each single request's timeout capped by the remaining budget), `max_requests` (upstream requests shared across all providers per search, 9 by default; when exceeded the best candidates so far are returned with an explicit truncation hint and are not cached), `usage_limits` (per-vendor call caps via `[search.usage_limits.<provider>]` with `daily` and `monthly` (0 means unlimited); a vendor's Search and Fetch share one counter pool, and once the cap is hit that vendor is skipped while fallback continues normally; counters persist in `runtime/state/usage.json` inside the Runtime — **local counts are not the vendor's actual billing cap**), and `fetch_timeout` (separate timeout for fetching page text, 45 seconds by default). `syvrio setup` manages both periods and official quota pauses.
 
 Controlled real-network smoke test: `scripts/smoke_search_apis.py` by default only performs local checks (key readability, whether each vendor would register) and never sends a request; adding `--provider <vendor> --operation search|fetch --live` sends at most `--max-requests` (default 1, cap 10) real requests to a single vendor and prints a desensitized report (success, result count or content length, error kind, duration and unverified fields). Keys are read only from environment variables or the system credential store and never echoed. Page fetching is controlled by a separate `[fetch]` section: `providers` is the fetch provider order (`["open_websearch"]` by default), independent of the search provider order; official vendors with a configured key (tavily / exa / you / volcengine) join fetching only once listed here.
 - A daemon started by `auto_start` has no visible console window on Windows and stays resident for reuse after the TUI exits.
-- Search results are cached in `.syvrio/search-cache.json` as derived data that can be deleted. Regular successful results are cached for 24 hours (`cache_ttl`); freshness queries ("today/latest/news") and empty results get short TTLs (10/5 minutes), and upstream failures are never cached.
+- Search results are cached in `runtime/cache/search/search-cache.json` as derived data that can be deleted. Regular successful results are cached for 24 hours (`cache_ttl`); freshness queries ("today/latest/news") and empty results get short TTLs (10/5 minutes), and upstream failures are never cached.
 
 
 Fetching independently follows `[fetch].providers`. Official fetch adapters and open-websearch use `search.fetch_timeout`; search uses `search.timeout`. Only open-websearch fetching requires HTTP transport; configured official fetch adapters are independent of that transport.
@@ -363,17 +371,25 @@ Fetching independently follows `[fetch].providers`. Official fetch adapters and 
 | Passwords, verification codes, API keys | Blocked outright, never written |
 | Exact duplicate text | Skipped |
 
-Memories are stored per topic as `memories/<topic>.md`, and entries carry a stable ID, status, timestamp, source, and confidence:
+Memories use [Schema v2 and Vault Layout v2](docs/vault-v2.md): stored per topic as `memories/<category>/<topic>.md`, where each top-level Markdown list item is one record containing the body, a required **Core** section (stable ID, status, source, confidence), and optional **Context** and **Extensions** sections; recorded times are UTC. On recall, the selected raw Markdown is handed to the model as untrusted references. Legacy Vaults must be migrated explicitly with `scripts/migrate_vault_v2.py` per the guide.
 
 ```markdown
-- 2026-10-22T19:42:50 — Looking for an apartment downtown  `id=mem-20261022-194250-8f1e` `status=active` `source=session:s-...` `confidence=0.95` `session=s-...` `message=m-...`
+# Apartment hunting
+
+* Looking for an apartment downtown.
+
+  **Core**
+  * `id`: `mem-20261022-194250-8f1e`
+  * `status`: `active`
+  * `source`: `session`
+  * `confidence`: `0.95`
 ```
 
-Corrections use a "new entry + `supersedes`" pattern, and the old entry's status becomes `superseded`; deletion is a soft delete with status `deleted`. Operations are written to `.syvrio/audit.jsonl`, and Git can roll them back.
+Corrections use a "new entry + `syvrio.supersedes`" pattern, and the old entry's status becomes `superseded`; deletion is a soft delete with status `deleted`. Operations are written to `records/memory/audit.jsonl`, and Git can roll them back.
 
-Trailing tag values containing backticks or line breaks are stored with a `~syvrio-escaped~` prefix and percent encoding, then decoded on read. Ordinary tags keep their existing format, and entry IDs remain stable.
+Field values containing backticks or line breaks are stored with a `~syvrio-escaped~` prefix and percent encoding, then decoded on read. Entry IDs remain stable.
 
-Extraction and import support an optional trailing `context` JSON tag. Unsupported fields remain absent; existing Markdown needs no migration:
+Extraction and import support optional `context` fields (written to the record's `**Context**` section). Unsupported fields remain absent:
 
 | Field | Meaning |
 | --- | --- |
@@ -385,11 +401,11 @@ Extraction and import support an optional trailing `context` JSON tag. Unsupport
 
 Fact dates accept only `YYYY`, `YYYY-MM`, or `YYYY-MM-DD`, preserving precision without inventing month/day values or converting time zones. Device location is never collected; tone-based guesses, sarcasm, and ambiguous emotions are not stored as emotional facts. Entry text retains these qualifications. Context does not yet filter or rerank retrieval. Credential checks cover context as well as text. Ordinary approval preserves context; edited approval and manual correction discard potentially stale context, while the original pending candidate remains auditable.
 
-The backend `MemoryService.propose_inference(text, source_ids, kind)` appends hypotheses separately to `.syvrio/inferences.jsonl`, using kind `profile` or `emotion` and initial status `hypothesis`. Evidence must reference active fact entries and is deduplicated. Repeating the same kind, normalized text, and evidence set returns the existing record without increasing confidence or appending another record. Inference IDs and deleted or superseded facts cannot support new hypotheses.
+The backend `MemoryService.propose_inference(text, source_ids, kind)` appends hypotheses separately to `records/memory/inferences.jsonl`, using kind `profile` or `emotion` and initial status `hypothesis`. Evidence must reference active fact entries and is deduplicated. Repeating the same kind, normalized text, and evidence set returns the existing record without increasing confidence or appending another record. Inference IDs and deleted or superseded facts cannot support new hypotheses.
 
 This is a backend foundation with no CLI/TUI/MCP inference entry points or automatic generation, confirmation, or chat injection. The model reserves `confirmed / rejected / superseded` states; user review, invalidation of existing hypotheses after source changes, and damaged-log recovery remain planned. Hypotheses are excluded from fact retrieval.
 
-Editing a candidate in `/pending` validates the final text and writes one memory directly, without first admitting and then correcting the original. Conflicting candidates still replace the old entry through `supersedes`. The original candidate remains in `resolved.jsonl`, while the audit record stores the edited text as `text_override`. Rejected blank or detected credential input leaves the candidate and old entry unchanged.
+Editing a candidate in `/pending` validates the final text and writes one memory directly, without first admitting and then correcting the original. Conflicting candidates still replace the old entry through `supersedes`. The original candidate remains in `records/memory/resolved.jsonl`, while the audit record stores the edited text as `text_override`. Rejected blank or detected credential input leaves the candidate and old entry unchanged.
 
 Approving a stale conflicting candidate follows the replacement chain to the current active entry. If the original entry was deleted, is missing, or has an ambiguous replacement chain, approval is rejected and the candidate is retained. User messages, assistant replies, summaries, titles, and tool arguments have detected credentials hidden before appending to session files; new user messages are also sanitized before reaching the model. Existing sessions and Git history are not rewritten automatically.
 
@@ -403,8 +419,9 @@ Credential detection considers assignment syntax and separators. It permits Chin
 src/syvrio/
 ├── app/          cli.py, server.py, tui.py, chat_app.py, chat_commands.py, chat_flow.py,
 │                 chat_widgets.py, chat_input.py, chat_theme.py, command_catalog.py,
-│                 actions.py, ui.py, session_ui.py
-│                                                   # CLI / Textual TUI / FastMCP entry points
+│                 actions.py, ui.py, session_ui.py, web/
+│                                                   # CLI / Textual TUI / Web / FastMCP entry points
+├── application/  Shared use cases
 ├── agent/        runtime.py, prompts.py, context.py, tools.py,
 │                 session.py, recall.py, file_tools.py # Agent loop, tools, sessions, file analysis
 ├── memory/       service.py, store.py, models.py, queue.py,
@@ -418,13 +435,13 @@ src/syvrio/
                   layout.py, dialogs.py, documents.py, search/ # Config, document conversion, web search
 ```
 
-Dependency direction: `app → agent → memory → retrieval → infra`, `memory/agent → llm → infra`.
+Dependency direction: `app → application → agent → memory → retrieval → infra`, `memory/agent → llm → infra`.
 `retrieval` reads only `memory`'s `models`, `store`, and `detect` helpers (entries, normalization, and literal coverage); this is the known `memory ↔ retrieval` back-reference. Writes and decisions stay in `memory`.
 Development conventions (code style, storage invariants, testing, and docs sync) are in [AGENTS.md](AGENTS.md).
 
 README demo media lives in `docs/assets/` and contains no personal memory vault data.
 
-- Retrieval defaults to hybrid: jieba + rank-bm25 and vector cosine runs are fused with RRF. Vectors come from local fastembed inference (optional extra) or an embedding API, cached as derived data in `.syvrio/vectors.npz` (gitignored inside the vault; delete it to force a rebuild; switching the embedding model invalidates it automatically). When the embedding backend is unavailable it falls back to plain BM25; `/status` and `syvrio status` show the active retrieval mode.
+- Retrieval defaults to hybrid: jieba + rank-bm25 and vector cosine runs are fused with RRF. Vectors come from local fastembed inference (optional extra) or an embedding API, cached as derived data in `runtime/indexes/vectors.npz` (outside Git; delete it to force a rebuild; switching the embedding model invalidates it automatically). When the embedding backend is unavailable it falls back to plain BM25; `/status` and `syvrio status` show the active retrieval mode.
 - Token budgets are estimated with tiktoken, falling back to character estimation when offline.
 - Session compaction, memory decisions, and source chains are custom-built; model adapters are delegated to LiteLLM, provider selection and password input use questionary, and keys use keyring.
 
@@ -439,7 +456,7 @@ uv run pytest
 
 `uv.toml` keeps dependency caches under the ignored `.cache/uv`; once populated, use `uv sync --frozen --offline`. In VS Code, select `.venv` to use the pytest test panel and the current-file/full-suite debugger configurations. Fixtures isolate configuration, vaults, and credentials; real API keys are unnecessary.
 
-Restricted Windows environments that block loopback TCP may hang while asyncio creates its `socketpair`. With the locked pytest-asyncio version, set `$env:SYVRIO_TEST_PIPE_LOOP = "1"` in PowerShell before running tests to wake the Proactor through a local pipe. This affects tests only, grants no network access, and does not modify application runtime behavior. Ordinary Windows and Ubuntu runs retain the default event loop.
+GitHub Actions runs the Python tests, frontend tests and package build on Debian 13.
 
 Run focused categories for local changes and the full suite before committing:
 
@@ -521,7 +538,7 @@ These runtime request-count protection defaults also apply when providers are en
 | volcengine | 0 | 450 |
 | open_websearch | 0 | 0 |
 
-Use `daily` / `monthly` under `[search.usage_limits.<provider>]` to override defaults. Explicit zero disables that period's cap. Either exhausted period blocks dispatch. Search and Fetch share counts; cache hits are free of local charges; dispatched failures count conservatively. Local calendar days/months use the runtime machine's timezone. State persists in `.syvrio/usage.json`; check-and-count is synchronized within one process, without a strict cross-process guarantee.
+Use `daily` / `monthly` under `[search.usage_limits.<provider>]` to override defaults. Explicit zero disables that period's cap. Either exhausted period blocks dispatch. Search and Fetch share counts; cache hits are free of local charges; dispatched failures count conservatively. Local calendar days/months use the runtime machine's timezone. State persists in `runtime/state/usage.json`; check-and-count is synchronized within one process, without a strict cross-process guarantee.
 
 ```toml
 [search.usage_limits.tavily]

@@ -9,11 +9,9 @@ from syvrio.agent.session import SessionStore
 from syvrio.agent.tools import build_tools
 from syvrio.infra.documents import document_paths
 from syvrio.infra.tokens import estimate_tokens
-from syvrio.memory.models import Candidate, ExtractionResult
+from syvrio.memory.models import Candidate
 
 pytestmark = pytest.mark.agent
-
-
 def test_paths_require_explicit_absolute_path_and_preserve_spaces(tmp_path):
     path = tmp_path / "synthetic conversation.JSONL"
     assert document_paths(f'分析 "{path}"，只读不写') == [path.resolve()]

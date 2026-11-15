@@ -77,6 +77,11 @@ APP_CSS = """
     .bubble { background: #1e2026; color: #d5d6da; padding: 0 2; width: auto; max-width: 68%; height: auto; }
     .who-ai { color: $accent; text-style: bold; margin-top: 1; width: 1fr; }
     .reply { color: #d0d1d5; margin: 0; height: auto; }
+    .thinking-panel { width: 1fr; height: auto; margin-top: 1; }
+    .thinking-toggle { height: 1; min-width: 0; border: none; padding: 0 1; color: $muted; background: $panel; }
+    .thinking-toggle:hover, .thinking-toggle:focus { color: $accent; }
+    .thinking-text { height: 3; border: none; padding: 0 1; color: $muted; background: $panel; }
+    .thinking-text:focus { border: none; }
     /* 工具事件用薄边线和弱底色分组，不与正式回复争夺注意力 */
     .event-card { border-left: solid $dim; background: #15161a; color: $muted; padding: 0 1; width: 1fr; }
     .event-card.memo { border-left: solid $muted; color: #a5a6ac; }
@@ -107,6 +112,7 @@ APP_CSS = """
     /* 命令面板：浮在输入框上方，只显示命令、参数和一句短语。
        -6 = status 2 行 + 输入框下边距 1 行 + 输入框 3 行；偏移不够会盖住输入框。 */
     #cmd-palette { layer: overlay; dock: bottom; offset-x: 3; offset-y: -6; width: 64; height: auto; max-height: 16; background: $panel; border: round #383a42; padding: 0 1; display: none; }
+    #cmd-list { height: auto; max-height: 14; scrollbar-size-vertical: 1; }
     .cmd-row { width: 1fr; height: 1; padding: 0 1; color: #b9babd; }
     .cmd-row.cmd-active { background: #292b32; }
     .cmd-usage { color: #96979c; }

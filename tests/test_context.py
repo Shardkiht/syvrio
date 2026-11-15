@@ -2,14 +2,12 @@ from __future__ import annotations
 
 import pytest
 
-pytestmark = pytest.mark.agent
-
 from syvrio.agent.context import ContextManager
 from syvrio.agent.session import SessionStore, new_message_id
 from syvrio.infra.config import ChatConfig
 from syvrio.infra.tokens import estimate_messages_tokens
 
-
+pytestmark = pytest.mark.agent
 class FakeSummarizer:
     def __init__(self):
         self.calls = []

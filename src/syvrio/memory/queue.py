@@ -5,9 +5,10 @@ import os
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime
 from pathlib import Path
 
+from ..infra.paths import vault_paths
+from ..time import utc_timestamp
 from .models import PendingItem
 
 
@@ -46,7 +47,7 @@ def rollback_files(paths: list[Path]) -> Iterator[None]:
 class PendingQueue:
     def __init__(self, vault: Path):
         self.vault = Path(vault)
-        self.dir = self.vault / ".syvrio"
+        self.dir = vault_paths(self.vault).records_dir
         self.pending_path = self.dir / "pending.jsonl"
         self.resolved_path = self.dir / "resolved.jsonl"
 
@@ -95,7 +96,7 @@ class PendingQueue:
         with rollback_files([self.pending_path, self.resolved_path]):
             self.dir.mkdir(parents=True, exist_ok=True)
             record = target.model_dump()
-            record.update(status=status, resolved_at=datetime.now().isoformat(timespec="seconds"))
+            record.update(status=status, resolved_at=utc_timestamp())
             with self.resolved_path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(record, ensure_ascii=False) + "\n")
             self._save([item for item in items if item is not target])

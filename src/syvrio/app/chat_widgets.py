@@ -10,26 +10,28 @@ import unicodedata
 from markdown_it import MarkdownIt
 from markdown_it.rules_inline import emphasis
 from markdown_it.rules_inline.state_inline import StateInline
-from rich.markup import escape
-from rich.markdown import Markdown as RichMarkdown, Heading, CodeBlock
-from rich.syntax import Syntax
 from rich.console import Console, ConsoleOptions, RenderResult
+from rich.markdown import CodeBlock, Heading
+from rich.markdown import Markdown as RichMarkdown
+from rich.markup import escape
+from rich.syntax import Syntax
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.content import Content
 from textual.containers import Vertical, VerticalScroll
+from textual.content import Content
 from textual.screen import ModalScreen
 from textual.selection import Selection
-from textual.style import Style
 from textual.strip import Strip
+from textual.style import Style
 from textual.visual import RenderOptions, RichVisual
-from textual.widgets import Input, Label, ListView, ListItem, Static
+from textual.widgets import Input, Label, ListItem, ListView, Static
 
 from ..agent.session import Session
-from .command_catalog import SLASH_COMMANDS
+from ..time import format_local_timestamp
 from .chat_theme import MARKDOWN_THEME
-
+from .command_catalog import SLASH_COMMANDS
+from .thinking_panel import ThinkingPanel
 
 _CJK_EMPHASIS = re.compile(r"[\u3400-\u9fff]\*\*[^\w\s*]|[^\w\s*]\*\*[\u3400-\u9fff]")
 
@@ -115,14 +117,27 @@ class ChatReply(Static):
 
     def __init__(self, content: str, **kwargs) -> None:
         self._markdown = content
+        self._pending_markdown: str | None = None
         super().__init__(**kwargs)
         super().update(_SelectableMarkdown(self, content))
 
     def update(self, content: str) -> None:
+        chat = next((node for node in self.ancestors if isinstance(node, TranscriptView)), None)
+        if chat is not None and chat.reading_paused:
+            # 只缓存最新全文；用户阅读的 Markdown 与选区坐标保持不变。
+            self._pending_markdown = content
+            return
+        self._pending_markdown = None
         if content == self._markdown:
             return
         self._markdown = content
         super().update(_SelectableMarkdown(self, content))
+
+    def flush_pending(self) -> bool:
+        if self._pending_markdown is None:
+            return False
+        self.update(self._pending_markdown)
+        return True
 
     def get_selection(self, selection: Selection) -> tuple[str, str]:
         content = self.visual.selectable_content(self.content_size.width)
@@ -152,13 +167,85 @@ class TranscriptView(VerticalScroll):
         self._tools: dict[str, dict] = {}
         self._start = 0
         self._more: HistoryMore | None = None
+        self.follow_output = True
+        self.selecting = False
+
+    def scroll_to_follow(self) -> None:
+        if self.reading_paused:
+            return
+        # Textual can snap to an older animation target before scrolling to the bottom.
+        self._following_scroll = True
+        try:
+            self.scroll_end(animate=False, immediate=True)
+        finally:
+            self._following_scroll = False
+
+    def on_resize(self) -> None:
+        # Buffered Markdown can change virtual height one layout after flush.
+        self.scroll_to_follow()
+
+    def watch_virtual_size(self) -> None:
+        # A reply may grow without changing the viewport or emitting Resize.
+        if self.is_mounted and not self.reading_paused:
+            self.app._scroll_end()
 
     def clear_transcript(self) -> None:
+        self.follow_output = True
+        self.selecting = False
         self._turns = []
         self._tools = {}
         self._start = 0
         self._more = None
         self.remove_children()
+
+    @property
+    def reading_paused(self) -> bool:
+        return (
+            not self.follow_output
+            or self.selecting
+            or self.is_vertical_scrollbar_grabbed
+            or any(self in widget.ancestors_with_self for widget in self.screen.selections)
+        )
+
+    def resume_output(self) -> None:
+        selected = any(self in widget.ancestors_with_self for widget in self.screen.selections)
+        if (
+            not self.is_vertical_scroll_end
+            or self.selecting
+            or selected
+            or self.is_vertical_scrollbar_grabbed
+        ):
+            return
+        self.follow_output = True
+        changed = [reply.flush_pending() for reply in self.query(ChatReply)]
+        if any(changed):
+            self.app._scroll_end()
+
+    def _scroll_update(self, virtual_size) -> None:
+        # 布局收缩时的滚动夹紧（思考面板折叠、内容重排）也会触发 watch_scroll_y 下降，
+        # 但那不是用户上滑：夹紧期间不改变跟随意图，否则自动跟随会被永久打断。
+        self._layout_clamping = True
+        try:
+            super()._scroll_update(virtual_size)
+        finally:
+            self._layout_clamping = False
+
+    def watch_scroll_y(self, old_value: float, new_value: float) -> None:
+        super().watch_scroll_y(old_value, new_value)
+        if getattr(self, "_following_scroll", False):
+            return
+        if new_value < old_value and not getattr(self, "_layout_clamping", False):
+            self.follow_output = False
+        elif self.is_vertical_scroll_end:
+            self.call_after_refresh(self.resume_output)
+
+    def on_mouse_scroll_up(self, event) -> None:
+        self.follow_output = False
+        self.app.query_one("#input").suspend_cursor()
+
+    def on_mouse_scroll_down(self, event) -> None:
+        self.app.query_one("#input").suspend_cursor()
+        self.call_after_refresh(self.resume_output)
 
     def show_session(self, session: Session) -> None:
         self._turns = []
@@ -169,7 +256,11 @@ class TranscriptView(VerticalScroll):
                 self._tools[str(record.get("tool_call_id"))] = record
             elif kind == "message" and record.get("role") == "user" and str(record.get("content") or "").strip():
                 self._turns.append(record)
-            elif kind == "assistant" and (str(record.get("content") or "").strip() or record.get("tool_calls")):
+            elif kind == "assistant" and (
+                str(record.get("content") or "").strip()
+                or record.get("tool_calls")
+                or record.get("reasoning")
+            ):
                 self._turns.append(record)
         widgets = []
         if session.damaged_tail_line is not None:
@@ -184,17 +275,25 @@ class TranscriptView(VerticalScroll):
         widgets.extend(self._widgets(self._turns[self._start:]))
         if widgets:
             self.mount(*widgets)
+        self.call_after_refresh(self.resume_output)
 
     def _widgets(self, turns: list[dict]) -> list:
         widgets = []
         for record in turns:
             content = str(record.get("content") or "")
-            stamp = str(record.get("at") or "")[11:16]
+            stamp = format_local_timestamp(record.get("at"), "%H:%M")
             if record.get("type") == "message":
                 if stamp:
                     widgets.append(Static(f"You · {stamp}", classes="who-user"))
                 widgets.append(Vertical(Static(content, classes="bubble"), classes="user-turn"))
                 continue
+            reasoning = record.get("reasoning") or {}
+            if (reasoning.get("text") or "").strip():
+                widgets.append(
+                    ThinkingPanel(
+                        reasoning["text"], record_id=record["id"], seconds=reasoning.get("seconds")
+                    )
+                )
             if content.strip():
                 widgets.append(Static(f"{ASSISTANT_NAME} · {stamp}" if stamp else ASSISTANT_NAME, classes="who-ai"))
                 widgets.append(ChatReply(content, classes="reply"))
@@ -304,9 +403,12 @@ class PickScreen(ModalScreen):
         value = self.query_one("#pick-search", Input).value if self._searchable else ""
         self._apply_filter(value)
 
+    def _matches(self, needle: str) -> list[tuple]:
+        return [option for option in self._options if needle in option[0].lower()]
+
     def _apply_filter(self, value: str) -> None:
         needle = value.strip().lower()
-        options = [option for option in self._options if needle in option[0].lower()]
+        options = self._matches(needle)
         listing = self.query_one("#pick-list", ListView)
         listing.clear()
         for item in self._items(options):
@@ -359,6 +461,13 @@ class ModelPickerScreen(PickScreen):
             "Ctrl+P providers · Ctrl+R refresh · Ctrl+N custom model"
         )
 
+    def _matches(self, needle: str) -> list[tuple]:
+        options = super()._matches(needle)
+        if not needle:
+            return options
+        # 前缀精确命中的模型浮到列表顶部，其余保持原顺序。
+        return sorted(options, key=lambda option: not option[0].lower().startswith(needle))
+
     def action_providers(self) -> None:
         self._finish(("__providers__", ""))
 
@@ -401,15 +510,24 @@ class CommandRow(Static):
 
 
 class CommandPalette(Vertical):
-    """竖排命令面板：跟随输入前缀过滤，↑↓ 移动高亮，Enter 执行。"""
+    """浮层命令列表：外层限高，内层滚动；高亮项始终滚入可视区域。"""
 
     def __init__(self) -> None:
         super().__init__(id="cmd-palette")
         self.matches: list[tuple[str, str, str]] = []
         self.index = 0
+        self.prefix: str | None = None
+
+    def compose(self) -> ComposeResult:
+        yield VerticalScroll(id="cmd-list", classes="thin-scroll")
+
+    @property
+    def listing(self) -> VerticalScroll:
+        return self.query_one("#cmd-list", VerticalScroll)
 
     def open(self, prefix: str) -> None:
         needle = prefix.lower()
+        self.prefix = prefix
         self.matches = [
             (command, usage, description)
             for command, usage, description in SLASH_COMMANDS
@@ -420,6 +538,7 @@ class CommandPalette(Vertical):
         self.display = bool(self.matches)
 
     def close(self) -> None:
+        self.prefix = None
         self.matches = []
         self.display = False
 
@@ -428,6 +547,7 @@ class CommandPalette(Vertical):
             return
         self.index = (self.index + delta) % len(self.matches)
         self.refresh_rows()
+        self.scroll_current()
 
     @property
     def current(self) -> str | None:
@@ -436,14 +556,29 @@ class CommandPalette(Vertical):
         return None
 
     def rebuild(self) -> None:
-        self.remove_children()
-        if self.matches:
-            self.mount(*[CommandRow(*match) for match in self.matches])
+        self.listing.remove_children()
+        rows = [CommandRow(*match) for match in self.matches]
+        for position, row in enumerate(rows):
+            row.set_class(position == self.index, "cmd-active")
+        if rows:
+            self.listing.mount(*rows)
+        self.call_after_refresh(self._after_rebuild)
+
+    def _after_rebuild(self) -> None:
         self.refresh_rows()
+        self.scroll_current()
+
+    def rows(self) -> list[CommandRow]:
+        return list(self.listing.query(CommandRow))
 
     def refresh_rows(self) -> None:
-        for position, row in enumerate(self.children):
+        for position, row in enumerate(self.rows()):
             row.set_class(position == self.index, "cmd-active")
+
+    def scroll_current(self) -> None:
+        rows = self.rows()
+        if 0 <= self.index < len(rows):
+            self.listing.scroll_to_widget(rows[self.index], animate=False, immediate=True)
 
 
 class SessionPickerScreen(ModalScreen):
@@ -499,7 +634,9 @@ class SessionPickerScreen(ModalScreen):
         listing = self.query_one("#picker-list", ListView)
         listing.clear()
         for row in self._filtered:
-            time_text = (row.get("updated_at") or "")[11:16]
+            time_text = format_local_timestamp(
+                row.get("last_message_at") or row.get("started_at"), "%H:%M"
+            )
             meta = f"{time_text} · {row['messages']} msgs".lstrip("· ")
             if row["id"] == self._current_id:
                 meta += " · ← current"

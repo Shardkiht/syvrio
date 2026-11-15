@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import ipaddress
 import sys
 from pathlib import Path
+from typing import Annotated
 
 import typer
 
 from .. import __version__
-
 from ..agent.session import SessionStore
 from ..infra.config import (
     Config,
@@ -15,13 +16,13 @@ from ..infra.config import (
     load_config,
     write_example_config,
 )
+from ..infra.documents import SUPPORTED_SUFFIXES, DocumentError, read_document
 from ..infra.gitops import GitError
-from ..infra.documents import DocumentError, SUPPORTED_SUFFIXES, read_document
 from ..memory.extractor import ExtractorError, split_chunks
 from ..memory.service import MemoryService, get_service
 from .session_ui import print_sessions
 from .tui import run_chat
-from .ui import padded, console, fail, print_hits, styled_table
+from .ui import console, fail, padded, print_hits, styled_table
 
 app = typer.Typer(
     help="Syvrio — Local-first personal AI agent with persistent memory.",
@@ -62,12 +63,12 @@ def _service(config: Path | None, vault: Path | None) -> MemoryService:
 
 @app.command()
 def init(
-    vault: Path = typer.Option(default_vault_path(), "--vault", help="记忆库目录"),
+    vault: Annotated[Path | None, typer.Option("--vault", help="记忆库目录")] = None,
     config: Path | None = CONFIG_OPTION,
     force: bool = typer.Option(False, "--force", help="目标目录非空且不是记忆库时仍然继续"),
 ) -> None:
     """初始化记忆库与 Git 仓库。"""
-    vault = vault.expanduser().resolve()
+    vault = (vault if vault is not None else default_vault_path()).expanduser().resolve()
     if vault.exists() and any(vault.iterdir()) and not (vault / ".git").exists() and not force:
         fail(f"{vault} 非空且不是 Syvrio 记忆库；确认无误后加 --force。")
     config_path = config.expanduser() if config else default_config_path()
@@ -146,7 +147,7 @@ def list_sessions(
 ) -> None:
     """列出历史会话。"""
     service = _service(config, vault)
-    print_sessions(SessionStore(service.config.vault).list(limit))
+    print_sessions(SessionStore(service.paths).list(limit))
 
 
 @app.command()
@@ -193,7 +194,9 @@ def note(
 
 @app.command("import")
 def import_memories(
-    path: Path = typer.Argument(..., help="要导入的文本、聊天导出或文档文件/目录", exists=True),
+    path: Annotated[
+        Path, typer.Argument(help="要导入的文本、聊天导出或文档文件/目录", exists=True)
+    ],
     apply: bool = typer.Option(False, "--apply", help="实际写入；默认只打印计划"),
     config: Path | None = CONFIG_OPTION,
     vault: Path | None = VAULT_OPTION,
@@ -444,6 +447,69 @@ def serve(
     from .server import build_server
 
     build_server(service=service).run()
+
+
+@app.command()
+def web(
+    host: str = typer.Option("127.0.0.1", "--host", help="监听地址；默认仅 loopback"),
+    port: int = typer.Option(8765, "--port", min=1, max=65535, help="服务端口 / 远程访问端口"),
+    domain: str = typer.Option("", "--domain", help="本地域名；写入 hosts 映射并放行 Host/Origin"),
+    domain_ip: str = typer.Option(
+        "127.0.0.1", "--domain-ip", help="域名映射目标 IP；远程 Tailscale 填 100.x.y.z"
+    ),
+    map_only: bool = typer.Option(
+        False, "--map-only", help="只写 hosts 映射并打印地址，不启动本机服务（远程访问）"
+    ),
+    remove_domain: bool = typer.Option(False, "--remove-domain", help="删除该域名的 hosts 映射"),
+    map_hosts: bool = typer.Option(True, "--hosts/--no-hosts", help="是否自动更新系统 hosts 文件"),
+    config: Path | None = CONFIG_OPTION,
+    vault: Path | None = VAULT_OPTION,
+) -> None:
+    """启动私有 Web 客户端，或为本机/远程实例配置本地域名映射。"""
+    from .web.hosts import ensure_hosts_mapping, normalize_domain, remove_hosts_mapping
+    from .web.server import run_server
+
+    domains: list[str] = []
+    if domain.strip() or map_only or remove_domain:
+        try:
+            name = normalize_domain(domain)
+            ipaddress.ip_address(domain_ip)
+        except ValueError as exc:
+            fail(str(exc))
+            return
+        domains.append(name)
+        if remove_domain:
+            typer.echo(f"[hosts] {remove_hosts_mapping(name, domain_ip).message}")
+            return
+        if map_hosts:
+            typer.echo(f"[hosts] {ensure_hosts_mapping(name, domain_ip).message}")
+        else:
+            typer.echo(f"[hosts] Add manually: {domain_ip}\t{name}")
+        suffix = "" if port == 80 else f":{port}"
+        typer.echo(f"Web URL: http://{name}{suffix}/")
+        if domain_ip != "127.0.0.1":
+            typer.echo(
+                "Remote note: the remote host must allow this hostname in "
+                "SYVRIO_WEB_ALLOWED_HOSTS. If it uses Tailscale Serve HTTPS, "
+                "open https://<machine>.<tailnet>.ts.net/ instead (a local alias "
+                "will not match the Tailscale certificate)."
+            )
+        if map_only:
+            return
+    try:
+        loopback = ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        loopback = host.lower() == "localhost"
+    if not loopback:
+        typer.echo(
+            "Warning: a non-loopback --host exposes the Web API without authentication. "
+            "Host/Origin checks only block cross-site requests, not direct network access. "
+            "Restrict the network (e.g. Tailscale) or keep --host 127.0.0.1."
+        )
+    try:
+        run_server(host, port, config_path=config, vault_path=vault, domains=domains)
+    except RuntimeError as exc:
+        fail(str(exc))
 
 
 def main() -> None:
