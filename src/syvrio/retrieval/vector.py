@@ -66,7 +66,7 @@ class VectorRetriever:
         self.store = store
         self.embedder = embedder
         self.batch_size = batch_size
-        self.cache_path = store.vault / ".syvrio" / CACHE_FILENAME
+        self.cache_path = store.paths.index_dir / CACHE_FILENAME
         self._entries: list[Entry] = []
         self._matrix: np.ndarray | None = None
         self._fingerprint: tuple[tuple[str, int, int], ...] | None = None

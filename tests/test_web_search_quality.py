@@ -6,19 +6,17 @@ from __future__ import annotations
 
 import pytest
 
-pytestmark = pytest.mark.search
-
 from syvrio.infra.search.base import (
     ProviderError,
     ProviderErrorKind,
     SearchQuery,
     SearchResult,
 )
-from syvrio.infra.search.quality import analyze_query, result_relevance
 from syvrio.infra.search.cache import SearchCache
+from syvrio.infra.search.quality import analyze_query, result_relevance
 from syvrio.infra.search.router import SearchRouter
 
-
+pytestmark = pytest.mark.search
 class EngineProvider:
     """支持多引擎槽位的假 provider：按请求的引擎返回预置结果。"""
 

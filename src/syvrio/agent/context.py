@@ -44,6 +44,10 @@ def record_to_message(record: dict) -> dict | None:
     if record_type == "message":
         return {"role": record.get("role", "user"), "content": record.get("content", "")}
     if record_type == "assistant":
+        if record.get("interrupted") is True:
+            return None
+        # 推理原文只供本机展示（Runtime 附件）；无论新旧记录、source 是否非空，
+        # 都绝不回放进发给模型的请求消息。
         message: dict = {"role": "assistant", "content": record.get("content") or ""}
         tool_calls = record.get("tool_calls") or []
         if tool_calls:

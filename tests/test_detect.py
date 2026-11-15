@@ -2,12 +2,10 @@ from __future__ import annotations
 
 import pytest
 
-pytestmark = pytest.mark.memory
-
 from syvrio.memory.detect import contains_secret, find_conflicts
 from syvrio.memory.models import Candidate, Entry
 
-
+pytestmark = pytest.mark.memory
 def entry(entry_id: str, text: str, topic: str = "housing") -> Entry:
     return Entry(id=entry_id, topic=topic, text=text, timestamp="2026-10-22T12:00:00")
 

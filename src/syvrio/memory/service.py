@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-import threading
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 
 from ..infra.config import Config, LLMConfig, RetrievalConfig, default_config_path, load_config
 from ..infra.gitops import GitError, GitRepo
+from ..infra.locking import git_operation_lock, vault_write_lock
 from ..infra.tokens import truncate_to_tokens
 from ..llm import LiteLLMEmbedder
 from ..llm.commit_summary import summarize_diff
@@ -21,6 +20,7 @@ from ..retrieval import (
     SearchHit,
     VectorRetriever,
 )
+from ..time import utc_timestamp
 from .audit import AuditLog
 from .detect import contains_secret, find_conflicts
 from .extractor import ImportExtractor, LLMExtractor
@@ -37,17 +37,14 @@ from .store import (
     slugify,
 )
 
-
 VAULT_README = """# Syvrio vault
 
 这个目录由 [Syvrio](https://github.com/Shardkiht/Syvrio) 管理。
 
-- `memories/`：按主题拆分的 Markdown 记忆，是唯一事实来源。
-- `sessions/`：会话 JSONL，保留原始对话与工具轨迹。
-- `.syvrio/pending.jsonl`：低置信、冲突或敏感候选，等待人工确认。
-- `.syvrio/resolved.jsonl`：已确认/已拒绝记录。
-- `.syvrio/audit.jsonl`：更正、删除等审计记录。
-- `.syvrio/inferences.jsonl`：独立假设与去重后的事实来源，不参与事实检索。
+- `memories/<category>/<topic>.md`：Markdown v2，是唯一事实来源。
+- `sessions/YYYY/MM/`：会话 JSONL，保留原始对话与工具轨迹。
+- `records/memory/`：待确认、处理结果、审计与独立推断。
+- Runtime 与 Vault 分离；派生索引、缓存和锁不会进入 Vault。
 - `SOUL.md`（可选）：自定义人设，替代系统提示词里的默认人设段。
 - 全部变更由 Git 跟踪，可回滚、可审计。
 """
@@ -56,8 +53,9 @@ VAULT_GITIGNORE = """__pycache__/
 *.pyc
 .DS_Store
 Thumbs.db
-.syvrio/vectors.npz
-.syvrio/search-cache.json
+.idea/
+.vscode/
+*~
 """
 
 # 默认人设兼作 init 写入 SOUL.md 的模板；放 memory 层是因为 agent/prompts.py 可以引 memory，
@@ -155,7 +153,18 @@ class MemoryService:
         config_path: Path | None = None,
     ):
         self.config = config
-        self.store = MemoryStore(config.vault)
+        self.paths = config.paths(config_path)
+        self.paths.validate()
+        # 旧版布局（runtime 内嵌 vault/.syvrio、记忆平铺、会话平铺）必须先迁移；不静默兼容。
+        if (
+            (self.paths.vault_dir / ".syvrio").exists()
+            or any(self.paths.memories_dir.glob("*.md"))
+            or any(self.paths.sessions_dir.glob("*.jsonl"))
+        ):
+            raise ValueError(
+                "Legacy Vault layout; run scripts/migrate_vault_v2.py before starting Syvrio"
+            )
+        self.store = MemoryStore(self.paths)
         self.queue = PendingQueue(config.vault)
         self.inferences = InferenceStore(config.vault)
         self.repo = GitRepo(config.vault)
@@ -169,38 +178,32 @@ class MemoryService:
         # 热更新（切模型/上下文）写回配置的路径：记住加载来源，避免写错文件或被读回旧值。
         self.config_path = config_path
         # 后台补沉淀与前台对话可能并发写 vault：所有变更操作在这把锁内串行。
-        self.write_lock = threading.Lock()
+        # 组合写入流程可安全复用公开服务方法；锁可重入，跨进程由文件锁互斥，
+        # 进程崩溃后由内核释放，不会留下需要手工清理的锁文件。
+        self.write_lock = vault_write_lock(self.paths)
+        self._git_lock = git_operation_lock(self.paths)
+        with self._git_lock, self.write_lock:
+            self.paths.bind()
 
     def init_vault(self) -> dict:
-        self.store.ensure()
-        self.queue.dir.mkdir(parents=True, exist_ok=True)
-        (self.config.vault / "sessions").mkdir(parents=True, exist_ok=True)
-        readme = self.config.vault / "README.md"
-        if not readme.exists():
-            readme.write_text(VAULT_README, encoding="utf-8")
-        soul = self.config.vault / SOUL_FILENAME
-        if not soul.exists():
-            soul.write_text(DEFAULT_PERSONA + "\n", encoding="utf-8")
-        gitignore = self.config.vault / ".gitignore"
-        if not gitignore.exists():
-            gitignore.write_text(VAULT_GITIGNORE, encoding="utf-8")
-        else:
-            # 老记忆库补齐派生缓存忽略规则；这些文件可重建，不进 Git 历史。
-            existing = gitignore.read_text(encoding="utf-8")
-            missing = [
-                line
-                for line in (".syvrio/vectors.npz", ".syvrio/search-cache.json")
-                if line not in existing
-            ]
-            if missing:
-                with open(gitignore, "a", encoding="utf-8") as handle:
-                    # 旧文件可能没有末尾换行，直接追加会把规则拼到上一行。
-                    if existing and not existing.endswith("\n"):
-                        handle.write("\n")
-                    handle.write("\n".join(missing) + "\n")
-        created = self.repo.ensure_init()
-        self.repo.stage_all()
-        commit_hash = self.repo.commit("memory: 初始化记忆库")
+        with self._git_lock:
+            with self.write_lock:
+                # 先确认仓库归属，避免在父仓库子目录里写出 Vault 文件后再失败。
+                created = self.repo.ensure_init()
+                self.store.ensure()
+                self.queue.dir.mkdir(parents=True, exist_ok=True)
+                self.paths.sessions_dir.mkdir(parents=True, exist_ok=True)
+                readme = self.config.vault / "README.md"
+                if not readme.exists():
+                    readme.write_text(VAULT_README, encoding="utf-8")
+                soul = self.config.vault / SOUL_FILENAME
+                if not soul.exists():
+                    soul.write_text(DEFAULT_PERSONA + "\n", encoding="utf-8")
+                gitignore = self.config.vault / ".gitignore"
+                if not gitignore.exists():
+                    gitignore.write_text(VAULT_GITIGNORE, encoding="utf-8")
+                self._stage_all_checked()
+                commit_hash = self.repo.commit("memory: 初始化记忆库")
         return {"vault": str(self.config.vault), "git_created": created, "commit": commit_hash}
 
     def memorize(
@@ -210,11 +213,24 @@ class MemoryService:
         session_id: str | None = None,
         message_id: str | None = None,
     ) -> MemorizeResult:
+        return self.adjudicate_extracted(
+            self.extract_candidates(text), source, session_id, message_id
+        )
+
+    def extract_candidates(self, text: str) -> list[Candidate]:
         text = text.strip()
         if not text:
             raise ValueError("对话内容为空。")
-        extraction = self.extractor.extract(text, self.store.recent_context())
-        return self._adjudicate(extraction.memories, source, session_id, message_id)
+        return self.extractor.extract(text, self.store.recent_context()).memories
+
+    def adjudicate_extracted(
+        self,
+        candidates: list[Candidate],
+        source: str,
+        session_id: str | None = None,
+        message_id: str | None = None,
+    ) -> MemorizeResult:
+        return self._adjudicate(candidates, source, session_id, message_id)
 
     def import_text(
         self,
@@ -262,6 +278,11 @@ class MemoryService:
         active_entries = [entry for entry in all_entries if entry.status == STATUS_ACTIVE]
         known_texts = {normalize_text(entry.text) for entry in active_entries}
         for candidate in candidates:
+            # V2 的条目 topic 是 vault 相对路径；候选先归一到同一坐标系再比较。
+            topic_path = self.store.topic_path(candidate.topic)
+            candidate = candidate.model_copy(
+                update={"topic": topic_path.relative_to(self.config.vault).as_posix()}
+            )
             if contains_secret(candidate.text) or (
                 candidate.context is not None and contains_secret(candidate.context.model_dump_json())
             ):
@@ -376,7 +397,7 @@ class MemoryService:
             raise ValueError("推断内容不能为空。")
         if contains_secret(text):
             raise ValueError("检测到密钥或密码类信息，拒绝保存推断。")
-        stamp = datetime.now().astimezone().isoformat(timespec="seconds")
+        stamp = utc_timestamp()
         item = Inference(
             id="", text=text, kind=kind, source_ids=source_ids,
             created_at=stamp, updated_at=stamp,
@@ -552,26 +573,47 @@ class MemoryService:
             "retrieval": self.retrieval_mode,
         }
 
+    def _refuse_sensitive(self) -> None:
+        sensitive = self.repo.sensitive_paths()
+        if sensitive:
+            paths = "、".join(sensitive[:5])
+            raise GitError(
+                f"拒绝提交疑似敏感文件：{paths}。请移出 vault 或加入 .gitignore。", kind="sensitive"
+            )
+
+    def _stage_all_checked(self) -> None:
+        """首次初始化与后续提交共用：暂存前后都检查，覆盖索引里已有的文件。"""
+        self._refuse_sensitive()
+        with self.repo.stage_checked():
+            self._refuse_sensitive()
+
     def commit_pending_changes(self) -> str | None:
         """启动检查用：自动提交 vault 未保存变更（不 push、不调 LLM 生成总结）。"""
-        with self.write_lock:
-            self.repo.ensure_init()
-            self.repo.stage_all()
-            if not self.repo.has_staged():
-                return None
-            return self.repo.commit("memory: 自动提交未保存变更（启动检查）")
+        with self._git_lock:
+            with self.write_lock:
+                self.repo.ensure_init()
+                self._stage_all_checked()
+                if not self.repo.has_staged():
+                    return None
+                return self.repo.commit("memory: 自动提交未保存变更（启动检查）")
 
     def commit(self, push: bool | None = None) -> dict:
-        with self.write_lock:
+        with self._git_lock:
             return self._commit_locked(push)
 
     def _commit_locked(self, push: bool | None) -> dict:
-        self.repo.ensure_init()
-        self.repo.stage_all()
-        if not self.repo.has_staged():
+        with self.write_lock:
+            self.repo.ensure_init()
+            self._stage_all_checked()
+            staged = self.repo.has_staged()
+        if staged:
+            stat = self.repo.staged_stat()
+            # 摘要输入只含记忆内容：会话等其余变更不发给模型，走 staged_stat 本地回退。
+            diff = self.repo.staged_diff(paths=["memories"])
+        if not staged:
             return {"committed": False, "summary": "没有需要提交的变更。", "hash": None, "pushed": False}
-        stat = self.repo.staged_stat()
-        summary = summarize_diff(self.repo.staged_diff(), self.config.llm, stat)
+        # LLM 摘要与 Push 都不占 Vault 写锁；Git 锁仍持有，其他 Git 操作不会改 Index。
+        summary = summarize_diff(diff, self.config.llm, stat)
         lines = summary.splitlines()
         subject = lines[0] if lines else "memory: 更新记忆库"
         if not subject.startswith("memory:"):

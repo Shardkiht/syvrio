@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import pytest
 
-pytestmark = pytest.mark.agent
-
 from syvrio.agent.runtime import AgentRuntime
 from syvrio.agent.session import SessionStore, new_message_id
 from syvrio.infra.config import ChatConfig, Config, LLMConfig
@@ -12,7 +10,7 @@ from syvrio.memory.extractor import StaticExtractor
 from syvrio.memory.models import Candidate, ExtractionResult
 from syvrio.memory.service import MemoryService
 
-
+pytestmark = pytest.mark.agent
 class FakeChatModel:
     def __init__(self, turns):
         self.turns = list(turns)
@@ -147,6 +145,7 @@ def test_failed_switch_preserves_exit_distillation(tmp_path):
 @pytest.mark.parametrize("fails", [False, True])
 def test_mutating_tool_timeout_reports_final_result(tmp_path, cancelled, fails):
     from concurrent.futures import TimeoutError
+
     from syvrio.agent.tools import ToolOutcome, ToolRegistry, ToolSpec
 
     runtime, service = build_runtime(tmp_path, FakeChatModel([]))
@@ -315,7 +314,9 @@ def test_read_topic_tool_result_reaches_model(tmp_path):
     tool_messages = [message for message in second_call_messages if message["role"] == "tool"]
     assert tool_messages and "清淡风味" in tool_messages[0]["content"]
     assert "晚上少量喝茶" in tool_messages[0]["content"]
-    assert any('Read topic "preferences": 2 entries' in event for event in reply.events)
+    assert any(
+        'Read topic "memories/general/preferences.md": 2 entries' in event for event in reply.events
+    )
 
 
 def test_auto_recall_injects_long_term_memory(tmp_path):
@@ -378,7 +379,7 @@ def test_attribute_question_rewrites_with_synonyms(tmp_path, monkeypatch):
     store.append("preferences", "喜欢清淡风味")
     store.append("devices", "使用便携键盘")
     hits = KeywordRetriever(store).search(query.text)
-    assert hits and hits[0].topic == "01-identity"
+    assert hits and hits[0].topic == "memories/general/01-identity.md"
 
 
 def test_memory_cue_increases_auto_recall_limit(tmp_path, monkeypatch):
@@ -697,7 +698,9 @@ def test_ask_streams_events_to_callback(tmp_path):
 
 
 def _config_with_vault(tmp_path_factory=None):
-    import tempfile, pathlib
+    import pathlib
+    import tempfile
+
     from syvrio.infra.config import Config, LLMConfig, RetrievalConfig
     tmp = pathlib.Path(tempfile.mkdtemp())
     return Config(vault=tmp / "vault", llm=LLMConfig(), retrieval=RetrievalConfig(method="keyword"))
@@ -705,8 +708,8 @@ def _config_with_vault(tmp_path_factory=None):
 
 def test_recall_tool_guides_query_with_synonyms():
     """身份类查询召回：自然问句还要带常见同义词/字段名，避免“名字”漏掉“姓名”。"""
-    from syvrio.agent.tools import build_tools
     from syvrio.agent.session import SessionStore
+    from syvrio.agent.tools import build_tools
     from syvrio.memory.service import MemoryService
 
     config = _config_with_vault()
@@ -1191,7 +1194,7 @@ def test_consolidate_does_not_let_short_sessions_hide_eligible_sessions(tmp_path
             runtime.sessions.append(session, {
                 "type": "message", "id": f"m{number}-{index}", "role": "user",
                 "content": f"合成陈述 {number}-{index}",
-                "at": f"2026-01-0{number + 1}T12:00:00",
+                "at": f"2026-01-0{number + 1}T12:00:00+00:00",
             })
 
     result = runtime.consolidate_pending(limit=3, min_new_messages=3)
@@ -1234,9 +1237,10 @@ def test_progress_precedes_model_and_tool_execution(tmp_path, monkeypatch):
 @pytest.mark.parametrize("stop_at", ["context", "stream", "tool"])
 def test_cancel_preserves_partial_and_tool_pairs(tmp_path, monkeypatch, stop_at):
     from threading import Event
-    from syvrio.llm import GenerationCancelled
+
     from syvrio.agent import runtime as module
     from syvrio.agent.tools import ToolOutcome
+    from syvrio.llm import GenerationCancelled
 
     cancel = Event()
     calls = []

@@ -7,12 +7,17 @@ import socket
 import httpx
 import pytest
 
-pytestmark = pytest.mark.search
-
 from syvrio.agent.session import SessionStore
 from syvrio.agent.tools import SEARCH_NOTICE, build_tools
 from syvrio.app.server import build_server
-from syvrio.infra.config import ChatConfig, Config, FetchConfig, LLMConfig, SearchConfig, load_config
+from syvrio.infra.config import (
+    ChatConfig,
+    Config,
+    FetchConfig,
+    LLMConfig,
+    SearchConfig,
+    load_config,
+)
 from syvrio.infra.search import (
     FetchQuery,
     FetchResult,
@@ -25,15 +30,15 @@ from syvrio.infra.search import (
     build_fetch_router,
     build_search_router,
 )
-from syvrio.infra.search.base import assert_public_fetch_url
 from syvrio.infra.search import daemon as daemon_module
+from syvrio.infra.search.base import assert_public_fetch_url
 from syvrio.infra.search.cache import SearchCache
 from syvrio.infra.search.daemon import ensure_daemon
 from syvrio.infra.search.open_websearch import OpenWebSearchProvider
 from syvrio.infra.search.router import normalize_url
 from syvrio.memory.service import MemoryService
 
-
+pytestmark = pytest.mark.search
 def envelope(results: list[dict]) -> dict:
     return {
         "status": "ok",

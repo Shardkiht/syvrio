@@ -2,14 +2,14 @@ from __future__ import annotations
 
 from functools import partial
 from pathlib import Path
-from rich.markup import escape
 
+from rich.markup import escape
 from textual.widgets import Input
 
+from ..infra.documents import SUPPORTED_SUFFIXES, DocumentError, read_document
 from ..infra.tokens import format_tokens
-from ..infra.documents import DocumentError, SUPPORTED_SUFFIXES, read_document
-from ..memory.extractor import split_chunks
 from ..llm import cached_provider_models, fetch_provider_models
+from ..memory.extractor import split_chunks
 from . import actions
 from .chat_widgets import ModelPickerScreen, PickScreen, SessionPickerScreen, TextInputScreen
 from .command_catalog import SLASH_COMMANDS
@@ -262,6 +262,10 @@ class ChatCommandsMixin:
         )
 
     def _undo_message(self) -> None:
+        if self._ask_active:
+            # 生成期间：立即取消并精确撤销当前回合；撤销在 Worker 退出后执行。
+            self._request_undo()
+            return
         if not self.runtime.has_session:
             self.add_card("No message to undo.")
             return

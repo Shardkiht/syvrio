@@ -6,7 +6,6 @@ from pathlib import Path
 import pytest
 
 pytestmark = pytest.mark.memory
-
 evaluation = runpy.run_path(str(Path(__file__).resolve().parents[1] / "evals" / "memory_eval.py"))
 
 

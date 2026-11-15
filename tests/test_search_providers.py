@@ -9,16 +9,14 @@ import json
 import httpx
 import pytest
 
-pytestmark = pytest.mark.search
-
 from syvrio.infra.config import SearchConfig
+from syvrio.infra.search.baidu import BaiduSearchProvider
 from syvrio.infra.search.base import (
     FetchQuery,
     ProviderError,
     ProviderErrorKind,
     SearchQuery,
 )
-from syvrio.infra.search.baidu import BaiduSearchProvider
 from syvrio.infra.search.exa import ExaFetchProvider, ExaSearchProvider
 from syvrio.infra.search.http_client import JsonApiClient
 from syvrio.infra.search.router import build_registry
@@ -29,6 +27,7 @@ from syvrio.infra.search.volcengine import (
 )
 from syvrio.infra.search.you import YouFetchProvider, YouSearchProvider
 
+pytestmark = pytest.mark.search
 KEY = "test-key-placeholder"
 
 

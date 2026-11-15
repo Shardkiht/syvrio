@@ -21,6 +21,7 @@ class BarInput(Input):
         kwargs["placeholder"] = ""
         super().__init__(*args, **kwargs)
         self._native_cursor_active = False
+        self._cursor_suspended = False
         self._hint = hint
         self.border_title = hint or None
 
@@ -72,10 +73,33 @@ class BarInput(Input):
         self.call_after_refresh(self._show_native_cursor)
 
     def _show_native_cursor(self) -> None:
-        if self._uses_native_cursor and self.has_focus and not self.disabled:
+        if (
+            self._uses_native_cursor
+            and self.has_focus
+            and not self.disabled
+            and not self._cursor_suspended
+        ):
             # IME preedit belongs to the terminal; a painted glyph cannot follow it.
             self.app._driver.write("\x1b[5 q\x1b[?25h")
             self._native_cursor_active = True
+
+    def suspend_cursor(self) -> None:
+        """拖选正文时暂停输入区光标，避免每帧重定位硬件光标干扰选择。"""
+        self._cursor_suspended = True
+        self._hide_native_cursor()
+        self.refresh()
+
+    def _resume_cursor(self) -> None:
+        if self._cursor_suspended:
+            self._cursor_suspended = False
+            self._show_native_cursor()
+            self.refresh()
+
+    def on_mouse_down(self) -> None:
+        self._resume_cursor()
+
+    def on_key(self) -> None:
+        self._resume_cursor()
 
     def _hide_native_cursor(self) -> None:
         if self._native_cursor_active:
@@ -99,7 +123,13 @@ class BarInput(Input):
 
     def render_line(self, y: int) -> Strip:
         strip = super().render_line(y)
-        if self._uses_native_cursor or y != 0 or not self.has_focus or not self._cursor_visible:
+        if (
+            self._cursor_suspended
+            or self._uses_native_cursor
+            or y != 0
+            or not self.has_focus
+            or not self._cursor_visible
+        ):
             return strip
 
         # 在渲染结果里插竖线，不能改 _value：额外字符会让 Textual 的输入框重绘

@@ -5,9 +5,11 @@
 """
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Protocol
 
 from ..config import FetchConfig, SearchConfig
+from ..paths import SyvrioPaths, vault_paths
 from .base import (
     FetchQuery,
     FetchResult,
@@ -155,9 +157,8 @@ def build_fetch_router(
     if vault is not None:
         from .usage import USAGE_FILENAME, UsageLimiter
 
-        limiter = UsageLimiter(
-            search_config.usage_limits, vault / ".syvrio" / USAGE_FILENAME
-        )
+        paths = vault if isinstance(vault, SyvrioPaths) else vault_paths(Path(vault))
+        limiter = UsageLimiter(search_config.usage_limits, paths.state_dir / USAGE_FILENAME)
     return FetchRouter(
         build_fetch_registry(fetch_config, search_config),
         order=fetch_config.providers,

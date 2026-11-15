@@ -4,9 +4,6 @@ import json
 import threading
 
 import pytest
-
-pytestmark = pytest.mark.ui
-
 from textual.geometry import Offset
 from textual.widgets import Input, Static
 
@@ -22,7 +19,7 @@ from syvrio.memory.extractor import StaticExtractor
 from syvrio.memory.models import ExtractionResult
 from syvrio.memory.service import MemoryService
 
-
+pytestmark = pytest.mark.ui
 class FakeChatModel:
     def __init__(self, turns):
         self.turns = list(turns)
@@ -351,6 +348,7 @@ async def test_resume_session_does_not_show_success_notification(tmp_path, monke
 
 async def test_reply_selection_tracks_stream_updates_and_resize(tmp_path):
     from textual.selection import SELECT_ALL
+
     from syvrio.app.chat_widgets import ChatReply
 
     app = build_app(tmp_path, [])
@@ -556,7 +554,7 @@ async def test_command_palette_columns_align(tmp_path):
         assert len(rows) == len(SLASH_COMMANDS)
 
         starts = set()
-        for row, (_, usage, description) in zip(rows, SLASH_COMMANDS):
+        for row, (_, usage, description) in zip(rows, SLASH_COMMANDS, strict=True):
             plain = row.render().plain
             # [refresh] 等方括号必须原样可见，不能被当成标记吞掉
             assert usage in plain
@@ -728,6 +726,7 @@ async def test_model_picker_can_remove_provider_key(tmp_path, monkeypatch):
 
 async def test_model_picker_provider_menu_returns_to_models(tmp_path, monkeypatch):
     from textual.widgets import ListView
+
     from syvrio.app.chat_widgets import ModelPickerScreen
 
     monkeypatch.setattr("syvrio.app.chat_commands.fetch_provider_models", lambda *args, **kwargs: [])
@@ -873,7 +872,6 @@ async def test_model_picker_uses_cache_and_refreshes_in_background(tmp_path, mon
 async def test_ctrl_b_toggles_sidebar(tmp_path):
     from textual.containers import Vertical
 
-    from syvrio.app.chat_app import SidebarToggle
 
     app = build_app(tmp_path, [])
     async with app.run_test(size=(120, 40)) as pilot:
@@ -1154,8 +1152,9 @@ async def test_delete_session_uses_captured_row(tmp_path):
         await pilot.pause()
         # 模态打开期间模拟列表刷新（如后台回复完成后的 refresh_sessions）。
         app.refresh_sessions()
-        # 走真实模态交互：高亮默认在第一项"确认删除"上，Enter 触发回调。
+        # 走真实模态交互：默认第一项是 Cancel；显式选择 Delete permanently 才执行。
         assert "cannot be undone" in str(app.screen.query_one(".pick-title").render())
+        app.screen.query_one("#pick-list").index = 1
         await pilot.press("enter")
         for _ in range(100):
             await pilot.pause()
@@ -1784,6 +1783,7 @@ async def test_session_picker_search_resume_and_delete(tmp_path):
         await pilot.press("delete")
         await pilot.pause()
         assert "PickScreen" in type(app.screen).__name__  # 删除确认弹窗已弹出
+        app.screen.query_one("#pick-list").index = 1  # 默认第一项是 Cancel
         await pilot.press("enter")  # 确认删除
         for _ in range(100):
             await pilot.pause()
@@ -1797,6 +1797,7 @@ async def test_session_picker_search_resume_and_delete(tmp_path):
 
 async def test_startup_catchup_does_not_block_switching(tmp_path):
     # 回归：启动补沉淀在后台执行，不能再把输入和会话切换一起锁住。
+    import asyncio
     import threading
 
     app = build_app(tmp_path, [], extract_on_exit=True)
@@ -1835,12 +1836,13 @@ async def test_startup_catchup_does_not_block_switching(tmp_path):
         assert app.runtime.current.id == crashed.id
 
         blocker.release.set()
-        for _ in range(300):
-            await pilot.pause()
-            if any("Consolidated" in str(widget.render()) for widget in app.query(".card")):
-                break
+        await asyncio.wait_for(app.workers.wait_for_complete(), timeout=10)
         assert app.busy is False
-        assert any("Consolidated 1" in str(widget.render()) for widget in app.query(".card"))
+        # A snapshot selected while the session was inactive cannot advance its
+        # cursor after the user reopens it. It remains eligible for a later pass.
+        stored = app.sessions.load(crashed.id)
+        assert stored.user_texts_after_distilled() == ["中断前说的话"]
+        assert not any(row["type"] in {"distilled", "consolidated"} for row in stored.records)
 
 
 async def test_transcript_replays_tool_events(tmp_path):
@@ -2083,6 +2085,7 @@ def test_fixed_tui_text_is_english():
     import ast
     import re
     from pathlib import Path
+
     from syvrio.app import chat_app
 
     directory = Path(chat_app.__file__).parent
@@ -2277,14 +2280,15 @@ async def test_submit_during_ask_queues_fifo_across_sessions(tmp_path):
         assert any(r.get("type") == "assistant" and "reply-3" in str(r.get("content")) for r in records_b)
 
 
-async def test_queued_command_runs_on_original_session(tmp_path):
-    # A 生成中排队 /undo，随后切到 B：命令必须回到 A 执行，不能撤销 B。
+async def test_undo_during_generation_bypasses_queue_and_targets_original_session(tmp_path):
+    # A 生成中 /undo 立即取消，不进入 FIFO；切到 B 后也只撤销 A，不改 B 的输入。
     app = build_app(tmp_path, [])
     gated = GatedChatModel([
         AssistantTurn(content="reply-1"),
         AssistantTurn(content="reply-2"),
+        AssistantTurn(content="reply-b"),
     ])
-    gated.gates = [threading.Event(), threading.Event()]
+    gated.gates = [threading.Event(), threading.Event(), threading.Event()]
     app.runtime.model = gated
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause()
@@ -2301,7 +2305,8 @@ async def test_queued_command_runs_on_original_session(tmp_path):
         app.query_one("#input", Input).value = "/undo"
         await pilot.press("enter")
         await pilot.pause()
-        assert [item.session_id for item in app._queue] == [session_a]
+        assert app._queue == []
+        assert app._undo_requested is True
 
         session_b = app.sessions.create().id
         app._switch_session(session_b)
@@ -2313,19 +2318,181 @@ async def test_queued_command_runs_on_original_session(tmp_path):
 
         gated.gates[1].set()
         await _wait_idle(app, pilot)
-        # 排队命令把视图切回 A，再在 A 上执行 undo。
-        for _ in range(200):
-            await pilot.pause()
-            if app.runtime.has_session and app.runtime.current.id == session_a and not app.busy:
-                break
-        assert app.runtime.current.id == session_a
-        assert app.query_one("#input", Input).value == "m2"
+        assert app.runtime.current.id == session_b
+        assert app.query_one("#input", Input).value == ""
         assert app.sessions.load(session_a).user_texts() == ["m1"]
         assert app.sessions.load(session_b).user_texts() == []
 
+        # 在 B 里继续对话不应丢弃 A 的待回填文本。
+        widget = app.query_one("#input", Input)
+        widget.value = "b-msg"
+        await pilot.press("enter")
+        await _wait_ask_started(app, pilot)
+        gated.gates[2].set()
+        await _wait_idle(app, pilot)
+        assert app.runtime.current.id == session_b
+        assert app.sessions.load(session_b).user_texts() == ["b-msg"]
+
+        # 切回 A 后补回填原文；B 的历史与输入始终未被修改。
+        app._switch_session(session_a)
+        for _ in range(200):
+            await pilot.pause()
+            if not app._navigation_busy:
+                break
+        assert app.runtime.current.id == session_a
+        assert app.query_one("#input", Input).value == "m2"
+        await pilot.pause()
+
+
+async def test_undo_during_ask_is_immediate_and_idempotent(tmp_path):
+    app = build_app(tmp_path, [])
+    gated = GatedChatModel(
+        [AssistantTurn(content="reply-0"), AssistantTurn(content="reply-1")],
+        stream_first=True,
+    )
+    gated.gates = [threading.Event(), threading.Event()]
+    app.runtime.model = gated
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        widget = app.query_one("#input", Input)
+        widget.value = "m0"
+        await pilot.press("enter")
+        await _wait_ask_started(app, pilot)
+        gated.gates[0].set()
+        await _wait_idle(app, pilot)
+
+        widget.value = "m1"
+        await pilot.press("enter")
+        await _wait_ask_started(app, pilot)
+        session_id = app.runtime.current.id
+        assert app._stream_buffer  # 已在流式生成
+
+        for _ in range(3):
+            widget.value = "/undo"
+            await pilot.press("enter")
+            await pilot.pause()
+
+        # 立即取消，不进入 FIFO；重复 /undo 不会叠加撤销。
+        assert app._queue == []
+        assert app._cancel_generation.is_set()
+        assert app._progress_phase == "Undoing"
+        assert len(gated.calls) == 2
+        assert app._ask_in_flight == session_id
+
+        gated.gates[1].set()
+        await _wait_idle(app, pilot)
+        await pilot.pause()
+
+        assert widget.value == "m1"
+        session = app.sessions.load(session_id)
+        assert session.user_texts() == ["m0"]
+        assert len([r for r in session.records if r.get("type") == "undo"]) == 1
+        active = "\n".join(str(r.get("content", "")) for r in session.active_records())
+        assert "m1" not in active and "reply-1" not in active
+
+
+async def test_undo_keeps_queued_message_paused_without_losing_it(tmp_path):
+    app = build_app(tmp_path, [])
+    gated = GatedChatModel([
+        AssistantTurn(content="reply-m1"),
+        AssistantTurn(content="reply-edited"),
+        AssistantTurn(content="reply-queued"),
+    ])
+    gated.gates = [threading.Event(), threading.Event(), threading.Event()]
+    app.runtime.model = gated
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        widget = app.query_one("#input", Input)
+        widget.value = "m1"
+        await pilot.press("enter")
+        await _wait_ask_started(app, pilot)
+
+        widget.value = "queued message"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert [item.line for item in app._queue] == ["queued message"]
+
+        widget.value = "/undo"
+        await pilot.press("enter")
+        await pilot.pause()
+        gated.gates[0].set()
+        await _wait_idle(app, pilot)
+
+        # 撤销完成但不自动发送队列，回填文本不会被覆盖。
+        assert widget.value == "m1"
+        assert [item.line for item in app._queue] == ["queued message"]
+        assert app._queue_paused is True
+        assert len(gated.calls) == 1
+
+        # 用户主动开始下一轮后，旧队列在回复结束后按原顺序接续。
+        widget.value = "m1 edited"
+        await pilot.press("enter")
+        await _wait_ask_started(app, pilot)
+        assert app._queue_paused is False
+        gated.gates[1].set()
+        for _ in range(400):
+            await pilot.pause()
+            if len(gated.calls) >= 3:
+                break
+        gated.gates[2].set()
+        await _wait_idle(app, pilot)
+        assert gated.calls == ["m1", "m1 edited", "queued message"]
+        assert app._queue == []
+
+
+async def test_natural_completion_after_undo_request_does_not_keep_reply(tmp_path):
+    # 模型与取消竞争：即便正常回复先到达，只要 /undo 已请求，也只撤销当前回合。
+    app = build_app(tmp_path, [])
+    app.runtime.start()
+    session = app.runtime.ensure_session()
+    app.sessions.append(
+        session,
+        {"type": "message", "id": "u1", "role": "user", "content": "m1"},
+    )
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        app._begin_ask(session.id)
+        app._undo_user_message_id = "u1"
+        app._undo_requested = True
+        app._undo_session_id = session.id
+        app._finish_reply("final reply", "12:00", "", session.id)
+        await pilot.pause()
+
+        assert app.query_one("#input", Input).value == "m1"
+        loaded = app.sessions.load(session.id)
+        assert loaded.user_texts() == []
+        assert len([r for r in loaded.records if r.get("type") == "undo"]) == 1
+        assert "final reply" not in "\n".join(
+            str(r.get("content", "")) for r in loaded.active_records()
+        )
+
+
+async def test_undo_without_bound_message_does_not_touch_earlier_turn(tmp_path):
+    # 请求在用户消息落盘前失败：没有具体消息 ID 时不得回退撤销上一轮。
+    app = build_app(tmp_path, [])
+    app.runtime.start()
+    session = app.runtime.ensure_session()
+    app.sessions.append(
+        session,
+        {"type": "message", "id": "u0", "role": "user", "content": "earlier"},
+    )
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        app._begin_ask(session.id)
+        app._undo_requested = True
+        app._undo_session_id = session.id
+        app._undo_user_message_id = None
+        app._finish_cancelled(session.id)
+        await pilot.pause()
+
+        loaded = app.sessions.load(session.id)
+        assert loaded.user_texts() == ["earlier"]
+        assert not any(r.get("type") == "undo" for r in loaded.records)
+
 
 async def test_queued_command_skipped_when_target_unavailable(tmp_path):
-    # 目标会话文件已删除：命令跳过并提示，不切换、不误伤当前会话。
+    # 目标会话文件已损坏：排队命令跳过并提示，不切换、不误伤当前会话。
+    # （/undo 生成中已改为立即撤销，这里用普通非安全命令验证队列绑定。）
     app = build_app(tmp_path, [])
     gated = GatedChatModel([AssistantTurn(content="reply-1")])
     gated.gates.append(threading.Event())
@@ -2337,7 +2504,7 @@ async def test_queued_command_skipped_when_target_unavailable(tmp_path):
         await _wait_ask_started(app, pilot)
         session_a = app.runtime.current.id
 
-        app.query_one("#input", Input).value = "/undo"
+        app.query_one("#input", Input).value = "/rename Queued title"
         await pilot.press("enter")
         await pilot.pause()
         session_b = app.sessions.create().id
@@ -2349,7 +2516,8 @@ async def test_queued_command_skipped_when_target_unavailable(tmp_path):
 
         # 目标会话文件中间行损坏：load 必抛，排队命令应跳过而非切过去。
         # （直接 unlink 会被仍在进行的 ask 的落盘 append 原路重建，测不到这个分支。）
-        (tmp_path / "vault" / "sessions" / f"{session_a}.jsonl").write_bytes(b"not-json-corrupt\n")
+        target = next((tmp_path / "vault" / "sessions").rglob(f"{session_a}.jsonl"))
+        target.write_bytes(b"not-json-corrupt\n")
         gated.gates[0].set()
         await _wait_idle(app, pilot)
         for _ in range(100):
@@ -2449,7 +2617,7 @@ async def test_closed_marker_after_assistant_records_when_switching_mid_ask(tmp_
             if not app._navigation_busy:
                 break
         # 请求未结束时不得提前落 closed 标记
-        path = app.service.config.vault / "sessions" / f"{session_a}.jsonl"
+        path = next((app.service.config.vault / "sessions").rglob(f"{session_a}.jsonl"))
         types = [json.loads(line)["type"] for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
         assert "closed" not in types
 
@@ -2535,7 +2703,6 @@ async def test_switch_consolidate_skipped_while_ask_in_flight(tmp_path, monkeypa
         app.query_one("#input", Input).value = "q"
         await pilot.press("enter")
         await _wait_ask_started(app, pilot)
-        session_a = app.runtime.current.id
 
         session_b = app.sessions.create().id
         app._switch_session(session_b)
@@ -2725,6 +2892,7 @@ async def test_escape_closes_palette_before_stopping(tmp_path):
 async def test_pending_long_text_scrolls_without_hiding_actions(tmp_path, size):
     from textual.containers import VerticalScroll
     from textual.widgets import ListView
+
     from syvrio.app.chat_widgets import PickScreen
     from syvrio.memory.models import Candidate, PendingItem
     app = build_app(tmp_path, [])
@@ -2764,6 +2932,7 @@ async def test_pending_long_text_scrolls_without_hiding_actions(tmp_path, size):
 @pytest.mark.parametrize("action", ["approve", "edit", "reject"])
 async def test_long_pending_review_actions_keep_full_text(tmp_path, action):
     from textual.containers import VerticalScroll
+
     from syvrio.app.chat_widgets import TextInputScreen
     from syvrio.memory.models import Candidate, PendingItem
     app = build_app(tmp_path, [])
@@ -2793,13 +2962,15 @@ async def test_long_pending_review_actions_keep_full_text(tmp_path, action):
         if action == "reject":
             assert not entries
         else:
-            expected = "Synthetic final edited text" if action == "edit" else " ".join(text.split())
+            # V2 不再压平多行文本，长候选按原样落盘。
+            expected = "Synthetic final edited text" if action == "edit" else text
             assert [entry.text for entry in entries] == [expected]
 
 
 @pytest.mark.parametrize("size", [(80, 24), (120, 40), (160, 50)])
 async def test_short_pending_review_stays_compact(tmp_path, size):
     from textual.containers import VerticalScroll
+
     from syvrio.memory.models import Candidate, PendingItem
 
     app = build_app(tmp_path, [])
@@ -2817,3 +2988,222 @@ async def test_short_pending_review_stays_compact(tmp_path, size):
         assert panel.size.height == 1
         assert panel.max_scroll_y == 0
         assert app.screen.query_one("#pick-list").region.bottom < card.region.bottom
+
+
+async def test_tab_completes_highlighted_command_without_executing(tmp_path, monkeypatch):
+    app = build_app(tmp_path, [])
+    commands = []
+    monkeypatch.setattr(app, "_command", commands.append)
+    async with app.run_test() as pilot:
+        widget = app.query_one("#input", Input)
+        await pilot.press("slash", "down", "tab")
+        assert widget.value == "/sessions"
+        assert widget.cursor_position == len(widget.value)
+        assert not commands
+        await pilot.press("enter")
+        assert commands == ["/sessions"]
+
+
+@pytest.mark.parametrize("size", [(80, 24), (120, 40)])
+async def test_reasoning_preview_expansion_follow_and_folding(tmp_path, monkeypatch, size):
+    from textual.widgets import Button
+
+    from syvrio.app.thinking_panel import ThinkingPanel, ThinkingText
+    from syvrio.llm import LiteLLMChatModel, ToolCall
+
+    app = build_app(tmp_path, [])
+    app.runtime.model = LiteLLMChatModel(LLMConfig())
+    first = "".join(f"合成 thought {index:03d} " + "中英 mixed " * 8 + "\n" for index in range(32))
+    more = "".join(f"next line {index}\n" for index in range(200))
+    release_more, release_bottom, release_tool, release_body = [threading.Event() for _ in range(4)]
+    calls = []
+
+    def chat(model, messages, tools, on_delta=None, cancel=None, *, on_reasoning=None):
+        calls.append(1)
+        if len(calls) == 1:
+            on_reasoning(first)
+            assert release_more.wait(30)
+            for chunk in more.splitlines(keepends=True):
+                on_reasoning(chunk)
+            assert release_bottom.wait(30)
+            on_reasoning("latest thought\n")
+            assert release_tool.wait(30)
+            return AssistantTurn(
+                reasoning_content=first + more + "latest thought\n",
+                tool_calls=[ToolCall("step-1", "recall", {"query": "synthetic"})],
+            )
+        on_reasoning("Second reasoning stage")
+        assert release_body.wait(30)
+        on_delta("Visible answer")
+        return AssistantTurn(content="Visible answer", reasoning_content="Second reasoning stage")
+
+    monkeypatch.setattr(LiteLLMChatModel, "chat", chat)
+
+    async def until(pilot, condition):
+        for _ in range(100):
+            await pilot.pause(0.025)
+            if condition():
+                return
+        assert condition()
+
+    async with app.run_test(size=size) as pilot:
+        widget = app.query_one("#input", Input)
+        widget.value = "Synthetic multi-stage question"
+        try:
+            await pilot.press("enter")
+            await until(
+                pilot,
+                lambda: (
+                    bool(app.query(ThinkingText))
+                    and app.query_one(ThinkingText).size.height == 3
+                    and app.query_one(ThinkingText).is_vertical_scroll_end
+                ),
+            )
+            panel = app.query_one(ThinkingPanel)
+            area = panel.query_one(ThinkingText)
+            assert widget.has_focus and area.size.height == 3 and area.is_vertical_scroll_end
+            await pilot.click(panel.query_one(Button))
+            assert area.size.height == min(10, size[1] // 3)
+            area.focus()
+            await pilot.press("pageup")
+            await pilot.wait_for_scheduled_animations()
+            assert not area.is_vertical_scroll_end
+            position = area.scroll_y
+            release_more.set()
+            await until(pilot, lambda: area.text.endswith("next line 199\n"))
+            assert area.scroll_y == position
+            assert len(app.query(ThinkingPanel)) == 1
+            area.scroll_end(animate=False, immediate=True)
+            release_bottom.set()
+            await until(pilot, lambda: area.text.endswith("latest thought\n"))
+            assert area.is_vertical_scroll_end
+            release_tool.set()
+            await until(pilot, lambda: len(app.query(ThinkingPanel)) == 2)
+            next_panel = list(app.query(ThinkingPanel))[-1]
+            await until(pilot, lambda: next_panel.query_one(ThinkingText).size.height == 3)
+            assert next_panel.query_one(ThinkingText).size.height == 3
+            assert area.display  # User explicitly opened the earlier stage.
+            release_body.set()
+            await _wait_idle(app, pilot)
+            assert not next_panel.query_one(ThinkingText).display
+            assert app.query_one(".reply")._markdown == "Visible answer"
+
+            app._clear_chat()
+            app.build_transcript()
+            await pilot.pause()
+            history = list(app.query(ThinkingPanel))
+            assert len(history) == 2 and all(not p.query_one(ThinkingText).display for p in history)
+            await pilot.click(history[-1].query_one(Button))
+            assert history[-1].query_one(ThinkingText).text == "Second reasoning stage"
+        finally:
+            for event in (release_more, release_bottom, release_tool, release_body):
+                event.set()
+
+
+async def test_reasoning_only_cancellation_restores_collapsed_history(tmp_path, monkeypatch):
+    from textual.widgets import Button
+
+    from syvrio.app.thinking_panel import ThinkingPanel, ThinkingText
+    from syvrio.llm import GenerationCancelled, LiteLLMChatModel
+
+    app = build_app(tmp_path, [])
+    app.runtime.model = LiteLLMChatModel(LLMConfig())
+
+    def chat(model, messages, tools, on_delta=None, cancel=None, *, on_reasoning=None):
+        on_reasoning("Synthetic interrupted thinking")
+        assert cancel.wait(20)
+        raise GenerationCancelled("Stopped by user")
+
+    monkeypatch.setattr(LiteLLMChatModel, "chat", chat)
+    async with app.run_test(size=(80, 24)) as pilot:
+        widget = app.query_one("#input", Input)
+        widget.value = "Synthetic stop request"
+        await pilot.press("enter")
+        for _ in range(100):
+            await pilot.pause()
+            if app.query(ThinkingPanel):
+                break
+        assert app.query_one(ThinkingPanel).query_one(ThinkingText).display
+        await pilot.press("escape")
+        await _wait_idle(app, pilot)
+        assert not app.query_one(ThinkingPanel).query_one(ThinkingText).display
+        assert widget.has_focus
+        app._clear_chat()
+        app.build_transcript()
+        await pilot.pause()
+        panel = app.query_one(ThinkingPanel)
+        assert not panel.query_one(ThinkingText).display
+        await pilot.click(panel.query_one(Button))
+        assert panel.query_one(ThinkingText).text == "Synthetic interrupted thinking"
+
+
+async def test_reasoning_stays_with_background_session(tmp_path, monkeypatch):
+    from syvrio.app.thinking_panel import ThinkingPanel, ThinkingText
+    from syvrio.llm import LiteLLMChatModel
+
+    app = build_app(tmp_path, [])
+    app.runtime.model = LiteLLMChatModel(LLMConfig())
+    release = threading.Event()
+
+    def chat(model, messages, tools, on_delta=None, cancel=None, *, on_reasoning=None):
+        on_reasoning("Synthetic background first")
+        assert release.wait(30)
+        on_reasoning(" and second")
+        on_delta("Synthetic background answer")
+        return AssistantTurn(
+            content="Synthetic background answer",
+            reasoning_content="Synthetic background first and second",
+        )
+
+    monkeypatch.setattr(LiteLLMChatModel, "chat", chat)
+
+    def current_id(runtime):
+        return runtime.current.id if runtime.has_session else None
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        try:
+            app.query_one("#input", Input).value = "Synthetic background question"
+            await pilot.press("enter")
+            for _ in range(100):
+                await pilot.pause()
+                if app.query(ThinkingPanel):
+                    break
+            assert app.query(ThinkingPanel)
+            original = current_id(app.runtime)
+            app._new_session()
+            for _ in range(100):
+                await pilot.pause()
+                if not app._navigation_busy and not app.runtime.has_session:
+                    break
+            assert not app.runtime.has_session
+            assert not app.query(ThinkingPanel)
+            release.set()
+            await _wait_idle(app, pilot)
+            assert not app.query(ThinkingPanel)
+            app._switch_session(original)
+            for _ in range(100):
+                await pilot.pause()
+                if app.query(ThinkingPanel):
+                    break
+            assert current_id(app.runtime) == original
+            assert not app.query_one(ThinkingPanel).query_one(ThinkingText).display
+        finally:
+            release.set()
+
+
+async def test_automatic_follow_ignores_stale_scroll_animation_target(tmp_path, monkeypatch):
+    app = build_app(tmp_path, [])
+    async with app.run_test(size=(80, 24)):
+        chat = app._chat()
+        chat.follow_output = True
+        original = chat.scroll_end
+
+        def scroll_with_stale_target(**kwargs):
+            chat.watch_scroll_y(2, 1)
+            original(**kwargs)
+
+        monkeypatch.setattr(chat, "scroll_end", scroll_with_stale_target)
+        chat.scroll_to_follow()
+        assert chat.follow_output
+        chat.watch_scroll_y(2, 1)
+        assert not chat.follow_output

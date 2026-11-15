@@ -8,6 +8,7 @@ import tomllib
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from .paths import SyvrioPaths, runtime_path
 
 DEFAULT_BASE_URL = "https://api.deepseek.com/v1"
 DEFAULT_MODEL = "deepseek-flash"
@@ -15,6 +16,8 @@ DEFAULT_API_KEY_ENV = "DEEPSEEK_API_KEY"
 DEFAULT_EMBEDDING_MODEL = "BAAI/bge-small-zh-v1.5"
 DEFAULT_EMBEDDING_BASE_URL = "https://api.siliconflow.cn/v1"
 CONFIG_FILENAME = "syvrio.toml"
+SPARK_THINKING_MODES = ("enabled", "auto", "disabled")
+RECENT_MODEL_LIMIT = 5
 
 
 KEYRING_SERVICE = "syvrio"
@@ -24,7 +27,7 @@ class ConfigError(ValueError):
     """配置读取、TOML 语法或字段校验失败；消息可直接展示给用户。"""
 
 
-def toml_literal(value: str | list[str]) -> str:
+def toml_literal(value: str | list[str] | list[tuple[str, str]]) -> str:
     """序列化 TOML 字符串及字符串数组，保留 Unicode 标量。"""
     # ASCII 模式会把非 BMP 字符拆成 TOML 不接受的代理对；DEL 也必须转义。
     return json.dumps(value, ensure_ascii=False).replace("\x7f", "\\u007f")
@@ -37,10 +40,27 @@ class LLMConfig:
     model: str = DEFAULT_MODEL
     api_key_env: str = DEFAULT_API_KEY_ENV
     reasoning_effort: str | None = None
-    fallbacks: list[str] = field(default_factory=list)
     num_retries: int = 2
     temperature: float = 0.1
     timeout: float = 60.0
+
+    spark_thinking: str = ""
+    provider_urls: dict[str, str] = field(default_factory=dict)
+    recent_models: list[tuple[str, str]] = field(default_factory=list)
+
+    def recent_model_ids(self) -> list[tuple[str, str]]:
+        models = [(self.provider, self.model), *self.recent_models]
+        return list(
+            dict.fromkeys(
+                (provider, model)
+                for provider, model in models
+                if provider.strip() and model.strip()
+            )
+        )[:RECENT_MODEL_LIMIT]
+
+    @property
+    def is_spark(self) -> bool:
+        return self.provider.strip().lower() == "spark"
 
     def litellm_model(self) -> str:
         provider = (self.provider or "").strip().lower()
@@ -177,6 +197,13 @@ class Config:
     fetch: FetchConfig = field(default_factory=FetchConfig)
     confidence_threshold: float = 0.8
     auto_push: bool = False
+    # Runtime 与 Vault 分离；空值回落 ~/.syvrio/runtime，SYVRIO_RUNTIME 优先。
+    runtime: str = ""
+
+    def paths(self, config_file: Path | None = None) -> SyvrioPaths:
+        return SyvrioPaths(
+            self.vault, runtime_path(self.runtime), config_file or default_config_path()
+        )
 
 
 def _default_config_dir() -> Path:
@@ -236,6 +263,19 @@ def _validate_types(data: dict, defaults: dict, prefix: str = "") -> None:
         elif isinstance(default, list):
             if not isinstance(value, list):
                 raise ConfigError(f"配置字段 {name} 必须是字符串数组。")
+            if name == "llm.recent_models":
+                if not isinstance(value, list) or any(
+                    not isinstance(pair, list)
+                    or len(pair) != 2
+                    or any(not isinstance(part, str) or not part.strip() for part in pair)
+                    for pair in value
+                ):
+                    raise ConfigError(
+                        "配置字段 llm.recent_models 必须是 [供应商, 模型] 字符串对的数组。"
+                    )
+                continue
+            if not isinstance(value, list):
+                raise ConfigError(f"配置字段 {name} 必须是字符串数组。")
             for index, item in enumerate(value):
                 if not isinstance(item, str):
                     raise ConfigError(f"配置字段 {name}[{index}] 必须是字符串。")
@@ -279,6 +319,11 @@ def _validate_range(
 
 def _validate_config(data: dict) -> None:
     _validate_types(data, asdict(Config(vault=Path("."))))
+    llm = data.get("llm", {})
+    if any(not isinstance(url, str) or not url.strip() for url in llm.get("provider_urls", {}).values()):
+        raise ConfigError("配置字段 llm.provider_urls 的值必须是非空字符串。")
+    if llm.get("spark_thinking", "") not in ("", *SPARK_THINKING_MODES):
+        raise ConfigError("配置字段 llm.spark_thinking 必须为空或为 enabled、auto、disabled。")
     for name in (
         "llm.timeout", "chat.context_window", "chat.max_tool_steps", "chat.tool_timeout",
         "search.timeout", "search.max_results", "search.fetch_timeout",
@@ -311,19 +356,19 @@ def load_config(path: Path | str | None = None) -> Config:
     vault_raw = data.get("vault") or str(default_vault_path())
     llm_raw = data.get("llm", {})
     base_url = llm_raw.get("base_url", DEFAULT_BASE_URL)
-    fallbacks = llm_raw.get("fallbacks", [])
-    if not isinstance(fallbacks, list):
-        fallbacks = []
     llm = LLMConfig(
         provider=str(llm_raw.get("provider") or infer_provider(base_url)),
         base_url=base_url,
         model=llm_raw.get("model", DEFAULT_MODEL),
         api_key_env=llm_raw.get("api_key_env", DEFAULT_API_KEY_ENV),
         reasoning_effort=(str(llm_raw.get("reasoning_effort") or "").strip() or None),
-        fallbacks=[str(item) for item in fallbacks if str(item).strip()],
         num_retries=int(llm_raw.get("num_retries", 2)),
         temperature=float(llm_raw.get("temperature", 0.1)),
         timeout=float(llm_raw.get("timeout", 60.0)),
+        spark_thinking=llm_raw.get("spark_thinking", ""),
+        provider_urls=dict(llm_raw.get("provider_urls", {})),
+        recent_models=[(provider, model) for provider, model in llm_raw.get("recent_models", [])],
+
     )
     chat_raw = data.get("chat", {})
     chat = ChatConfig(
@@ -424,6 +469,7 @@ def load_config(path: Path | str | None = None) -> Config:
         fetch=fetch,
         confidence_threshold=float(data.get("confidence_threshold", 0.8)),
         auto_push=bool(data.get("auto_push", False)),
+        runtime=str(data.get("runtime", "")),
     )
 
 
@@ -445,6 +491,7 @@ vault = {toml_literal(vault.as_posix())}
 
 confidence_threshold = 0.8
 auto_push = false
+runtime = {toml_literal("~/.syvrio/runtime")}
 
 [llm]
 provider = {toml_literal("deepseek")}
@@ -452,7 +499,9 @@ base_url = {toml_literal(DEFAULT_BASE_URL)}
 model = {toml_literal(DEFAULT_MODEL)}
 api_key_env = {toml_literal(DEFAULT_API_KEY_ENV)}
 reasoning_effort = {toml_literal("")}
-fallbacks = {toml_literal([])}
+spark_thinking = ""
+provider_urls = {{}}
+recent_models = []
 num_retries = 2
 temperature = 0.1
 timeout = 60.0

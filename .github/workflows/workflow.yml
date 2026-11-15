@@ -7,17 +7,21 @@ permissions:
   contents: read
 
 jobs:
-  publish:
-    # PyPI trusted publisher for syvrio must be configured before manual dispatch.
+  build:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    environment:
-      name: pypi
-      url: https://pypi.org/p/syvrio
-    permissions:
-      id-token: write
-      contents: read
+    container: debian:13-slim
     steps:
+      - name: Install Debian prerequisites
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates git libstdc++6
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Enable Corepack
+        run: corepack enable
 
       - uses: astral-sh/setup-uv@v6
         with:
@@ -29,8 +33,15 @@ jobs:
       - name: Test
         run: uv run pytest -q
 
+      - name: Build and stage Web assets
+        run: uv run python scripts/build_web.py
+      - name: Frontend tests
+        working-directory: web
+        run: corepack pnpm test
       - name: Build
         run: uv build
+      - name: Verify wheel contains Web assets
+        run: uv run python scripts/build_web.py --wheel dist/*.whl
 
       - name: Verify distribution contents
         run: |
@@ -64,6 +75,26 @@ jobs:
               assert not any("/src/quiet_memo/" in name or "/src/quietmemo/" in name for name in names)
           print(f"Validated syvrio {version} distributions: no legacy Python package or CLI entry points.")
           PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pypi-distributions
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/syvrio
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: pypi-distributions
+          path: dist/
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 from importlib import metadata
 from pathlib import Path
@@ -9,13 +10,15 @@ from syvrio.app.chat_widgets import ASSISTANT_NAME
 from syvrio.infra.config import (
     CONFIG_FILENAME,
     KEYRING_SERVICE,
+    Config,
+    LLMConfig,
+    RetrievalConfig,
     default_config_path,
     default_vault_path,
 )
 from syvrio.memory.extractor import StaticExtractor
 from syvrio.memory.models import ExtractionResult
 from syvrio.memory.service import MemoryService
-from syvrio.infra.config import Config, LLMConfig, RetrievalConfig
 
 
 def test_only_syvrio_console_script():
@@ -75,6 +78,8 @@ def test_runtime_metadata_uses_syvrio_directory(tmp_path: Path):
     )
     service = MemoryService(config, extractor=StaticExtractor(ExtractionResult(memories=[])))
     service.init_vault()
-    assert (config.vault / ".syvrio").is_dir()
     service.note("品牌测试条目", topic="misc")
-    assert (config.vault / "memories" / "misc.md").exists()
+    assert (config.vault / "memories" / "general" / "misc.md").exists()
+    # Runtime 与 Vault 分离：绑定标记在 Runtime 状态目录，Vault 内不再有 .syvrio。
+    assert not (config.vault / ".syvrio").exists()
+    assert (Path(os.environ["SYVRIO_RUNTIME"]) / "state" / "vault-binding.json").is_file()

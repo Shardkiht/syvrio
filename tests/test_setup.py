@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import pytest
-
-pytestmark = pytest.mark.config
-
 import sys
 import tomllib
 import types
+
+import pytest
 
 from syvrio.infra.config import (
     ChatConfig,
@@ -21,10 +19,13 @@ from syvrio.infra.config import (
 )
 from syvrio.infra.providers import PRESETS, display_model, provider_label, write_config
 
+pytestmark = pytest.mark.config
+
 
 @pytest.mark.parametrize("provider", ["custom", "deepseek", "spark"])
 def test_model_change_preserves_same_provider_endpoint_and_credentials(tmp_path, monkeypatch, provider):
     from types import SimpleNamespace
+
     from syvrio.app import actions
     from syvrio.memory.service import MemoryService
 
@@ -62,6 +63,25 @@ def test_litellm_model_names():
     assert LLMConfig(provider="openai", model="openai/gpt-4o-mini").litellm_model() == "openai/gpt-4o-mini"
 
 
+def test_model_failure_is_returned_after_requesting_only_the_selected_model(monkeypatch):
+    from syvrio.llm import client
+
+    config = LLMConfig(model="synthetic-primary", num_retries=0)
+    calls = []
+
+    class FakeLiteLLM:
+        def completion(self, **kwargs):
+            calls.append(kwargs)
+            raise RuntimeError("synthetic model failure")
+
+    monkeypatch.setattr(client, "_litellm", lambda: FakeLiteLLM())
+    with pytest.raises(RuntimeError, match="synthetic model failure"):
+        client.complete(config, [{"role": "user", "content": "synthetic"}])
+    assert len(calls) == 1
+    assert calls[0]["model"] == "deepseek/synthetic-primary"
+    assert "fallbacks" not in calls[0]
+
+
 def test_spark_preset_and_configuration_roundtrip(tmp_path):
     from syvrio.infra.config import infer_provider
 
@@ -81,6 +101,7 @@ def test_spark_preset_and_configuration_roundtrip(tmp_path):
 
 def test_spark_chat_parameters_match_maas_contract(monkeypatch):
     from types import SimpleNamespace
+
     from syvrio.llm import client
 
     calls = []
@@ -103,6 +124,7 @@ def test_spark_chat_parameters_match_maas_contract(monkeypatch):
 
 def test_spark_streaming_preserves_deltas_and_usage(monkeypatch):
     from types import SimpleNamespace
+
     from syvrio.llm import client
 
     calls = []
@@ -140,7 +162,6 @@ def test_write_config_roundtrip(tmp_path):
             model="deepseek-ai/DeepSeek-V3",
             api_key_env="SILICONFLOW_API_KEY",
             reasoning_effort="medium",
-            fallbacks=["openai/gpt-4o-mini"],
             num_retries=1,
         ),
         chat=ChatConfig(
@@ -166,7 +187,6 @@ def test_write_config_roundtrip(tmp_path):
 
     assert loaded.llm.provider == "siliconflow"
     assert loaded.llm.reasoning_effort == "medium"
-    assert loaded.llm.fallbacks == ["openai/gpt-4o-mini"]
     assert loaded.llm.num_retries == 1
     assert loaded.chat.context_window == 16000
     assert loaded.chat.recall_rewrite is False
@@ -360,7 +380,7 @@ def test_provider_model_list_cache(monkeypatch):
     monkeypatch.setattr(
         client,
         "_fetch_provider_models_uncached",
-        lambda cfg, timeout: calls.append(1) or ["model-a"],
+        lambda cfg, timeout, api_key: calls.append(api_key) or ["model-a"],
     )
     client.clear_model_cache()
     try:
@@ -370,6 +390,12 @@ def test_provider_model_list_cache(monkeypatch):
 
         assert client.fetch_provider_models(config, refresh=True) == ["model-a"]
         assert len(calls) == 2
+
+        assert client.fetch_provider_models(config, api_key="setup-key") == ["model-a"]
+        monkeypatch.setattr(LLMConfig, "api_key", lambda self: "different-workspace-key")
+        assert client.cached_provider_models(config) is None
+        assert client.fetch_provider_models(config) == ["model-a"]
+        assert calls == ["test-key", "test-key", "setup-key", "different-workspace-key"]
     finally:
         client.clear_model_cache()
 
@@ -383,7 +409,7 @@ def test_cached_provider_models_reads_cache_only(monkeypatch):
     monkeypatch.setattr(
         client,
         "_fetch_provider_models_uncached",
-        lambda cfg, timeout: calls.append(1) or ["model-a"],
+        lambda cfg, timeout, api_key: calls.append(api_key) or ["model-a"],
     )
     client.clear_model_cache()
     try:
@@ -400,6 +426,7 @@ def test_cancellable_transport_closes_without_waiting_for_tokens(monkeypatch, be
     import asyncio
     from threading import Event
     from types import SimpleNamespace
+
     from syvrio.llm import client
 
     cancel = Event()
@@ -433,6 +460,7 @@ def test_cancellable_transport_closes_without_waiting_for_tokens(monkeypatch, be
 def test_cancellable_transport_normal_completion_and_tool_fragments(monkeypatch):
     from threading import Event
     from types import SimpleNamespace
+
     from syvrio.llm import client
 
     closed = []
@@ -468,6 +496,7 @@ def test_cancellable_transport_normal_completion_and_tool_fragments(monkeypatch)
 
 def test_cancellable_stream_with_installed_litellm_mock_transport(monkeypatch):
     from threading import Event
+
     from syvrio.llm import client
 
     litellm = client._litellm()
@@ -686,7 +715,7 @@ def test_search_setup_search_and_fetch_independent(tmp_path, monkeypatch):
     assert result["fetch_providers"] == ["open_websearch"]
 
 
-def test_llm_setup_flow_unchanged(tmp_path, monkeypatch):
+def test_llm_setup_uses_api_models_and_the_entered_key(tmp_path, monkeypatch):
     """顶层菜单选 LLM 时走原有流程，返回结构不变。"""
     from syvrio.infra import providers as providers_module
 
@@ -699,9 +728,10 @@ def test_llm_setup_flow_unchanged(tmp_path, monkeypatch):
             next(p for p in providers_module.PRESETS if p.key == "custom"),
             "https://api.example.com/v1",
             "MY_KEY_ENV",
+            "synthetic-key",
             "my-model",
             16000,  # context（reasoning 因 custom 无参数而跳过）
-            "",  # API Key 留空
+            False,  # 不调用真实模型
             False,  # 不初始化记忆库
         ],
     )
@@ -709,11 +739,23 @@ def test_llm_setup_flow_unchanged(tmp_path, monkeypatch):
         providers_module, "_capabilities", lambda *args, **kwargs: ({}, ())
     )
 
+    import syvrio.llm as llm
+    _install_fake_keyring(monkeypatch, {})
+    calls = []
+
+    def fetch_models(config, *, refresh, api_key):
+        calls.append((config.base_url, config.api_key_env, refresh, api_key))
+        return ["my-model", "other-model"]
+
+    monkeypatch.setattr(llm, "fetch_provider_models", fetch_models)
     result = providers_module.run_setup(config_path, None)
 
     assert result["provider"] == "custom"
     assert result["base_url"] == "https://api.example.com/v1"
-    assert result["key_saved"] is False
+    assert result["key_saved"] is True
+    assert load_config(config_path).llm.model == "my-model"
+    assert calls == [("https://api.example.com/v1", "MY_KEY_ENV", True, "synthetic-key")]
+    assert "synthetic-key" not in config_path.read_text()
 
 
 def test_search_setup_can_edit_daily_and_monthly_limits(tmp_path, monkeypatch):
@@ -795,10 +837,10 @@ def test_baidu_menu_only_offers_search(monkeypatch, tmp_path):
 
 def test_usage_menu_zero_reset_and_resume(tmp_path, monkeypatch, capsys):
     from syvrio.infra import providers as module
-    from syvrio.infra.config import Config, UsageLimit, load_config
+    from syvrio.infra.config import Config, load_config
     from syvrio.infra.search.usage import UsageLimiter
     config = Config(vault=tmp_path / "vault")
-    limiter = UsageLimiter(config.search.usage_limits, config.vault / ".syvrio/usage.json")
+    limiter = UsageLimiter(config.search.usage_limits, config.paths().state_dir / "usage.json")
     limiter.record("exa")
     limiter.pause("exa", "NO_MORE_CREDITS")
     path = tmp_path / "config.toml"
@@ -808,7 +850,7 @@ def test_usage_menu_zero_reset_and_resume(tmp_path, monkeypatch, capsys):
     loaded = load_config(path)
     assert loaded.search.usage_limits["exa"].monthly == 0
     assert (loaded.search.usage_limits["tavily"].daily, loaded.search.usage_limits["tavily"].monthly) == (0, 800)
-    state = UsageLimiter(loaded.search.usage_limits, config.vault / ".syvrio/usage.json").status("exa")
+    state = UsageLimiter(loaded.search.usage_limits, config.paths().state_dir / "usage.json").status("exa")
     assert not state["paused"] and state["monthly"]["used"] == 1
     output = capsys.readouterr().out
     assert "NO_MORE_CREDITS" in output and "不限" in output

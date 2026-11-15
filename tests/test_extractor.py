@@ -6,10 +6,10 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
-pytestmark = pytest.mark.memory
-
 from syvrio.memory.extractor import ExtractorError, parse_extraction
 from syvrio.memory.models import MemoryContext
+
+pytestmark = pytest.mark.memory
 
 
 @pytest.mark.parametrize("value", ["2024", "2024-02", "2024-02-29"])

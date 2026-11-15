@@ -19,7 +19,6 @@ from .base import (
     ProviderError,
     ProviderErrorKind,
     SearchFailure,
-    SearchProvider,
     SearchQuery,
     SearchResult,
 )

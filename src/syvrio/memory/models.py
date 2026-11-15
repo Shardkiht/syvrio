@@ -3,10 +3,12 @@ from __future__ import annotations
 import calendar
 import re
 import secrets
-from datetime import date, datetime
+from datetime import date
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from ..time import parse_timestamp, serialize_timestamp, utc_now
 
 
 class MemoryContext(BaseModel):
@@ -23,6 +25,10 @@ class MemoryContext(BaseModel):
     emotion: str | None = None
     emotion_at: Literal["event", "expression"] | None = None
     emotion_source: Literal["explicit"] | None = None
+
+    def markdown_fields(self) -> list[tuple[str, str]]:
+        values = self.model_dump(exclude_none=True)
+        return [(key, values[name]) for key, name in _CONTEXT_KEYS.items() if name in values]
 
     @field_validator("event_time", "valid_from", "valid_to")
     @classmethod
@@ -102,6 +108,11 @@ class Inference(BaseModel):
     updated_at: str
     status: InferenceStatus = "hypothesis"
 
+    @field_validator("created_at", "updated_at")
+    @classmethod
+    def validate_timestamp(cls, value: str) -> str:
+        return serialize_timestamp(parse_timestamp(value))
+
     @field_validator("source_ids")
     @classmethod
     def unique_sources(cls, values: list[str]) -> list[str]:
@@ -126,6 +137,11 @@ class PendingItem(BaseModel):
     conflict_with: str | None = None
     context: MemoryContext | None = None
 
+    @field_validator("created_at")
+    @classmethod
+    def validate_timestamp(cls, value: str) -> str:
+        return serialize_timestamp(parse_timestamp(value))
+
     @classmethod
     def from_candidate(
         cls,
@@ -136,10 +152,10 @@ class PendingItem(BaseModel):
         message_id: str | None = None,
         conflict_with: str | None = None,
     ) -> "PendingItem":
-        stamp = datetime.now()
+        stamp = utc_now()
         return cls(
             id=f"p-{stamp:%Y%m%d-%H%M%S}-{secrets.token_hex(4)}",
-            created_at=stamp.isoformat(timespec="seconds"),
+            created_at=serialize_timestamp(stamp.replace(microsecond=0)),
             source=source,
             text=candidate.text,
             topic=candidate.topic,
@@ -155,6 +171,21 @@ class PendingItem(BaseModel):
         )
 
 
+_CONTEXT_NAMESPACES = {
+    "temporal": ("event_time", "valid_from", "valid_to", "time_text"),
+    "spatial": ("location", "location_kind"),
+    "affective": ("emotion", "emotion_at", "emotion_source"),
+}
+_CONTEXT_KEYS = {f"{ns}.{key}": key for ns, keys in _CONTEXT_NAMESPACES.items() for key in keys}
+
+
+class FieldNode(BaseModel):
+    key: str
+    value: str | None = None
+    children: tuple[FieldNode, ...] = ()
+    raw_markdown: str
+
+
 class Entry(BaseModel):
     id: str
     topic: str
@@ -164,8 +195,31 @@ class Entry(BaseModel):
     supersedes: str | None = None
     metadata: dict[str, str] = Field(default_factory=dict)
 
+    raw_markdown: str = ""
+    source_path: str = ""
+    line: int = 0
+    end_line: int = 0
+    confidence: float | None = None
+    context_fields: tuple[FieldNode, ...] = ()
+    extension_fields: tuple[FieldNode, ...] = ()
+    topic_title: str = Field(default="", exclude=True)
+
     @property
     def context(self) -> MemoryContext | None:
+        if self.context_fields:
+            values: dict[str, str] = {}
+            for node in self.context_fields:
+                name = _CONTEXT_KEYS.get(node.key)
+                if name and node.value is not None:
+                    values.setdefault(name, node.value)
+            # A manually written v2 record can omit companion fields. Project only
+            # understood scalar values without inventing type or provenance.
+            for key in ("event_time", "valid_from", "valid_to"):
+                try:
+                    MemoryContext.validate_date(values.get(key))
+                except ValueError:
+                    values.pop(key, None)
+            return MemoryContext.model_construct(**values) if values else None
         raw = self.metadata.get("context")
         return MemoryContext.model_validate_json(raw) if raw else None
 

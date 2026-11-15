@@ -112,7 +112,7 @@ def main() -> None:
         categories = [c["category"] for c in cases]
         for category in dict.fromkeys(categories):
             line = f"{category:<8}"
-            for name, r in results.items():
+            for _name, r in results.items():
                 rows = r["per_category"][category]
                 line += f"{sum(rows) / len(rows):>10.0%}"
             print(line)

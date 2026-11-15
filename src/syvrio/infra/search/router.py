@@ -1,15 +1,16 @@
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import time
 from collections.abc import Sequence
-from typing import Any
-import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from ..config import SearchConfig, read_api_key
+from ..paths import SyvrioPaths, vault_paths
 from .base import (
     FetchResult,
     ProviderError,
@@ -188,11 +189,12 @@ def build_search_router(
     cache = None
     limiter = None
     if vault is not None:
+        paths = vault if isinstance(vault, SyvrioPaths) else vault_paths(Path(vault))
         if config.cache_ttl > 0:
-            cache = SearchCache(vault / ".syvrio" / "search-cache.json", config.cache_ttl)
+            cache = SearchCache(paths.cache_dir / "search" / "search-cache.json", config.cache_ttl)
         from .usage import USAGE_FILENAME, UsageLimiter
 
-        limiter = UsageLimiter(config.usage_limits, vault / ".syvrio" / USAGE_FILENAME)
+        limiter = UsageLimiter(config.usage_limits, paths.state_dir / USAGE_FILENAME)
     return SearchRouter(
         build_registry(config),
         order=config.providers,

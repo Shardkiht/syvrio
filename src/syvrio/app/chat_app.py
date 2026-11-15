@@ -11,30 +11,32 @@ from datetime import date
 from functools import partial
 from urllib.parse import urlsplit
 
+from rich.markup import escape
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.widgets import Input, Label, ListView, ListItem, Markdown, Static
+from textual.widgets import Input, Label, ListItem, ListView, Markdown, Static
 
 from ..agent.runtime import AgentRuntime
 from ..agent.session import Session, SessionStore
 from ..infra.search.daemon import ensure_search_daemon
 from ..infra.tokens import format_tokens
 from ..memory.service import MemoryService
+from ..time import format_local_timestamp
 from .chat_commands import ChatCommandsMixin
 from .chat_flow import ChatFlowMixin, _QueuedLine
 from .chat_input import BarInput
 from .chat_theme import APP_CSS
 from .chat_widgets import (
     ASSISTANT_NAME,
+    ChatReply,
     CommandPalette,
+    ModelPickerScreen,
     NewSessionButton,
     PickScreen,
-    ModelPickerScreen,
     SessionItem,
     SessionPickerScreen,
     SidebarToggle,
-    ChatReply,
     TranscriptView,
 )
 from .session_ui import visible_sessions
@@ -86,6 +88,14 @@ class ChatApp(ChatFlowMixin, ChatCommandsMixin, App):
         self._stream_buffer = ""
         self._stream_stamp = ""
         self._stream_flush_scheduled = False
+        # 思考流式面板与撤销状态：随回合生命周期重置（见 _begin_ask/_end_ask）。
+        self._thinking_widget = None
+        self._thinking_parts: list[str] = []
+        self._undo_requested = False
+        self._undo_session_id: str | None = None
+        self._undo_user_message_id: str | None = None
+        self._pending_undo_restore: dict[str, str] = {}
+        self._queue_paused = False
         self._usage_cache: dict[tuple, int] = {}
         self._usage_request: tuple | None = None
         self._usage_failed: tuple | None = None
@@ -202,10 +212,34 @@ class ChatApp(ChatFlowMixin, ChatCommandsMixin, App):
         self.query_one("#input", Input).focus()
 
     def action_focus_next(self) -> None:
+        # Tab 命令补全：主屏输入框末尾输入 / 前缀时补全高亮命令，否则正常轮转焦点。
+        if len(self.screen_stack) == 1:
+            widget = self.query_one("#input", Input)
+            value = widget.value
+            if (
+                widget.has_focus
+                and widget.cursor_at_end
+                and widget.selection.is_empty
+                and value.startswith("/")
+            ):
+                palette = self.query_one("#cmd-palette", CommandPalette)
+                prefix = value[1:]
+                if palette.prefix != prefix:
+                    palette.open(prefix)
+                if command := palette.current:
+                    widget.value = f"/{command}"
+                    widget.cursor_position = len(widget.value)
+                    return
         self._focus_active_input()
 
     def action_focus_previous(self) -> None:
         self._focus_active_input()
+
+    def pop_screen(self):
+        # 模态屏关闭后恢复输入框焦点与硬件光标；否则原生竖线会停在左上角闪烁。
+        result = super().pop_screen()
+        self.call_after_refresh(self._focus_active_input)
+        return result
 
     def run_command_from_palette(self, command: str) -> None:
         self.query_one("#cmd-palette", CommandPalette).close()
@@ -225,7 +259,7 @@ class ChatApp(ChatFlowMixin, ChatCommandsMixin, App):
         current_id = self.runtime.current.id if self.runtime.has_session else None
         last_date = None
         for row in visible_sessions(self.sessions.list(100, with_tokens=False)):
-            stamp = row.get("updated_at") or row.get("started_at") or ""
+            stamp = format_local_timestamp(row.get("last_message_at") or row.get("started_at"))
             date = stamp[:10] or "Unknown date"
             if date != last_date:
                 view.append(ListItem(Label(date, classes="group-label"), disabled=True))
@@ -335,6 +369,9 @@ class ChatApp(ChatFlowMixin, ChatCommandsMixin, App):
             if not self.busy:
                 self._drain_pending_intent()
             return
+        if self._queue_paused:
+            # 撤销后保留消息，直到用户下一次主动提交。
+            return
         self._dispatch_queue()
 
     def _session_work(self, session_id: str | None) -> None:
@@ -400,6 +437,7 @@ class ChatApp(ChatFlowMixin, ChatCommandsMixin, App):
         self._end_navigation()
         if message:
             self.notify(message)
+        self._flush_undo_restore()
         self.query_one("#input", Input).focus()
         self._drain_pending_intent()
 
@@ -408,8 +446,8 @@ class ChatApp(ChatFlowMixin, ChatCommandsMixin, App):
             return
         self.push_screen(
             PickScreen(
-                f"Delete session \"{row['title']}\"? This cannot be undone",
-                [("Delete", True), ("Cancel", False)],
+                f'Delete session "{escape(row["title"])}" permanently?\nThis cannot be undone.',
+                [("Cancel", False), ("Delete permanently", True)],
                 partial(self._delete_session_result, row),
             )
         )
@@ -463,9 +501,11 @@ class ChatApp(ChatFlowMixin, ChatCommandsMixin, App):
         # 视图销毁后活跃段控件失效；buffer 保留供切回时重放（落盘段由磁盘重建负责）。
         self._stream_widget = None
         self._stream_flush_scheduled = False
+        self._thinking_widget = None
 
     def _scroll_end(self) -> None:
-        self.call_after_refresh(self._chat().scroll_end, animate=False)
+        # 布局刷新前后都可能收到上滑/选择事件，真正滚动时再核验跟随意图。
+        self.call_after_refresh(self._chat().scroll_to_follow)
 
     def add_welcome(self) -> None:
         total = self.service.config.chat.context_window
@@ -537,7 +577,8 @@ class ChatApp(ChatFlowMixin, ChatCommandsMixin, App):
 
     def add_card(self, text: str, title: str | None = None) -> None:
         body = f"{title}\n{text}" if title else text
-        self._chat().mount(Static(body, classes="card"))
+        # 卡片内容含用户数据（会话名、文件路径等），禁用 markup 防止方括号被吃掉。
+        self._chat().mount(Static(body, classes="card", markup=False))
         self._scroll_end()
 
     def add_markdown_card(self, markdown: str, title: str | None = None) -> None:
@@ -644,6 +685,11 @@ class ChatApp(ChatFlowMixin, ChatCommandsMixin, App):
     def _begin_ask(self, session_id: str | None) -> None:
         self._ask_active = True
         self._ask_in_flight = session_id
+        self._thinking_widget = None
+        self._thinking_parts = []
+        self._undo_requested = False
+        self._undo_session_id = session_id
+        self._undo_user_message_id = None
         self._progress_started = time.monotonic()
         self._progress_phase = "Working"
         self.query_one("#input", BarInput).set_hint("Message to queue · Esc to stop")
@@ -657,6 +703,8 @@ class ChatApp(ChatFlowMixin, ChatCommandsMixin, App):
         self._stream_buffer = ""
         self._stream_stamp = ""
         self._stream_flush_scheduled = False
+        self._thinking_widget = None
+        self._thinking_parts = []
         self.query_one("#input", BarInput).set_hint("Message or /command")
         self._release_input_if_idle()
 
@@ -690,6 +738,8 @@ class ChatApp(ChatFlowMixin, ChatCommandsMixin, App):
     # ---------- 输入与回合 ----------
 
     def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id != "input":
+            return  # 模态搜索框的输入不驱动主命令面板。
         palette = self.query_one("#cmd-palette", CommandPalette)
         value = event.value
         if value.startswith("/") and " " not in value:
@@ -714,4 +764,6 @@ class ChatApp(ChatFlowMixin, ChatCommandsMixin, App):
             self._command(line)
             return
         self.query_one("#cmd-palette", CommandPalette).close()
+        # 用户主动开始下一轮消息后，撤销期间暂停的旧队列才恢复接续。
+        self._queue_paused = False
         self._start_ask(line)

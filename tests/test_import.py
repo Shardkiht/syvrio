@@ -4,8 +4,6 @@ from types import SimpleNamespace
 
 import pytest
 
-pytestmark = pytest.mark.memory
-
 from syvrio.infra.config import Config, LLMConfig, RetrievalConfig
 from syvrio.memory.extractor import (
     ExtractorError,
@@ -16,7 +14,7 @@ from syvrio.memory.extractor import (
 from syvrio.memory.models import Candidate, ExtractionResult
 from syvrio.memory.service import MemoryService
 
-
+pytestmark = pytest.mark.memory
 def response(text: str):
     return SimpleNamespace(
         choices=[SimpleNamespace(message=SimpleNamespace(content=text))]
@@ -217,4 +215,4 @@ def test_import_text_passes_store_topics_to_extractor(tmp_path, monkeypatch):
 
     service.import_text("新内容")
 
-    assert captured["topics"] == ["preferences"]
+    assert captured["topics"] == ["memories/general/preferences.md"]

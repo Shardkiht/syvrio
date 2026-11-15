@@ -16,6 +16,11 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends ca-certificates git libstdc++6
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Enable Corepack
+        run: corepack enable
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
@@ -23,7 +28,14 @@ jobs:
       - run: uv lock --check
       - run: uv sync --frozen
       - run: uv run pytest -q
+      - name: Build and stage Web assets
+        run: uv run python scripts/build_web.py
+      - name: Frontend tests
+        working-directory: web
+        run: corepack pnpm test
       - run: uv build
+      - name: Verify wheel contains Web assets
+        run: uv run python scripts/build_web.py --wheel dist/*.whl
       - run: uv run syvrio --help
       - run: uv run syvrio --version
       - run: uv run python -m syvrio --version
