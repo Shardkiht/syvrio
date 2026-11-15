@@ -98,7 +98,12 @@ def _probe(candidate: Path) -> tuple[int, int, int] | None:
     """Run the interpreter in isolation and report its (major, minor, micro) version."""
     try:
         output = subprocess.run(
-            (str(candidate), "-I", "-c", "import sys; print('{}.{}.{}'.format(*sys.version_info[:3]))"),
+            (
+                str(candidate),
+                "-I",
+                "-c",
+                "import sys; print('{}.{}.{}'.format(*sys.version_info[:3]))",
+            ),
             check=True,
             timeout=30,
             capture_output=True,
@@ -209,7 +214,9 @@ def _healthy(client: httpx.Client, url: str, version: str, seconds: int = 20) ->
     return False
 
 
-def _install(client: httpx.Client, root: Path, version: str, wheel: dict, python: str | None = None) -> Path:
+def _install(
+    client: httpx.Client, root: Path, version: str, wheel: dict, python: str | None = None
+) -> Path:
     # Interpreter selection comes before the download: a missing interpreter must fail fast.
     interpreter = _interpreter(python, wheel.get("requires_python"))
     versions = root / "versions"
@@ -254,7 +261,9 @@ def _install(client: httpx.Client, root: Path, version: str, wheel: dict, python
                     env=no_downloads,
                 )
             except subprocess.TimeoutExpired as error:
-                raise UpdateError("install", f"uv pip install timed out after {error.timeout} s") from error
+                raise UpdateError(
+                    "install", f"uv pip install timed out after {error.timeout} s"
+                ) from error
             except subprocess.CalledProcessError as error:
                 raise UpdateError("install", f"uv pip install failed: {_detail(error)}") from error
         executable = environment / "bin" / "syvrio"
@@ -270,8 +279,15 @@ def _install(client: httpx.Client, root: Path, version: str, wheel: dict, python
                 "from importlib.resources import files; "
                 "assert files('syvrio.app.web').joinpath('static', 'index.html').is_file()",
             )
-        except subprocess.SubprocessError as error:
-            raise UpdateError("verify", f"the installed environment is broken: {_detail(error)}") from error
+        except subprocess.TimeoutExpired as error:
+            raise UpdateError(
+                "verify",
+                f"the installed environment is broken: verification timed out after {error.timeout} s",
+            ) from error
+        except subprocess.CalledProcessError as error:
+            raise UpdateError(
+                "verify", f"the installed environment is broken: {_detail(error)}"
+            ) from error
         return executable
     except BaseException:
         shutil.rmtree(environment, ignore_errors=True)
@@ -290,20 +306,35 @@ def _service_state(unit: str) -> str:
 
 
 def _stop_service(unit: str) -> None:
+    """Stop the unit and return only with a confirmed stop; otherwise abort the update."""
     try:
         _run("systemctl", "--user", "stop", unit, timeout=STOP_TIMEOUT)
         return
     except subprocess.SubprocessError:
         pass
     # The stop job may still be concluding (the unit stops itself with a 5 min timeout);
-    # wait for it to settle instead of leaving a half-stopped unit without a restore.
+    # wait for it to settle instead of switching under a unit that is going away anyway.
     deadline = time.monotonic() + 60
-    state = _service_state(unit)
-    while state in {"active", "activating", "deactivating"} and time.monotonic() < deadline:
+    while True:
+        try:
+            state = _service_state(unit)
+        except (OSError, subprocess.SubprocessError) as error:
+            raise UpdateError(
+                "stop", f"could not confirm the state of {unit}: {error}; nothing was changed"
+            ) from error
+        if state in {"inactive", "failed"}:
+            return
+        if time.monotonic() >= deadline:
+            break
         time.sleep(2)
-        state = _service_state(unit)
-    if state == "active":
-        raise UpdateError("stop", f"{unit} still reports active after a failed stop; nothing was changed")
+    # Still not confirmed stopped: the unit may go down on its own later, e.g. while
+    # deactivating. Keep the old link untouched and leave the decision to the operator.
+    raise UpdateError(
+        "stop",
+        f"{unit} still reports {state!r} after a failed stop command, so the stop is "
+        f"unconfirmed and the update was aborted; the unit may stop on its own later. "
+        f"Check systemctl --user is-active {unit} and start it again if needed.",
+    )
 
 
 def update(root: Path, channel: str, unit: str, port: int, python: str | None = None) -> str:
@@ -329,12 +360,28 @@ def update(root: Path, channel: str, unit: str, port: int, python: str | None = 
         version, wheel = release
         # Built and verified while the old service keeps serving.
         new = _install(pypi, root, version, wheel, python)
+        new_environment = new.parent.parent
+
+        def discard_install() -> None:
+            # The fresh environment is ours alone. Drop it only once current cannot point
+            # into it, so the previous version, current and every other environment stay.
+            try:
+                if not link.resolve(strict=True).is_relative_to(new_environment):
+                    shutil.rmtree(new_environment, ignore_errors=True)
+            except OSError:
+                pass
+
         service = ("systemctl", "--user")
         url = f"http://127.0.0.1:{port}/api/health"
         with httpx.Client(trust_env=False) as local:
             if not _healthy(local, url, installed):
+                discard_install()
                 raise ValueError("The existing Web service is not healthy for this installation.")
-            _stop_service(unit)
+            try:
+                _stop_service(unit)
+            except BaseException:
+                discard_install()
+                raise
             try:
                 try:
                     _switch(link, new)
@@ -343,9 +390,13 @@ def update(root: Path, channel: str, unit: str, port: int, python: str | None = 
                 try:
                     _run(*service, "start", unit)
                 except subprocess.TimeoutExpired as error:
-                    raise UpdateError("start", f"systemctl start timed out after {error.timeout} s") from error
+                    raise UpdateError(
+                        "start", f"systemctl start timed out after {error.timeout} s"
+                    ) from error
                 except subprocess.CalledProcessError as error:
-                    raise UpdateError("start", f"systemctl start failed: {_detail(error)}") from error
+                    raise UpdateError(
+                        "start", f"systemctl start failed: {_detail(error)}"
+                    ) from error
                 if not _healthy(local, url, version, seconds=STARTUP_SECONDS):
                     raise UpdateError(
                         "health",
@@ -361,11 +412,19 @@ def update(root: Path, channel: str, unit: str, port: int, python: str | None = 
                         raise UpdateError(
                             "health", f"the restored Syvrio {installed} failed its Web health check"
                         ) from None
-                except (UpdateError, OSError, subprocess.SubprocessError, KeyboardInterrupt) as rollback:
+                except (
+                    UpdateError,
+                    OSError,
+                    subprocess.SubprocessError,
+                    KeyboardInterrupt,
+                ) as rollback:
                     raise UpdateError(
                         "rollback",
                         f"the update failed ({error}) and restoring Syvrio {installed} also failed "
                         f"({rollback}); repoint {link} at {previous} and start {unit} manually",
                     ) from error
+                # Rollback succeeded: current is back on the old version, so the fresh
+                # environment is unreachable and safe to remove.
+                discard_install()
                 raise ValueError(f"Update failed; restored Syvrio {installed}.") from error
     return f"Updated Syvrio {installed} → {version} ({channel})."

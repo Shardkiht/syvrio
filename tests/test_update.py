@@ -32,6 +32,54 @@ def patch_release_transport(monkeypatch) -> None:
     monkeypatch.setattr(update.httpx, "Client", lambda **kwargs: factory(transport=transport))
 
 
+class FakeClock:
+    """Deterministic clock for settle loops: sleep advances simulated time."""
+
+    def __init__(self):
+        self.now = 1000.0
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+
+def use_fake_clock(monkeypatch):
+    clock = FakeClock()
+    monkeypatch.setattr(update.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(update.time, "sleep", clock.sleep)
+    return clock
+
+
+def patch_run_with_failing_stop(monkeypatch, old, events) -> None:
+    """_run mock where the version probe works and every stop command errors."""
+
+    def run(*args, **kwargs):
+        if args == (str(old), "--version"):
+            return "Syvrio 0.3.4"
+        if args[2:] == ("stop", "syvrio-web.service"):
+            events.append("stop")
+            raise subprocess.CalledProcessError(1, args)
+        events.append(args[2])
+        return ""
+
+    monkeypatch.setattr(update, "_run", run)
+
+
+def make_versions(tmp_path):
+    """Real old/new environment directories shaped like the updater builds them."""
+    old_env = tmp_path / "old-env"
+    (old_env / "bin").mkdir(parents=True)
+    old = old_env / "bin" / "syvrio"
+    old.touch()
+    new_env = tmp_path / "versions" / "0.5.2rc1-abc"
+    (new_env / "bin").mkdir(parents=True)
+    new = new_env / "bin" / "syvrio"
+    new.touch()
+    return old_env, old, new_env, new
+
+
 def test_update_channels_ignore_yanked_and_source_releases():
     releases = {v: [wheel(v)] for v in ("0.5.2rc1", "0.5.2rc10", "0.5.2", "0.5.3")}
     releases["0.5.3"][0]["yanked"] = True
@@ -189,6 +237,26 @@ def test_install_dependency_failure_cleans_up(tmp_path, monkeypatch):
     assert list((tmp_path / "versions").iterdir()) == []
 
 
+def test_install_verify_timeout_cleans_up(tmp_path, monkeypatch):
+    # verify 阶段的 TimeoutExpired 不得落进 CalledProcessError 分支（否则丢阶段与超时信息）。
+    monkeypatch.setattr(update, "_interpreter", lambda python, spec: "/usr/bin/python3.13")
+    monkeypatch.setattr(update, "_download", lambda client, wheel, target: None)
+
+    def run(*args, **kwargs):
+        if args[:2] == ("uv", "venv") or args[:3] == ("uv", "pip", "install"):
+            return ""
+        if args[-1] == "--version":
+            raise subprocess.TimeoutExpired(args[0], kwargs.get("timeout", 120))
+        return ""
+
+    monkeypatch.setattr(update, "_run", run)
+    with pytest.raises(update.UpdateError) as raised:
+        update._install(httpx.Client(), tmp_path, "0.5.4", wheel("0.5.4"))
+    assert raised.value.stage == "verify"
+    assert "timed out after 120 s" in str(raised.value)
+    assert list((tmp_path / "versions").iterdir()) == []
+
+
 # --- update() 编排（任务二）：stop/start/回滚全程不得破坏运行中的旧服务。 ---
 
 
@@ -236,22 +304,13 @@ def test_update_stop_failure_leaves_old_service_running(tmp_path, monkeypatch):
     monkeypatch.setattr(update, "_install", lambda *args: new)
     monkeypatch.setattr(update, "_healthy", lambda c, u, version, seconds=20: True)
     monkeypatch.setattr(update, "_service_state", lambda unit: "active")
+    use_fake_clock(monkeypatch)
     events = []
-
-    def run(*args, **kwargs):
-        if args == (str(old), "--version"):
-            return "Syvrio 0.3.4"
-        if args[2:] == ("stop", "syvrio-web.service"):
-            events.append("stop")
-            raise subprocess.CalledProcessError(1, args)
-        events.append(args[2])
-        return ""
-
-    monkeypatch.setattr(update, "_run", run)
+    patch_run_with_failing_stop(monkeypatch, old, events)
     with pytest.raises(update.UpdateError) as raised:
         update.update(tmp_path, "evo", "syvrio-web.service", 8765)
     assert raised.value.stage == "stop"
-    assert "nothing was changed" in str(raised.value)
+    assert "unconfirmed" in str(raised.value)
     assert link.resolve() == old
     assert events == ["stop"]
 
@@ -286,18 +345,79 @@ def test_update_waits_for_settling_stop(tmp_path, monkeypatch):
     assert events == ["stop", ("start", new)]
 
 
-def test_update_rollback_failure_reports_both_errors(tmp_path, monkeypatch):
+def test_update_stop_deactivating_timeout_aborts(tmp_path, monkeypatch):
+    # 停止命令失败后单元一直停在 deactivating：不得当作停止成功，链接不得切换。
+    old_env, old, new_env, new = make_versions(tmp_path)
+    link = tmp_path / "current"
+    link.symlink_to(old)
+    patch_release_transport(monkeypatch)
+    monkeypatch.setattr(update, "_install", lambda *args: new)
+    monkeypatch.setattr(update, "_healthy", lambda c, u, version, seconds=20: True)
+    monkeypatch.setattr(update, "_service_state", lambda unit: "deactivating")
+    use_fake_clock(monkeypatch)
+    events = []
+    patch_run_with_failing_stop(monkeypatch, old, events)
+    with pytest.raises(update.UpdateError) as raised:
+        update.update(tmp_path, "evo", "syvrio-web.service", 8765)
+    assert raised.value.stage == "stop"
+    assert "deactivating" in str(raised.value) and "unconfirmed" in str(raised.value)
+    assert "is-active" in str(raised.value)  # 人工处理指引
+    assert link.resolve() == old
+    assert events == ["stop"]
+    assert not new_env.exists() and old_env.exists()  # 失败安装已清理，旧版本保留
+
+
+def test_update_stop_unknown_state_aborts(tmp_path, monkeypatch):
+    old_env, old, new_env, new = make_versions(tmp_path)
+    link = tmp_path / "current"
+    link.symlink_to(old)
+    patch_release_transport(monkeypatch)
+    monkeypatch.setattr(update, "_install", lambda *args: new)
+    monkeypatch.setattr(update, "_healthy", lambda c, u, version, seconds=20: True)
+    monkeypatch.setattr(update, "_service_state", lambda unit: "unknown")
+    use_fake_clock(monkeypatch)
+    events = []
+    patch_run_with_failing_stop(monkeypatch, old, events)
+    with pytest.raises(update.UpdateError) as raised:
+        update.update(tmp_path, "evo", "syvrio-web.service", 8765)
+    assert raised.value.stage == "stop"
+    assert "'unknown'" in str(raised.value)
+    assert link.resolve() == old
+    assert events == ["stop"]
+    assert not new_env.exists() and old_env.exists()
+
+
+def test_update_stop_state_query_failure_aborts(tmp_path, monkeypatch):
     old = tmp_path / "old"
-    new = tmp_path / "new"
     old.touch()
-    new.touch()
+    link = tmp_path / "current"
+    link.symlink_to(old)
+    patch_release_transport(monkeypatch)
+    monkeypatch.setattr(update, "_install", lambda *args: tmp_path / "new")
+    monkeypatch.setattr(update, "_healthy", lambda c, u, version, seconds=20: True)
+
+    def broken_state(unit):
+        raise OSError("systemctl unavailable")
+
+    monkeypatch.setattr(update, "_service_state", broken_state)
+    events = []
+    patch_run_with_failing_stop(monkeypatch, old, events)
+    with pytest.raises(update.UpdateError) as raised:
+        update.update(tmp_path, "evo", "syvrio-web.service", 8765)
+    assert raised.value.stage == "stop"
+    assert "could not confirm" in str(raised.value)
+    assert link.resolve() == old
+    assert events == ["stop"]
+
+
+def test_update_rollback_failure_reports_both_errors(tmp_path, monkeypatch):
+    old_env, old, new_env, new = make_versions(tmp_path)
     link = tmp_path / "current"
     link.symlink_to(old)
     patch_release_transport(monkeypatch)
     monkeypatch.setattr(update, "_install", lambda *args: new)
     # 旧版（0.3.4）预检通过；新版（0.5.2rc1）健康检查失败，触发回滚。
     monkeypatch.setattr(update, "_healthy", lambda c, u, version, seconds=20: version == "0.3.4")
-    monkeypatch.setattr(update, "_service_state", lambda unit: "inactive")
 
     def run(*args, **kwargs):
         if args == (str(old), "--version"):
@@ -311,6 +431,50 @@ def test_update_rollback_failure_reports_both_errors(tmp_path, monkeypatch):
         update.update(tmp_path, "evo", "syvrio-web.service", 8765)
     assert raised.value.stage == "rollback"
     assert "manually" in str(raised.value)
+    assert link.resolve() == old
+    # 回滚失败：新环境保留，供人工判断后处理；旧版本目录不动。
+    assert new_env.exists() and old_env.exists()
+
+
+def test_update_precheck_failure_discards_failed_install(tmp_path, monkeypatch):
+    old_env, old, new_env, new = make_versions(tmp_path)
+    link = tmp_path / "current"
+    link.symlink_to(old)
+    patch_release_transport(monkeypatch)
+    monkeypatch.setattr(update, "_install", lambda *args: new)
+    monkeypatch.setattr(update, "_healthy", lambda c, u, version, seconds=20: False)
+
+    def run(*args, **kwargs):
+        if args == (str(old), "--version"):
+            return "Syvrio 0.3.4"
+        raise AssertionError(f"unexpected subprocess call during pre-check failure: {args}")
+
+    monkeypatch.setattr(update, "_run", run)
+    with pytest.raises(ValueError, match="not healthy"):
+        update.update(tmp_path, "evo", "syvrio-web.service", 8765)
+    # 预检失败：current 未动过，新环境安全清理；旧版本目录与链接保留。
+    assert not new_env.exists() and old_env.exists()
+    assert link.resolve() == old
+
+
+def test_update_rollback_success_discards_failed_install(tmp_path, monkeypatch):
+    old_env, old, new_env, new = make_versions(tmp_path)
+    link = tmp_path / "current"
+    link.symlink_to(old)
+    patch_release_transport(monkeypatch)
+    monkeypatch.setattr(update, "_install", lambda *args: new)
+    monkeypatch.setattr(update, "_healthy", lambda c, u, version, seconds=20: version == "0.3.4")
+
+    def run(*args, **kwargs):
+        if args == (str(old), "--version"):
+            return "Syvrio 0.3.4"
+        return ""
+
+    monkeypatch.setattr(update, "_run", run)
+    with pytest.raises(ValueError, match="restored"):
+        update.update(tmp_path, "evo", "syvrio-web.service", 8765)
+    # 回滚成功：current 回到旧版，新环境安全清理；旧版本目录保留。
+    assert not new_env.exists() and old_env.exists()
     assert link.resolve() == old
 
 
