@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import type { ChatMessage, Segment } from '../state/chat';
 import { Collapsible } from './Collapsible';
 import { Markdown } from './Markdown';
@@ -138,60 +138,87 @@ export function MessageList({
   onToggle: (segmentId: string) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   const following = useRef(true);
+  const lastTop = useRef(0);
   const previousSession = useRef<string | null | undefined>(undefined);
+
+  const updateFollow = useCallback((element: HTMLDivElement) => {
+    const top = element.scrollTop;
+    const nearBottom = element.scrollHeight - top - element.clientHeight < 48;
+    // An event can arrive after content grows, while the scroll offset still
+    // equals the previous bottom. Only upward movement pauses following.
+    if (nearBottom || top < lastTop.current) following.current = nearBottom;
+    lastTop.current = top;
+  }, []);
+
+  const followLatest = useCallback((element: HTMLDivElement, sessionChanged = false) => {
+    if (sessionChanged) {
+      following.current = true;
+    } else {
+      updateFollow(element);
+    }
+    const bottom = element.scrollHeight - element.clientHeight;
+    if (following.current && (sessionChanged || element.scrollTop < bottom)) {
+      // Smooth scrolling emits intermediate events and can fall behind streamed updates.
+      element.scrollTo({ top: element.scrollHeight, behavior: 'instant' });
+      lastTop.current = element.scrollTop;
+    }
+  }, [updateFollow]);
 
   useLayoutEffect(() => {
     const element = ref.current;
     if (!element) return;
     const sessionChanged = previousSession.current !== sessionId;
     previousSession.current = sessionId;
-    // A newly opened conversation always starts at its latest message, even if
-    // the user had paused follow scrolling in the previous conversation.
-    if (sessionChanged) following.current = true;
-    if (!following.current) return;
-    element.scrollTo({
-      top: element.scrollHeight,
-      // CSS scroll-behavior must not turn history restoration into a long
-      // animated trip from the first message to the last one.
-      behavior: sessionChanged ? 'instant' : 'smooth',
-    });
-  }, [messages, sessionId]);
+    followLatest(element, sessionChanged);
+  }, [followLatest, messages, sessionId]);
 
-  const handleScroll = () => {
+  useLayoutEffect(() => {
     const element = ref.current;
-    if (!element) return;
-    // Scrolling up pauses follow; returning to the bottom resumes it.
-    following.current = element.scrollHeight - element.scrollTop - element.clientHeight < 48;
-  };
+    const content = contentRef.current;
+    if (!element || !content || typeof ResizeObserver === 'undefined') return;
+    // Images can finish loading and the composer can resize after a message renders.
+    const observer = new ResizeObserver(() => followLatest(element));
+    observer.observe(element);
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, [followLatest]);
 
   return (
-    <div className="messages" ref={ref} onScroll={handleScroll} data-testid="message-list">
-      {messages.length === 0 && (
-        <div className="welcome">
-          <span className="welcome-mark" aria-hidden="true">S</span>
-          <h1>Syvrio</h1>
-          <p>Private conversations with persistent local memory.</p>
-        </div>
-      )}
-      {messages.map((message) => {
-        if (message.role === 'user') {
+    <div
+      className="messages"
+      ref={ref}
+      onScroll={(event) => updateFollow(event.currentTarget)}
+      data-testid="message-list"
+    >
+      <div className="messages-content" ref={contentRef}>
+        {messages.length === 0 && (
+          <div className="welcome">
+            <span className="welcome-mark" aria-hidden="true">S</span>
+            <h1>Syvrio</h1>
+            <p>Private conversations with persistent local memory.</p>
+          </div>
+        )}
+        {messages.map((message) => {
+          if (message.role === 'user') {
+            return (
+              <div className="turn user" key={message.id} data-testid="user-message">
+                <div className="bubble">{message.content}</div>
+              </div>
+            );
+          }
+          if (message.role === 'info') {
+            return <InfoLine key={message.id} message={message} />;
+          }
           return (
-            <div className="turn user" key={message.id} data-testid="user-message">
-              <div className="bubble">{message.content}</div>
+            <div className="turn assistant" key={message.id} data-testid="assistant-message">
+              {renderSegments(message.segments, onToggle)}
+              {message.interrupted && <div className="stopped">Stopped</div>}
             </div>
           );
-        }
-        if (message.role === 'info') {
-          return <InfoLine key={message.id} message={message} />;
-        }
-        return (
-          <div className="turn assistant" key={message.id} data-testid="assistant-message">
-            {renderSegments(message.segments, onToggle)}
-            {message.interrupted && <div className="stopped">Stopped</div>}
-          </div>
-        );
-      })}
+        })}
+      </div>
     </div>
   );
 }

@@ -423,6 +423,8 @@ textarea, input, select { touch-action: manipulation; }
   -webkit-overflow-scrolling: touch;
 }
 
+.messages-content { display: flow-root; }
+
 /* The home view is a centred hero, not an empty transcript pinned to the top. */
 .main.is-empty .thread { justify-content: center; padding-bottom: 5vh; }
 .main.is-empty .messages { flex: 0 0 auto; overflow: visible; padding-top: 0; }
