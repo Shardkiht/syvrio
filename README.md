@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="web/public/syvrio.svg" alt="Syvrio logo" width="112" />
+
 # Syvrio
 
 **让下一次对话，仍然记得你。**
@@ -27,7 +29,7 @@
 
 需要 Python 3.12+、uv、git。
 
-**发布状态：** 已发布稳定包为 `0.3.4`（[PyPI](https://pypi.org/project/syvrio/0.3.4/) / [Release](https://github.com/Shardkiht/syvrio/releases/tag/v0.3.4)）。下一次稳定发行前，Foundation 的 Web 客户端与 Vault V2 请按照下文从源码运行。
+稳定版本从 [PyPI](https://pypi.org/project/syvrio/) 和 [GitHub Releases](https://github.com/Shardkiht/syvrio/releases) 发布。从 `0.4.0` 起，Web 客户端随包安装。旧 Vault 请先阅读下方的升级说明。
 
 ```bash
 uv tool install syvrio

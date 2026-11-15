@@ -30,7 +30,7 @@ def test_only_syvrio_console_script():
 
 
 def test_version_and_assistant_branding():
-    assert syvrio.__version__ == "0.3.4"
+    assert syvrio.__version__ == "0.4.0"
     assert ASSISTANT_NAME == "Syvrio"
 
 

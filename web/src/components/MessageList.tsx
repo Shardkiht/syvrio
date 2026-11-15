@@ -195,7 +195,7 @@ export function MessageList({
       <div className="messages-content" ref={contentRef}>
         {messages.length === 0 && (
           <div className="welcome">
-            <span className="welcome-mark" aria-hidden="true">S</span>
+            <img className="welcome-mark" src="/syvrio.svg" alt="" width={54} height={54} />
             <h1>Syvrio</h1>
             <p>Private conversations with persistent local memory.</p>
           </div>
