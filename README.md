@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="web/public/syvrio.svg" alt="Syvrio logo" width="112" />
+
 # Syvrio
 
 **让下一次对话，仍然记得你。**
@@ -21,7 +23,7 @@
 
 演示操作实际 Textual 界面，使用合成数据与固定模型回复回放；记忆写入和跨会话检索走真实代码，不产生模型费用。[查看静态截图](docs/assets/syvrio-demo.png)。
 
-演进分支 `feature-memory-evolution` 从源码安装，当前开发版为 `0.4.0.dev0`，包含 Vault v2 和新增网页抓取服务。后续开发构建使用 `.devN` 后缀，正式版本由 `main` 单独维护。
+演进分支 `feature-memory-evolution` 可从源码安装，也可在 [PyPI](https://pypi.org/project/syvrio/) 选择 `rcN` 预发布版本。稳定版本由 `main` 单独维护。
 
 ## 快速开始
 

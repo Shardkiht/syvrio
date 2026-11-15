@@ -265,13 +265,7 @@ textarea, input, select { touch-action: manipulation; }
   flex: 0 0 auto;
   width: 24px;
   height: 24px;
-  display: grid;
-  place-items: center;
-  border-radius: 50%;
-  background: var(--panel-3);
-  color: var(--muted);
-  font-size: 11.5px;
-  font-weight: 600;
+  object-fit: contain;
 }
 
 .foot-model {
@@ -436,16 +430,11 @@ textarea, input, select { touch-action: manipulation; }
 }
 
 .welcome-mark {
-  display: grid;
-  place-items: center;
+  display: block;
   width: 54px;
   height: 54px;
   margin: 0 auto 16px;
-  border-radius: 16px;
-  background: var(--text);
-  color: var(--bg);
-  font-size: 24px;
-  font-weight: 700;
+  object-fit: contain;
 }
 
 .welcome h1 {
@@ -1137,7 +1126,7 @@ button.fold-summary:hover {
   .fold-summary, .fold-row { min-height: 32px; padding: 6px 12px; font-size: 13px; }
   .fold-hint { display: none; }
   .fold-body { max-height: 46vh; max-height: 46dvh; }
-  .welcome-mark { width: 46px; height: 46px; margin-bottom: 12px; border-radius: 14px; font-size: 21px; }
+  .welcome-mark { width: 46px; height: 46px; margin-bottom: 12px; }
   .welcome h1 { font-size: 26px; }
   .welcome p { font-size: 13px; }
   .welcome { margin-bottom: 22px; }
