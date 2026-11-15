@@ -119,7 +119,6 @@ def test_spark_chat_parameters_match_maas_contract(monkeypatch, mode):
         api_key_env=preset.api_key_env,
         reasoning_effort="high",
         spark_thinking=mode,
-        fallbacks=["openai/gpt-4o-mini"],
     )
     tools = [
         {
@@ -144,10 +143,7 @@ def test_spark_chat_parameters_match_maas_contract(monkeypatch, mode):
     assert sent["tools"] == tools and sent["max_completion_tokens"] == 128
     assert not {"temperature", "reasoning_effort", "response_format", "max_tokens"} & sent.keys()
     assert sent.get("extra_body") == ({"thinking": {"type": mode}} if mode else None)
-    expected_fallback = (
-        {"model": "openai/gpt-4o-mini", "extra_body": None} if mode else "openai/gpt-4o-mini"
-    )
-    assert sent["fallbacks"] == [expected_fallback]
+    assert "fallbacks" not in sent
 
 
 def test_spark_streaming_preserves_deltas_and_usage(monkeypatch):
@@ -276,7 +272,6 @@ def test_write_config_roundtrip(tmp_path):
             model="deepseek-ai/DeepSeek-V3",
             api_key_env="SILICONFLOW_API_KEY",
             reasoning_effort="medium",
-            fallbacks=["openai/gpt-4o-mini"],
             num_retries=1,
         ),
         chat=ChatConfig(
@@ -298,11 +293,11 @@ def test_write_config_roundtrip(tmp_path):
     )
 
     write_config(path, config)
+    assert "fallbacks" not in path.read_text(encoding="utf-8")
     loaded = load_config(path)
 
     assert loaded.llm.provider == "siliconflow"
     assert loaded.llm.reasoning_effort == "medium"
-    assert loaded.llm.fallbacks == ["openai/gpt-4o-mini"]
     assert loaded.llm.num_retries == 1
     assert loaded.chat.context_window == 16000
     assert loaded.chat.recall_rewrite is False
@@ -746,12 +741,13 @@ def test_stream_respects_litellm_transport_ownership(monkeypatch, outcome):
     assert events == expected
 
 
-@pytest.mark.parametrize("scenario", ["primary", "fallback", "retry", "error", "timeout", "cancel"])
-def test_fallback_stream_releases_real_aiohttp_session(monkeypatch, scenario):
+@pytest.mark.parametrize("scenario", ["done", "retry", "error", "timeout", "cancel"])
+def test_single_model_stream_releases_real_aiohttp_session(monkeypatch, scenario):
     import json
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     from threading import Event, Thread
 
+    from litellm import InternalServerError, Timeout
     from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler
 
     from syvrio.llm import client
@@ -773,10 +769,7 @@ def test_fallback_stream_releases_real_aiohttp_session(monkeypatch, scenario):
             if scenario in {"timeout", "cancel"}:
                 release.wait(timeout=3)
                 return
-            if scenario == "error" or (
-                payload["model"] == "gpt-4o"
-                and (scenario == "fallback" or (scenario == "retry" and len(hits) == 1))
-            ):
+            if scenario == "error" or (scenario == "retry" and len(hits) == 1):
                 self.send_error(500)
                 return
             chunk = {
@@ -812,7 +805,6 @@ def test_fallback_stream_releases_real_aiohttp_session(monkeypatch, scenario):
                 model="gpt-4o",
                 base_url=f"http://127.0.0.1:{server.server_port}/v1",
                 api_key_env="SYVRIO_TEST_STREAM_KEY",
-                fallbacks=["openai/gpt-4o-mini"],
                 num_retries=int(scenario == "retry"),
                 timeout=0.2 if scenario == "timeout" else 5,
             )
@@ -831,7 +823,7 @@ def test_fallback_stream_releases_real_aiohttp_session(monkeypatch, scenario):
                 with pytest.raises(client.GenerationCancelled):
                     run()
             elif scenario in {"error", "timeout"}:
-                with pytest.raises(Exception, match="All fallback attempts failed"):
+                with pytest.raises(InternalServerError if scenario == "error" else Timeout):
                     run()
             else:
                 assert run().content == "ok"
@@ -840,11 +832,7 @@ def test_fallback_stream_releases_real_aiohttp_session(monkeypatch, scenario):
             server.shutdown()
             server_thread.join()
 
-    expected = {
-        "primary": ["gpt-4o"],
-        "retry": ["gpt-4o", "gpt-4o"],
-        "cancel": ["gpt-4o"],
-    }.get(scenario, ["gpt-4o", "gpt-4o-mini"])
+    expected = ["gpt-4o"] * (2 if scenario == "retry" else 1)
     assert hits == expected
     assert sessions and all(transport.client.closed for transport in sessions)
 

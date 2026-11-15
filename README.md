@@ -111,7 +111,6 @@ reasoning_effort = ""         # low / medium / high；仅模型支持时生效
 provider_urls = {}             # 按供应商保存 Base URL，例如 dashscope 工作空间地址
 recent_models = []              # 自动记录最近切换的模型，每项为 [供应商, 模型 ID]
 spark_thinking = ""           # 仅 Spark MaaS；enabled / auto / disabled，留空使用供应商默认值
-fallbacks = []                 # 例如 ["openai/gpt-4o-mini"]
 num_retries = 2
 temperature = 0.1
 timeout = 60.0
@@ -729,7 +728,7 @@ MCP `memorize` 可选 `observed_at` 接受带时区的原始消息时间。未�
 
 `/profile refresh [n]` 或 `syvrio profile --refresh` 生成/更新摘要并继续提炼画像推断。摘要缺失或来源变化时，刷新先把最多 1 次请求分配给摘要，其余 n-1 次用于推断批次；n=0 不发请求，n=1 最多一次请求，手动刷新也不会隐式增加请求。事实未变化时跳过摘要生成。摘要失败或取消时保留旧摘要并标记过期，不发布未完成结果。`syvrio dream --requests 1` 或 `/dream 1` 仍用于跨事实回顾，寻找可审查的联系和假设；回顾在后台工作，可以继续聊天、切换会话。`/dream status` 查看运行态与下次计划，`/dream cancel` 请求取消（两种模式共用任务）；已发送请求无法撤销计费，返回后停止发布未完成候选。已保存候选和全部会话仍保留。
 
-每次任务默认最多一次模型请求，可设 0–20；关闭该任务的底层重试与候补模型，单请求超时最多 60 秒，要求配置的上下文窗口至少 2048 tokens。只处理新增/变化的事实，有限引用已处理事实作为背景；重启 TUI 后空闲自动调度会接续，也可执行同一命令立即接续。预算 0 不发请求，仅可恢复已经校验的本地结果。Dreaming 不直接扫描原始会话，先由既有沉淀流程将会话转成事实；不承诺穷举整库所有跨条目关系。
+每次任务默认最多一次模型请求，可设 0–20；关闭该任务的底层重试，单请求超时最多 60 秒，要求配置的上下文窗口至少 2048 tokens。只处理新增/变化的事实，有限引用已处理事实作为背景；重启 TUI 后空闲自动调度会接续，也可执行同一命令立即接续。预算 0 不发请求，仅可恢复已经校验的本地结果。Dreaming 不直接扫描原始会话，先由既有沉淀流程将会话转成事实；不承诺穷举整库所有跨条目关系。
 
 进度追加在 `runtime/jobs/dreaming/jobs.jsonl`，保存批次摘要、已校验候选及完成状态；截断尾行通过追加恢复标记保留原字节，中间损坏停止处理。加载摘要与调度状态分别使用 `runtime/cache/profile/profile-summary.json`、`runtime/state/reflection.json` 和 `runtime/state/fingerprints.json`，均可删除重建且不进入 Git 历史。候选仅写独立推断日志，不直接改写 Markdown 事实。新推断携带来源内容指纹，来源到期、更正、删除或手动改变后失效；旧推断没有指纹时只能检查来源 ID 和有效状态，无法追溯旧文本编辑。当前任务互斥限于同一服务实例，请勿同时用多个进程向同一库启动回顾。
 

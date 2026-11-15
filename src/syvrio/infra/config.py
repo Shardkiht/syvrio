@@ -42,7 +42,6 @@ class LLMConfig:
     model: str = DEFAULT_MODEL
     api_key_env: str = DEFAULT_API_KEY_ENV
     reasoning_effort: str | None = None
-    fallbacks: list[str] = field(default_factory=list)
     num_retries: int = 2
     temperature: float = 0.1
     timeout: float = 60.0
@@ -415,16 +414,12 @@ def load_config(path: Path | str | None = None) -> Config:
     vault_raw = data.get("vault") or str(default_vault_path())
     llm_raw = data.get("llm", {})
     base_url = llm_raw.get("base_url", DEFAULT_BASE_URL)
-    fallbacks = llm_raw.get("fallbacks", [])
-    if not isinstance(fallbacks, list):
-        fallbacks = []
     llm = LLMConfig(
         provider=str(llm_raw.get("provider") or infer_provider(base_url)),
         base_url=base_url,
         model=llm_raw.get("model", DEFAULT_MODEL),
         api_key_env=llm_raw.get("api_key_env", DEFAULT_API_KEY_ENV),
         reasoning_effort=(str(llm_raw.get("reasoning_effort") or "").strip() or None),
-        fallbacks=[str(item) for item in fallbacks if str(item).strip()],
         num_retries=int(llm_raw.get("num_retries", 2)),
         temperature=float(llm_raw.get("temperature", 0.1)),
         timeout=float(llm_raw.get("timeout", 60.0)),
@@ -585,7 +580,6 @@ reasoning_effort = {toml_literal("")}
 spark_thinking = {toml_literal("")}
 provider_urls = {{}}
 recent_models = []
-fallbacks = {toml_literal([])}
 num_retries = 2
 temperature = 0.1
 timeout = 60.0

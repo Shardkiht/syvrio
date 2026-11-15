@@ -129,7 +129,7 @@ class RecallQueryBuilder:
             future = _REWRITE_EXECUTOR.submit(
                 copy_context().run,
                 self.completer,
-                replace(self.llm, timeout=timeout, num_retries=0, fallbacks=[]),
+                replace(self.llm, timeout=timeout, num_retries=0),
                 [
                     {"role": "system", "content": REWRITE_PROMPT},
                     {

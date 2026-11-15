@@ -329,19 +329,19 @@ def test_reflection_model_disables_retries_and_limits_output(service, monkeypatc
     from syvrio.infra.config import LLMConfig
     from syvrio.memory import reflection as module
 
-    service.config.llm = LLMConfig(provider="local", num_retries=7, fallbacks=["unused"])
+    service.config.llm = LLMConfig(provider="local", num_retries=7)
     source = service.note("合成事实")
     captured = {}
 
     def complete(config, messages, **kwargs):
-        captured.update(retries=config.num_retries, fallbacks=config.fallbacks, **kwargs)
+        captured.update(retries=config.num_retries, **kwargs)
         return SimpleNamespace(
             choices=[SimpleNamespace(message=SimpleNamespace(content='{"proposals":[]}'))]
         )
 
     monkeypatch.setattr(module, "complete", complete)
     assert service.reflection._model("dream", [source]) == []
-    assert captured["retries"] == 0 and captured["fallbacks"] == []
+    assert captured["retries"] == 0
     assert captured["max_tokens"] <= 1800
 
 

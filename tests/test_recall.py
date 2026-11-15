@@ -129,12 +129,12 @@ def test_slow_rewrite_returns_original_before_request_finishes(monkeypatch):
             completed.set()
 
     try:
-        cfg = LLMConfig(provider="spark", timeout=60, num_retries=2, fallbacks=["other"])
+        cfg = LLMConfig(provider="spark", timeout=60, num_retries=2)
         query = RecallQueryBuilder(cfg, completer=slow).build("我叫什么名字", [])
         assert query.text == query.original == "我叫什么名字"
         assert query.rewrite_timed_out and not completed.is_set()
         assert configs and configs[0].timeout == 0.1
-        assert configs[0].num_retries == 0 and not configs[0].fallbacks
+        assert configs[0].num_retries == 0
         assert cfg.timeout == 60 and cfg.num_retries == 2
     finally:
         release.set()

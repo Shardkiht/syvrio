@@ -99,7 +99,7 @@ def _reasoning_route(config: LLMConfig) -> tuple[str, str]:
     return source, policy
 
 
-def _chat_history(config: LLMConfig, messages: list[dict]) -> tuple[list[dict], list[dict], str]:
+def _chat_history(config: LLMConfig, messages: list[dict]) -> tuple[list[dict], str]:
     source, policy = _reasoning_route(config)
     last_user = max(
         (
@@ -128,7 +128,7 @@ def _chat_history(config: LLMConfig, messages: list[dict]) -> tuple[list[dict], 
         else msg
         for index, (msg, original) in enumerate(zip(clean, messages, strict=True))
     ]
-    return primary, clean, source
+    return primary, source
 
 
 def _litellm():
@@ -150,9 +150,8 @@ def complete(
     response_format: dict | None = None,
     temperature: float | None = None,
     max_tokens: int | None = None,
-    fallback_messages: list[dict] | None = None,
 ):
-    """统一的 LiteLLM 调用入口；provider/base_url/retry/fallback 都由配置决定。"""
+    """统一的 LiteLLM 调用入口；provider/base_url/retry 都由配置决定。"""
     litellm = _litellm()
     kwargs: dict = {
         "model": config.litellm_model(),
@@ -172,10 +171,7 @@ def complete(
         kwargs["response_format"] = response_format
     if max_tokens is not None:
         kwargs["max_tokens"] = max_tokens
-    if config.fallbacks:
-        kwargs["fallbacks"] = config.fallbacks
     _adapt_spark_params(config, kwargs)
-    _strip_fallback_reasoning(kwargs, fallback_messages)
     mark_model("request")
     with track_completion():
         return litellm.completion(**kwargs)
@@ -189,30 +185,8 @@ def _adapt_spark_params(config: LLMConfig, kwargs: dict) -> None:
         kwargs.pop(name, None)
     if config.spark_thinking:
         kwargs["extra_body"] = {"thinking": {"type": config.spark_thinking}}
-        if kwargs.get("fallbacks"):
-            # LiteLLM inherits extra_body on fallback requests unless explicitly overridden.
-            kwargs["fallbacks"] = [
-                {"model": model, "extra_body": None} for model in kwargs["fallbacks"]
-            ]
     if "max_tokens" in kwargs:
         kwargs["max_completion_tokens"] = kwargs.pop("max_tokens")
-
-
-def _strip_fallback_reasoning(kwargs: dict, messages: list[dict] | None) -> None:
-    if messages is not None and kwargs.get("fallbacks"):
-        kwargs["fallbacks"] = [
-            {**(item if isinstance(item, dict) else {"model": item}), "messages": messages}
-            for item in kwargs["fallbacks"]
-        ]
-
-
-def _primary_response(response, fallbacks: Sequence[str]) -> bool:
-    if not fallbacks:
-        return True
-    hidden = _field(response, "_hidden_params") or {}
-    headers = hidden.get("additional_headers") or {}
-    # A missing provenance marker is ambiguous when fallback routing is enabled.
-    return headers.get("x-litellm-attempted-fallbacks") in (0, "0")
 
 
 def embed_texts(config: LLMConfig, texts: list[str], batch_size: int = 32) -> list[list[float]]:
@@ -419,14 +393,10 @@ class LiteLLMChatModel:
                 "or run syvrio setup to save it to system credentials."
             )
         litellm = _litellm()
-        primary, clean, source = _chat_history(self.config, messages)
-        fallback_messages = clean if primary != clean else None
+        primary, source = _chat_history(self.config, messages)
         source = source if tools else ""
         if on_delta is None and on_reasoning is None:
-            kwargs = (
-                {"fallback_messages": fallback_messages} if fallback_messages is not None else {}
-            )
-            response = complete(self.config, primary, tools=tools or None, **kwargs)
+            response = complete(self.config, primary, tools=tools or None)
             choice = response.choices[0]
             message = choice.message
             reasoning, metadata = _reasoning_fields(message)
@@ -439,16 +409,12 @@ class LiteLLMChatModel:
                 usage=_usage(response, litellm),
                 reasoning_content=reasoning,
                 reasoning_fragments=[metadata] if metadata else [],
-                reasoning_source=source
-                if reasoning and _primary_response(response, self.config.fallbacks)
-                else "",
+                reasoning_source=source if reasoning else "",
             )
         parser = _StreamAccumulator(on_delta, litellm, on_reasoning, source)
-        return self._chat_stream(primary, tools or None, parser, litellm, cancel, fallback_messages)
+        return self._chat_stream(primary, tools or None, parser, litellm, cancel)
 
-    def _chat_stream(
-        self, messages, tools, parser, litellm, cancel, fallback_messages
-    ) -> AssistantTurn:
+    def _chat_stream(self, messages, tools, parser, litellm, cancel) -> AssistantTurn:
         """流式：文本 delta 实时回调，tool_calls 增量累积，结束时返回聚合结果。"""
         kwargs: dict = {
             "model": self.config.litellm_model(),
@@ -466,17 +432,12 @@ class LiteLLMChatModel:
             kwargs["reasoning_effort"] = self.config.reasoning_effort
         if tools:
             kwargs["tools"] = tools
-        if self.config.fallbacks:
-            kwargs["fallbacks"] = self.config.fallbacks
         _adapt_spark_params(self.config, kwargs)
-        _strip_fallback_reasoning(kwargs, fallback_messages)
 
         if cancel is not None:
             return asyncio.run(self._cancellable_stream(kwargs, parser, litellm, cancel))
         mark_model("request")
         stream = litellm.completion(**kwargs)
-        if not _primary_response(stream, self.config.fallbacks):
-            parser.source = ""
         mark_model("stream_open")
         try:
             for chunk in stream:
@@ -492,52 +453,26 @@ class LiteLLMChatModel:
         async def consume() -> AssistantTurn:
             async with AsyncExitStack() as resources:
                 kwargs = request
-                if getattr(litellm, "aclient_session", None) is None:
+                if (
+                    getattr(litellm, "aclient_session", None) is None
+                    and self.config.litellm_model().startswith("openai/")
+                    and request.get("api_key")
+                ):
                     from litellm.llms.openai.common_utils import BaseOpenAILLM
+                    from openai import AsyncOpenAI
 
-                    # Let LiteLLM choose the SDK client and credentials for each
-                    # attempt. Borrow one request-owned aiohttp session on this
-                    # event loop while preserving LiteLLM's transport settings.
-                    if request.get("fallbacks"):
-                        from litellm.llms.custom_httpx.http_handler import (
-                            AsyncHTTPHandler,
-                            get_ssl_configuration,
-                        )
-
-                        if AsyncHTTPHandler.should_use_aiohttp_transport():
-                            import ssl
-
-                            verify = get_ssl_configuration()
-                            transport = AsyncHTTPHandler.create_aiohttp_transport(
-                                ssl_context=verify if isinstance(verify, ssl.SSLContext) else None,
-                                ssl_verify=verify if isinstance(verify, bool) else None,
-                            )
-                            resources.push_async_callback(transport.aclose)
-                            session = transport.get_valid_client_session()
-                            # LiteLLM deep-copies fallback kwargs. A live connection
-                            # pool is shared by reference, like a caller-owned client.
-                            object.__setattr__(session, "__deepcopy__", lambda memo: session)
-                            resources.callback(object.__delattr__, session, "__deepcopy__")
-                            kwargs = {**request, "shared_session": session}
-                    elif self.config.litellm_model().startswith("openai/") and request.get(
-                        "api_key"
-                    ):
-                        from openai import AsyncOpenAI
-
-                        http_client = BaseOpenAILLM.get_async_http_client()
-                        resources.push_async_callback(http_client.aclose)
-                        client = AsyncOpenAI(
-                            api_key=request["api_key"],
-                            base_url=request.get("api_base"),
-                            timeout=request["timeout"],
-                            max_retries=request["num_retries"],
-                            http_client=http_client,
-                        )
-                        kwargs = {**request, "client": client}
+                    http_client = BaseOpenAILLM.get_async_http_client()
+                    resources.push_async_callback(http_client.aclose)
+                    client = AsyncOpenAI(
+                        api_key=request["api_key"],
+                        base_url=request.get("api_base"),
+                        timeout=request["timeout"],
+                        max_retries=request["num_retries"],
+                        http_client=http_client,
+                    )
+                    kwargs = {**request, "client": client}
                 mark_model("request")
                 stream = await litellm.acompletion(**kwargs)
-                if not _primary_response(stream, self.config.fallbacks):
-                    parser.source = ""
                 mark_model("stream_open")
                 try:
                     async for chunk in stream:

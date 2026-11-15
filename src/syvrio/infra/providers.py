@@ -298,7 +298,6 @@ reasoning_effort = {toml_literal(config.llm.reasoning_effort or "")}
 spark_thinking = {toml_literal(config.llm.spark_thinking)}
 provider_urls = {{ {provider_urls} }}
 recent_models = {toml_literal(config.llm.recent_models)}
-fallbacks = {toml_literal(config.llm.fallbacks)}
 num_retries = {config.llm.num_retries}
 temperature = {config.llm.temperature}
 timeout = {config.llm.timeout}
@@ -797,7 +796,6 @@ def _run_llm_setup(config: Config, path: Path) -> dict:
             provider: base_url,
         },
         recent_models=config.llm.recent_model_ids(),
-        fallbacks=config.llm.fallbacks,
         num_retries=config.llm.num_retries,
         temperature=config.llm.temperature,
         timeout=config.llm.timeout,

@@ -163,7 +163,7 @@ def test_stream_multi_tool_reasoning_survives_session_reload(tmp_path, monkeypat
     ],
 )
 def test_reasoning_replay_respects_route_and_turn(monkeypatch, provider, model_id, base, expected):
-    model = _model(monkeypatch, provider, model=model_id, base_url=base, fallbacks=["openai/other"])
+    model = _model(monkeypatch, provider, model=model_id, base_url=base)
     origin = client._reasoning_route(model.config)[0] or "different-model-or-endpoint"
     messages = [
         {
@@ -198,8 +198,7 @@ def test_reasoning_replay_respects_route_and_turn(monkeypatch, provider, model_i
     assert [
         m["reasoning_content"] for m in wire["messages"] if "reasoning_content" in m
     ] == expected
-    if expected:
-        assert all("reasoning_content" not in m for m in wire["fallbacks"][0]["messages"])
+    assert "fallbacks" not in wire
     assert messages[-1]["reasoning_content"] == "foreign"
 
 

@@ -44,7 +44,6 @@ spark_thinking = ""
 provider_urls = {}
 # 模型选择器维护的最近记录，每项为 [供应商, 模型 ID]。
 recent_models = []
-fallbacks = []
 num_retries = 2
 temperature = 0.1
 timeout = 60.0
