@@ -185,7 +185,7 @@ Web 单 Turn 模型下，`CommandUseCases.BUSY_READ_ONLY` 与 `BUSY_NO_ARGUMENT`
 - 单进程单 Worker，进程内共享一个 `ApplicationService` / `AgentRuntime`。
 - 同一时刻只允许一个生成中的 Turn；第二个 `POST /api/chat` 返回 `409 busy`（`code="busy"`），不排队、不串线。
 - 取消请求必须带匹配的 `turn_id`；过期或伪造 ID 不会取消当前请求。
-- 浏览器断开 SSE 时只取消并释放该 Turn，不误伤其他请求。
+- 浏览器切后台、退出或刷新导致流式连接断开时，当前回复继续生成并保存。重新打开页面后会等待在途回复完成并刷新历史。主动点停止仍会按该轮 ID 取消回复。
 - `runtime/locks/client.lock` 是整进程持有的独占标记：**TUI 与 Web 不能同时使用同一 Vault**。后启动的一方会收到明确错误（Web 拒绝启动，TUI 提示先关闭另一客户端）。进程退出或崩溃时由操作系统释放锁，不会残留。
 - `vault.lock` / `git.lock` 仍只保护单次写入，不是跨进程 Agent 协调机制。
 

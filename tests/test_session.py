@@ -584,3 +584,17 @@ def test_create_retries_exclusive_open_race(tmp_path, monkeypatch):
     created = SessionStore(tmp_path).create()
     assert created.path != collided[0]
     assert collided[0].read_bytes() == b"synthetic competing session\n"
+
+
+@pytest.mark.parametrize("identifier", [{}, {"id": "../invalid"}])
+def test_invalid_reasoning_reference_keeps_assistant_body(tmp_path, identifier):
+    store, session = make_store(tmp_path)
+    store.append(
+        session,
+        {"type": "assistant", "content": "Synthetic reply", "reasoning_local": True, **identifier},
+    )
+    before = session.path.read_bytes()
+    assistant = store.load(session.id).records[-1]
+    assert assistant["content"] == "Synthetic reply"
+    assert "reasoning" not in assistant
+    assert session.path.read_bytes() == before

@@ -475,7 +475,8 @@ def test_second_chat_request_gets_busy_error(backend):
     assert backend.active_turn_id() is None
 
 
-def test_disconnect_cancels_but_waits_for_worker(backend):
+@pytest.mark.parametrize("explicit_stop", [False, True])
+def test_disconnect_keeps_turn_running_until_done_or_explicit_stop(backend, explicit_stop):
     model = GatedModel()
     backend._runtime.model = model
 
@@ -483,21 +484,31 @@ def test_disconnect_cancels_but_waits_for_worker(backend):
         loop = asyncio.get_running_loop()
         turn = backend.start_turn("hi", None, loop)
         generator = backend.stream(turn)
-        await generator.__anext__()  # first frame
-        await generator.aclose()  # browser went away
-        return turn
+        await generator.__anext__()
+        await generator.aclose()
+        try:
+            assert backend.active_turn_id() == turn.turn_id
+            with pytest.raises(WebError) as busy:
+                backend.start_turn("second", None, loop)
+            assert busy.value.code == "busy"
+            if explicit_stop:
+                assert backend.cancel(turn.turn_id)
+        finally:
+            model.release.set()
+        assert await asyncio.to_thread(turn.finished.wait, 10)
+        await asyncio.sleep(0)
+        assert turn.queue.empty()
 
-    turn = asyncio.run(scenario())
-    # Disconnect cancels the turn but must not release it while the worker is
-    # still inside runtime.ask, otherwise a new request could overlap it.
-    assert backend.active_turn_id() == turn.turn_id
-    with pytest.raises(WebError) as busy:
-        backend.start_turn("second", None, turn.loop)
-    assert busy.value.code == "busy"
-    model.release.set()
-    assert turn.finished.wait(timeout=10)
+    asyncio.run(scenario())
     assert backend.active_turn_id() is None
-    assert client_health_idle(create_app(backend, autostart=False)) is True
+    session_id = backend._conversation.current_id
+    assert session_id is not None
+    history = backend.history(session_id)
+    (reply,) = [item for item in history.items if item.role == "assistant"]
+    assert reply.interrupted is explicit_stop
+    assert ("generation stopped by user" in reply.content) is explicit_stop
+    if not explicit_stop:
+        assert reply.content == "partial done"
 
 
 def test_switch_rejected_while_generating(backend):

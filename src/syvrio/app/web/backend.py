@@ -72,6 +72,7 @@ class ActiveTurn:
     queue: asyncio.Queue[StreamEvent | None]
     loop: asyncio.AbstractEventLoop
     finished: threading.Event = field(default_factory=threading.Event)
+    stream_detached: bool = False
 
 
 class EventPump:
@@ -681,7 +682,7 @@ class WebBackend:
             pump.close()
 
     async def stream(self, turn: ActiveTurn):
-        """Yield SSE frames until the terminal event; clean up on disconnect."""
+        """Stream a turn without tying its lifetime to the browser connection."""
         try:
             while True:
                 try:
@@ -693,11 +694,9 @@ class WebBackend:
                     break
                 yield sse_frame(event)
         finally:
-            if not turn.finished.is_set():
-                # Browser went away mid-generation: cancel this turn, but let the
-                # worker release request state in its own finally. Releasing here
-                # while runtime.ask still runs would let a new turn overlap it.
-                self.cancel(turn.turn_id)
+            turn.stream_detached = True
+            while not turn.queue.empty():
+                turn.queue.get_nowait()
 
     def cancel(self, turn_id: int) -> bool:
         with self._lock:
@@ -714,8 +713,12 @@ class WebBackend:
 
     @staticmethod
     def _post(turn: ActiveTurn, event: StreamEvent | None) -> None:
+        def deliver() -> None:
+            if not turn.stream_detached:
+                turn.queue.put_nowait(event)
+
         try:
-            turn.loop.call_soon_threadsafe(turn.queue.put_nowait, event)
+            turn.loop.call_soon_threadsafe(deliver)
         except RuntimeError:
             pass  # Loop closed during shutdown; the worker still finishes cleanly.
 

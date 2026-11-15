@@ -207,11 +207,19 @@ class TranscriptView(VerticalScroll):
             streaming=getattr(self.app, "_ask_active", False),
         )
 
+    def scroll_to_follow(self) -> None:
+        if self.reading_paused:
+            return
+        # Textual can snap to an older animation target before scrolling to the bottom.
+        self._following_scroll = True
+        try:
+            self.scroll_end(animate=False, immediate=True)
+        finally:
+            self._following_scroll = False
+
     def on_resize(self) -> None:
         # Buffered Markdown can change virtual height one layout after flush.
-        # Follow the new bottom only while the user's follow intent is active.
-        if not self.reading_paused:
-            self.scroll_end(animate=False, immediate=True)
+        self.scroll_to_follow()
 
     def watch_virtual_size(self) -> None:
         # A reply may grow without changing the viewport or emitting Resize.
@@ -254,6 +262,8 @@ class TranscriptView(VerticalScroll):
 
     def watch_scroll_y(self, old_value: float, new_value: float) -> None:
         super().watch_scroll_y(old_value, new_value)
+        if getattr(self, "_following_scroll", False):
+            return
         if new_value < old_value:
             self.follow_output = False
             self.record_reading_state()

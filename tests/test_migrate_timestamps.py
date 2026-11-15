@@ -217,3 +217,27 @@ def test_session_migration_preserves_physical_lines(tmp_path, recovered):
     assert loaded.started_at == "2026-01-01T04:00:00+00:00"
     assert loaded.messages[0]["content"] == "one\u2028two"
     assert loaded.messages[0]["at"] == "2026-01-01T04:00:02+00:00"
+
+
+def test_session_migration_preserves_cr_only_separators(tmp_path):
+    vault = tmp_path / "vault"
+    session = SessionStore(vault).create()
+    original = (
+        b'{"type":"meta","started_at":"2026-01-01T12:00:00"}\r'
+        b'{"type":"message","role":"user","at":"2026-01-01T12:00:01","content":"synthetic"}\r'
+    )
+    session.path.write_bytes(original)
+    backup = tmp_path / "backup"
+    result = migrate(
+        "--vault", vault, "--source-timezone", "Asia/Shanghai", "--apply", "--backup-dir", backup
+    )
+    assert result.returncode == 0, result.stderr
+    assert session.path.read_bytes().count(b"\r") == 2
+    assert b"\n" not in session.path.read_bytes()
+    loaded = SessionStore(vault).load(session.id)
+    assert loaded.started_at == "2026-01-01T04:00:00+00:00"
+    assert loaded.messages[0]["at"] == "2026-01-01T04:00:01+00:00"
+    assert loaded.messages[0]["content"] == "synthetic"
+    assert (
+        backup / "sessions" / session.path.relative_to(vault / "sessions")
+    ).read_bytes() == original

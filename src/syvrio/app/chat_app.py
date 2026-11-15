@@ -591,12 +591,7 @@ class ChatApp(ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixi
 
     def _scroll_end(self) -> None:
         # 布局刷新前后都可能收到上滑/选择事件，真正滚动时再核验跟随意图。
-        def follow() -> None:
-            chat = self._chat()
-            if not chat.reading_paused:
-                chat.scroll_end(animate=False, immediate=True)
-
-        self.call_after_refresh(follow)
+        self.call_after_refresh(self._chat().scroll_to_follow)
 
     def on_mouse_down(self, event: MouseDown) -> None:
         if event.widget is not None and self._chat() in event.widget.ancestors_with_self:

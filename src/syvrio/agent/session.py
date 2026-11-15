@@ -335,7 +335,10 @@ class SessionStore:
         if include_reasoning:
             for record in records:
                 if record.get("type") == "assistant" and record.get("reasoning_local") is True:
-                    attachment = self._reasoning_path(session_id, record["id"])
+                    record_id = record.get("id")
+                    if not isinstance(record_id, str) or not SESSION_ID_RE.fullmatch(record_id):
+                        continue
+                    attachment = self._reasoning_path(session_id, record_id)
                     try:
                         reasoning = json.loads(attachment.read_text(encoding="utf-8"))
                     except FileNotFoundError:

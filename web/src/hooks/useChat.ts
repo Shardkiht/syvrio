@@ -196,6 +196,43 @@ export function useChat() {
     if (timerRef.current === null) timerRef.current = setTimeout(flush, FLUSH_MS);
   }, [flush]);
 
+  const recoverReply = useCallback(async (
+    turnId: number, sessionId: string | null, controller: AbortController,
+  ) => {
+    const { signal } = controller;
+    const version = navigationVersion.current;
+    const stillHere = () => !signal.aborted && version === navigationVersion.current;
+    update((prev) => ({
+      ...prev, busy: true, turnId, progress: '等待服务器完成回复', error: null,
+    }));
+
+    try {
+      while (stillHere()) {
+        const info = await api.health();
+        if (!stillHere()) return;
+        setHealth(info);
+        setOnline(true);
+        if (info.active_turn_id !== turnId) break;
+        await new Promise<void>((resolve) => setTimeout(resolve, 1000));
+      }
+      if (!stillHere()) return;
+      const listing = await api.listSessions();
+      if (!stillHere()) return;
+      setSessions(listing.items);
+      const target = sessionId ?? listing.items.find((row) => row.current)?.id;
+      if (!target) throw new Error('找不到这轮回复对应的会话');
+      const history = await api.history(target);
+      if (stillHere()) update((prev) => loadHistory(prev, history));
+    } catch {
+      if (stillHere()) {
+        update((prev) => ({
+          ...prev, busy: false, turnId: null, progress: '',
+          error: '暂时无法读取回复，请重新打开会话查看结果',
+        }));
+      }
+    }
+  }, [update]);
+
   const send = useCallback(async (text: string) => {
     const trimmed = text.trim();
     if (!trimmed) return;
@@ -231,26 +268,32 @@ export function useChat() {
       failure = error;
     } finally {
       flush();
-      if (!terminalRef.current) {
-        // Half-received reply is kept and explicitly marked as interrupted.
+      const turnId = turnRef.current;
+      if (controller.signal.aborted) {
+        if (controllerRef.current === controller) controllerRef.current = null;
+        return;
+      }
+      if (!terminalRef.current && turnId != null) {
+        await recoverReply(turnId, chatRef.current.sessionId, controller);
+      } else if (!terminalRef.current) {
         const message = failure instanceof Error
           ? failure.message
-          : '连接中断，回复未完成';
-        update((prev) => reduceChat(prev, { seq: 0, type: 'failed', message, interrupted: true }));
+          : '连接已断开，请重新打开会话查看回复';
+        update((prev) => reduceChat(prev, { seq: 0, type: 'failed', message }));
         // An HTTP error still means the server is reachable; only a transport
         // failure (or a stream that ended without a terminal event) is offline.
         if (!failure || failure instanceof NetworkError) setOnline(false);
       } else {
         setOnline(true);
       }
-      controllerRef.current = null;
+      if (controllerRef.current === controller) controllerRef.current = null;
       void refreshSessions();
       if (pendingHistoryRef.current) {
         pendingHistoryRef.current = false;
         await reloadHistory(chatRef.current.sessionId);
       }
     }
-  }, [flush, handleEvent, refreshSessions, reloadHistory, runCommand, update]);
+  }, [flush, handleEvent, recoverReply, refreshSessions, reloadHistory, runCommand, update]);
 
   const stop = useCallback(async () => {
     const turnId = turnRef.current ?? chatRef.current.turnId;
@@ -258,10 +301,7 @@ export function useChat() {
     try {
       await api.cancelTurn(turnId);
     } catch {
-      // Fall back to disconnecting the SSE stream; the backend cleans up on
-      // disconnect and cancels only this turn.
-      controllerRef.current?.abort();
-      update((prev) => ({ ...prev, error: '停止请求失败，已断开当前连接' }));
+      update((prev) => ({ ...prev, error: '停止请求失败，回复仍可能在生成' }));
     }
   }, [update]);
 
@@ -357,6 +397,7 @@ export function useChat() {
 
   useEffect(() => {
     let alive = true;
+    const recovery = new AbortController();
     const version = navigationVersion.current;
     void (async () => {
       try {
@@ -374,7 +415,13 @@ export function useChat() {
           update((prev) => ({ ...prev, error: 'Web 静态资源未构建，请运行 scripts/build_web.py' }));
         }
         const current = listing.items.find((item) => item.current);
-        if (current && version === navigationVersion.current && !chatRef.current.busy) {
+        if (version === navigationVersion.current && !chatRef.current.busy
+            && info.active_turn_id != null) {
+          if (current) {
+            update((prev) => ({ ...prev, sessionId: current.id }));
+          }
+          await recoverReply(info.active_turn_id, current?.id ?? null, recovery);
+        } else if (current && version === navigationVersion.current && !chatRef.current.busy) {
           const history = await api.history(current.id);
           if (alive && version === navigationVersion.current && !chatRef.current.busy) {
             update((prev) => loadHistory(prev, history));
@@ -390,11 +437,12 @@ export function useChat() {
     window.addEventListener('offline', goOffline);
     return () => {
       alive = false;
+      recovery.abort();
       window.removeEventListener('online', goOnline);
       window.removeEventListener('offline', goOffline);
       controllerRef.current?.abort();
     };
-  }, [update]);
+  }, [recoverReply, update]);
 
   const toggleSidebar = useCallback(() => setSidebarOpen((open) => !open), []);
   const focusComposer = useCallback(() => setFocusSignal((value) => value + 1), []);

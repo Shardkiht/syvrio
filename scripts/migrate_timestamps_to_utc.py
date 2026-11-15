@@ -175,8 +175,8 @@ def migrate_object(
         return line, 0
     if line.endswith("\r\n"):
         newline = "\r\n"
-    elif line.endswith("\n"):
-        newline = "\n"
+    elif line.endswith(("\r", "\n")):
+        newline = line[-1]
     else:
         newline = ""
     return json.dumps(obj, ensure_ascii=False, separators=(",", ":")) + newline, changed

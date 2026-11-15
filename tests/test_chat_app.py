@@ -6217,3 +6217,21 @@ async def test_reasoning_stays_with_background_session(tmp_path, monkeypatch):
             assert not app.query_one(ThinkingPanel).query_one(ThinkingText).display
         finally:
             release.set()
+
+
+async def test_automatic_follow_ignores_stale_scroll_animation_target(tmp_path, monkeypatch):
+    app = build_app(tmp_path, [])
+    async with app.run_test(size=(80, 24)):
+        chat = app._chat()
+        chat.follow_output = True
+        original = chat.scroll_end
+
+        def scroll_with_stale_target(**kwargs):
+            chat.watch_scroll_y(2, 1)
+            original(**kwargs)
+
+        monkeypatch.setattr(chat, "scroll_end", scroll_with_stale_target)
+        chat.scroll_to_follow()
+        assert chat.follow_output
+        chat.watch_scroll_y(2, 1)
+        assert not chat.follow_output
