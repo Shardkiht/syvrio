@@ -3494,7 +3494,7 @@ wheels = [
 
 [[package]]
 name = "syvrio"
-version = "0.5.3rc1"
+version = "0.5.3rc2"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
