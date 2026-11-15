@@ -3207,3 +3207,25 @@ async def test_automatic_follow_ignores_stale_scroll_animation_target(tmp_path, 
         assert chat.follow_output
         chat.watch_scroll_y(2, 1)
         assert not chat.follow_output
+
+
+async def test_thinking_focus_does_not_recenter_the_transcript(tmp_path, monkeypatch):
+    from syvrio.app.thinking_panel import ThinkingPanel, ThinkingText
+
+    app = build_app(tmp_path, [])
+    async with app.run_test(size=(80, 24)) as pilot:
+        area_panel = ThinkingPanel("Synthetic reasoning", active=True)
+        await app._chat().mount(area_panel)
+        await pilot.pause()
+        area = area_panel.query_one(ThinkingText)
+        centered = []
+        monkeypatch.setattr(app.screen, "can_view_entire", lambda widget: widget is not area)
+        monkeypatch.setattr(
+            app.screen, "scroll_to_center", lambda widget, **kwargs: centered.append(widget)
+        )
+
+        area.focus()
+        await pilot.pause()
+
+        assert area.has_focus
+        assert area not in centered
