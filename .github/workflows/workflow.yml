@@ -45,7 +45,7 @@ jobs:
 
       - name: Verify distribution contents
         run: |
-          python - <<'PY'
+          uv run --frozen python - <<'PY'
           import configparser
           import tarfile
           import tomllib
