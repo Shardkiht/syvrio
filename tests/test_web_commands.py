@@ -23,8 +23,9 @@ from syvrio.application.commands import (
     slash_matches,
     web_command_catalog,
 )
-from syvrio.application.contracts import ModelOption, SettingsResult
+from syvrio.application.contracts import InferenceReview, ModelOption, SettingsResult
 from syvrio.application.conversation import SAFE_COMMANDS
+from syvrio.application.memory import MemoryUseCases
 from syvrio.application.settings import SettingsUseCases
 from syvrio.infra.config import (
     ChatConfig,
@@ -35,7 +36,7 @@ from syvrio.infra.config import (
 )
 from syvrio.llm import AssistantTurn, LiteLLMChatModel
 from syvrio.memory.extractor import StaticExtractor
-from syvrio.memory.models import ExtractionResult, PendingItem
+from syvrio.memory.models import ExtractionResult, Inference, PendingItem
 from syvrio.memory.service import MemoryService
 from syvrio.time import utc_timestamp
 
@@ -177,6 +178,40 @@ def test_pending_review_preserves_full_text_and_requires_confirmation(client, ba
     assert response["data"]["rows"] == []
     assert not service.pending()
     assert [entry.text for entry in service.current_facts()] == [edited]
+
+
+def test_inference_command_edit_keeps_full_text_and_requires_confirmation(client, monkeypatch):
+    stamp = utc_timestamp()
+    original = Inference(
+        id="inf-example",
+        kind="profile",
+        text="Synthetic hypothesis. " * 20,
+        source_ids=["fact-example"],
+        created_at=stamp,
+        updated_at=stamp,
+    )
+    monkeypatch.setattr(
+        MemoryUseCases, "load_inference_review", lambda self: InferenceReview([original], {})
+    )
+    calls = []
+
+    def review(self, item_id, action, text):
+        calls.append((item_id, action, text))
+        return InferenceReview([original.model_copy(update={"text": text})], {})
+
+    monkeypatch.setattr(MemoryUseCases, "review_inference", review)
+    assert run(client, "/inferences").json()["data"]["rows"][0]["text"] == original.text
+    line = "/inferences correct inf-example"
+    edited = "Edited synthetic hypothesis. " * 100 + "\nA second line."
+    response = run(client, line, inference_text=edited).json()
+    assert response["status"] == "confirm_required"
+    assert edited not in response["message"]
+    assert not calls
+    assert run(client, "/status", inference_text=edited).status_code == 422
+    response = run(client, line, inference_text=edited, confirmed=True).json()
+    assert response["status"] == "ok", response
+    assert calls == [("inf-example", "correct", edited)]
+    assert response["data"]["rows"][0]["text"] == edited
 
 
 def test_chat_endpoint_rejects_slash_lines(client, backend):

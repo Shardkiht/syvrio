@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Callable, Literal
 
 from ..infra.config import ChatConfig
 from ..infra.tokens import estimate_messages_tokens, estimate_tokens
@@ -10,6 +10,7 @@ from ..llm import Summarizer
 from .session import Session, SessionStore, dated_message, new_message_id, transcript
 
 SUMMARY_MAX_CHARS = 1200
+CompactionPhase = Literal["running", "done", "failed"]
 
 
 @dataclass
@@ -151,6 +152,7 @@ class ContextManager:
         current_id: str | None = None,
         memory_context: str = "",
         force: bool = False,
+        on_compaction: Callable[[CompactionPhase], None] | None = None,
     ) -> ContextPlan:
         history = [
             record
@@ -176,10 +178,25 @@ class ContextManager:
         events: list[str] = []
 
         if force or total > self.trigger_tokens:
-            history, summary_text, evicted_total, flushed, events = self._compact(
-                session, history, summary_text, base_tokens, force=force
-            )
+            started = False
+
+            def begin() -> None:
+                nonlocal started
+                started = True
+                if on_compaction is not None:
+                    on_compaction("running")
+
+            try:
+                history, summary_text, evicted_total, flushed, events = self._compact(
+                    session, history, summary_text, base_tokens, force=force, on_start=begin
+                )
+            except Exception:
+                if started and on_compaction is not None:
+                    on_compaction("failed")
+                raise
             compacted = evicted_total > 0
+            if compacted and on_compaction is not None:
+                on_compaction("done")
 
         messages: list[dict] = [{"role": "system", "content": system_prompt}]
         if summary_text:
@@ -219,6 +236,7 @@ class ContextManager:
         summary_text: str,
         base_tokens: int,
         force: bool,
+        on_start: Callable[[], None],
     ) -> tuple[list[dict], str, int, dict | None, list[str]]:
         events: list[str] = []
         evicted_total = 0
@@ -232,6 +250,8 @@ class ContextManager:
             cutoff = self._cutoff(history, keep_tokens)
             if cutoff <= 0:
                 break
+            if evicted_total == 0:
+                on_start()
             evicted = history[:cutoff]
             pending_ids = {record["id"] for record in session.undistilled_messages()}
             user_records = [

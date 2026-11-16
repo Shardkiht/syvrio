@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 EventType = Literal[
     "start",
+    "message_saved",
     "reasoning_delta",
     "reasoning_end",
     "content_delta",
@@ -20,6 +21,7 @@ EventType = Literal[
     "tool_end",
     "event",
     "progress",
+    "compaction",
     "done",
     "cancelled",
     "failed",
@@ -45,6 +47,13 @@ class HealthResponse(BaseModel):
     # True when another TUI/Web client is blocked from writing the same Vault.
     single_client: bool = True
     static_ready: bool = True
+
+
+class ContextUsageResponse(BaseModel):
+    session_id: str | None
+    used: int
+    limit: int
+    compact_threshold: float
 
 
 class SessionInfo(BaseModel):
@@ -192,6 +201,7 @@ class CommandCatalogResponse(BaseModel):
 class CommandRequest(BaseModel):
     line: str = Field(min_length=1, max_length=2000)
     pending_text: str | None = Field(default=None, min_length=1, max_length=100_000)
+    inference_text: str | None = Field(default=None, min_length=1, max_length=100_000)
     session_id: str | None = None
     confirmed: bool = False
 

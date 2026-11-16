@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable
 
+from ..agent.context import CompactionPhase
 from ..agent.runtime import AgentReply, ThinkingUpdate
 from ..agent.session import Session
 from ..memory.models import Inference, PendingItem
@@ -58,6 +59,7 @@ class TurnCallbacks:
     # Outcome of the tool call whose display text arrives through ``on_event``
     # next; the Web stream needs it to label failures without a history reload.
     on_tool: Callable[[bool], None] | None = None
+    on_compaction: Callable[[CompactionPhase], None] | None = None
 
 
 @dataclass

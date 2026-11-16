@@ -28,7 +28,7 @@ from ..llm import (
 from ..memory.detect import redact_secrets
 from ..memory.extractor import LLMExtractor, split_chunks
 from ..memory.service import MemoryService, load_persona
-from .context import ContextManager, record_to_message
+from .context import CompactionPhase, ContextManager, record_to_message
 from .prompts import build_system_prompt
 from .recall import (
     RecallQueryBuilder,
@@ -273,6 +273,7 @@ class AgentRuntime:
         on_thinking: Callable[[ThinkingUpdate], None] | None = None,
         on_progress: Callable[[str], None] | None = None,
         on_tool: Callable[[bool], None] | None = None,
+        on_compaction: Callable[[CompactionPhase], None] | None = None,
         cancel: Event | None = None,
     ) -> AgentReply:
         """执行一轮对话。
@@ -302,6 +303,7 @@ class AgentRuntime:
                     on_user_message,
                     on_thinking,
                     on_tool,
+                    on_compaction,
                 )
         except GenerationCancelled as exc:
             partial = getattr(exc, "partial_content", "")
@@ -339,6 +341,7 @@ class AgentRuntime:
         on_user_message: Callable[[str], None] | None = None,
         on_thinking: Callable[[ThinkingUpdate], None] | None = None,
         on_tool: Callable[[bool], None] | None = None,
+        on_compaction: Callable[[CompactionPhase], None] | None = None,
     ) -> AgentReply:
         # Settings can change while this turn waits on a model or tool.
         model = self.model
@@ -381,6 +384,7 @@ class AgentRuntime:
             text,
             current_id=message_id,
             memory_context=memory_context,
+            on_compaction=on_compaction,
         )
         latency.event(
             "context.finished",
@@ -521,7 +525,9 @@ class AgentRuntime:
             estimated_tokens=plan.estimated_tokens,
         )
 
-    def force_compact(self) -> list[str]:
+    def force_compact(
+        self, on_compaction: Callable[[CompactionPhase], None] | None = None
+    ) -> list[str]:
         if self.session is None:
             return ["This session has no records to compact."]
         plan = self.context.prepare(
@@ -529,6 +535,7 @@ class AgentRuntime:
             self._system_prompt(),
             "",
             force=True,
+            on_compaction=on_compaction,
         )
         events = list(plan.events)
         if plan.flushed and plan.flushed.get("admitted") is not None:

@@ -1,16 +1,61 @@
-import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react';
 import { isCommandLine, suggestionsFor, type Suggestion } from '../state/commands';
 import { isComposing } from '../state/shortcuts';
-import type { CommandInfo } from '../types';
+import type { CommandInfo, CompactionPhase, ContextUsage } from '../types';
 import { CommandSuggestions } from './CommandUI';
 import { ArrowUpIcon, PlusIcon, StopIcon } from './Icons';
 
 /** Starter commands shown under the home composer, in display order. */
 const STARTER_COMMANDS = ['model', 'status', 'help', 'sessions'];
 
+const COMPACTION_LABEL = {
+  running: 'Compressing context…',
+  done: 'Context compressed',
+  failed: 'Context compression failed',
+};
+
+function ContextMeter({ usage, compaction }: { usage: ContextUsage | null; compaction: CompactionPhase | null }) {
+  const [open, setOpen] = useState(false);
+  const ratio = usage && usage.limit > 0 ? usage.used / usage.limit : 0;
+  const percent = Math.min(100, ratio * 100);
+  const label = usage ? (percent > 0 && percent < 1 ? '<1%' : `${Math.floor(percent)}%`) : '—';
+  const nearLimit = usage !== null && ratio >= usage.compact_threshold;
+  const waveCeiling = compaction === 'running' ? 99 : 85;
+  const detail = usage
+    ? `${usage.used.toLocaleString()} / ${usage.limit.toLocaleString()} tokens`
+    : 'Estimate unavailable';
+  return (
+    <div className={`context-meter${open ? ' expanded' : ''}`} data-compaction={compaction ?? undefined}>
+      <button type="button" className="context-dial" aria-expanded={open}
+        aria-label={`Context estimate: ${detail}`}
+        data-fill={percent === 0 ? 'empty' : percent === 100 ? 'full' : 'partial'}
+        data-wave={percent >= 15 && percent <= waveCeiling ? 'moving' : 'still'}
+        style={{ '--context-fill': `${percent}%` } as CSSProperties}
+        onClick={() => setOpen((value) => !value)}
+        onBlur={() => setOpen(false)}
+        onKeyDown={(event) => {
+          if (!open || event.key !== 'Escape' || isComposing(event)) return;
+          event.preventDefault();
+          event.stopPropagation();
+          setOpen(false);
+        }}>
+        <span className="context-value">{label}</span>
+      </button>
+      <div className="context-detail" aria-hidden="true">
+        <strong>{compaction ? COMPACTION_LABEL[compaction] : 'Context estimate'}</strong>
+        <span>{detail}</span>
+        {nearLimit && <span className="context-warning">Near the compaction threshold</span>}
+      </div>
+      {compaction && <span className="sr-only" role="status">{COMPACTION_LABEL[compaction]}</span>}
+    </div>
+  );
+}
+
 export function Composer({
   busy,
   progress,
+  contextUsage = null,
+  compaction = null,
   onSend,
   onStop,
   catalog = [],
@@ -20,6 +65,8 @@ export function Composer({
 }: {
   busy: boolean;
   progress: string;
+  contextUsage?: ContextUsage | null;
+  compaction?: CompactionPhase | null;
   onSend: (text: string) => void;
   onStop: () => void;
   catalog?: CommandInfo[];
@@ -187,15 +234,14 @@ export function Composer({
               </button>
             )}
             <div className="composer-actions">
+              {busy && isCommandLine(value) && (
+                <button type="button" className="send run-command" onClick={submit}>Run</button>
+              )}
+              <ContextMeter usage={contextUsage} compaction={compaction} />
               {busy ? (
-                <>
-                  {isCommandLine(value) && (
-                    <button type="button" className="send run-command" onClick={submit}>Run</button>
-                  )}
-                  <button type="button" className="stop" onClick={onStop} aria-label="Stop">
-                    <StopIcon size={16} />
-                  </button>
-                </>
+                <button type="button" className="stop" onClick={onStop} aria-label="Stop">
+                  <StopIcon size={20} />
+                </button>
               ) : (
                 <button
                   type="button"
@@ -204,7 +250,7 @@ export function Composer({
                   disabled={!value.trim()}
                   aria-label="Send"
                 >
-                  <ArrowUpIcon size={18} />
+                  <ArrowUpIcon size={23} />
                 </button>
               )}
             </div>

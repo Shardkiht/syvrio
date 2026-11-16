@@ -59,6 +59,36 @@ def test_prepare_under_budget_does_not_compact(tmp_path):
     assert plan.messages[-1] == {"role": "user", "content": "继续"}
 
 
+@pytest.mark.parametrize("fail", [False, True])
+def test_compaction_phases_follow_summary_persistence(tmp_path, fail):
+    store = SessionStore(tmp_path)
+    session = build_session(store, repeat=45)
+    summarizer = FakeSummarizer()
+    manager = ContextManager(
+        ChatConfig(context_window=2500, keep_recent_tokens=350, reserve_output_tokens=300),
+        summarizer,
+        store,
+    )
+    phases = []
+
+    def on_compaction(phase):
+        phases.append((phase, bool(session.summary_text())))
+
+    if fail:
+
+        def fail_summary(*args):
+            raise ValueError("synthetic summary failure")
+
+        summarizer.summarize = fail_summary
+        with pytest.raises(ValueError, match="synthetic summary failure"):
+            manager.prepare(session, "system", "", force=True, on_compaction=on_compaction)
+        assert phases == [("running", False), ("failed", False)]
+    else:
+        plan = manager.prepare(session, "system", "", force=True, on_compaction=on_compaction)
+        assert plan.compacted
+        assert phases == [("running", False), ("done", True)]
+
+
 def test_tool_replay_drops_orphans_and_duplicates_and_closes_each_batch():
     records = [
         {"type": "tool", "tool_call_id": "orphan", "content": "orphan"},

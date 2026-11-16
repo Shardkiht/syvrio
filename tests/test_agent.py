@@ -917,7 +917,7 @@ def test_context_options_and_apply(tmp_path, monkeypatch, service):
     service.config_path = config_path
 
     options = actions.context_options(service)
-    assert 16000 in options
+    assert options == [100_000, 200_000, 400_000, 600_000]
     assert "16K" in actions.apply_context(service, 16000)
     assert service.config.chat.context_window == 16000
     assert (tmp_path / "syvrio.toml").exists()

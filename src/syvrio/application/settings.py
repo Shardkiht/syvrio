@@ -6,7 +6,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 
-from ..infra.config import SPARK_THINKING_MODES, LLMConfig
+from ..infra.config import CONTEXT_WINDOW_PRESETS, SPARK_THINKING_MODES, LLMConfig
 from ..infra.providers import (
     PRESETS,
     delete_api_key,
@@ -146,15 +146,7 @@ class SettingsUseCases:
 
     def context_options(self) -> list[int]:
         max_input = self._max_input()
-        presets = [8_000, 16_000, 32_000, 64_000, 128_000, 200_000]
-        if max_input:
-            presets = [size for size in presets if size <= max_input]
-            if max_input not in presets:
-                presets.append(max_input)
-        current = self.service.config.chat.context_window
-        if current not in presets:
-            presets.insert(0, current)
-        return sorted(presets)
+        return [size for size in CONTEXT_WINDOW_PRESETS if not max_input or size <= max_input]
 
     @property
     def context_window(self) -> int:

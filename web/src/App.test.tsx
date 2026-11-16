@@ -135,6 +135,39 @@ afterEach(() => {
 });
 
 describe('Web client interactions', () => {
+  it('shows context usage next to Send and updates it when a session opens', async () => {
+    const current = SESSIONS[0];
+    const seen: (string | null)[] = [];
+    vi.stubGlobal('fetch', async (url: string) => {
+      const route = new URL(url, 'http://localhost');
+      switch (route.pathname) {
+        case '/api/health': return json(HEALTH);
+        case '/api/sessions': return json({ items: SESSIONS });
+        case '/api/commands': return json({ items: CATALOG });
+        case '/api/context-usage': {
+          const id = route.searchParams.get('session_id');
+          seen.push(id);
+          return json({ session_id: id, used: id ? 2400 : 0, limit: 4000, compact_threshold: .8 });
+        }
+        case '/api/sessions/s-1/switch': return json({ session_id: current.id, title: current.title });
+        case '/api/sessions/s-1': return json({ session_id: current.id, items: [], title: current.title });
+        default: return json({}, 404);
+      }
+    });
+    render(<App />);
+    const empty = await screen.findByRole('button', { name: /Context estimate: 0 \/ 4,000 tokens/ });
+    expect(empty.textContent).toBe('0%');
+    expect(empty.getAttribute('data-wave')).toBe('still');
+    expect(empty.parentElement?.nextElementSibling).toBe(screen.getByRole('button', { name: 'Send' }));
+    fireEvent.click(screen.getByTestId('session-s-1'));
+    const dial = await screen.findByRole('button', { name: /Context estimate: 2,400 \/ 4,000 tokens/ });
+    expect(dial.textContent).toBe('60%');
+    expect(dial.getAttribute('data-wave')).toBe('moving');
+    fireEvent.click(dial);
+    expect(dial.getAttribute('aria-expanded')).toBe('true');
+    expect(seen).toEqual([null, current.id]);
+  });
+
   it('sends a message and streams the markdown reply', async () => {
     installFetch({
       '/api/chat': () => sse(
@@ -150,6 +183,49 @@ describe('Web client interactions', () => {
     await waitFor(() => expect(screen.getByTestId('assistant-message').textContent).toContain('Hello'));
     expect(screen.getByTestId('assistant-message').querySelector('strong')?.textContent).toBe('world');
     await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).toBeTruthy());
+  });
+
+  it('moves the saved session to the top while its reply is still running', async () => {
+    const old = { ...SESSIONS[0], current: true };
+    const recent = { ...SESSIONS[0], id: 's-2', title: 'More recent' };
+    let saved = false;
+    let releaseDone: ((data: string) => void) | undefined;
+    const stream = {
+      ok: true,
+      body: {
+        getReader: () => ({
+          read: async () => {
+            if (!saved) {
+              saved = true;
+              return {
+                done: false,
+                value: encoder.encode(frame({ seq: 1, type: 'message_saved', session_id: old.id })),
+              };
+            }
+            if (releaseDone) return { done: true };
+            const chunk = await new Promise<string>((resolve) => { releaseDone = resolve; });
+            return { done: false, value: encoder.encode(chunk) };
+          },
+          releaseLock: () => {},
+        }),
+      },
+    } as unknown as Response;
+    installFetch({
+      '/api/sessions': () => json({ items: saved ? [old, recent] : [recent, old] }),
+      '/api/sessions/s-1': () => json({
+        session_id: old.id, items: [], title: old.title, current: true,
+      }),
+      '/api/chat': () => stream,
+    });
+    render(<App />);
+    await ready();
+    const sidebar = within(screen.getByTestId('sidebar'));
+    await waitFor(() => expect(sidebar.getAllByTestId(/^session-/)[0].dataset.testid).toBe('session-s-2'));
+    send('Continue the older chat');
+    await waitFor(() => expect(sidebar.getAllByTestId(/^session-/)[0].dataset.testid).toBe('session-s-1'));
+    expect(screen.getByRole('button', { name: 'Stop' })).toBeTruthy();
+    releaseDone?.(frame({ seq: 2, type: 'done', text: 'Finished', session_id: old.id }));
+    await screen.findByRole('button', { name: 'Send' });
   });
 
   it('collapses thinking and expands it into a bounded pane', async () => {
@@ -404,6 +480,80 @@ describe('Slash commands and shortcuts', () => {
     expect(requests[3]).toMatchObject({ line: '/pending reject p-2', confirmed: true });
   });
 
+  it('edits an inference with the TUI keys and keeps the response in review', async () => {
+    const text = 'Full inference text used as the edit draft.';
+    const requests: { line: string; confirmed: boolean; inference_text?: string }[] = [];
+    installFetch({
+      'POST /api/commands': (init) => {
+        const body = JSON.parse(String(init?.body)) as (typeof requests)[number];
+        requests.push(body);
+        const rows = body.inference_text ? [] : [{
+          id: 'inf-example', topic: 'profile', reason: 'hypothesis', text,
+        }];
+        return json(commandResult({
+          command: 'inferences', intent: 'inferences',
+          data: { kind: 'inferences', count: rows.length, rows },
+        }));
+      },
+    });
+    render(<App />);
+    await ready();
+    send('/inferences');
+    const surface = await screen.findByRole('dialog', { name: 'Inference review' });
+    const dialog = within(surface);
+    fireEvent.keyDown(surface, { key: 'ArrowRight' });
+    expect(dialog.getByRole('button', { name: 'Pending' }).getAttribute('aria-pressed')).toBe('true');
+    fireEvent.keyDown(surface, { key: 'ArrowDown' });
+    expect(dialog.getByRole('button', { name: /Full inference/ }).getAttribute('aria-pressed')).toBe('true');
+    fireEvent.keyDown(document.activeElement!, { key: 'e' });
+    const input = dialog.getByRole('textbox', { name: 'Edit inference' }) as HTMLTextAreaElement;
+    expect(input.value).toBe(text);
+    fireEvent.change(input, { target: { value: 'Edited\nwith a second line' } });
+    fireEvent.keyDown(input, { key: 's', ctrlKey: true });
+    expect(requests).toHaveLength(1);
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
+    expect(document.activeElement).toBe(input);
+    fireEvent.keyDown(input, { key: 's', ctrlKey: true });
+    fireEvent.click(dialog.getByRole('button', { name: 'Confirm' }));
+    expect(await dialog.findByText('No inferences')).toBeTruthy();
+    expect(requests[1]).toEqual({
+      line: '/inferences correct inf-example', confirmed: true,
+      inference_text: 'Edited\nwith a second line', session_id: null,
+    });
+    expect(screen.getByTestId('message-list').textContent).not.toContain('Edited');
+  });
+
+  it('opens /sessions in a modal with keyboard navigation and /help in the palette', async () => {
+    const spy = spyCommands((body) => body.line === '/sessions'
+      ? commandResult({ status: 'client', command: 'sessions', intent: 'open_sessions' })
+      : commandResult({ command: 'help', intent: 'help' }));
+    installFetch(spy.overrides);
+    render(<App />);
+    await ready();
+    send('/sessions');
+    const dialog = await screen.findByRole('dialog', { name: 'Sessions' });
+    fireEvent.keyDown(dialog, { key: 'ArrowDown' });
+    expect(document.activeElement).toBe(within(dialog).getByRole('button', { name: 'Earlier chat' }));
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
+    send('/help');
+    expect(await screen.findByRole('dialog', { name: 'Command palette' })).toBeTruthy();
+  });
+
+  it('opens the Git sync confirmation from its dialog with Ctrl+S', async () => {
+    const spy = spyCommands((body) => body.line === '/git'
+      ? commandResult({ command: 'git', intent: 'git_status', message: 'modified: 1' })
+      : commandResult({ command: 'git', intent: 'git_status', status: 'confirm_required', message: 'Confirm sync' }));
+    installFetch(spy.overrides);
+    render(<App />);
+    await ready();
+    send('/git');
+    const dialog = await screen.findByRole('dialog', { name: '/git' });
+    fireEvent.keyDown(dialog, { key: 's', ctrlKey: true });
+    expect(await screen.findByRole('alertdialog', { name: 'Confirm' })).toBeTruthy();
+    expect(spy.lines).toEqual(['/git', '/git sync']);
+    expect(spy.confirmed).toEqual([false, false]);
+  });
+
   it('completes by prefix, Tab and Enter without ever calling /api/chat', async () => {
     const spy = spyCommands((body) =>
       commandResult({ command: 'model', intent: 'model', message: `ran ${body.line}` }));
@@ -418,8 +568,9 @@ describe('Slash commands and shortcuts', () => {
     expect(screen.getByTestId('command-suggestions').textContent).toContain('/model refresh');
     fireEvent.keyDown(input, { key: 'Enter' });
     await waitFor(() => expect(spy.lines).toEqual(['/model refresh']));
-    await waitFor(() =>
-      expect(screen.getByTestId('message-list').textContent).toContain('ran /model refresh'));
+    const dialog = await screen.findByRole('dialog', { name: '/model' });
+    expect(dialog.textContent).toContain('ran /model refresh');
+    expect(screen.getByTestId('message-list').textContent).not.toContain('ran /model refresh');
     expect(calls.some((entry) => entry.includes('/api/chat'))).toBe(false);
     expect(input.value).toBe('');
   });
@@ -453,7 +604,8 @@ describe('Slash commands and shortcuts', () => {
     fireEvent.change(input, { target: { value: '/nope' } });
     fireEvent.keyDown(input, { key: 'Enter' });
     await waitFor(() => expect(spy.lines).toEqual(['/nope']));
-    expect(screen.getByTestId('message-list').textContent).toContain('Unknown command');
+    expect(await screen.findByRole('dialog', { name: 'Unknown command' })).toBeTruthy();
+    expect(screen.getByTestId('message-list').textContent).not.toContain('Unknown command');
     expect(calls.some((entry) => entry.includes('/api/chat'))).toBe(false);
   });
 
@@ -467,8 +619,7 @@ describe('Slash commands and shortcuts', () => {
     const input = screen.getByTestId('composer-input') as HTMLTextAreaElement;
     fireEvent.change(input, { target: { value: '/import /tmp/private.txt' } });
     fireEvent.keyDown(input, { key: 'Enter' });
-    await waitFor(() =>
-      expect(screen.getByTestId('message-list').textContent).toContain('not available on the Web'));
+    expect(await screen.findByRole('dialog', { name: '/import is not available on the Web' })).toBeTruthy();
   });
 
   it('does not send or trigger shortcuts during IME composition', async () => {
@@ -502,10 +653,30 @@ describe('Slash commands and shortcuts', () => {
 
     fireEvent.keyDown(window, { key: 'm', altKey: true });
     await waitFor(() => expect(spy.lines).toContain('/model'));
+    const model = await screen.findByRole('dialog', { name: '/model' });
+    fireEvent.keyDown(model, { key: 'Escape' });
 
     expect(screen.getByTestId('sidebar').className).toContain('open');
     fireEvent.keyDown(window, { key: 'b', ctrlKey: true });
     await waitFor(() => expect(screen.getByTestId('sidebar').className).not.toContain('open'));
+  });
+
+  it('uses Alt+S in model choices to open Providers without taking over Ctrl+P', async () => {
+    const spy = spyCommands(() => commandResult({
+      command: 'model', intent: 'model',
+      data: { options: [{ provider: 'deepseek', model: 'deepseek-flash' }] },
+    }));
+    installFetch(spy.overrides);
+    render(<App />);
+    await ready();
+    send('/model');
+    const dialog = await screen.findByRole('dialog', { name: 'Models' });
+    fireEvent.keyDown(dialog, { key: 'p', ctrlKey: true });
+    expect(screen.queryByRole('dialog', { name: 'Settings' })).toBeNull();
+    fireEvent.keyDown(dialog, { key: 's', altKey: true });
+    const settings = within(await screen.findByRole('dialog', { name: 'Settings' }));
+    expect(settings.getByTestId('settings-tab-providers').getAttribute('aria-current')).toBe('page');
+    expect(screen.queryByRole('dialog', { name: 'Models' })).toBeNull();
   });
 
   it('opens the settings panel from the header and with Alt+S', async () => {
@@ -561,8 +732,11 @@ describe('Slash commands and shortcuts', () => {
     const input = screen.getByTestId('composer-input') as HTMLTextAreaElement;
     fireEvent.change(input, { target: { value: '/nope' } });
     fireEvent.keyDown(input, { key: 'Enter' });
-    await waitFor(() =>
-      expect(screen.getByTestId('message-list').textContent).toContain('Command failed'));
+    const dialog = await screen.findByRole('dialog', { name: 'Command failed' });
+    expect(document.activeElement).toBe(dialog);
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    await waitFor(() => expect(document.activeElement).toBe(input));
+    expect(screen.queryByRole('dialog', { name: 'Command failed' })).toBeNull();
     fireEvent.change(input, { target: { value: 'still works' } });
     expect(input.value).toBe('still works');
   });
@@ -601,8 +775,10 @@ describe('Slash commands and shortcuts', () => {
     expect(screen.queryByTestId('command-suggestions')).toBeNull();
     fireEvent.keyDown(input, { key: 'Enter' });
     await waitFor(() => expect(spy.lines).toContain('/status'));
-    await waitFor(() =>
-      expect(screen.getByTestId('message-list').textContent).toContain('Generating: yes'));
+    const status = await screen.findByRole('dialog', { name: '/status' });
+    expect(status.textContent).toContain('Generating: yes');
+    expect(screen.getByTestId('message-list').textContent).not.toContain('Generating: yes');
+    fireEvent.keyDown(status, { key: 'Escape' });
 
     gate.release?.(
       frame({ seq: 2, type: 'content_delta', text: 'finished' })

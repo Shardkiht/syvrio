@@ -61,6 +61,7 @@ export interface OptionPanel {
   title: string;
   options: { label: string; value: string }[];
   prefix: string;
+  message?: string;
 }
 
 export interface PendingCandidate {
@@ -70,13 +71,21 @@ export interface PendingCandidate {
   reason: string;
 }
 
-export interface PendingPanel {
-  title: 'Pending review';
+export interface ReviewPanel {
+  kind: 'pending' | 'inferences';
+  title: string;
   rows: PendingCandidate[];
   count: number;
 }
 
-export type CommandPanel = OptionPanel | PendingPanel;
+export interface ResultPanel {
+  title: string;
+  message: string;
+  action?: { label: string; line: string; saveShortcut?: boolean };
+  rename?: boolean;
+}
+
+export type CommandPanel = OptionPanel | ReviewPanel | ResultPanel | { kind: 'sessions' };
 export type PendingAction = 'approve' | 'reject' | 'edit';
 
 /** Model / reasoning / context choices share one small clickable panel. */
@@ -84,9 +93,10 @@ export function panelFor(result: CommandResponse): CommandPanel | null {
   const data = result.data;
   if (!data) return null;
 
-  if (data.kind === 'pending' && Array.isArray(data.rows)) {
+  if ((data.kind === 'pending' || data.kind === 'inferences') && Array.isArray(data.rows)) {
     return {
-      title: 'Pending review',
+      kind: data.kind,
+      title: data.kind === 'pending' ? 'Pending review' : 'Inference review',
       rows: data.rows as PendingCandidate[],
       count: typeof data.count === 'number' ? data.count : data.rows.length,
     };
@@ -96,20 +106,9 @@ export function panelFor(result: CommandResponse): CommandPanel | null {
   const rows = data.rows as { id: string; text: string }[] | undefined;
   if (Array.isArray(rows) && rows.length) {
     const kind = String(data.kind ?? '');
-    const label = (prefix: string, row: { id: string; text: string }) =>
-      `${prefix} · ${row.text || row.id}`.slice(0, 120);
-    if (kind === 'inferences') {
-      return {
-        title: 'Inference review', prefix: '/inferences',
-        options: rows.flatMap((row) => [
-          { label: label('Confirm', row), value: `confirm ${row.id}` },
-          { label: label('Reject', row), value: `reject ${row.id}` },
-        ]),
-      };
-    }
     if (kind === 'dream') {
       return {
-        title: 'Reflection', prefix: '/dream',
+        title: 'Reflection', prefix: '/dream', message: result.message,
         options: rows.map((row) => ({ label: row.text, value: row.id })),
       };
     }
@@ -166,4 +165,15 @@ export function commandMessage(result: CommandResponse): string {
     }).join('\n');
   }
   return message ? title + '\n' + message : title;
+}
+
+export function resultPanelFor(result: CommandResponse): ResultPanel {
+  const [title, ...lines] = commandMessage(result).split('\n');
+  const panel: ResultPanel = { title, message: lines.join('\n') };
+  if (result.status === 'ok' && result.intent === 'git_status') {
+    panel.action = { label: 'Synchronize', line: '/git sync', saveShortcut: true };
+  } else if (result.status === 'ok' && result.intent === 'profile') {
+    panel.action = { label: 'Refresh profile', line: '/profile refresh' };
+  }
+  return panel;
 }

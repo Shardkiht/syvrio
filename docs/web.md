@@ -82,6 +82,7 @@ uv run python scripts/build_web.py --wheel dist/*.whl  # 校验实际 wheel 内�
 | 方法 | 路径 | 作用 |
 | --- | --- | --- |
 | GET | `/api/health` | 版本、供应商与模型、生成状态、活动轮次、静态资源状态 |
+| GET | `/api/context-usage?session_id=<id>` | 会话上下文估算、配置上限与压缩阈值；省略 ID 表示空白草稿 |
 | GET | `/api/sessions?limit=100` | 会话列表 |
 | POST | `/api/sessions` | 回到新对话首页（返回 `draft=true`、`session_id=null`，不写文件；首条消息才创建会话） |
 | POST | `/api/sessions/{id}/switch` | 切换/恢复会话 |
@@ -149,7 +150,9 @@ Web 单 Turn 模型下，`CommandUseCases.BUSY_READ_ONLY` 与 `BUSY_NO_ARGUMENT`
 - 输入 `/` 显示候选，前缀实时过滤；`↑ / ↓` 选择、`Tab` 补全、`Enter` 执行选中的命令或子命令、`Escape` 关闭候选；鼠标点击与移动端触摸同样可选。
 - 候选列表与输入卡片共用左右边界并独立滚动。可用高度较小时，候选进入输入区的正常布局，留在顶栏下方。
 - 中文输入法组字状态（`isComposing`、`keyCode 229`、`Process` / `Unidentified`）不会触发 `Enter`、`Tab` 或任何全局快捷键。
-- `/model`、`/think`、`/context` 的结果会转成轻量可点击选项面板；选择后服务端应用设置，不会重新弹出面板。模型变更后刷新顶栏模型信息。
+- 斜杠命令的结果与错误在站内弹窗显示。状态、摘要和主题等使用可滚动的结果窗口；`/sessions` 用弹窗浏览和切换会话，`/help` 打开命令面板，`/rename` 可在弹窗直接编辑标题。
+- `/model`、`/think`、`/context` 打开选项弹窗。选择后在弹窗显示设置结果，模型变更后刷新顶栏。
+- `/pending` 与 `/inferences` 共用列表和详情布局。审核按钮与键盘操作触发同样的确认流程，提交失败保留草稿。`/git` 可通过弹窗请求同步。
 - 模型目录是**进程内缓存**（`llm/client.py` 的 `_MODEL_CACHE`），Web 进程刚启动、或供应商未暴露 `/models` 时可能为空。此时 `/model` 仍列出当前配置模型并明确提示，不会输出空白列表；`/model refresh` 会真正向已配置供应商发起一次有界拉取（单供应商 5 秒超时），拉不到时说明原因而不是谎称「需要本地终端」。缓存为空时仍可用 `/model <当前provider>/<模型ID>` 按 ID 切换，未知供应商仍拒绝。
 - 命令面板（`Ctrl+Shift+P` / `Alt+P`，或顶栏 `Commands` 按钮）复用同一目录与分发逻辑：搜索、方向键、Enter 执行、Escape 关闭并恢复输入框焦点，同时列出快捷键和浏览器保留键说明。
 
@@ -162,13 +165,19 @@ Web 单 Turn 模型下，`CommandUseCases.BUSY_READ_ONLY` 与 `BUSY_NO_ARGUMENT`
 | Model | `/model`、`/model refresh`、`/model <provider>/<model>` | 列出目录中的模型并标记当前项；目录为空时明确提示，可按模型 ID 切换 |
 | Appearance | 浏览器 `localStorage` | 默认跟随系统 / 浏览器明暗主题，也可固定亮色或暗色；只保存在当前浏览器 |
 | Thinking | `/think` | 仅展示模型真实支持的 reasoning 取值，`default` 表示不覆盖供应商默认 |
-| Context | `/context` | 上下文窗口候选与当前值 |
+| Context | `/context` | 默认 100K，提供 100K、200K、400K、600K 预设和自定义 token 数；受模型上限约束 |
 | Providers | `GET/POST /api/settings/providers/{provider}` | 添加/更新 Key、修改 Base URL、删除供应商、自定义模型；**保存的 Key 永不回传浏览器** |
 | About | `/api/health` | 版本、当前 provider/model、是否生成中、单客户端锁、静态资源状态与快捷键 |
 
 打开面板只读取当前设置；删除供应商仍需二次确认，服务端复用 `SettingsUseCases` 的「当前供应商不可删」等守卫，失败原因以 `provider-error` 原样展示。
 
+### 上下文占用
+
+发送键左侧的水球显示当前会话的 token 占比估算。悬停或点按可查看估算用量和模型的配置上限，达到压缩阈值时水球高亮。水波只在占用 15%–85% 时流动；系统开启减少动态效果时保持静止。 自动压缩开始时显示压缩状态，摘要保存成功后按重新估算的用量降低水位。手动执行 `/compact` 也会显示状态；没有可压缩的历史时不会显示成功动画。Web 复用 TUI 的历史上下文估算，估算不触发模型请求，也不计入尚未发送的输入或本轮临时召回内容。
+
 ### 主题、侧栏与消息滚动
+
+- 服务端保存用户消息后，Web 立即刷新会话顺序，模型回复期间无需刷新网页。排序使用最后一条有效用户消息的时间。
 
 - 界面使用同一套 CSS 变量生成亮色与暗色主题。默认 `Follow system` 响应 `prefers-color-scheme` 的实时变化，也可在 Appearance 中固定 Light / Dark；选择只写入当前浏览器的 `syvrio.theme`，移动端地址栏 `theme-color` 同步切换。显式主题在样式加载前恢复，避免刷新时黑白闪烁。
 - 桌面端点击侧栏头部的面板图标会收起整列（`display: none`，宽度让给对话区），顶栏左侧同一图标或 `Ctrl+B` / `Alt+B` 重新展开；桌面选择保存在 `syvrio.sidebar`。手机端仍使用默认收起的抽屉与蒙层，跨断点时自动折叠。
@@ -176,17 +185,20 @@ Web 单 Turn 模型下，`CommandUseCases.BUSY_READ_ONLY` 与 `BUSY_NO_ARGUMENT`
 
 ### 快捷键与浏览器冲突
 
-以 TUI 实际绑定为准（`chat_app.py`：`Ctrl+P` 命令面板、`Ctrl+B` 会话栏、`Ctrl+Q` 退出、`Escape` 关闭/取消）。映射集中在 `web/src/state/shortcuts.ts`：
+以 TUI 实际绑定为准（`chat_app.py`：`Ctrl+P` 在模型面板管理供应商、`Ctrl+B` 会话栏、`Ctrl+Q` 退出、`Escape` 关闭/取消）。映射集中在 `web/src/state/shortcuts.ts`：
 
 | TUI | Web | 说明 |
 | --- | --- | --- |
-| `Ctrl+P`（命令面板） | `Ctrl+Shift+P` / `Alt+P` | `Ctrl+P` 是浏览器打印，不拦截；Firefox 的 `Ctrl+Shift+P` 是隐私窗口，`Alt+P` 是跨浏览器可靠替代 |
-| `Ctrl+P`（`/model` 内供应商入口） | `Alt+M`，或点击顶栏模型名，或 `/model` | 不占用浏览器打印键 |
+| 命令面板 | `Ctrl+Shift+P` / `Alt+P` | `Ctrl+P` 是浏览器打印，不拦截；Firefox 的 `Ctrl+Shift+P` 是隐私窗口，`Alt+P` 是跨浏览器可靠替代 |
+| `Ctrl+P`（模型面板内管理供应商） | 在模型选项弹窗按 `Alt+S` | 打开设置的 Providers 分区，保留浏览器打印键 |
 | TUI `/setup` | `Alt+S`、顶栏 `Settings` 或 `/setup` | 设置面板：模型、思考强度、上下文、供应商 Key 与端点 |
 | `Ctrl+B`（会话栏） | `Ctrl+B` / `Alt+B` | 可稳定拦截，另有顶栏侧栏图标按钮 |
 | `Ctrl+Q`（退出） | 不拦截 | 浏览器保留；`/exit` 只返回入口视图 |
 | `Escape` | `Escape` | 关闭弹层 / 关闭补全 / 停止生成 |
-| `↑ / ↓`、`Tab`、`Enter`、`Shift+Enter` | 同 TUI 语义 | 在输入框内处理，`Shift+Enter` 换行 |
+| `↑ / ↓`、`Tab`、`Enter`、`Shift+Enter` | 同 TUI 语义 | 输入区支持补全与换行；弹窗内可移动焦点和选择 |
+| `C / R / E`、`Page Up / Page Down` | 相同 | 审核弹窗内确认、拒绝、编辑及翻阅详情 |
+| `← / →` | 相同 | 推断弹窗切换状态筛选 |
+| `Ctrl+S` | `Ctrl+S` / `⌘S` | 审核或重命名弹窗保存，Git 弹窗请求同步 |
 
 `KEY_BINDINGS` 是唯一映射表；`Ctrl+Q`、`Ctrl+P` 明确列在 `RESERVED_KEYS` 中不做拦截，避免破坏浏览器正常功能，并在命令面板里显示替代组合键。
 
@@ -307,7 +319,7 @@ CLI 语法按 Tailscale 1.104.5 的 `tailscale serve --help` 核对：`serve <ta
 
 ## 使用边界
 
-Web 保持单用户、私有部署，没有内置登录或浏览器文件上传。它支持列表式记忆命令，待确认界面支持列表和详情，其他专用审核面板及本地文件导入仍以 TUI 为主；CLI 仍可用于批处理。Web 和 TUI 由不同进程分别运行，不能同时占用同一 Vault/Runtime。
+Web 保持单用户、私有部署，没有内置登录或浏览器文件上传。待确认记忆和推断审核均有列表、详情和编辑弹窗，本地文件导入仍以 TUI 为主；CLI 仍可用于批处理。Web 和 TUI 由不同进程分别运行，不能同时占用同一 Vault/Runtime。
 
 ## 测试
 

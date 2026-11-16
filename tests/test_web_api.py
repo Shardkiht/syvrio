@@ -142,6 +142,27 @@ def test_health_and_openapi(client, backend):
     assert client.get("/openapi.json").status_code == 200
 
 
+def test_context_usage_tracks_requested_session_without_switching(client, backend):
+    empty = client.get("/api/context-usage").json()
+    assert empty == {
+        "session_id": None,
+        "used": 0,
+        "limit": backend._app_service.settings.context_window,
+        "compact_threshold": backend._conversation.compact_threshold(),
+    }
+    session = backend._sessions.create()
+    backend._sessions.append(
+        session, {"type": "message", "role": "user", "content": "Synthetic context sample."}
+    )
+    response = client.get("/api/context-usage", params={"session_id": session.id})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["session_id"] == session.id
+    assert data["used"] == backend._conversation.estimate_usage(session) > 0
+    assert backend._conversation.current_id is None
+    assert client.get("/api/context-usage", params={"session_id": "../vault"}).status_code == 422
+
+
 def test_session_lifecycle(client, backend):
     before = len(backend._sessions.list())
     created = client.post("/api/sessions")
@@ -176,6 +197,9 @@ def test_first_message_persists_the_session(client, backend):
     ids = {event["session_id"] for event in events if event.get("session_id")}
     assert len(ids) == 1
     session_id = ids.pop()
+    saved = [event for event in events if event["type"] == "message_saved"]
+    assert len(saved) == 1 and saved[0]["session_id"] == session_id
+    assert types(events).index("message_saved") < types(events).index("content_delta")
     assert backend._sessions.exists(session_id)
     rows = client.get("/api/sessions").json()["items"]
     assert [row["id"] for row in rows if row["current"]] == [session_id]

@@ -205,18 +205,15 @@ class CommandResult:
     refresh_history: bool = False
 
 
-def _item_rows(items, limit: int = MAX_ROWS) -> list[dict[str, str]]:
-    """Frontend-neutral review rows: id plus a short, safe text preview."""
-    rows: list[dict[str, str]] = []
-    for item in items[:limit]:
-        text = ""
-        for field in ("text", "content", "body", "statement", "summary", "title"):
-            value = getattr(item, field, None)
-            if isinstance(value, str) and value.strip():
-                text = value.strip()
-                break
-        rows.append({"id": str(getattr(item, "id", "") or ""), "text": text[:160]})
-    return rows
+def _inference_data(items) -> dict[str, Any]:
+    return {
+        "kind": "inferences",
+        "count": len(items),
+        "rows": [
+            {"id": item.id, "text": item.text, "topic": item.kind, "reason": item.status}
+            for item in items[:MAX_ROWS]
+        ],
+    }
 
 
 def _pending_data(items) -> dict[str, Any]:
@@ -335,7 +332,9 @@ class CommandUseCases:
         # The server re-checks confirmation independently of any browser dialog.
         if (capability.confirm or self._needs_confirmation(name, argument)) and not confirmed:
             description = (
-                " ".join(argument.split(maxsplit=2)[:2]) if name == "pending" else argument
+                " ".join(argument.split(maxsplit=2)[:2])
+                if name in {"pending", "inferences"}
+                else argument
             )
             return CommandResult(
                 "confirm_required",
@@ -450,11 +449,7 @@ class CommandUseCases:
                     name,
                     "inferences",
                     f"{len(review.items)} inference(s).",
-                    data={
-                        "kind": "inferences",
-                        "rows": _item_rows(review.items),
-                        "count": len(review.items),
-                    },
+                    data=_inference_data(review.items),
                 )
             if head in ("confirm", "reject", "correct", "edit"):
                 item_id, _, text = rest.partition(" ")
@@ -469,6 +464,7 @@ class CommandUseCases:
                     name,
                     "inferences",
                     result.feedback or f"Inference {item_id}: {action} applied.",
+                    data=_inference_data(result.items),
                 )
             return CommandResult(
                 "error", name, "inferences", "Usage: /inferences [confirm|reject|correct <id>]"
@@ -582,7 +578,8 @@ class CommandUseCases:
             )
 
         if name == "compact":
-            events = conversation.force_compact()
+            phases = []
+            events = conversation.force_compact(on_compaction=phases.append)
             return CommandResult(
                 "ok",
                 name,
@@ -590,6 +587,7 @@ class CommandUseCases:
                 "Context compacted."
                 if not events
                 else "\n".join(str(event) for event in events)[:MAX_TEXT],
+                data={"compacted": "done" in phases},
                 refresh_history=True,
             )
 

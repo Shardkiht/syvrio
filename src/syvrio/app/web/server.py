@@ -29,6 +29,7 @@ from .models import (
     CommandCatalogResponse,
     CommandRequest,
     CommandResponse,
+    ContextUsageResponse,
     CreateSessionResponse,
     DeleteSessionResponse,
     ErrorDetail,
@@ -149,6 +150,10 @@ def create_app(
     async def health():
         return owner.health(static_ready=static_ready)
 
+    @app.get("/api/context-usage", response_model=ContextUsageResponse, tags=["web"])
+    async def context_usage(session_id: str | None = None):
+        return await asyncio.to_thread(owner.context_usage, session_id)
+
     @app.get("/api/sessions", response_model=SessionListResponse, tags=["web"])
     async def sessions(limit: int = Query(100, ge=1, le=500)):
         return await asyncio.to_thread(owner.list_sessions, limit)
@@ -186,14 +191,22 @@ def create_app(
     @app.post("/api/commands", response_model=CommandResponse, tags=["web"])
     async def run_command(body: CommandRequest):
         line = body.line
-        if body.pending_text is not None:
+        if body.pending_text is not None and body.inference_text is not None:
+            raise WebError("invalid_request", "Supply only one edited text field.", 422)
+        text = body.pending_text if body.pending_text is not None else body.inference_text
+        if text is not None:
+            command, action = (
+                ("pending", "edit") if body.pending_text is not None else ("inferences", "correct")
+            )
             name, argument = parse_command(line)
             parts = argument.split()
-            if name != "pending" or len(parts) != 2 or parts[0].lower() != "edit":
-                raise WebError("invalid_request", "Edited text requires /pending edit <id>.", 422)
-            if not body.pending_text.strip():
+            if name != command or len(parts) != 2 or parts[0].lower() != action:
+                raise WebError(
+                    "invalid_request", f"Edited text requires /{command} {action} <id>.", 422
+                )
+            if not text.strip():
                 raise WebError("invalid_request", "Edited text cannot be blank.", 422)
-            line = f"/pending edit {parts[1]} {body.pending_text}"
+            line = f"/{command} {action} {parts[1]} {text}"
         return await asyncio.to_thread(owner.execute_command, line, body.session_id, body.confirmed)
 
     @app.post("/api/chat", tags=["web"])

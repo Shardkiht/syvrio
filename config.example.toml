@@ -56,7 +56,7 @@ timeout = 60.0
 # Spark 由供应商控制采样参数，不发送 temperature / reasoning_effort。
 
 [chat]
-context_window = 32000
+context_window = 100000
 reserve_output_tokens = 1500
 keep_recent_tokens = 6000
 compact_threshold = 0.8

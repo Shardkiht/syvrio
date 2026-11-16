@@ -9,8 +9,8 @@ import {
   toggleSegment,
   type ChatState,
 } from '../state/chat';
-import { commandMessage, isCommandLine, panelFor, type CommandPanel, type PendingAction } from '../state/commands';
-import type { CommandInfo, HealthResponse, SessionInfo, StreamEvent } from '../types';
+import { isCommandLine, panelFor, resultPanelFor, type CommandPanel, type PendingAction, type ReviewPanel } from '../state/commands';
+import type { CommandInfo, CompactionPhase, ContextUsage, HealthResponse, SessionInfo, StreamEvent } from '../types';
 
 const TERMINAL = new Set(['done', 'cancelled', 'failed']);
 const FLUSH_MS = 16;
@@ -20,6 +20,9 @@ export function useChat() {
   const chatRef = useRef<ChatState>(chat);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [health, setHealth] = useState<HealthResponse | null>(null);
+  const [usage, setUsage] = useState<ContextUsage | null>(null);
+  const [compaction, setCompaction] = useState<CompactionPhase | null>(null);
+  const [historyRevision, setHistoryRevision] = useState(0);
   const [online, setOnline] = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(() => {
     // Desktop honours the last choice; the mobile drawer always starts closed.
@@ -54,6 +57,7 @@ export function useChat() {
   const navigationHistory = useRef<Promise<void> | null>(null);
   const sessionsVersion = useRef(0);
   const newCommand = useRef<Promise<void> | null>(null);
+  const commandSequence = useRef(0);
 
   // Crossing the mobile breakpoint must fold the drawer away; otherwise a
   // desktop window narrowed to phone width leaves the scrim covering the chat.
@@ -111,6 +115,21 @@ export function useChat() {
     }
   }, []);
 
+  useEffect(() => {
+    if (!health || compaction === 'running' || compaction === 'failed') return;
+    const controller = new AbortController();
+    void api.contextUsage(chat.sessionId, controller.signal)
+      .then((value) => { if (!controller.signal.aborted) setUsage(value); })
+      .catch(() => { if (!controller.signal.aborted) setUsage(null); });
+    return () => controller.abort();
+  }, [chat.sessionId, chat.busy, historyRevision, health, compaction]);
+
+  useEffect(() => {
+    if (compaction !== 'done' && compaction !== 'failed') return;
+    const timer = setTimeout(() => setCompaction(null), 2200);
+    return () => clearTimeout(timer);
+  }, [compaction]);
+
   const reloadHistory = useCallback(async (sessionId: string | null) => {
     if (!sessionId) return;
     const version = navigationVersion.current;
@@ -118,6 +137,7 @@ export function useChat() {
       const history = await api.history(sessionId);
       if (version === navigationVersion.current && chatRef.current.sessionId === sessionId) {
         update((prev) => loadHistory(prev, history));
+        setHistoryRevision((value) => value + 1);
       }
     } catch {
       // Keep the current view; a failed refresh must never disable the composer.
@@ -127,18 +147,21 @@ export function useChat() {
   const runCommand = useCallback(async (
     line: string,
     confirmed = false,
-    review?: { text?: string },
+    review?: { kind: ReviewPanel['kind']; text?: string },
   ) => {
     const requestLine = line.trim();
     if (!requestLine) return;
     while (navigation.current || newCommand.current) await (navigation.current ?? newCommand.current);
     const version = navigationVersion.current;
+    const sequence = ++commandSequence.current;
     const sessionId = chatRef.current.sessionId;
-    let focusInput = !review;
+    const isCompact = requestLine.split(/\s+/, 1)[0].toLowerCase() === '/compact';
+    if (isCompact) setCompaction('running');
     try {
       const request = api.runCommand({
         line: requestLine,
-        pending_text: review?.text,
+        pending_text: review?.kind === 'pending' ? review.text : undefined,
+        inference_text: review?.kind === 'inferences' ? review.text : undefined,
         session_id: sessionId,
         confirmed,
       });
@@ -151,38 +174,50 @@ export function useChat() {
       }
       const result = await request;
       if (version !== navigationVersion.current) return;
+      if (isCompact) {
+        setCompaction(result.status !== 'ok' ? 'failed' : result.data?.compacted === true ? 'done' : null);
+      }
       if (review) {
         const refreshed = panelFor(result);
-        if (result.status !== 'ok' || !refreshed || !('rows' in refreshed)) {
+        if (result.status !== 'ok' || !refreshed || !('rows' in refreshed) || refreshed.kind !== review.kind) {
           throw new Error(result.message || 'Unable to update the candidate.');
         }
         setPanel(refreshed);
         return result;
       }
+      const canPresent = () => sequence === commandSequence.current && version === navigationVersion.current;
       if (result.status === 'confirm_required') {
+        if (!canPresent()) return;
+        setPanel(null);
         setConfirm({ line: requestLine, message: result.message });
         return;
       }
-      setConfirm(null);
+      if (canPresent()) setConfirm(null);
 
       if (result.status === 'client') {
-        if (result.intent === 'open_sessions') setSidebarOpen(true);
-        if (result.intent === 'open_settings') setSettingsOpen(true);
-        if (result.intent === 'leave') {
+        if (!canPresent()) return;
+        if (result.intent === 'open_sessions') {
+          setPanel({ kind: 'sessions' });
+        } else if (result.intent === 'open_settings') {
+          setPanel(null);
+          setSettingsOpen(true);
+        } else if (result.intent === 'leave') {
           // A Web /exit never stops the background server.
           update((prev) => ({ ...initialChatState, sessionId: prev.sessionId }));
+          setPanel(resultPanelFor(result));
+        } else {
+          setPanel(resultPanelFor(result));
         }
         return;
       }
-
-      const commandPanel = panelFor(result);
-      if (commandPanel) {
-        setPanel(commandPanel);
-        if ('rows' in commandPanel) {
-          focusInput = false;
-          return result;
-        }
+      if (result.status === 'ok' && result.intent === 'help') {
+        if (!canPresent()) return;
+        setPanel(null);
+        setPaletteOpen(true);
+        return;
       }
+      const commandPanel = panelFor(result);
+      if (commandPanel && canPresent()) setPanel(commandPanel);
       // /model, /think and /context can change the active model; keep the
       // header label in sync without a full page reload.
       if (result.data?.model_changed === true) void refreshHealth();
@@ -191,31 +226,53 @@ export function useChat() {
         // The file appears with the first message; until then this is just the
         // empty home view, so no session id is expected and there is no history
         // to reload (reading the old one would only flash before this reset).
+        setCompaction(null);
         update(() => ({ ...initialChatState }));
       } else {
         if (result.refresh_history) {
           if (chatRef.current.busy) pendingHistoryRef.current = true;
           else await reloadHistory(result.session_id ?? chatRef.current.sessionId);
         }
-        update((prev) => addInfo(prev, commandMessage(result)));
+      }
+      if (!commandPanel && canPresent()) {
+        const output = resultPanelFor(result);
+        if (result.status === 'ok' && result.intent === 'rename' && requestLine.toLowerCase() === '/rename') {
+          setPanel({ ...output, title: 'Rename session', message: '', rename: true });
+        } else {
+          setPanel(output);
+        }
       }
     } catch (error) {
       if (review) throw error;
-      update((prev) => addInfo(
-        prev,
-        `Command failed: ${error instanceof Error ? error.message : 'unknown error'}`,
-      ));
-    } finally {
-      if (focusInput) setFocusSignal((value) => value + 1);
+      if (isCompact && version === navigationVersion.current) setCompaction('failed');
+      if (version === navigationVersion.current && sequence === commandSequence.current) {
+        setPanel({
+          title: 'Command failed',
+          message: error instanceof Error ? error.message : 'unknown error',
+        });
+      }
     }
   }, [refreshHealth, refreshSessions, reloadHistory, update]);
 
   const handleEvent = useCallback((event: StreamEvent) => {
+    if (event.type === 'compaction') {
+      const phase = event.text;
+      if (phase === 'running' || phase === 'done' || phase === 'failed') setCompaction(phase);
+      return;
+    }
+    if (event.type === 'failed' || event.type === 'cancelled') {
+      setCompaction((value) => value === 'running' ? 'failed' : value);
+    }
     if (event.type === 'start' && event.turn_id != null) turnRef.current = event.turn_id;
     if (TERMINAL.has(event.type)) terminalRef.current = true;
     pendingRef.current.push(event);
-    if (timerRef.current === null) timerRef.current = setTimeout(flush, FLUSH_MS);
-  }, [flush]);
+    if (event.type === 'message_saved') {
+      flush();
+      void refreshSessions();
+    } else if (timerRef.current === null) {
+      timerRef.current = setTimeout(flush, FLUSH_MS);
+    }
+  }, [flush, refreshSessions]);
 
   const recoverReply = useCallback(async (
     turnId: number, sessionId: string | null, controller: AbortController,
@@ -332,6 +389,8 @@ export function useChat() {
       return;
     }
     const version = ++navigationVersion.current;
+    setPanel(null);
+    setCompaction(null);
     navigationHistory.current = null;
     const previous = navigation.current ?? newCommand.current;
     const next = (async () => {
@@ -420,6 +479,7 @@ export function useChat() {
     let alive = true;
     const recovery = new AbortController();
     const version = navigationVersion.current;
+    const sessionListVersion = sessionsVersion.current;
     void (async () => {
       try {
         const [info, listing, commands] = await Promise.all([
@@ -429,7 +489,9 @@ export function useChat() {
         ]);
         if (!alive) return;
         setHealth(info);
-        if (version === navigationVersion.current) setSessions(listing.items);
+        if (version === navigationVersion.current && sessionListVersion === sessionsVersion.current) {
+          setSessions(listing.items);
+        }
         setCatalog(commands.items);
         setOnline(true);
         if (!info.static_ready) {
@@ -485,9 +547,13 @@ export function useChat() {
     await runCommand(line, true);
   }, [confirm, runCommand]);
 
-  const reviewPending = useCallback(async (action: PendingAction, id: string, text?: string) => {
-    const result = await runCommand(`/pending ${action} ${id}`, true, { text });
-    if (!result) throw new Error('The current session changed. Reopen pending review.');
+  const reviewMemory = useCallback(async (
+    kind: ReviewPanel['kind'], action: PendingAction, id: string, text?: string,
+  ) => {
+    const inferenceAction = { approve: 'confirm', reject: 'reject', edit: 'correct' };
+    const verb = kind === 'pending' ? action : inferenceAction[action];
+    const result = await runCommand(`/${kind} ${verb} ${id}`, true, { kind, text });
+    if (!result) throw new Error('The current session changed. Reopen the review.');
   }, [runCommand]);
 
   const runPanelCommand = useCallback(async (line: string) => {
@@ -497,6 +563,8 @@ export function useChat() {
 
   return {
     chat,
+    contextUsage: usage?.session_id === chat.sessionId ? usage : null,
+    compaction,
     sessions,
     health,
     online,
@@ -522,10 +590,9 @@ export function useChat() {
     confirmDeleteSession,
     settingsOpen,
     setSettingsOpen,
-    notice: (message: string) => update((prev) => addInfo(prev, message)),
     refreshHealth,
     runPanelCommand,
-    reviewPending,
+    reviewMemory,
     runCommand,
     handleEscape,
     focusSignal,

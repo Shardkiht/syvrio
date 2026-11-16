@@ -14,6 +14,8 @@ from .paths import SyvrioPaths, runtime_path, syvrio_home
 DEFAULT_BASE_URL = "https://api.deepseek.com/v1"
 DEFAULT_MODEL = "deepseek-flash"
 DEFAULT_API_KEY_ENV = "DEEPSEEK_API_KEY"
+CONTEXT_WINDOW_PRESETS = (100_000, 200_000, 400_000, 600_000)
+DEFAULT_CONTEXT_WINDOW = CONTEXT_WINDOW_PRESETS[0]
 DEFAULT_EMBEDDING_MODEL = "BAAI/bge-small-zh-v1.5"
 DEFAULT_EMBEDDING_BASE_URL = "https://api.siliconflow.cn/v1"
 SPARK_THINKING_MODES = ("enabled", "auto", "disabled")
@@ -91,7 +93,7 @@ class LLMConfig:
 
 @dataclass(slots=True)
 class ChatConfig:
-    context_window: int = 32000
+    context_window: int = DEFAULT_CONTEXT_WINDOW
     reserve_output_tokens: int = 1500
     keep_recent_tokens: int = 6000
     compact_threshold: float = 0.8
@@ -429,7 +431,7 @@ def load_config(path: Path | str | None = None) -> Config:
     )
     chat_raw = data.get("chat", {})
     chat = ChatConfig(
-        context_window=int(chat_raw.get("context_window", 32000)),
+        context_window=int(chat_raw.get("context_window", DEFAULT_CONTEXT_WINDOW)),
         reserve_output_tokens=int(chat_raw.get("reserve_output_tokens", 1500)),
         keep_recent_tokens=int(chat_raw.get("keep_recent_tokens", 6000)),
         compact_threshold=float(chat_raw.get("compact_threshold", 0.8)),
@@ -585,7 +587,7 @@ temperature = 0.1
 timeout = 60.0
 
 [chat]
-context_window = 32000
+context_window = {DEFAULT_CONTEXT_WINDOW}
 reserve_output_tokens = 1500
 keep_recent_tokens = 6000
 compact_threshold = 0.8

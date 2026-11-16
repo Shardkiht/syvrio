@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from threading import Event, RLock
+from typing import Callable
 
+from ..agent.context import CompactionPhase
 from ..agent.runtime import AgentRuntime
 from ..agent.session import Session, SessionStore
 from ..infra.diagnostics import record_event
@@ -366,6 +368,7 @@ class ConversationUseCases:
                 on_thinking=callbacks.on_thinking,
                 on_progress=callbacks.on_progress,
                 on_tool=callbacks.on_tool,
+                on_compaction=callbacks.on_compaction,
                 cancel=cancel,
             )
             content = reply.content
@@ -531,5 +534,7 @@ class ConversationUseCases:
     def compact_threshold(self) -> float:
         return self.runtime.config.compact_threshold
 
-    def force_compact(self) -> list[str]:
-        return self.runtime.force_compact()
+    def force_compact(
+        self, on_compaction: Callable[[CompactionPhase], None] | None = None
+    ) -> list[str]:
+        return self.runtime.force_compact(on_compaction=on_compaction)

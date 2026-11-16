@@ -121,7 +121,7 @@ profile_auto_interval_hours = 168.0
 profile_min_cooldown_hours = 24.0
 profile_min_changes = 20
 dream_auto_interval_hours = 24.0
-context_window = 32000
+context_window = 100000
 reserve_output_tokens = 1500
 keep_recent_tokens = 6000
 compact_threshold = 0.8
@@ -395,7 +395,7 @@ uv run syvrio web
 ```
 
 - **Chats and replies:** A new session is saved with its first message. Replies stream, and thinking and tool details can be expanded. If the page closes or loses its connection, generation and saving continue. Reopen the session to read the result, or use Stop to cancel the active turn. Web handles one message at a time; the TUI supports a send queue.
-- **Commands and settings:** Type `/` to open suggestions aligned with the input, press `Tab` to complete, or press `Enter` to run. Open Settings or type `/setup` to manage appearance, models, thinking, context, and providers. In Web `/pending`, each candidate appears once. Select one to edit, approve, or reject it. Web commands can also refresh the profile and run reflection. Use the TUI or CLI for local file imports. See the [Web guide](docs/web.md#slash-command-与快捷键) for the command reference.
+- **Commands and settings:** Type `/` to open suggestions aligned with the input, press `Tab` to complete, or press `Enter` to run. Open Settings or type `/setup` to manage appearance, models, thinking, context, and providers. Command results open in an in-page dialog. Use `/pending` and `/inferences` to browse, edit, and review items in their dialogs. Web commands can also refresh the profile and run reflection. Use the TUI or CLI for local file imports. See the [Web guide](docs/web.md#slash-command-与快捷键) for the command reference.
 - **Phones and remote access:** On phones, the sidebar opens as a drawer and the composer fits above the keyboard. For remote access inside a private tailnet, see [Tailscale Serve setup](docs/web.md).
 - **Process ownership:** When using the same Vault and Runtime, stop the TUI before starting Web, or vice versa. Failed calls follow the current model's retry settings; model switching is explicit.
 

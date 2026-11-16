@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 
 from .config import (
     CONFIG_FILENAME,
+    CONTEXT_WINDOW_PRESETS,
     KEYRING_SERVICE,
     Config,
     LLMConfig,
@@ -202,12 +203,9 @@ def _choose_reasoning(params: tuple[str, ...], current: str | None) -> str | Non
 def _choose_context(max_input: int | None, current: int) -> int:
     import questionary
 
-    if max_input:
-        options = [value for value in (16000, 32000, 64000, 128000, 256000) if value <= max_input]
-        if not options:
-            options = [max_input]
-    else:
-        options = [16000, 32000, 64000]
+    options = [value for value in CONTEXT_WINDOW_PRESETS if not max_input or value <= max_input]
+    if not options and max_input:
+        options = [max_input]
     default = min(options, key=lambda value: abs(value - current))
     options = [default] + [value for value in options if value != default]
     selected = ask(

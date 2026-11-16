@@ -121,7 +121,7 @@ profile_auto_interval_hours = 168.0
 profile_min_cooldown_hours = 24.0
 profile_min_changes = 20
 dream_auto_interval_hours = 24.0
-context_window = 32000
+context_window = 100000
 reserve_output_tokens = 1500
 keep_recent_tokens = 6000
 compact_threshold = 0.8
@@ -394,7 +394,7 @@ uv run syvrio web
 ```
 
 - **会话和回复**：首条消息才创建会话。正文实时显示，思考和工具详情可展开；关闭页面或临时断网时，回复继续生成并保存。重新打开会话可读取结果；点「停止」会取消当前生成。Web 同时处理一条聊天消息，TUI 支持发送队列。
-- **命令和设置**：输入 `/` 打开与输入框同宽的提示列表，`Tab` 补全，`Enter` 执行。顶栏设置按钮或 `/setup` 可管理外观、模型、思考、上下文和供应商。Web 的 `/pending` 列表每条候选只出现一次，选中后可编辑、确认或拒绝。Web 也支持刷新画像和运行回顾；本地文件导入仍使用 TUI 或 CLI。完整列表见 [Web 指南](docs/web.md#slash-command-与快捷键)。
+- **命令和设置**：输入 `/` 打开与输入框同宽的提示列表，`Tab` 补全，`Enter` 执行。顶栏设置按钮或 `/setup` 可管理外观、模型、思考、上下文和供应商。命令结果在站内弹窗显示，`/pending` 和 `/inferences` 可在审核弹窗中浏览、编辑和决策。Web 也支持刷新画像和运行回顾；本地文件导入仍使用 TUI 或 CLI。完整列表见 [Web 指南](docs/web.md#slash-command-与快捷键)。
 - **手机和远程访问**：手机使用抽屉式会话栏，输入区贴合软键盘上方的可见空间。远程访问可经 Tailscale Serve，在私有 tailnet 内使用。部署见 [Web 指南](docs/web.md)。
 - **进程互斥**：使用同一 Vault 和 Runtime 时，先关闭 TUI 再启动 Web，反之亦然。模型失败按当前模型的重试设置处理；切换模型由用户决定。
 

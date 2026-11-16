@@ -4,6 +4,7 @@ import type {
   CommandCatalogResponse,
   CommandRequest,
   CommandResponse,
+  ContextUsage,
   ActionResponse,
   CreateSessionResponse,
   DeleteSessionResponse,
@@ -46,6 +47,12 @@ const jsonHeaders = { 'Content-Type': 'application/json' };
 
 export const api = {
   health: () => jsonRequest<HealthResponse>('/api/health'),
+
+  contextUsage: (sessionId: string | null, signal: AbortSignal) =>
+    jsonRequest<ContextUsage>(
+      '/api/context-usage' + (sessionId === null ? '' : '?' + new URLSearchParams({ session_id: sessionId })),
+      { signal, cache: 'no-store' },
+    ),
 
   listSessions: () => jsonRequest<SessionListResponse>('/api/sessions?limit=100'),
 

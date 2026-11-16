@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import threading
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +31,7 @@ from .models import (
     CommandCatalogResponse,
     CommandInfo,
     CommandResponse,
+    ContextUsageResponse,
     CreateSessionResponse,
     DeleteSessionResponse,
     HealthResponse,
@@ -116,8 +117,8 @@ class EventPump:
         # The first message creates the session; later frames carry its real ID.
         self._session_id = session_id
 
-    def on_user_message(self, message_id: str) -> None:
-        pass  # Bind stays internal (used by undo and cancellation).
+    def on_user_message(self, _message_id: str) -> None:
+        self.send("message_saved")
 
     def on_progress(self, text: str) -> None:
         if text.startswith(TOOL_PREFIX):
@@ -292,6 +293,27 @@ class WebBackend:
             busy=active is not None or operating,
             active_turn_id=active.turn_id if active else None,
             static_ready=static_ready,
+        )
+
+    def context_usage(self, session_id: str | None) -> ContextUsageResponse:
+        used = 0
+        if session_id is not None:
+            self._validate_session_id(session_id)
+            current = self._runtime.session
+            if current is not None and current.id == session_id:
+                # Estimate from a snapshot while the turn may append new records.
+                session = replace(current, records=list(current.records))
+            else:
+                try:
+                    session = self._sessions.load(session_id, include_reasoning=False)
+                except KeyError as exc:
+                    raise WebError("not_found", "Session not found.", 404) from exc
+            used = self._conversation.estimate_usage(session)
+        return ContextUsageResponse(
+            session_id=session_id,
+            used=used,
+            limit=self._app_service.settings.context_window,
+            compact_threshold=self._conversation.compact_threshold(),
         )
 
     # ---------- slash commands ----------
@@ -650,6 +672,7 @@ class WebBackend:
             on_progress=pump.on_progress,
             on_thinking=pump.on_thinking,
             on_tool=pump.on_tool,
+            on_compaction=lambda phase: pump.send("compaction", text=phase),
             on_session=lambda session: pump.on_session(session.id),
             on_user_message=pump.on_user_message,
         )
