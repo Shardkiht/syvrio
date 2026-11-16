@@ -9,7 +9,7 @@ import {
   toggleSegment,
   type ChatState,
 } from '../state/chat';
-import { commandMessage, isCommandLine, panelFor, type CommandPanel } from '../state/commands';
+import { commandMessage, isCommandLine, panelFor, type CommandPanel, type PendingAction } from '../state/commands';
 import type { CommandInfo, HealthResponse, SessionInfo, StreamEvent } from '../types';
 
 const TERMINAL = new Set(['done', 'cancelled', 'failed']);
@@ -124,15 +124,21 @@ export function useChat() {
     }
   }, [update]);
 
-  const runCommand = useCallback(async (line: string, confirmed = false) => {
+  const runCommand = useCallback(async (
+    line: string,
+    confirmed = false,
+    review?: { text?: string },
+  ) => {
     const requestLine = line.trim();
     if (!requestLine) return;
     while (navigation.current || newCommand.current) await (navigation.current ?? newCommand.current);
     const version = navigationVersion.current;
     const sessionId = chatRef.current.sessionId;
+    let focusInput = !review;
     try {
       const request = api.runCommand({
         line: requestLine,
+        pending_text: review?.text,
         session_id: sessionId,
         confirmed,
       });
@@ -145,6 +151,14 @@ export function useChat() {
       }
       const result = await request;
       if (version !== navigationVersion.current) return;
+      if (review) {
+        const refreshed = panelFor(result);
+        if (result.status !== 'ok' || !refreshed || !('rows' in refreshed)) {
+          throw new Error(result.message || 'Unable to update the candidate.');
+        }
+        setPanel(refreshed);
+        return result;
+      }
       if (result.status === 'confirm_required') {
         setConfirm({ line: requestLine, message: result.message });
         return;
@@ -162,7 +176,13 @@ export function useChat() {
       }
 
       const commandPanel = panelFor(result);
-      if (commandPanel) setPanel(commandPanel);
+      if (commandPanel) {
+        setPanel(commandPanel);
+        if ('rows' in commandPanel) {
+          focusInput = false;
+          return result;
+        }
+      }
       // /model, /think and /context can change the active model; keep the
       // header label in sync without a full page reload.
       if (result.data?.model_changed === true) void refreshHealth();
@@ -180,12 +200,13 @@ export function useChat() {
         update((prev) => addInfo(prev, commandMessage(result)));
       }
     } catch (error) {
+      if (review) throw error;
       update((prev) => addInfo(
         prev,
         `Command failed: ${error instanceof Error ? error.message : 'unknown error'}`,
       ));
     } finally {
-      setFocusSignal((value) => value + 1);
+      if (focusInput) setFocusSignal((value) => value + 1);
     }
   }, [refreshHealth, refreshSessions, reloadHistory, update]);
 
@@ -464,6 +485,11 @@ export function useChat() {
     await runCommand(line, true);
   }, [confirm, runCommand]);
 
+  const reviewPending = useCallback(async (action: PendingAction, id: string, text?: string) => {
+    const result = await runCommand(`/pending ${action} ${id}`, true, { text });
+    if (!result) throw new Error('The current session changed. Reopen pending review.');
+  }, [runCommand]);
+
   const runPanelCommand = useCallback(async (line: string) => {
     setPanel(null);
     await runCommand(line);
@@ -499,6 +525,7 @@ export function useChat() {
     notice: (message: string) => update((prev) => addInfo(prev, message)),
     refreshHealth,
     runPanelCommand,
+    reviewPending,
     runCommand,
     handleEscape,
     focusSignal,

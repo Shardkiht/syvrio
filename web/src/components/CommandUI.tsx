@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { searchCommands, type CommandPanel, type Suggestion } from '../state/commands';
+import { searchCommands, type OptionPanel, type Suggestion } from '../state/commands';
 import { isComposing, SHORTCUT_HELP } from '../state/shortcuts';
 import type { CommandInfo } from '../types';
 
@@ -166,7 +166,7 @@ export function CommandPanelDialog({
   onPick,
   onClose,
 }: {
-  panel: CommandPanel;
+  panel: OptionPanel;
   onPick: (line: string) => void;
   onClose: () => void;
 }) {

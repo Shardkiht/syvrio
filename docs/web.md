@@ -11,23 +11,29 @@ Textual TUI ┘
 - 后端 `src/syvrio/app/web/`：FastAPI + Pydantic，单 Worker，REST + SSE。
 - 前端 `web/`：React + TypeScript + Vite + 原生 CSS，pnpm 管理。
 - `src/syvrio/app/server.py` 仍是 MCP Server，未被 Web 覆盖。
-- 首版不替代 TUI，也不把 TUI 改成 HTTP 客户端。
+- TUI 保持独立运行；两种入口共享应用用例。
 
 ## 开发与运行
 
-```bash
-# 后端（同时提供 API 和已构建的静态资源）
-uv sync
-uv run syvrio web                      # 默认 127.0.0.1:8765
-uv run syvrio web --host 127.0.0.1 --port 9000
+PyPI wheel 已包含 Web 静态资源，安装并运行 `syvrio setup` 后，用 `syvrio web` 启动，浏览器打开 `http://127.0.0.1:8765/`。
 
-# 前端开发服务器（/api 由 Vite 代理到 8765）
+从 Evo 源码运行需要 Python 3.12+、uv、Node.js 和 Corepack。首次使用先运行 `uv run syvrio setup`。
+
+```bash
+uv sync
+uv run python scripts/build_web.py
+uv run syvrio web
+```
+
+前后端联调时，可跳过静态构建。先在仓库根目录运行 `uv run syvrio web`，再用另一个终端启动 Vite：
+
+```bash
 cd web
-corepack pnpm install
+corepack pnpm install --frozen-lockfile
 corepack pnpm dev
 ```
 
-开发模式下前端由 Vite 提供，直接访问后端根路径会返回明确的 `assets_missing` 提示（503），这是正常的；API 仍可用。
+打开 Vite 提示的地址（默认 `http://localhost:5173/`）；`/api` 会代理到 `127.0.0.1:8765`。未暂存静态资源时，直接访问后端根路径会返回 `503 assets_missing`，API 仍可用。
 
 ### 本地域名映射（浏览器只输域名）
 
@@ -47,10 +53,10 @@ uv run syvrio web --domain syvrio.local --port 80
 ### 生产构建与 PyPI 打包
 
 ```bash
-python scripts/build_web.py                     # pnpm install + build + 复制 + 校验
-python scripts/build_web.py --check             # 只校验已暂存的静态资源
+uv run python scripts/build_web.py                     # pnpm install + build + 复制 + 校验
+uv run python scripts/build_web.py --check             # 只校验已暂存的静态资源
 uv build --clear
-python scripts/build_web.py --wheel dist/*.whl  # 校验实际 wheel 内含静态资源
+uv run python scripts/build_web.py --wheel dist/*.whl  # 校验实际 wheel 内含静态资源
 ```
 
 `scripts/build_web.py` 把 `web/dist` 复制进 `src/syvrio/app/web/static/`（该目录被 Git 忽略，不提交），并校验 `index.html` 确实引用了 JS/CSS 产物；构建失败或产物不完整会非零退出。`--wheel` 进一步检查打好的 wheel 里确实存在 `index.html` 和 JS/CSS 产物。
@@ -75,18 +81,20 @@ python scripts/build_web.py --wheel dist/*.whl  # 校验实际 wheel 内含静�
 
 | 方法 | 路径 | 作用 |
 | --- | --- | --- |
-| GET | `/api/health` | 状态、模型、busy、活动 turn、静态资源是否就绪 |
+| GET | `/api/health` | 版本、供应商与模型、生成状态、活动轮次、静态资源状态 |
 | GET | `/api/sessions?limit=100` | 会话列表 |
 | POST | `/api/sessions` | 回到新对话首页（返回 `draft=true`、`session_id=null`，不写文件；首条消息才创建会话） |
 | POST | `/api/sessions/{id}/switch` | 切换/恢复会话 |
 | DELETE | `/api/sessions/{id}?confirmed=true` | 删除会话（需二次确认；当前/生成中会话受守卫保护） |
-| GET | `/api/sessions/{id}` | 结构化历史（含已落盘的 Reasoning，默认折叠） |
+| GET | `/api/sessions/{id}?limit=300` | 最近的结构化历史；可读取本机 Runtime 思考附件，默认折叠 |
+| GET | `/api/settings/providers` | 供应商、端点和配置状态；不返回已保存的 Key |
+| POST | `/api/settings/providers/{provider}` | 添加、更新或删除凭据，以及修改端点 |
 | GET | `/api/commands` | 共享命令目录（名称、用法、能力标记、子命令、快捷键） |
 | POST | `/api/commands` | 执行斜杠命令，返回结构化结果，不经过 LLM |
 | POST | `/api/chat` | 流式聊天，`text/event-stream` |
 | POST | `/api/chat/cancel` | 按 `turn_id` 取消当前请求 |
 
-会话栏排序口径：`GET /api/sessions` 按**会话最后一条有效消息的发送时间**倒序（`SessionInfo.last_message_at`），没有消息的空会话回退到创建时间 `started_at`。共享的 `SessionStore.list()` 仍按 `updated_at` 排序供 TUI / CLI 使用，但 `updated_at` 会被重命名（`title`）、摘要、沉淀、`undo` 等控制记录刷新，因此 Web 侧栏在 `WebBackend.list_sessions()` 里单独重排；这些写入不会再把旧会话顶到最前。被 `undo` 撤销的消息不计入有效消息。
+Web、TUI 与 CLI 共用 `SessionStore.list()`：在应用列表条数上限前，按最后一条有效消息的时间倒序。撤销后的消息不计入排序；改名、摘要和沉淀记录不会把旧会话顶到前面。没有有效消息时使用创建时间。
 
 **删除会话**：侧栏每条会话悬停（或键盘聚焦）时出现 `×`，移动端常显。确认弹窗在浏览器侧提示「不可撤销」，服务端仍独立校验 `confirmed=true`、会话 ID 合法性、会话存在、`_require_idle()` 以及 `ConversationUseCases.delete_guard()`（与 TUI 同一守卫：当前会话、生成中、队列引用不可删），通过后由 `SessionStore.delete()` 删除 JSONL 与 Reasoning 附件。删除当前会话时 Web 先切到未落盘的新对话再删旧文件，等价于 TUI 的「先 `/new` 再 `Ctrl+D`」，服务端语义不变。删除失败返回稳定的 `delete_failed` 错误并保留文件。
 
@@ -108,7 +116,7 @@ FastAPI 自动提供 `/openapi.json` 与 `/docs`。
 | `cancelled` | — | 已停止，保留半截输出 |
 | `failed` | `message` | 失败，不泄露堆栈 |
 
-事件只在模型确实返回 reasoning 时产生；前端不解析任何 Provider 私有协议，也不虚构思考文本。断流时前端保留半截回复并显式标注，不会留下永久 busy 状态。
+只有模型提供思考时才产生 Reasoning 事件。客户端只消费统一事件；Provider 协议在后端适配。浏览器断流不会取消正在运行的 Turn：已显示片段暂留，前端等待该轮完成，再从会话历史加载定稿。主动停止则发送匹配的 `turn_id`。
 
 ## Slash Command 与快捷键
 
@@ -125,7 +133,9 @@ FastAPI 自动提供 `/openapi.json` 与 `/docs`。
 | `unsupported` | 明确提示不可用及原因，绝不静默忽略 | `/import` |
 
 - `/import` 不允许浏览器把任意路径交给服务器读取，返回 `unsupported` 并说明改用 TUI。
-- `/git`、`/pending`、`/inferences`、`/profile`、`/dream` 在 Web 只提供只读状态；同步 / commit / push、批准候选、删除或确认记忆等副作用操作仍留在 TUI，授权约束不被绕过。
+- `/git` 显示同步状态，`/git sync` 二次确认后执行同步。`/pending approve|reject|edit <id>` 和 `/inferences confirm|reject|correct <id>` 可从 Web 审查记录。
+- `/pending` 每条候选只列一次。选中后查看完整正文、主题及原因，可编辑多行内容、批准或拒绝；提交前需确认。写入成功原位刷新列表，失败时可重试且保留编辑内容。编辑表单通过命令请求的 `pending_text` 字段发送正文，独立于斜杠命令的长度上限。
+- `/profile refresh [n]` 手动刷新画像，`/dream <n>` 运行有请求预算的回顾，`/dream status|cancel|resume` 管理状态。TUI 仍提供更完整的专用审查界面和空闲调度。
 - `/undo` 前端弹二次确认，服务端仍独立复核 `confirmed` 才执行。
 - 未识别的 `/` 命令返回 `unknown` 并提示 `/help`；前端把所有 `/` 行发往 `/api/commands`，后端 `/api/chat` 也会拒绝斜杠开头的消息（`422 command_required`），双重保证不会误发给 LLM。
 - 多标签页：`POST /api/commands` 携带的 `session_id` 与 Runtime 当前会话不一致时返回 `409 session_mismatch`，提示刷新，避免旧标签页操作到别人的会话。
@@ -137,7 +147,7 @@ Web 单 Turn 模型下，`CommandUseCases.BUSY_READ_ONLY` 与 `BUSY_NO_ARGUMENT`
 ### 输入与补全
 
 - 输入 `/` 显示候选，前缀实时过滤；`↑ / ↓` 选择、`Tab` 补全、`Enter` 执行选中的命令或子命令、`Escape` 关闭候选；鼠标点击与移动端触摸同样可选。
-- 候选列表贴近输入框、固定最大高度、内部滚动，不遮挡主要聊天内容。
+- 候选列表与输入卡片共用左右边界并独立滚动。可用高度较小时，候选进入输入区的正常布局，留在顶栏下方。
 - 中文输入法组字状态（`isComposing`、`keyCode 229`、`Process` / `Unidentified`）不会触发 `Enter`、`Tab` 或任何全局快捷键。
 - `/model`、`/think`、`/context` 的结果会转成轻量可点击选项面板；选择后服务端应用设置，不会重新弹出面板。模型变更后刷新顶栏模型信息。
 - 模型目录是**进程内缓存**（`llm/client.py` 的 `_MODEL_CACHE`），Web 进程刚启动、或供应商未暴露 `/models` 时可能为空。此时 `/model` 仍列出当前配置模型并明确提示，不会输出空白列表；`/model refresh` 会真正向已配置供应商发起一次有界拉取（单供应商 5 秒超时），拉不到时说明原因而不是谎称「需要本地终端」。缓存为空时仍可用 `/model <当前provider>/<模型ID>` 按 ID 切换，未知供应商仍拒绝。
@@ -156,7 +166,7 @@ Web 单 Turn 模型下，`CommandUseCases.BUSY_READ_ONLY` 与 `BUSY_NO_ARGUMENT`
 | Providers | `GET/POST /api/settings/providers/{provider}` | 添加/更新 Key、修改 Base URL、删除供应商、自定义模型；**保存的 Key 永不回传浏览器** |
 | About | `/api/health` | 版本、当前 provider/model、是否生成中、单客户端锁、静态资源状态与快捷键 |
 
-面板本身不执行任何副作用：删除供应商仍需二次确认，服务端复用 `SettingsUseCases` 的「当前供应商不可删」等守卫，失败原因以 `provider-error` 原样展示。
+打开面板只读取当前设置；删除供应商仍需二次确认，服务端复用 `SettingsUseCases` 的「当前供应商不可删」等守卫，失败原因以 `provider-error` 原样展示。
 
 ### 主题、侧栏与消息滚动
 
@@ -194,7 +204,7 @@ Web 单 Turn 模型下，`CommandUseCases.BUSY_READ_ONLY` 与 `BUSY_NO_ARGUMENT`
 页面按移动浏览器设计，不依赖 App 或 WebView：
 
 - **布局断点**：`≤767px` 侧栏变成 `82vw` 抽屉（蒙层点击 / `«` 关闭，默认收起），顶栏显示 `Sessions` 入口；`≤380px` 进一步压缩顶栏按钮与设置标签；横屏矮屏（`max-height: 520px`）单独压缩欢迎区间距与弹层内边距。
-- **软键盘**：`index.html` 使用 `viewport-fit=cover` 与 `interactive-widget=resizes-content`；`App.tsx` 监听 `visualViewport` 把可用高度写入 `--app-height`，`.app` 优先使用该值，iOS Safari 弹出键盘时输入框不会被遮住。
+- **软键盘**：`index.html` 使用 `viewport-fit=cover` 与 `interactive-widget=resizes-content`；`App.tsx` 监听 `visualViewport` 把可用高度写入 `--app-height`，`.app` 优先使用该值，软键盘压缩可见区域时启用紧凑布局，隐藏欢迎区和快捷按钮，给输入框及命令列表留出空间。
 - **输入缩放**：移动端 `textarea` / 命令面板输入 / 设置与供应商输入统一 `font-size: 16px`，避免 iOS 聚焦时整页放大；`touch-action: manipulation` 去掉双击缩放的点击延迟。
 - **弹层高度**：命令面板、确认框、选项面板与设置面板优先使用 `dvh`（不支持时退回 `vh`），手机键盘弹出或地址栏收起后仍可见；设置面板在手机上为顶部横向标签 + 纵向内容，窄屏自动换行。
 - **安全区**：顶栏、侧栏与输入框使用 `env(safe-area-inset-*)`，适配刘海屏横屏与底部 Home 指示条；`index.html` 提供 `theme-color`，由主题控制逻辑同步为当前亮色或暗色背景。
@@ -206,7 +216,7 @@ Web 单 Turn 模型下，`CommandUseCases.BUSY_READ_ONLY` 与 `BUSY_NO_ARGUMENT`
 
 ## WSL + systemd 常驻
 
-模板见 `docs/syvrio-web.service`，把 `REPLACE_USER`、`REPLACE_REPO`、`REPLACE_UV`、`REPLACE_TAILSCALE_HOST` 替换成实际值后安装。
+本节适用于从源码运行的系统级服务；如需由 `syvrio update` 管理安装版本，请使用下文的[用户级服务](#pypi-自动更新)。源码模板见 `docs/syvrio-web.service`，把 `REPLACE_USER`、`REPLACE_REPO`、`REPLACE_UV`、`REPLACE_TAILSCALE_HOST` 替换成实际值后安装。
 
 ### 启用 systemd
 
@@ -295,21 +305,17 @@ CLI 语法按 Tailscale 1.104.5 的 `tailscale serve --help` 核对：`serve <ta
 - 服务必须处于运行状态：Windows 睡眠 / 关机 / 重启、WSL 实例未启动都会导致远程不可达；`systemd enabled` 不等于开机即可访问。
 - 排查：`tailscale status`、`tailscale ping <机器名>`、`curl.exe -I https://<机器名>.<tailnet>.ts.net/api/health`；403 查白名单，502/503 查本地 `127.0.0.1:<port>` 是否可达。
 
-> 当前开发环境未执行 WSL systemd 常驻与 Serve 的远程联机验收，也未改动本机 Tailscale 配置；命令语法按本机 CLI 实测帮助核对，实际远程连通性仍需在获准设备上验证。
+## 使用边界
 
-## 暂未实现
-
-完整模型管理后台、Git 可视化、Memory 管理界面、多用户、文件上传、插件市场、工作流编辑器、多 Agent 协作、数据分析看板、PWA、Web 与 TUI 共用统一常驻 Backend。
-
-命令侧明确未支持或只提供只读视图：`/import`、`/setup` 未支持；`/git` 的同步与 push、`/pending` 与 `/inferences` 的批准/拒绝、`/profile` 与 `/dream` 的刷新和任务控制仍留在 TUI。这些命令在 Web 会给出明确提示，不会静默忽略。首版也不引入 WebSocket、Redux、路由库或任何数据库。
+Web 保持单用户、私有部署，没有内置登录或浏览器文件上传。它支持列表式记忆命令，待确认界面支持列表和详情，其他专用审核面板及本地文件导入仍以 TUI 为主；CLI 仍可用于批处理。Web 和 TUI 由不同进程分别运行，不能同时占用同一 Vault/Runtime。
 
 ## 测试
 
 ```bash
 uv run pytest -m web -q              # 后端 API / SSE / 并发 / 安全 / 命令目录与分发
-cd web && corepack pnpm test         # 前端单元测试、组件交互、补全与快捷键
-cd web && corepack pnpm build        # 类型检查 + 生产构建
-python scripts/build_web.py --check  # 校验已暂存静态资源
+(cd web && corepack pnpm test)       # 前端单元测试、组件交互、补全与快捷键
+(cd web && corepack pnpm build)      # 类型检查 + 生产构建
+uv run python scripts/build_web.py --check  # 校验已暂存静态资源
 ```
 
 命令相关自动化覆盖：目录与 TUI 一致性、能力标记、未知命令不转发 LLM、`/import` 不读取浏览器路径、`/undo` 服务端确认、忙期策略、会话错配 409、跨站写拒绝、选项面板不重开；前端覆盖前缀/子命令补全、`Tab`/`Enter`/`Escape`、方向键、IME 组字、快捷键冲突、命令面板、设置面板（模型切换、思考强度、上下文、供应商分区、About 不泄露 Key）、危险确认、命令失败后输入框恢复、生成中只读命令不打断流式回复。
@@ -346,7 +352,7 @@ port = 8765
 
 `stable` 只选正式版，`evo` 只选形如 `0.5.2rc1` 的候选版。更新不会降级。首次切换到 Evo 时，初始安装版本必须低于目标预发布版本。服务正常启动以后，停用旧的源码拉取任务，定时任务只运行 `syvrio update`。定时任务的 PATH 须包含 `syvrio` 和 `uv`，并可访问对应的用户 systemd 实例。更新命令应在 Web unit 外运行。
 
-新版先安装在独立环境，校验通过后才停止旧版。新版启动后健康检查最多等待 120 秒（容忍慢启动的初始化与记忆补记），失败自动切回旧链接并启动旧版；停止单元最多等待 6 分钟并确认单元确实停下，避免「更新器以为停止失败、旧服务却被继续停掉」的半停止状态。更新保留旧安装目录用于回滚，配置和 Vault 继续使用服务定义的原有路径。
+新版先安装在独立环境，校验通过后才停止旧版。新版启动后健康检查最多等待 120 秒（容忍慢启动的初始化与记忆补记），切换链接、启动或健康检查失败时，更新器检查当前链接指向；如果已指向新版，先停止新版并恢复旧链接，再启动并验证旧版。若链接已经指向旧版，直接尝试启动旧服务。遇到意外链接目标或恢复失败时会报出具体阶段，留待人工处理。停止单元最多等待 6 分钟并确认单元确实停下，避免「更新器以为停止失败、旧服务却被继续停掉」的半停止状态。更新保留旧安装目录用于回滚，配置和 Vault 继续使用服务定义的原有路径。
 
 ### 旧版更新器的一次性手工升级
 
@@ -382,4 +388,4 @@ mv -T ~/.syvrio/update/.current.next ~/.syvrio/update/current
 systemctl --user start syvrio-web.service
 ```
 
-配置（`config.toml`）、启动脚本（`start-web`、`web_entry.py`）、Vault 与 Runtime 都不在版本目录内，升级不触碰。
+应用配置、Vault 与 Runtime 应放在版本目录之外。如果部署了自定义启动脚本，也保留在版本目录之外，让它始终通过 `current` 找到所选版本。

@@ -17,6 +17,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from ...application.commands import parse_command
 from ...infra.diagnostics import record_event
 from .backend import WebBackend, WebError
 from .models import (
@@ -184,9 +185,16 @@ def create_app(
 
     @app.post("/api/commands", response_model=CommandResponse, tags=["web"])
     async def run_command(body: CommandRequest):
-        return await asyncio.to_thread(
-            owner.execute_command, body.line, body.session_id, body.confirmed
-        )
+        line = body.line
+        if body.pending_text is not None:
+            name, argument = parse_command(line)
+            parts = argument.split()
+            if name != "pending" or len(parts) != 2 or parts[0].lower() != "edit":
+                raise WebError("invalid_request", "Edited text requires /pending edit <id>.", 422)
+            if not body.pending_text.strip():
+                raise WebError("invalid_request", "Edited text cannot be blank.", 422)
+            line = f"/pending edit {parts[1]} {body.pending_text}"
+        return await asyncio.to_thread(owner.execute_command, line, body.session_id, body.confirmed)
 
     @app.post("/api/chat", tags=["web"])
     async def chat(body: ChatRequest):

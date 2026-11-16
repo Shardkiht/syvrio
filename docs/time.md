@@ -43,18 +43,18 @@ inventory and the migration field map when applicable.
 
 ## Migrate before opening an existing Vault with the strict build
 
-For a v1 Vault, complete and verify the existing Vault v2 migration first. Stop
+For a v1 Vault, complete and verify the [Vault v2 layout migration](vault-v2.md#upgrade-an-existing-vault) first. Stop
 TUI, Web, MCP, scheduled Git synchronization and other writers of the selected
 Vault and Runtime for the whole migration. Use the actual storage roots and
 confirm the source timezone before applying. The script never loads the active
 configuration or infers a source timezone from the machine.
 
 ```bash
-.venv/bin/python scripts/migrate_timestamps_to_utc.py \
+uv run python scripts/migrate_timestamps_to_utc.py \
   --vault /path/to/vault --runtime /path/to/runtime \
   --source-timezone Asia/Shanghai --dry-run
 
-.venv/bin/python scripts/migrate_timestamps_to_utc.py \
+uv run python scripts/migrate_timestamps_to_utc.py \
   --vault /path/to/vault --runtime /path/to/runtime \
   --source-timezone Asia/Shanghai --apply --backup-dir /path/to/new-backup
 ```
@@ -68,7 +68,7 @@ configuration or infers a source timezone from the machine.
   The most specific matching path takes precedence.
 - The default is a read-only preview. Invalid values, missing source zones
   for naive values, malformed records and ambiguous or nonexistent DST times
-  stop the batch before data writes. Resolve them using independent evidence
+  stop the batch before data writes. Session rows already covered by valid recovery markers are retained byte for byte. Resolve other issues using independent evidence
   of the original timezone or offset, then rerun the preview.
 - Apply requires a new backup directory outside the data roots. It backs up
   affected files before replacing them, keeps their relative paths under

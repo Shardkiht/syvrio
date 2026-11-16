@@ -35,8 +35,9 @@ from syvrio.infra.config import (
 )
 from syvrio.llm import AssistantTurn, LiteLLMChatModel
 from syvrio.memory.extractor import StaticExtractor
-from syvrio.memory.models import ExtractionResult
+from syvrio.memory.models import ExtractionResult, PendingItem
 from syvrio.memory.service import MemoryService
+from syvrio.time import utc_timestamp
 
 pytestmark = pytest.mark.web
 
@@ -138,6 +139,44 @@ def test_unknown_command_is_never_forwarded_to_the_llm(client, backend):
     assert response.json()["status"] == "unknown"
     assert "available commands" in response.json()["message"]
     assert backend._runtime.model.calls == 0
+
+
+def test_pending_review_preserves_full_text_and_requires_confirmation(client, backend):
+    service = backend._app_service.memory.service
+    original = "I am testing the synthetic review text. " * 60
+    service.queue.add(
+        PendingItem(
+            id="p-example",
+            created_at=utc_timestamp(),
+            source="chat",
+            text=original,
+            topic="preferences",
+            confidence=0.6,
+            reason="Ambiguous preference",
+        )
+    )
+    rows = run(client, "/pending").json()["data"]["rows"]
+    assert rows == [
+        {
+            "id": "p-example",
+            "text": original,
+            "topic": "preferences",
+            "reason": "Ambiguous preference",
+        }
+    ]
+
+    edited = "I revised the synthetic review text. " * 60 + "\n\nA separate note."
+    response = run(client, "/pending edit p-example", pending_text=edited).json()
+    assert response["status"] == "confirm_required"
+    assert edited not in response["message"]
+    assert len(service.pending()) == 1
+    assert run(client, "/status", pending_text=edited).status_code == 422
+
+    response = run(client, "/pending edit p-example", pending_text=edited, confirmed=True).json()
+    assert response["status"] == "ok", response
+    assert response["data"]["rows"] == []
+    assert not service.pending()
+    assert [entry.text for entry in service.current_facts()] == [edited]
 
 
 def test_chat_endpoint_rejects_slash_lines(client, backend):

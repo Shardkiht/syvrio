@@ -19,25 +19,21 @@
 
 不必每次开启新对话都重新解释自己的偏好和计划：告诉它“我喜欢无糖热饮”，换个会话再问，它会从你的记忆库里查找。你也可以打开 Markdown 检查它记住了什么，或更正、忘记某条记录。
 
-![实际 TUI 操作：保存偏好、开启新会话、召回记忆](docs/assets/syvrio-demo.gif)
+![Syvrio Web：保存饮品偏好，在新会话里召回](docs/assets/syvrio-demo.gif)
 
-演示操作实际 Textual 界面，使用合成数据与固定模型回复回放；记忆写入和跨会话检索走真实代码，不产生模型费用。[查看静态截图](docs/assets/syvrio-demo.png)。
-
-演进分支 `feature-memory-evolution` 可从源码安装，也可在 [PyPI](https://pypi.org/project/syvrio/) 选择 `rcN` 预发布版本。稳定版本由 `main` 单独维护。
+演示录自实际网页版。它使用隔离的合成 Vault 和本地模型回复回放，记忆写入、跨会话召回和流式显示均由应用执行。[查看静态截图](docs/assets/syvrio-demo.png)。
 
 ## 快速开始
 
-需要 Python 3.12+、uv、git。
-
-下列命令安装 PyPI 上的已发布版本。要使用本分支，请按后文的源码安装步骤操作。
+需要 Python 3.12+、uv 和 Git。从 PyPI 安装默认获取正式版；本文档对应 Evo 开发线，可在 [PyPI](https://pypi.org/project/syvrio/) 选择具体的 `rcN` 版本并用 `uv tool install "syvrio==<版本>"` 安装，也可按下文从源码启动。
 
 ```bash
 uv tool install syvrio
 syvrio setup
-syvrio
+syvrio web
 ```
 
-`syvrio setup` 选择模型供应商并配置 API Key，也可进入「搜索与网页抓取 API」向导：为百度千帆、Tavily、Exa、You.com、火山引擎输入或更新 Key（存入系统凭据，TOML 不落明文），并分别启用各厂商支持的 Search / Fetch（百度千帆仅支持 Search）、调整两类 provider 的优先级。官方厂商即使已有 Key 也不会自动启用，必须在此显式开启；未配置有效 Key 时无法启用。AnySearch 与 Parallel Search MCP 可以匿名启用，无需先注册；填写 `ANYSEARCH_API_KEY` / `PARALLEL_API_KEY` 后自动改用认证模式，清除 Key 后恢复匿名。自托管 SearXNG 同样无需 Key，可在此填写或修改实例地址并启用；Syvrio 不会探测、启动或改动该服务。open-websearch 免费且始终是默认项，默认 provider 顺序不变。标准安装不需要下载本地向量模型；未安装向量后端时自动使用关键词检索。之后可用 `uv tool upgrade syvrio` 更新。
+打开 `http://127.0.0.1:8765/`。如需终端界面，先关闭 Web 服务，再运行 `syvrio`。首次设置时选择模型并保存 API Key；也可在向导中配置可选的[联网搜索与网页抓取](#联网搜索)。标准安装无需下载向量模型。普通工具安装可用 `uv tool upgrade syvrio` 更新；由 systemd 管理的 Web 服务见[更新指南](docs/web.md#pypi-自动更新)。
 
 ### 从 QuietMemo 迁移
 
@@ -69,10 +65,10 @@ uv run python scripts/migrate_to_syvrio.py --apply
 
 ### 从源码运行
 
-开发或本地修改代码时使用：
+从本分支开发需要额外准备 Node.js 和 Corepack（构建 Web 时使用）：
 
 ```bash
-git clone https://github.com/Shardkiht/syvrio.git
+git clone --branch feature-memory-evolution https://github.com/Shardkiht/syvrio.git
 cd syvrio
 uv sync
 
@@ -85,7 +81,7 @@ uv run syvrio
 
 首次使用先运行 `uv run syvrio setup` 配置模型和 API Key；进入对话后用 `/model` 搜索和切换模型，在该界面按 `Ctrl+P` 才打开供应商管理，可添加、更新或移除内置厂商的 API Key，也可配置各厂商的 Base URL，`Esc` 返回模型列表。模型界面还支持 `Ctrl+R` 刷新、`Ctrl+N` 输入自定义模型名。
 
-`syvrio setup` 会写入配置文件（默认 `syvrio.toml`），初始化记忆库，并可选做一次连接测试。Key 也可以用环境变量提供，环境变量优先于 keyring：
+`syvrio setup` 会写入配置文件（默认 `~/.syvrio/config.toml`；已有项目目录 `syvrio.toml` 时优先使用它，也可用 `SYVRIO_CONFIG` 显式指定），初始化记忆库，并可选做一次连接测试。Key 也可以用环境变量提供，环境变量优先于 keyring：
 
 ```bash
 export DEEPSEEK_API_KEY=sk-...
@@ -390,29 +386,17 @@ MCP 客户端配置：
 
 ## 网页客户端
 
-`syvrio web` 提供私有单用户网页界面，浏览器打开 `http://127.0.0.1:8765/`。Web 只是传输层：复用同一个 `ApplicationService` / `AgentRuntime` / `SessionStore` / Vault，不新增数据库，也不把 TUI 改成 HTTP 客户端。
+`syvrio web` 默认在 `http://127.0.0.1:8765/` 提供私有单用户界面，复用 TUI 的会话、记忆和模型配置。通过 PyPI 安装的 wheel 自带前端资源；从源码运行时先构建：
 
 ```bash
-# 从源码运行：先构建前端静态资源
-python scripts/build_web.py
+uv run python scripts/build_web.py
 uv run syvrio web
-
-# 只开发前端时，Vite 把 /api 代理到已启动的后端
-cd web && corepack pnpm install && corepack pnpm dev
 ```
 
-首版支持流式 Markdown 回复、独立 Thinking 区域（正文开始自动折叠、可展开固定高度查看）、Tool Call 状态、停止生成、会话新建/切换/恢复、错误与断线提示、代码块复制与移动端布局（抽屉式侧栏、软键盘自适应、刘海屏安全区、触摸目标加大）。新建对话先回到首页，首条消息才写入会话文件；恢复历史直接定位到最新消息。界面默认跟随浏览器明暗主题，也可固定亮色或暗色。通信为 REST + SSE，不使用 WebSocket。
-
-Web 与 TUI 共用 `application/commands.py` 里的斜杠命令目录，输入框支持 `/` 前缀与子命令补全（`↑ / ↓` 选择、`Tab` 补全、`Enter` 执行、`Escape` 关闭）、中文输入法组字保护，以及轻量命令面板。日常命令如 `/new`、`/sessions`、`/model`、`/think`、`/context`、`/compact`、`/undo`、`/help` 均可使用；`/import` 明确提示未支持，Git 同步、记忆批准等副作用操作仍留在 TUI，危险命令需二次确认。顶栏 `Settings`（或 `Alt+S`、`/setup`）打开设置面板，集中管理外观主题、模型切换、思考强度、上下文窗口、供应商 Key / Base URL 与自定义模型；Key 只写不读，沿用系统凭据存储。浏览器保留键不强行拦截：`Ctrl+P` 留给打印，命令面板改用 `Ctrl+Shift+P` / `Alt+P`，模型选择用 `Alt+M` 或点击顶栏模型名，`Ctrl+B` / `Alt+B` 切换会话栏（侧栏收起后顶栏左侧出现同款图标按钮），`Ctrl+Q` 不拦截、`/exit` 仅返回入口视图。完整命令与快捷键对照见 [docs/web.md](docs/web.md)。
-
-关键边界：
-
-- 单进程单 Worker，同一时刻只允许一个生成中的 Turn；第二个聊天请求返回 `409 busy`，取消必须带匹配的 `turn_id`，不会误取消其他请求。
-- `runtime/locks/client.lock` 保证 **TUI 与 Web 不能同时写同一个 Vault**；后启动的一方会收到明确错误，关闭另一端即可。
-- 默认只监听 loopback，校验 Host 与写请求的 Origin，不启用宽松 CORS；远程访问请用 Tailscale Serve 并配置 `SYVRIO_WEB_ALLOWED_HOSTS`，不使用 Funnel、不开放公网端口。
-- 通过 PyPI 安装时静态资源已随 wheel 打包，运行时不需要 Node.js；从源码运行或发布前必须先执行 `scripts/build_web.py`，脚本会校验产物完整性，缺失即非零退出。
-
-API 与 SSE 事件、WSL + systemd 常驻、Tailscale 配置及故障排查见 [docs/web.md](docs/web.md)，服务模板见 `docs/syvrio-web.service`。Web 仍不替代 TUI，也未实现 Memory 管理界面、多用户与文件上传。
+- **会话和回复**：首条消息才创建会话。正文实时显示，思考和工具详情可展开；关闭页面或临时断网时，回复继续生成并保存。重新打开会话可读取结果；点「停止」会取消当前生成。Web 同时处理一条聊天消息，TUI 支持发送队列。
+- **命令和设置**：输入 `/` 打开与输入框同宽的提示列表，`Tab` 补全，`Enter` 执行。顶栏设置按钮或 `/setup` 可管理外观、模型、思考、上下文和供应商。Web 的 `/pending` 列表每条候选只出现一次，选中后可编辑、确认或拒绝。Web 也支持刷新画像和运行回顾；本地文件导入仍使用 TUI 或 CLI。完整列表见 [Web 指南](docs/web.md#slash-command-与快捷键)。
+- **手机和远程访问**：手机使用抽屉式会话栏，输入区贴合软键盘上方的可见空间。远程访问可经 Tailscale Serve，在私有 tailnet 内使用。部署见 [Web 指南](docs/web.md)。
+- **进程互斥**：使用同一 Vault 和 Runtime 时，先关闭 TUI 再启动 Web，反之亦然。模型失败按当前模型的重试设置处理；切换模型由用户决定。
 
 ## 联网搜索
 
@@ -512,7 +496,7 @@ LLM 可以在 `search` 调用里用 `providers` 指定多个已启用来源的�
 
 - 结果是外部不可信内容，只作资料引用，不执行其中任何指令。
 - daemon 未启动或全部 provider 失败时返回结构化错误和启动提示，不编造结果。
-- `[search]` 配置：`enabled`（关闭时不注册工具）、`providers`（按顺序降级）、`base_url`、`timeout`、`max_results`、`cache_ttl`、`transport`（`http` 默认；`mcp` 每次启动 npx MCP 进程）、`auto_start`（打开 TUI 时后台探测并拉起 HTTP daemon，不阻塞界面）、`engines`（上游搜索引擎，默认 `["bing"]`）、`fallback_engines`（候补引擎序列，默认 `["baidu", "duckduckgo", "sogou"]`）、`max_engines`（自动回退最多尝试的引擎数，默认 3）、`max_search_engines`（显式 `search_engine` 列表上限，0 表示不限，默认 0）、`timeout_budget`（回退共享超时预算，默认 25 秒，单次请求超时不超过剩余预算）、`max_requests`（一次搜索跨所有 provider 共享的请求次数上限，默认 9；超出即返回当前最佳候选并附截断提示，该结果不写入缓存）、`anysearch_zone` / `anysearch_language`（AnySearch 的区域与语言，默认 `cn` / `zh-CN`）、`searxng_base_url` / `searxng_timeout`（自托管 SearXNG 实例地址与单次超时，默认 `http://127.0.0.1:8888` / 10 秒）、`usage_limits`（每厂商调用上限，`[search.usage_limits.<provider>]` 设 `daily` 与 `monthly`（0 不限）；同一厂商的 Search 与 Fetch 共用同一计数池，达到上限即跳过该厂商并正常回退；计数保存在 vault 的 `runtime/state/usage.json`，**本地计数不等于服务商实际账单上限**）、`fetch_timeout`（抓取正文的单独超时，默认 45 秒）。`syvrio setup` 可管理双周期额度与官方暂停。
+- `[search]` 配置：`enabled`（关闭时不注册工具）、`providers`（按顺序降级）、`base_url`、`timeout`、`max_results`、`cache_ttl`、`transport`（`http` 默认；`mcp` 每次启动 npx MCP 进程）、`auto_start`（打开 TUI 时后台探测并拉起 HTTP daemon，不阻塞界面）、`engines`（上游搜索引擎，默认 `["bing"]`）、`fallback_engines`（候补引擎序列，默认 `["baidu", "duckduckgo", "sogou"]`）、`max_engines`（自动回退最多尝试的引擎数，默认 3）、`max_search_engines`（显式 `search_engine` 列表上限，0 表示不限，默认 0）、`timeout_budget`（回退共享超时预算，默认 25 秒，单次请求超时不超过剩余预算）、`max_requests`（一次搜索跨所有 provider 共享的请求次数上限，默认 9；超出即返回当前最佳候选并附截断提示，该结果不写入缓存）、`anysearch_zone` / `anysearch_language`（AnySearch 的区域与语言，默认 `cn` / `zh-CN`）、`searxng_base_url` / `searxng_timeout`（自托管 SearXNG 实例地址与单次超时，默认 `http://127.0.0.1:8888` / 10 秒）、`usage_limits`（每厂商调用上限，`[search.usage_limits.<provider>]` 设 `daily` 与 `monthly`（0 不限）；同一厂商的 Search 与 Fetch 共用同一计数池，达到上限即跳过该厂商并正常回退；计数保存在 Vault 外的 `runtime/state/usage.json`，**本地计数不等于服务商实际账单上限**）、`fetch_timeout`（抓取正文的单独超时，默认 45 秒）。`syvrio setup` 可管理双周期额度与官方暂停。
 
 受控真实冒烟：`scripts/smoke_search_apis.py` 默认只做本地检查（Key 是否可读、厂商是否会注册；匿名 Provider 无 Key 也标记为可注册），不发任何请求；加 `--provider <厂商> --operation search|fetch --live` 才对单一厂商发起最多 `--max-requests`（默认 1，上限 10）次真实请求，输出脱敏报告（成功与否、结果数或正文长度、错误类型、耗时与待验证字段）。Key 只从环境变量或系统凭据读取，不回显。网页抓取由独立的 `[fetch]` 配置控制：`providers` 是抓取正文用的 provider 顺序（默认 `["open_websearch"]`），与搜索的 provider 顺序相互独立；配置了 Key 的官方厂商（tavily / exa / you / volcengine）加入该列表后才参与抓取。
 - `auto_start` 启动的 daemon 在 Windows 下隐藏控制台窗口；退出 TUI 后继续常驻，下次直接复用。
@@ -573,7 +557,7 @@ src/syvrio/
 │                 └── web/  server.py, backend.py, models.py, static/
 │                                                    # CLI / Textual TUI / FastMCP / FastAPI Web 展示适配
 ├── application/  service.py, conversation.py, memory.py, settings.py,
-│                 reflection.py, git.py, contracts.py # 与前端无关的用例编排与数据契约
+│                 reflection.py, git.py, commands.py, contracts.py # 与前端无关的用例编排与数据契约
 ├── agent/        runtime.py, prompts.py, context.py, tools.py,
 │                 session.py, recall.py, file_tools.py # Agent 循环、工具、会话与文件分析
 ├── memory/       service.py, store.py, models.py, queue.py,
@@ -585,7 +569,7 @@ src/syvrio/
 ├── llm/          client.py, summarizer.py, commit_summary.py
 │                                                   # LiteLLM 适配、会话/提交摘要
 └── infra/        config.py, providers.py, gitops.py, gitsync.py, locking.py, tokens.py,
-                  layout.py, dialogs.py, documents.py, diagnostics.py, latency.py, search/ # 配置、Git 同步与锁、诊断、文档转换、联网搜索
+                  layout.py, dialogs.py, documents.py, diagnostics.py, latency.py, update.py, search/ # 配置、Git 同步与锁、诊断、文档转换、联网搜索
 
 web/
 ├── index.html
@@ -641,7 +625,7 @@ uv run pytest
 
 如果受限 Windows 环境禁止回环 TCP，默认 asyncio 可能卡在 `socketpair`。使用锁定的 pytest-asyncio，可在 PowerShell 中先设置 `$env:SYVRIO_TEST_PIPE_LOOP = "1"` 再运行测试，改用本地管道唤醒 Proactor；仅影响测试，不开放网络权限，也不修改应用运行时。普通 Windows 和 Ubuntu 继续使用默认事件循环。
 
-局部改动按影响范围运行分类测试，提交前再跑全量：
+局部改动按影响范围选择分类测试；跨模块核心改动按风险运行全量：
 
 ```bash
 uv run pytest -m ui
@@ -662,7 +646,7 @@ corepack pnpm install --frozen-lockfile
 corepack pnpm test          # Vitest：状态归约、SSE 客户端、组件交互
 corepack pnpm build         # tsc --noEmit + Vite 生产构建
 cd ..
-python scripts/build_web.py --check   # 校验已暂存的静态资源
+uv run python scripts/build_web.py --check   # 校验已暂存的静态资源
 ```
 
 分类为 `ui`（TUI）、`agent`（运行时/会话/上下文）、`memory`（存储/抽取/裁决/队列）、`retrieval`（本地检索）、`web`（Web Adapter 的 API/SSE/并发/安全）、`cli`、`config`、`mcp`、`search`（联网搜索）。LLM 路径用固定抽取器和假模型测试；未接真实 API Key 时不声称已完成线上验证。
@@ -688,26 +672,7 @@ uv run python evals/retrieval_eval.py
 
 ## Roadmap
 
-完整待办以 [GitHub Issues](https://github.com/Shardkiht/syvrio/issues) 为准。以下按**大致实现难度由低到高**排列；实际开发顺序可按收益与依赖调整，所有新增功能均服务于**个人日常聊天记忆**，不扩展成通用工作 Agent。
-
-| 难度 | 方向 | 规划 |
-| --- | --- | --- |
-| 低～中低 | [记忆上下文：时间、地点、情绪](https://github.com/Shardkiht/syvrio/issues/10) | 基础字段与存储链路已实现；已补带时区原始消息锚点与相对日期规则；推断情绪待实现 |
-| 低～中 | [推断独立存储与用户确认](https://github.com/Shardkiht/syvrio/issues/11) | 已支持独立存储、证据去重、CLI/TUI 审查及来源失效；交互体验继续完善 |
-| 中～中高 | [事实时间演化与多维召回](https://github.com/Shardkiht/syvrio/issues/12) | 已支持条件筛选、当前/历史视图和显式时态演化；复杂时序重排待完善 |
-| 高 | [梦境记忆 / Dreaming](https://github.com/Shardkiht/syvrio/issues/8) | 已实现 TUI 空闲自动回顾、请求上限、暂停与恢复 |
-| 高 | [动态用户画像](https://github.com/Shardkiht/syvrio/issues/9) | 已实现可重建的事实/推断画像、空闲刷新和相关已确认推断注入；长期语义评测待完善 |
-| 很高 / 长期 | [演化认知：纵向用户理解](https://github.com/Shardkiht/syvrio/issues/18) | 规划中：以可追溯的跨期证据识别稳定特征、短期波动、阶段性变化和长期趋势；形成可审阅、可重建的演化认识，区别于单条事实演化与当前画像 |
-| 很高 / 长期 | [跨 AI 客户端主动召回](https://github.com/Shardkiht/syvrio/issues/13) | 在客户端能力允许时，无需显式提醒即可适时调用个人记忆 |
-| 持续工程 | [记忆质量评测与回归](https://github.com/Shardkiht/syvrio/issues/14) | 扩展抽取/冲突、时间变化、情绪推断、隐含召回等合成测试，不以一次发布为终点 |
-
-其他待办：
-
-- 真实模型 dogfood 与成本统计
-- 每日定时提交守护进程
-- `syvrio consolidate` 子命令：手动或系统计划任务触发整库补沉淀（启动时自动补记与自动提交已实现）
-
-表中已标明基础实现与剩余规划；当前支持的行为和边界以 README 其他章节为准。
+近期重点是 Web 手机实机验收、Evo 构建发布和升级恢复验证；之后继续完善事实时间演化、推断审查、反思与画像。验收条件见[路线图](docs/ROADMAP.md)，单项待办以 [GitHub Issues](https://github.com/Shardkiht/syvrio/issues) 为准。
 
 ## 推断审查与上下文检索
 
@@ -789,7 +754,7 @@ monthly = 800
 
 会话列表和启动补沉淀会报告并隔离异常文件，直接加载仍报错，原始字节保持不变；损坏尾行继续通过追加标记恢复。人工确认、更正、拒绝和软删除在普通写入异常时，对涉及的主题及决策日志执行补偿回滚，回滚成功后可安全重试；回滚失败会显式报告。这不是跨进程终止、断电或多进程并发的原子事务，仍应单写入者使用并保留 Vault Git 检查点。
 
-Search/Fetch 同进程共享额度计数，但多个 Syvrio/MCP 进程同时运行时不保证跨进程原子性；本地额度是保守防护，不是厂商账单保证。可选的 `npx open-websearch@latest` 兜底不受 Python 锁文件冻结：需复现环境时，应自行安装并保留经过验证的上游版本，已安装命令仍优先使用。本轮冻结不包含干净上游包或动态网站的真实 API 验证。
+Search/Fetch 同进程共享额度计数，但多个 Syvrio/MCP 进程同时运行时不保证跨进程原子性；本地额度是保守防护，不是厂商账单保证。可选的 `npx open-websearch@latest` 兜底不受 Python 锁文件冻结：需复现环境时，应自行安装并保留经过验证的上游版本，已安装命令仍优先使用。
 
 Windows 下 CLI 重定向的标准输出和错误输出采用 UTF-8；原生终端处理及系统持久设置保持不变。
 

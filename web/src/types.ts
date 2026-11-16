@@ -163,6 +163,7 @@ export interface CommandCatalogResponse {
 
 export interface CommandRequest {
   line: string;
+  pending_text?: string;
   session_id: string | null;
   confirmed: boolean;
 }

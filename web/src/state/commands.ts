@@ -57,33 +57,47 @@ export function isCommandLine(value: string): boolean {
   return value.trimStart().startsWith('/');
 }
 
-export interface CommandPanel {
+export interface OptionPanel {
   title: string;
   options: { label: string; value: string }[];
   prefix: string;
 }
+
+export interface PendingCandidate {
+  id: string;
+  text: string;
+  topic: string;
+  reason: string;
+}
+
+export interface PendingPanel {
+  title: 'Pending review';
+  rows: PendingCandidate[];
+  count: number;
+}
+
+export type CommandPanel = OptionPanel | PendingPanel;
+export type PendingAction = 'approve' | 'reject' | 'edit';
 
 /** Model / reasoning / context choices share one small clickable panel. */
 export function panelFor(result: CommandResponse): CommandPanel | null {
   const data = result.data;
   if (!data) return null;
 
-  // Review screens (pending / inferences / reflection) expose their items as
-  // clickable action rows, so the browser never needs a second business model.
+  if (data.kind === 'pending' && Array.isArray(data.rows)) {
+    return {
+      title: 'Pending review',
+      rows: data.rows as PendingCandidate[],
+      count: typeof data.count === 'number' ? data.count : data.rows.length,
+    };
+  }
+
+  // Inferences and reflection use the generic option panel.
   const rows = data.rows as { id: string; text: string }[] | undefined;
   if (Array.isArray(rows) && rows.length) {
     const kind = String(data.kind ?? '');
     const label = (prefix: string, row: { id: string; text: string }) =>
       `${prefix} · ${row.text || row.id}`.slice(0, 120);
-    if (kind === 'pending') {
-      return {
-        title: 'Pending review', prefix: '/pending',
-        options: rows.flatMap((row) => [
-          { label: label('Approve', row), value: `approve ${row.id}` },
-          { label: label('Reject', row), value: `reject ${row.id}` },
-        ]),
-      };
-    }
     if (kind === 'inferences') {
       return {
         title: 'Inference review', prefix: '/inferences',

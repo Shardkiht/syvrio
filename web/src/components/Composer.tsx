@@ -151,61 +151,63 @@ export function Composer({
 
   return (
     <div className={`composer${hero ? ' composer-hero' : ''}`}>
-      <CommandSuggestions
-        suggestions={showSuggestions ? suggestions : []}
-        index={Math.min(index, Math.max(0, suggestions.length - 1))}
-        onHover={setIndex}
-        onPick={applyCompletion}
-      />
       {busy && <div className="progress" data-testid="progress">{progress || 'Working...'}</div>}
-      <div className="composer-card">
-        <textarea
-          ref={ref}
-          value={value}
-          rows={3}
-          aria-label="Message"
-          data-testid="composer-input"
-          placeholder="Message Syvrio"
-          onChange={(event) => {
-            setValue(event.target.value);
-            setDismissed(false);
-            setIndex(0);
-          }}
-          onKeyDown={onKeyDown}
+      <div className="composer-lane">
+        <CommandSuggestions
+          suggestions={showSuggestions ? suggestions : []}
+          index={Math.min(index, Math.max(0, suggestions.length - 1))}
+          onHover={setIndex}
+          onPick={applyCompletion}
         />
-        <div className="composer-bar">
-          {onOpenCommands && (
-            <button
-              type="button"
-              className="icon-button composer-plus"
-              onClick={onOpenCommands}
-              aria-label="Insert command"
-              title="Commands (Alt+P)"
-            >
-              <PlusIcon size={17} />
-            </button>
-          )}
-          <div className="composer-actions">
-            {busy ? (
-              <>
-                {isCommandLine(value) && (
-                  <button type="button" className="send run-command" onClick={submit}>Run</button>
-                )}
-                <button type="button" className="stop" onClick={onStop} aria-label="Stop">
-                  <StopIcon size={16} />
-                </button>
-              </>
-            ) : (
+        <div className="composer-card">
+          <textarea
+            ref={ref}
+            value={value}
+            rows={3}
+            aria-label="Message"
+            data-testid="composer-input"
+            placeholder="Message Syvrio"
+            onChange={(event) => {
+              setValue(event.target.value);
+              setDismissed(false);
+              setIndex(0);
+            }}
+            onKeyDown={onKeyDown}
+          />
+          <div className="composer-bar">
+            {onOpenCommands && (
               <button
                 type="button"
-                className="send"
-                onClick={submit}
-                disabled={!value.trim()}
-                aria-label="Send"
+                className="icon-button composer-plus"
+                onClick={onOpenCommands}
+                aria-label="Insert command"
+                title="Commands (Alt+P)"
               >
-                <ArrowUpIcon size={18} />
+                <PlusIcon size={17} />
               </button>
             )}
+            <div className="composer-actions">
+              {busy ? (
+                <>
+                  {isCommandLine(value) && (
+                    <button type="button" className="send run-command" onClick={submit}>Run</button>
+                  )}
+                  <button type="button" className="stop" onClick={onStop} aria-label="Stop">
+                    <StopIcon size={16} />
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  className="send"
+                  onClick={submit}
+                  disabled={!value.trim()}
+                  aria-label="Send"
+                >
+                  <ArrowUpIcon size={18} />
+                </button>
+              )}
+            </div>
           </div>
         </div>
       </div>

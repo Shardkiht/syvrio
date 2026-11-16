@@ -191,6 +191,7 @@ class CommandCatalogResponse(BaseModel):
 
 class CommandRequest(BaseModel):
     line: str = Field(min_length=1, max_length=2000)
+    pending_text: str | None = Field(default=None, min_length=1, max_length=100_000)
     session_id: str | None = None
     confirmed: bool = False
 

@@ -91,13 +91,13 @@ describe('option panels', () => {
       intent: 'model',
       data: { options: [{ provider: 'spark', model: 'x2', current: true }] },
     }));
-    expect(models?.options[0]).toEqual({ label: '* spark/x2', value: 'spark/x2' });
+    expect(models).toMatchObject({ options: [{ label: '* spark/x2', value: 'spark/x2' }] });
 
     const thinking = panelFor(result({ intent: 'think', data: { options: ['', 'high'] } }));
-    expect(thinking?.options[0]).toEqual({ label: 'default', value: 'default' });
+    expect(thinking).toMatchObject({ options: [{ label: 'default', value: 'default' }, { value: 'high' }] });
 
     const context = panelFor(result({ intent: 'context', data: { options: [8000, 16000] } }));
-    expect(context?.options[1]).toEqual({ label: '16000', value: '16000' });
+    expect(context).toMatchObject({ options: [{ value: '8000' }, { label: '16000', value: '16000' }] });
   });
 
   it('does not reopen the picker after a choice was applied', () => {

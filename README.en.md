@@ -19,25 +19,21 @@ Turn everyday conversations into long-term Markdown memories you can inspect, tr
 
 Stop repeating your preferences and plans every time you start a chat. Tell it “I prefer unsweetened hot drinks,” open another conversation, and it can look that preference up. Open the Markdown files to inspect what it remembers, correct a fact, or ask it to forget one.
 
-![Actual TUI interaction: save a preference, start a new session, and recall it](docs/assets/syvrio-demo.gif)
+![Syvrio Web: save a drink preference and recall it in a new chat](docs/assets/syvrio-demo.gif)
 
-The demo operates the actual Textual UI with synthetic data and scripted model replies. Memory writes and cross-session retrieval run through the real implementation, with no paid model requests. [View the still screenshot](docs/assets/syvrio-demo.png).
-
-Install `feature-memory-evolution` from source or select an `rcN` prerelease on [PyPI](https://pypi.org/project/syvrio/). Stable versions are maintained on `main`.
+Recorded in the actual Web client with an isolated synthetic Vault and local model replay. The app performs the memory write, cross-session retrieval, and streaming. [View the still screenshot](docs/assets/syvrio-demo.png).
 
 ## Quick start
 
-Requires Python 3.12+, uv, and git.
-
-The following commands install the published version from PyPI. To use this branch, follow the source installation instructions below.
+Requires Python 3.12+, uv, and Git. PyPI installs select a stable release by default. This guide covers Evo: pick a specific `rcN` release from [PyPI](https://pypi.org/project/syvrio/) and install it with `uv tool install "syvrio==<version>"`, or run this branch from source.
 
 ```bash
 uv tool install syvrio
 syvrio setup
-syvrio
+syvrio web
 ```
 
-`syvrio setup` selects a model provider and configures its API key, and also offers a "search & fetch API" wizard: enter or update keys for Baidu Qianfan, Tavily, Exa, You.com, and Volcengine (stored in the system credential store, never written as plaintext to TOML), enable each vendor's supported Search / Fetch separately (Baidu Qianfan supports Search only), and reorder both provider lists. Official vendors are never enabled automatically just because a key exists — enable them explicitly here; enabling without a valid key is refused. AnySearch and Parallel Search MCP can be enabled anonymously without registration; setting `ANYSEARCH_API_KEY` / `PARALLEL_API_KEY` switches them to authenticated mode, and clearing the key restores anonymous mode. A self-hosted SearXNG instance also needs no key: enter or change its address here and enable it. Syvrio never probes, starts, or modifies that service. open-websearch is free and remains the default, and the default provider order is unchanged. The standard installation does not download a local embedding model; keyword retrieval is used when the vector backend is not installed. Update later with `uv tool upgrade syvrio`.
+Open `http://127.0.0.1:8765/`. For terminal chat, stop the Web service first, then run `syvrio`. Setup selects the model and stores its API key; it also configures optional [web search and page fetch](#web-search). The standard installation needs no embedding model download. Upgrade a regular tool installation with `uv tool upgrade syvrio`; see the [update guide](docs/web.md#pypi-自动更新) for systemd-managed Web services.
 
 ### Migrating from QuietMemo
 
@@ -69,10 +65,10 @@ For a Vault still using the v1 layout, follow the separate [v2 migration guide](
 
 ### Run from source
 
-For development or local code changes:
+Use this branch for Evo development. Building the Web client additionally needs Node.js and Corepack:
 
 ```bash
-git clone https://github.com/Shardkiht/syvrio.git
+git clone --branch feature-memory-evolution https://github.com/Shardkiht/syvrio.git
 cd syvrio
 uv sync
 
@@ -85,7 +81,7 @@ uv run syvrio
 
 On first use, run `uv run syvrio setup` to configure the model and API key. Use `/model` to search and switch models. Press `Ctrl+P` in that screen to open separate provider management for adding, updating, or removing built-in provider API keys and setting their Base URLs; `Esc` returns to the model list. The model picker also supports `Ctrl+R` to refresh and `Ctrl+N` to enter a custom model name.
 
-`syvrio setup` writes the config file (default: `syvrio.toml`), initializes the vault, and optionally runs a connection test. Keys can also be provided through environment variables, which take precedence over keyring:
+`syvrio setup` writes the config file (default: `~/.syvrio/config.toml`; an existing `syvrio.toml` in the working directory takes precedence, and `SYVRIO_CONFIG` can override both), initializes the vault, and optionally runs a connection test. Keys can also be provided through environment variables, which take precedence over keyring:
 
 ```bash
 export DEEPSEEK_API_KEY=sk-...
@@ -391,29 +387,17 @@ Exposed tools: `memorize`, `note`, `recall`, `read_topic`, `review_pending`, `ap
 
 ## Web client
 
-`syvrio web` serves a private, single-user web UI at `http://127.0.0.1:8765/`. The web layer is transport only: it reuses the same `ApplicationService` / `AgentRuntime` / `SessionStore` / Vault, adds no database, and does not turn the TUI into an HTTP client.
+`syvrio web` serves a private single-user UI at `http://127.0.0.1:8765/` by default. It shares sessions, memory, and model settings with the TUI. PyPI wheels include the frontend. From source, build it before starting:
 
 ```bash
-# From source: build the frontend bundle first
-python scripts/build_web.py
+uv run python scripts/build_web.py
 uv run syvrio web
-
-# Frontend-only development: Vite proxies /api to the running backend
-cd web && corepack pnpm install && corepack pnpm dev
 ```
 
-The first release supports streamed Markdown replies, a dedicated Thinking area (auto-collapsed when the answer starts, expandable at a fixed height), tool-call status, stop generation, new/switch/restore sessions, error and disconnect states, code-block copy, and a mobile layout (drawer sidebar, soft-keyboard-aware composer, notch safe areas, larger touch targets). A new chat is only a draft until the first message creates its session file, and restored history jumps directly to the latest message. The interface follows the browser's light/dark scheme by default, with explicit light and dark choices. Communication uses REST + SSE, not WebSocket.
-
-The Web and TUI share the slash-command catalog in `application/commands.py`. The composer offers `/` prefix and sub-command completion (arrow keys, Tab, Enter, Escape), IME composition protection, and a lightweight command palette. Everyday commands such as `/new`, `/sessions`, `/model`, `/think`, `/context`, `/compact`, `/undo`, and `/help` work; `/import` reports that it is unsupported, side-effecting operations such as Git sync or memory approval stay in the TUI, and dangerous commands require a second confirmation. The header `Settings` button (`Alt+S`, or `/setup`) opens a settings panel for appearance, model switching, reasoning effort, context window, provider keys / base URLs, and custom model IDs; keys are write-only and stay in the system credential store. Browser-reserved keys are not hijacked: `Ctrl+P` remains Print, the palette uses `Ctrl+Shift+P` / `Alt+P`, model choices use `Alt+M` or the header model button, `Ctrl+B` toggles the sidebar with `Alt+B` as an alternative, and `/exit` only returns to the entry view instead of stopping the server. See [docs/web.md](docs/web.md) for the full command and shortcut mapping.
-
-Key boundaries:
-
-- One process, one worker, and only one in-flight Turn. A second chat request returns `409 busy`; cancellation must carry the matching `turn_id`, so it cannot cancel an unrelated request.
-- `runtime/locks/client.lock` enforces that **the TUI and Web cannot write the same Vault at once**; the later client receives an explicit error. Close the other client to proceed.
-- Loopback-only by default, with Host and write-request Origin validation and no permissive CORS. For remote access use Tailscale Serve and set `SYVRIO_WEB_ALLOWED_HOSTS`; Funnel is not used and no public port is opened.
-- A PyPI install already contains the static bundle in the wheel, so Node.js is not needed at runtime. From source (and before publishing) run `scripts/build_web.py` first; it verifies the bundle and exits non-zero if assets are missing.
-
-See [docs/web.md](docs/web.md) for the API/SSE contract, WSL + systemd residency, Tailscale configuration, and troubleshooting; the unit template is `docs/syvrio-web.service`. The Web client still does not replace the TUI and does not include a memory-management UI, multi-user support, or file uploads.
+- **Chats and replies:** A new session is saved with its first message. Replies stream, and thinking and tool details can be expanded. If the page closes or loses its connection, generation and saving continue. Reopen the session to read the result, or use Stop to cancel the active turn. Web handles one message at a time; the TUI supports a send queue.
+- **Commands and settings:** Type `/` to open suggestions aligned with the input, press `Tab` to complete, or press `Enter` to run. Open Settings or type `/setup` to manage appearance, models, thinking, context, and providers. In Web `/pending`, each candidate appears once. Select one to edit, approve, or reject it. Web commands can also refresh the profile and run reflection. Use the TUI or CLI for local file imports. See the [Web guide](docs/web.md#slash-command-与快捷键) for the command reference.
+- **Phones and remote access:** On phones, the sidebar opens as a drawer and the composer fits above the keyboard. For remote access inside a private tailnet, see [Tailscale Serve setup](docs/web.md).
+- **Process ownership:** When using the same Vault and Runtime, stop the TUI before starting Web, or vice versa. Failed calls follow the current model's retry settings; model switching is explicit.
 
 ## Web search
 
@@ -515,7 +499,7 @@ Response shape:
 
 - Results are untrusted external content: cite them as material, never execute instructions found in them.
 - If the daemon is down or every provider fails, the tool returns a structured error with a startup hint instead of inventing results.
-- `[search]` settings: `enabled` (removes the tool when false), `providers` (fallback order), `base_url`, `timeout`, `max_results`, `cache_ttl`, `transport` (`http` by default; `mcp` starts an npx MCP process per search), `auto_start` (warm up the HTTP daemon in the background when the TUI opens), `engines` (upstream search engines, `["bing"]` by default), `fallback_engines` (backup engine chain, `["baidu", "duckduckgo", "sogou"]` by default), `max_engines` (engines tried per automatic fallback, 3 by default), `max_search_engines` (cap for an explicit `search_engine` list, 0 means unlimited, 0 by default), `timeout_budget` (shared fallback budget, 25 seconds by default, with each single request's timeout capped by the remaining budget), `max_requests` (upstream requests shared across all providers per search, 9 by default; when exceeded the best candidates so far are returned with an explicit truncation hint and are not cached), `anysearch_zone` / `anysearch_language` (AnySearch region and language, `cn` / `zh-CN` by default), `searxng_base_url` / `searxng_timeout` (self-hosted SearXNG instance address and per-request timeout, `http://127.0.0.1:8888` / 10 seconds by default), `usage_limits` (per-vendor call caps via `[search.usage_limits.<provider>]` with `daily` and `monthly` (0 means unlimited); a vendor's Search and Fetch share one counter pool, and once the cap is hit that vendor is skipped while fallback continues normally; counters persist in `runtime/state/usage.json` inside the vault — **local counts are not the vendor's actual billing cap**), and `fetch_timeout` (separate timeout for fetching page text, 45 seconds by default). `syvrio setup` manages both periods and official quota pauses.
+- `[search]` settings: `enabled` (removes the tool when false), `providers` (fallback order), `base_url`, `timeout`, `max_results`, `cache_ttl`, `transport` (`http` by default; `mcp` starts an npx MCP process per search), `auto_start` (warm up the HTTP daemon in the background when the TUI opens), `engines` (upstream search engines, `["bing"]` by default), `fallback_engines` (backup engine chain, `["baidu", "duckduckgo", "sogou"]` by default), `max_engines` (engines tried per automatic fallback, 3 by default), `max_search_engines` (cap for an explicit `search_engine` list, 0 means unlimited, 0 by default), `timeout_budget` (shared fallback budget, 25 seconds by default, with each single request's timeout capped by the remaining budget), `max_requests` (upstream requests shared across all providers per search, 9 by default; when exceeded the best candidates so far are returned with an explicit truncation hint and are not cached), `anysearch_zone` / `anysearch_language` (AnySearch region and language, `cn` / `zh-CN` by default), `searxng_base_url` / `searxng_timeout` (self-hosted SearXNG instance address and per-request timeout, `http://127.0.0.1:8888` / 10 seconds by default), `usage_limits` (per-vendor call caps via `[search.usage_limits.<provider>]` with `daily` and `monthly` (0 means unlimited); a vendor's Search and Fetch share one counter pool, and once the cap is hit that vendor is skipped while fallback continues normally; counters persist in `runtime/state/usage.json` outside the Vault — **local counts are not the vendor's actual billing cap**), and `fetch_timeout` (separate timeout for fetching page text, 45 seconds by default). `syvrio setup` manages both periods and official quota pauses.
 
 Controlled real-network smoke test: `scripts/smoke_search_apis.py` by default only performs local checks (key readability, whether each vendor would register; anonymous providers are marked registrable without a key) and never sends a request; adding `--provider <vendor> --operation search|fetch --live` sends at most `--max-requests` (default 1, cap 10) real requests to a single vendor and prints a desensitized report (success, result count or content length, error kind, duration and unverified fields). Keys are read only from environment variables or the system credential store and never echoed. Page fetching is controlled by a separate `[fetch]` section: `providers` is the fetch provider order (`["open_websearch"]` by default), independent of the search provider order; official vendors with a configured key (tavily / exa / you / volcengine) join fetching only once listed here.
 - A daemon started by `auto_start` has no visible console window on Windows and stays resident for reuse after the TUI exits.
@@ -578,7 +562,7 @@ src/syvrio/
 │                 └── web/  server.py, backend.py, models.py, static/
 │                                                    # CLI / Textual TUI / FastMCP / FastAPI Web adapters
 ├── application/  service.py, conversation.py, memory.py, settings.py,
-│                 reflection.py, git.py, contracts.py # frontend-neutral use cases and data contracts
+│                 reflection.py, git.py, commands.py, contracts.py # frontend-neutral use cases and data contracts
 ├── agent/        runtime.py, prompts.py, context.py, tools.py,
 │                 session.py, recall.py, file_tools.py # Agent loop, tools, sessions, file analysis
 ├── memory/       service.py, store.py, models.py, queue.py,
@@ -590,7 +574,7 @@ src/syvrio/
 ├── llm/          client.py, summarizer.py, commit_summary.py
 │                                                   # LiteLLM adapter, session/commit summaries
 └── infra/        config.py, providers.py, gitops.py, gitsync.py, locking.py, tokens.py,
-                  layout.py, dialogs.py, documents.py, diagnostics.py, latency.py, search/ # Config, Git sync and locks, diagnostics, document conversion, web search
+                  layout.py, dialogs.py, documents.py, diagnostics.py, latency.py, update.py, search/ # Config, Git sync and locks, diagnostics, document conversion, web search
 
 web/
 ├── index.html
@@ -667,7 +651,7 @@ corepack pnpm install --frozen-lockfile
 corepack pnpm test          # Vitest: reducer, SSE client, component interactions
 corepack pnpm build         # tsc --noEmit + Vite production build
 cd ..
-python scripts/build_web.py --check   # verify the staged static assets
+uv run python scripts/build_web.py --check   # verify the staged static assets
 ```
 
 Categories are `ui` (TUI), `agent` (runtime/sessions/context), `memory` (store/extraction/policy/queue), `retrieval` (local retrieval), `web` (Web Adapter API/SSE/concurrency/security), `cli`, `config`, `mcp`, and `search` (web search). LLM paths use a fixed extractor and fake models; without real API keys, no online verification is claimed.
@@ -693,26 +677,7 @@ Hits are matched by target entry ID, comparing keyword / vector / hybrid. See [e
 
 ## Roadmap
 
-The full backlog lives in [GitHub Issues](https://github.com/Shardkiht/syvrio/issues). The directions below are ordered by **approximate implementation difficulty**, not a fixed shipping sequence. All features serve **personal, everyday conversational memory**, not a general-purpose work agent.
-
-| Difficulty | Direction | Scope |
-| --- | --- | --- |
-| Low–medium-low | [Memory context: time, place, emotion](https://github.com/Shardkiht/syvrio/issues/10) | Fields, storage, timezone-aware message anchors and relative-date rules are implemented; inferred emotion remains planned |
-| Low–medium | [Separate inference records and user review](https://github.com/Shardkiht/syvrio/issues/11) | Separate storage, evidence deduplication, CLI/TUI review and source invalidation are implemented; review UX remains extensible |
-| Medium–medium-high | [Temporal evolution and contextual recall](https://github.com/Shardkiht/syvrio/issues/12) | Context filters, current/historical views and explicit evolution are implemented; advanced temporal reranking remains planned |
-| High | [Dream memory / Dreaming](https://github.com/Shardkiht/syvrio/issues/8) | Idle TUI reflection, request budgets, pause and recovery are implemented |
-| High | [Dynamic user profiles](https://github.com/Shardkiht/syvrio/issues/9) | Rebuildable fact/inference profiles, automatic idle refresh and relevant confirmed context are implemented; longitudinal semantic evaluation remains planned |
-| Very high / long-term | [Longitudinal user understanding / evolutionary cognition](https://github.com/Shardkiht/syvrio/issues/18) | Planned: trace evidence across time to distinguish stable traits, short-term fluctuations, life phases and long-term trends; produce reviewable, rebuildable insights distinct from individual fact evolution or current profiles |
-| Very high / long-term | [Proactive recall across AI clients](https://github.com/Shardkiht/syvrio/issues/13) | Surface relevant memories without explicit prompts where client integrations permit |
-| Ongoing | [Memory quality and regression evaluation](https://github.com/Shardkiht/syvrio/issues/14) | Synthetic tests for extraction/conflicts, temporal change, emotional inference, and implicit recall |
-
-Other backlog items:
-
-- Real-model dogfooding and cost tracking
-- Daily scheduled commit daemon
-- A `syvrio consolidate` subcommand for manual or scheduled vault-wide catch-up (startup catch-up and auto-commit already exist)
-
-The table distinguishes implemented foundations from remaining plans; refer to the other README sections for supported behavior and limitations.
+Near-term work covers mobile browser acceptance, Evo release builds, and update recovery. Later work continues temporal memory, inference review, reflection, and profiles. See the [roadmap](docs/ROADMAP.md) for acceptance criteria and [GitHub Issues](https://github.com/Shardkiht/syvrio/issues) for individual work items.
 
 ## Inference review and contextual retrieval
 
@@ -796,7 +761,7 @@ Only documented official quota/balance/spending-limit errors persist a pause. Or
 
 Session lists and startup consolidation isolate invalid files with a diagnostic; direct loading still fails, and source bytes remain untouched. Torn trailing records retain append-only recovery. Manual approve/correct/reject/forget operations compensate ordinary write exceptions across the affected topic and decision logs; a successful rollback makes a retry safe. Failed rollback is reported explicitly. This is not an atomic transaction across process termination, power loss or concurrent processes; single-writer use and Vault Git checkpoints remain important.
 
-Search/Fetch limits share counters within one process, but simultaneous Syvrio/MCP processes do not have atomic quota accounting. Local caps are conservative safeguards, not provider billing guarantees. The optional `npx open-websearch@latest` fallback is not frozen by Python's lockfile: for repeatable deployments, install and retain a tested upstream version; the installed command remains preferred. This freeze does not verify a clean upstream package or dynamic websites through live APIs.
+Search/Fetch limits share counters within one process, but simultaneous Syvrio/MCP processes do not have atomic quota accounting. Local caps are conservative safeguards, not provider billing guarantees. The optional `npx open-websearch@latest` fallback is not frozen by Python's lockfile: for repeatable deployments, install and retain a tested upstream version; the installed command remains preferred.
 
 On Windows, redirected CLI stdout/stderr use UTF-8; native terminal handling and persistent system settings are unchanged.
 

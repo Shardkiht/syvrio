@@ -19,7 +19,7 @@ uv run syvrio            # 直接进入对话
 uv run syvrio setup      # 配置模型与 API Key
 ```
 
-依赖只用 `uv` 管理；新增依赖写进 `pyproject.toml`，不要用 `pip install` 改本地环境。
+Python 依赖用 `uv` 管理，新增依赖写进 `pyproject.toml`。Web 依赖在 `web/` 使用 Corepack 与锁定的 pnpm；仓库不提交前端构建产物。
 全局 `syvrio` 是 editable 安装：只同步代码、**不同步依赖**。改动依赖后必须重跑
 `uv tool install --force -e '.[local-embed]'` 重建工具环境，否则全局命令启动即崩（ModuleNotFoundError）。
 
@@ -39,10 +39,11 @@ application → llm → infra
 memory/agent → llm → infra
 ```
 
-- `app/`：Typer CLI、TUI、FastMCP 入口与展示适配；只做参数解析、焦点/键盘/渲染、Worker 与 UI 线程投递。
+- `app/`：Typer CLI、TUI、FastMCP、FastAPI Web 入口与展示适配；只做参数解析、焦点/键盘/渲染、Worker 与 UI 线程投递。
 - `application/`：与前端无关的用例编排（会话/FIFO/Undo、记忆审查、设置、Reflection/Git 协调）与数据契约；禁止依赖 Textual、Rich、Typer 或 `app/`，也不重复实现 Agent/Memory 核心逻辑。
 - `agent/`：Agent 循环、上下文压缩、工具注册、会话记录。
 - `memory/`：抽取、裁决、存储、队列、审计。
+- `web/`（仓库根目录）：React 前端，使用 REST/SSE 连接 Web 适配，不实现记忆裁决。
 - `retrieval/`：检索接口与实现，`Retriever` 是替换点。
 - `llm/`：LiteLLM 适配、摘要。
 - `infra/`：配置、供应商、Git、token 估算、终端交互、联网搜索。

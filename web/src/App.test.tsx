@@ -39,6 +39,7 @@ const CATALOG: CommandInfo[] = [
   command('import', { support: 'unsupported', note: 'Use the TUI.' }),
   command('help', { shortcut: 'Ctrl+Shift+P / Alt+P' }),
   command('status'),
+  command('pending'),
 ];
 
 const commandResult = (patch: Partial<CommandResponse> = {}): CommandResponse => ({
@@ -353,6 +354,56 @@ describe('Web client interactions', () => {
 });
 
 describe('Slash commands and shortcuts', () => {
+  it('selects a pending candidate once, edits it, and refreshes after confirmed writes', async () => {
+    const first = { id: 'p-1', text: 'First candidate\nSecond line', topic: 'food', reason: 'Check the wording' };
+    const second = { id: 'p-2', text: 'Another candidate', topic: 'food', reason: '' };
+    const requests: { line: string; confirmed: boolean; pending_text?: string }[] = [];
+    let fail = true;
+    installFetch({
+      'POST /api/commands': (init) => {
+        const body = JSON.parse(String(init?.body)) as (typeof requests)[number];
+        requests.push(body);
+        const pending = (rows: (typeof first)[]) =>
+          commandResult({ command: 'pending', intent: 'pending', data: { kind: 'pending', rows, count: rows.length } });
+        if (body.line === '/pending') return json(pending([first, second]));
+        if (body.line === '/pending edit p-1' && fail) {
+          fail = false;
+          return json(commandResult({ command: 'pending', status: 'error', message: 'Write failed' }));
+        }
+        return json(pending(body.line === '/pending edit p-1' ? [second] : []));
+      },
+    });
+    render(<App />);
+    await ready();
+    send('/pending');
+    const dialog = within(await screen.findByRole('dialog', { name: 'Pending review' }));
+    const list = within(dialog.getByRole('group', { name: 'Candidates' }));
+    expect(list.getAllByRole('button')).toHaveLength(2);
+    expect(dialog.queryByRole('button', { name: 'Edit' })).toBeNull();
+    expect(dialog.queryByRole('button', { name: 'Reject' })).toBeNull();
+    fireEvent.click(list.getByRole('button', { name: /First candidate/ }));
+    expect(dialog.getByText('Check the wording')).toBeTruthy();
+    fireEvent.click(dialog.getByRole('button', { name: 'Edit' }));
+    const editor = dialog.getByRole('textbox', { name: 'Edit candidate' }) as HTMLTextAreaElement;
+    expect(editor.value).toBe(first.text);
+    fireEvent.change(editor, { target: { value: 'Revised preference\nWith a note' } });
+    fireEvent.click(dialog.getByRole('button', { name: 'Save and approve' }));
+    expect(requests).toHaveLength(1);
+    fireEvent.click(dialog.getByRole('button', { name: 'Confirm' }));
+    expect((await dialog.findByRole('alert')).textContent).toBe('Write failed');
+    expect(editor.value).toBe('Revised preference\nWith a note');
+    fireEvent.click(dialog.getByRole('button', { name: 'Confirm' }));
+    await waitFor(() => expect(list.getAllByRole('button')).toHaveLength(1));
+    expect(requests[2]).toMatchObject({
+      line: '/pending edit p-1', confirmed: true, pending_text: 'Revised preference\nWith a note',
+    });
+    fireEvent.click(list.getByRole('button', { name: /Another candidate/ }));
+    fireEvent.click(dialog.getByRole('button', { name: 'Reject' }));
+    fireEvent.click(dialog.getByRole('button', { name: 'Confirm' }));
+    expect(await dialog.findByText('No pending candidates')).toBeTruthy();
+    expect(requests[3]).toMatchObject({ line: '/pending reject p-2', confirmed: true });
+  });
+
   it('completes by prefix, Tab and Enter without ever calling /api/chat', async () => {
     const spy = spyCommands((body) =>
       commandResult({ command: 'model', intent: 'model', message: `ran ${body.line}` }));

@@ -3,6 +3,7 @@ import { CommandPalette, CommandPanelDialog, ConfirmDialog } from './components/
 import { Composer } from './components/Composer';
 import { CommandsIcon, PanelIcon, SettingsIcon } from './components/Icons';
 import { MessageList } from './components/MessageList';
+import { PendingReview } from './components/PendingReview';
 import { SettingsPanel } from './components/SettingsPanel';
 import { Sidebar } from './components/Sidebar';
 import { useChat } from './hooks/useChat';
@@ -39,6 +40,7 @@ export default function App() {
     notice,
     refreshHealth,
     runPanelCommand,
+    reviewPending,
     runCommand,
     handleEscape,
     focusSignal,
@@ -247,13 +249,15 @@ export default function App() {
           onNotice={notice}
         />
       )}
-      {panel && (
+      {panel && ('rows' in panel ? (
+        <PendingReview panel={panel} onResolve={reviewPending} onClose={closePanel} />
+      ) : (
         <CommandPanelDialog
           panel={panel}
           onPick={(line) => { void runPanelCommand(line); focusComposer(); }}
           onClose={closePanel}
         />
-      )}
+      ))}
     </div>
   );
 }

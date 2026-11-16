@@ -1,5 +1,7 @@
 # Quiet-Memo main 冻结前代码评审（2026-11-01）
 
+> 历史评审快照。保留当时的项目名称、发现和验证结论；当前设计及命令请看[文档索引](README.md)。
+
 > **品牌迁移提示（2026-11-04）**：本报告沿用当时的 `Quiet-Memo` 名称与 `src/quiet_memo` 路径，仅作历史证据；当前项目为 `Syvrio`，源码路径为 `src/syvrio`，Vault 元数据目录为 `.syvrio/`。
 
 > **历史评审／已结案提示（2026-11-02）**：本报告的 `b016ccbf`、`0.3.2` 和“F1/F2 待修”等均是冻结前的时点证据，不代表当前状态。后续 PR #15 已合并稳定性修复并形成 `portfolio-2026-11-01`（`316a030`）；PR #16 仅做发布准备，`main` 已到 `22217c2`，`v0.3.3` GitHub Release 已发布。两次 PR 的 Windows/Ubuntu CI 均通过；原生 Windows TUI 人工验收仍未确认。现行分支规则见 [AGENTS.md](../AGENTS.md) 和 [HANDOFF.md](HANDOFF.md)。以下历史评审正文保留原貌，禁止把其待办当成当前指令。

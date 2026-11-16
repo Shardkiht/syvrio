@@ -219,6 +219,17 @@ def _item_rows(items, limit: int = MAX_ROWS) -> list[dict[str, str]]:
     return rows
 
 
+def _pending_data(items) -> dict[str, Any]:
+    return {
+        "kind": "pending",
+        "count": len(items),
+        "rows": [
+            {"id": item.id, "text": item.text, "topic": item.topic, "reason": item.reason}
+            for item in items[:MAX_ROWS]
+        ],
+    }
+
+
 class CommandUseCases:
     """Dispatch slash commands through existing Application use cases only."""
 
@@ -323,11 +334,14 @@ class CommandUseCases:
             )
         # The server re-checks confirmation independently of any browser dialog.
         if (capability.confirm or self._needs_confirmation(name, argument)) and not confirmed:
+            description = (
+                " ".join(argument.split(maxsplit=2)[:2]) if name == "pending" else argument
+            )
             return CommandResult(
                 "confirm_required",
                 name,
                 capability.intent,
-                message=f"Confirm this action: /{name} {argument}".strip()
+                message=f"Confirm this action: /{name} {description}".strip()
                 + ". This changes stored data and cannot be undone.",
             )
         try:
@@ -404,7 +418,7 @@ class CommandUseCases:
                     name,
                     "pending",
                     f"{len(items)} pending item(s)." if items else "No pending items.",
-                    data={"kind": "pending", "rows": _item_rows(items), "count": len(items)},
+                    data=_pending_data(items),
                 )
             if head in ("approve", "reject", "edit"):
                 item_id, _, override = rest.partition(" ")
@@ -419,7 +433,7 @@ class CommandUseCases:
                     name,
                     "pending",
                     f"Pending item {item_id}: {head} applied.",
-                    refresh_sessions=True,
+                    data=_pending_data(memory.pending().items),
                 )
             return CommandResult(
                 "error", name, "pending", "Usage: /pending [approve|reject|edit <id>]"

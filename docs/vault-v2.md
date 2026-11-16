@@ -25,7 +25,7 @@ Each top-level unordered list item in a memory file is one record. Start with fr
     * `name`: `Sample Agent`
 ```
 
-Core has exactly four fields. The ID must be unique across the Vault and should never change. Status is `active`, `superseded` or `deleted`. Source is a nonempty string and confidence is a finite number between 0 and 1. Fields use snake_case and may have dot-separated namespaces. Optional sections allow ordered, repeated fields and nested groups. Use inline code spans for scalar values. A longer backtick delimiter can contain a shorter one; literal line breaks are written with the reserved `~syvrio-escaped~` prefix and percent encoding. There is no frontmatter or embedded JSON metadata.
+Core has exactly four fields. The file must be UTF-8. A decoding error names the affected Vault-relative file so it can be saved again as UTF-8. The ID must be unique across the Vault and should never change. Status is `active`, `superseded` or `deleted`. Source is a nonempty string and confidence is a finite number between 0 and 1. Fields use snake_case and may have dot-separated namespaces. Optional sections allow ordered, repeated fields and nested groups. Use inline code spans for scalar values. A longer backtick delimiter can contain a shorter one; literal line breaks are written with the reserved `~syvrio-escaped~` prefix and percent encoding. There is no frontmatter or embedded JSON metadata.
 
 `syvrio.recorded_at`, `syvrio.supersedes`, `syvrio.session`, `syvrio.message` and `syvrio.change_kind` preserve write time, links and provenance. They are not substitutes for event time. The program uses temporal context for current/history views and indexes body, context and extensions for recall. The selected records are passed whole as untrusted Markdown references, with their Vault-relative paths and line numbers. Oversized records are omitted rather than clipped. Status edits replace the value at its source location; unrelated record bytes and LF/CRLF are retained.
 
@@ -46,13 +46,13 @@ Core has exactly four fields. The ID must be unique across the Vault and should 
     state/{reflection,fingerprints,git-sync,usage,vault-binding}.json
     jobs/dreaming/jobs.jsonl
     session-reasoning/<session-id>/<message-id>.json
-    locks/{vault,git}.lock
+    locks/{client,vault,git}.lock
     logs/
 ```
 
-Categories can be nested. Use the Vault-relative Markdown path when topic names repeat. Git tracks only the Vault and sees memory, session and record changes. Stop running Syvrio clients before switching the active Vault. A Runtime bound to a different Vault invalidates its known derived files; Vault data stays intact. Deleting Runtime while Syvrio is stopped does not delete facts or sessions, but does remove local counters, scheduling and job progress.
+Categories can be nested. Use the Vault-relative Markdown path when topic names repeat. Git tracks only the Vault and sees memory, session and record changes. Stop running Syvrio clients before switching the active Vault. A Runtime bound to a different Vault invalidates its known derived files; Vault data stays intact. Deleting Runtime while Syvrio is stopped preserves facts and session text but removes local reasoning attachments, counters, and job progress. Back up Runtime separately if you need those records.
 
-Assistant records may contain a `reasoning_local` flag that points to a private Runtime attachment. The attachment contains reasoning and optional protocol fragments. Keep the Runtime if you need to reopen this reasoning after a restore. A session remains readable when the attachment is missing.
+Assistant records may contain a `reasoning_local` flag that points to a private Runtime attachment. The attachment contains reasoning and optional protocol fragments. Keep the Runtime if you need to reopen this reasoning after a restore. Older sessions need no JSONL rewrite: assistant records without the flag still render their replies. If the attachment or its ID is missing, the reply still loads without reasoning. A legacy inline reasoning field is not used for display or model replay.
 
 Configuration lookup: `SYVRIO_CONFIG`, local `syvrio.toml`, then `~/.syvrio/config.toml`. If the last file does not exist, the previous platform configuration path is still accepted. `vault` and `runtime` are independent top-level settings; `SYVRIO_RUNTIME` overrides the runtime path. Runtime must be outside any Git working tree and separate from the Vault. See [config.example.toml](../config.example.toml).
 

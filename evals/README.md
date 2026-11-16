@@ -23,8 +23,7 @@ uv sync --extra local-embed
 uv run python evals/retrieval_eval.py               # 全部三路（读 evals/data/*.json）
 uv run python evals/retrieval_eval.py --keyword     # 只跑 BM25（离线）
 uv run python evals/retrieval_eval.py --failures    # 打印未过 @3 的用例
-uv run python evals/generate_retrieval_data.py --corpus 1000 --cases 50 \
-    --real-vault ~/.syvrio/vault-v2                 # 重新生成数据（真实 LLM，需 SPARK_API_KEY）
+uv run python evals/generate_retrieval_data.py --corpus 1000 --cases 50   # 重新生成数据（真实 LLM，需 SPARK_API_KEY）
 uv run python -m evals.short_facts_eval --details  # 大规模短字段回归
 uv run python -m evals.field_lookup_eval           # 完整标签与重叠标签回归
 ```
@@ -41,9 +40,9 @@ uv run python -m evals.field_lookup_eval           # 完整标签与重叠标签
 
 字段匹配评测使用另一组固定合成语料，覆盖重叠标签、同名字段的上下文区分、英文标签和普通文本。除 Hit@1/3 外，还单独统计较短标签错误排到第一的次数。
 
-## 最新重跑（2026-11-10，LLM 生成冻结数据）
+## 2026-11-10 历史结果（LLM 生成冻结数据）
 
-控制变量：两分支运行同一份 `evals/retrieval_eval.py`，读取同一份冻结的 `evals/data/*.json`（1000 条语料 / 50 题，含主题复述、口语改写、字段查询、数字干扰、低词面重叠）；解释器 CPython 3.12.14，本地 `BAAI/bge-small-zh-v1.5`，top-k=10。被测代码 main `703e969`（0.3.4）与 evolution 当前工作区。
+控制变量：两分支运行同一份 `evals/retrieval_eval.py`，读取同一份冻结的 `evals/data/*.json`（1000 条语料 / 50 题，含主题复述、口语改写、字段查询、数字干扰、低词面重叠）；解释器 CPython 3.12.14，本地 `BAAI/bge-small-zh-v1.5`，top-k=10。被测代码 main `703e969`（0.3.4）与当时的 evolution 工作区（未记录固定提交，因此结果不能作为当前 HEAD 的验收）。
 
 语料特征（生成语料自身，冻结可复现）：1000 条，长度中位 47、P90 66，汉字占比 0.596，含冒号 46.2%，含“的”62.7%，中英混排 98.1%；生成时已过滤邮箱/URL/手机号/身份证号/车牌等个人信息模式。
 
@@ -55,7 +54,7 @@ main（`703e969`）：
 | vector | 88% | 96% | 0.837 |
 | hybrid | 88% | 96% | 0.857 |
 
-evolution（当前工作区）：
+evolution（2026-11-10 工作区）：
 
 | 检索 | Recall@3 | Recall@5 | MRR@10 |
 |---|---:|---:|---:|
