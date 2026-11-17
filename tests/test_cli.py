@@ -288,3 +288,102 @@ def test_cli_help_with_western_pipe_encoding():
     assert result.returncode == 0, result.stderr.decode("utf-8", errors="replace")
     assert "Usage:" in result.stdout.decode("utf-8")
     assert "记忆" in result.stdout.decode("utf-8")
+
+
+def _update_home(tmp_path, monkeypatch, **config):
+    from syvrio.infra import paths
+
+    directory = tmp_path / ".syvrio" / "update"
+    directory.mkdir(parents=True)
+    lines = [f'{key} = "{value}"' for key, value in config.items()]
+    (directory / "config.toml").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    monkeypatch.setattr(paths, "syvrio_home", lambda: tmp_path / ".syvrio")
+    return directory
+
+
+def test_update_without_configuration_exits_nonzero(tmp_path, monkeypatch):
+    from syvrio.infra import paths
+
+    monkeypatch.setattr(paths, "syvrio_home", lambda: tmp_path / ".syvrio")
+    result = invoke(["update"])
+
+    assert result.exit_code == 1
+    text = result.output + result.stderr
+    assert "更新配置缺失" in text
+    assert "config.toml" in text
+
+
+def test_update_missing_executable_is_not_reported_as_missing_config(tmp_path, monkeypatch):
+    """uv 等可执行文件缺失属于更新失败，不能被翻译成「配置缺失」。"""
+    from syvrio.infra import update as update_module
+
+    _update_home(tmp_path, monkeypatch, channel="evo", service="syvrio-web.service")
+
+    def missing(*args, **kwargs):
+        raise FileNotFoundError(2, "No such file or directory", "uv")
+
+    monkeypatch.setattr(update_module, "update", missing)
+    result = invoke(["update"])
+
+    assert result.exit_code == 1
+    text = result.output + result.stderr
+    assert "更新配置缺失" not in text
+    assert "更新失败" in text and "uv" in text
+
+
+def test_update_rejects_configuration_without_service(tmp_path, monkeypatch):
+    _update_home(tmp_path, monkeypatch, channel="evo")
+    result = invoke(["update"])
+
+    assert result.exit_code == 1
+    assert "更新配置缺少 service" in result.output + result.stderr
+
+
+def test_update_forwards_python_and_uv_paths(tmp_path, monkeypatch):
+    from syvrio.infra import update as update_module
+
+    _update_home(
+        tmp_path,
+        monkeypatch,
+        channel="evo",
+        service="syvrio-web.service",
+        python="/usr/bin/python3.13",
+        uv="/opt/uv/bin/uv",
+    )
+    seen: dict[str, object] = {}
+
+    def fake(root, channel, service, port, python=None, uv=None):
+        seen.update(root=root, channel=channel, service=service, port=port, python=python, uv=uv)
+        return "ok"
+
+    monkeypatch.setattr(update_module, "update", fake)
+    result = invoke(["update"])
+
+    assert result.exit_code == 0
+    assert seen["uv"] == "/opt/uv/bin/uv"
+    assert seen["python"] == "/usr/bin/python3.13"
+    assert seen["port"] == 8765
+
+
+def test_update_failure_reaches_diagnostics(tmp_path, monkeypatch):
+    """fail() 把异常换成 typer.Exit 后原始原因会丢，失败必须在退出前先落诊断事件。"""
+    from syvrio.app import cli as cli_module
+    from syvrio.infra import update as update_module
+
+    _update_home(tmp_path, monkeypatch, channel="evo", service="syvrio-web.service")
+    recorded: list[tuple[str, object]] = []
+    monkeypatch.setattr(
+        cli_module,
+        "record_event",
+        lambda event, error=None, **state: recorded.append((event, error)),
+    )
+
+    def broken(*args, **kwargs):
+        raise update_module.UpdateError("uv", "uv not found on PATH")
+
+    monkeypatch.setattr(update_module, "update", broken)
+    result = invoke(["update"])
+
+    assert result.exit_code == 1
+    assert [event for event, _ in recorded] == ["update.failed"]
+    assert isinstance(recorded[0][1], update_module.UpdateError)

@@ -214,10 +214,32 @@ def _healthy(client: httpx.Client, url: str, version: str, seconds: int = 20) ->
     return False
 
 
+def _uv(uv: str | None) -> str:
+    """Resolve uv once, before any download, so the caller's PATH cannot decide the outcome."""
+    if uv:
+        candidate = Path(uv).expanduser()
+        if not candidate.is_file() or not os.access(candidate, os.X_OK):
+            raise UpdateError("uv", f"{candidate} is missing or not executable")
+        return str(candidate)
+    if shutil.which("uv") is None:
+        raise UpdateError(
+            "uv",
+            "uv not found on PATH; run the update from an environment that provides uv "
+            '(a login shell or a sourced dev env) or set uv = "..." in the update config',
+        )
+    return "uv"
+
+
 def _install(
-    client: httpx.Client, root: Path, version: str, wheel: dict, python: str | None = None
+    client: httpx.Client,
+    root: Path,
+    version: str,
+    wheel: dict,
+    python: str | None = None,
+    uv: str | None = None,
 ) -> Path:
-    # Interpreter selection comes before the download: a missing interpreter must fail fast.
+    # uv and the interpreter are checked before the download: neither may fail after it.
+    command = _uv(uv)
     interpreter = _interpreter(python, wheel.get("requires_python"))
     versions = root / "versions"
     versions.mkdir(exist_ok=True)
@@ -236,7 +258,7 @@ def _install(
             no_downloads = {"UV_PYTHON_DOWNLOADS": "never"}
             try:
                 _run(
-                    "uv",
+                    command,
                     "venv",
                     "--no-python-downloads",
                     "--python",
@@ -251,7 +273,7 @@ def _install(
             venv_python = environment / "bin" / "python"
             try:
                 _run(
-                    "uv",
+                    command,
                     "pip",
                     "install",
                     "--python",
@@ -337,7 +359,14 @@ def _stop_service(unit: str) -> None:
     )
 
 
-def update(root: Path, channel: str, unit: str, port: int, python: str | None = None) -> str:
+def update(
+    root: Path,
+    channel: str,
+    unit: str,
+    port: int,
+    python: str | None = None,
+    uv: str | None = None,
+) -> str:
     """Update the executable behind the configured user systemd service."""
     link = root / "current"
     if not re.fullmatch(r"[A-Za-z0-9_.@-]+\.service", unit) or unit.startswith("-"):
@@ -359,7 +388,7 @@ def update(root: Path, channel: str, unit: str, port: int, python: str | None = 
             return f"Syvrio {installed} is up to date ({channel})."
         version, wheel = release
         # Built and verified while the old service keeps serving.
-        new = _install(pypi, root, version, wheel, python)
+        new = _install(pypi, root, version, wheel, python, uv)
         new_environment = new.parent.parent
 
         def discard_install() -> None:

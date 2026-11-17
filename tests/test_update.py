@@ -12,6 +12,12 @@ from syvrio.infra import update
 pytestmark = pytest.mark.cli
 
 
+@pytest.fixture(autouse=True)
+def stub_uv_lookup(monkeypatch):
+    """这些用例不依赖宿主装没装 uv；要测「找不到 uv」的用例在用例内自行覆盖。"""
+    monkeypatch.setattr(update.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+
 def wheel(version: str, requires_python: str | None = None) -> dict:
     return {"filename": f"syvrio-{version}-py3-none-any.whl", "requires_python": requires_python}
 
@@ -291,6 +297,41 @@ def test_update_switches_or_restores_service(tmp_path, monkeypatch, healthy):
             update.update(tmp_path, "evo", "syvrio-web.service", 8765)
         assert link.resolve() == old
         assert events == [("stop", old), ("start", new), ("stop", new), ("start", old)]
+
+
+def test_update_forwards_python_and_uv_to_install(tmp_path, monkeypatch):
+    """CLI 与 _install 各自正确还不够：编排层必须原样传递两个显式路径。"""
+    old = tmp_path / "old"
+    new = tmp_path / "new"
+    old.touch()
+    new.touch()
+    (tmp_path / "current").symlink_to(old)
+    patch_release_transport(monkeypatch)
+    monkeypatch.setattr(update, "_healthy", lambda *args, **kwargs: True)
+    seen: dict[str, str | None] = {}
+
+    def install(client, root, version, wheel, python=None, uv=None):
+        seen.update(python=python, uv=uv)
+        return new
+
+    monkeypatch.setattr(update, "_install", install)
+    monkeypatch.setattr(
+        update,
+        "_run",
+        lambda *args, **kwargs: "Syvrio 0.3.4" if args == (str(old), "--version") else "",
+    )
+
+    result = update.update(
+        tmp_path,
+        "evo",
+        "syvrio-web.service",
+        8765,
+        "/usr/bin/python3.13",
+        "/opt/uv/bin/uv",
+    )
+
+    assert "Updated Syvrio 0.3.4" in result
+    assert seen == {"python": "/usr/bin/python3.13", "uv": "/opt/uv/bin/uv"}
 
 
 def test_update_stop_failure_leaves_old_service_running(tmp_path, monkeypatch):
@@ -641,3 +682,59 @@ def test_update_switch_failure_with_unexpected_link_aborts(tmp_path, monkeypatch
     assert not any(event[0] == "start" for event in events)
     assert link.resolve(strict=False) == other
     assert new_env.exists() and old_env.exists()
+
+
+def test_install_requires_uv_before_downloading(tmp_path, monkeypatch):
+    """uv 不在 PATH 上时必须立刻失败，且不能开始建目录或下载。"""
+    monkeypatch.setattr(update.shutil, "which", lambda name: None)
+    calls: list[tuple] = []
+
+    def run(*args, **kwargs):
+        calls.append(args)
+        return ""
+
+    monkeypatch.setattr(update, "_run", run)
+    monkeypatch.setattr(update, "_download", lambda *args, **kwargs: None)
+    with pytest.raises(update.UpdateError) as raised:
+        update._install(httpx.Client(), tmp_path, "0.5.4", wheel("0.5.4"))
+
+    assert raised.value.stage == "uv"
+    # 报错要能直接指导操作：说明 PATH 与配置键两种解法。
+    assert "PATH" in str(raised.value) and "uv = " in str(raised.value)
+    assert calls == []
+    assert not (tmp_path / "versions").exists()
+
+
+def test_install_uses_configured_uv_path(tmp_path, monkeypatch):
+    """配置里给出绝对路径时，两个 uv 步骤都用它，不依赖调用者 PATH。"""
+    monkeypatch.setattr(update.shutil, "which", lambda name: None)
+    local = tmp_path / "local"
+    local.mkdir()
+    uv = local / "uv"
+    uv.write_text("", encoding="utf-8")
+    uv.chmod(0o755)
+    monkeypatch.setattr(update, "_interpreter", lambda python, spec: "/usr/bin/python3.13")
+    monkeypatch.setattr(update, "_download", lambda client, wheel, target: None)
+    calls: list[tuple] = []
+
+    def run(*args, **kwargs):
+        calls.append(args)
+        return "Syvrio 0.5.4" if args[-1] == "--version" else ""
+
+    monkeypatch.setattr(update, "_run", run)
+    update._install(httpx.Client(), tmp_path, "0.5.4", wheel("0.5.4"), None, str(uv))
+
+    assert calls[0][:2] == (str(uv), "venv")
+    assert calls[1][:3] == (str(uv), "pip", "install")
+
+
+def test_install_reports_unusable_configured_uv(tmp_path, monkeypatch):
+    monkeypatch.setattr(update.shutil, "which", lambda name: None)
+    with pytest.raises(update.UpdateError) as raised:
+        update._install(
+            httpx.Client(), tmp_path, "0.5.4", wheel("0.5.4"), None, str(tmp_path / "absent")
+        )
+
+    assert raised.value.stage == "uv"
+    assert "missing or not executable" in str(raised.value)
+    assert not (tmp_path / "versions").exists()

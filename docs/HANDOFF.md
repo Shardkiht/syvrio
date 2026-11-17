@@ -1033,3 +1033,25 @@ Clash Verge 的 TUN 在 IPv6 下返回 `2001:2::xx`，所以只要同时开着�
 - 后端全量 **1513 passed / 5 skipped / 1 failed**（失败即上述 evals 导入）；修复后 `tests/test_vector.py` **29 项**全绿。
 - Edge 端到端：`fetch_web` 实时帧 `ok:true`，回复渲染为 `Field | Value` 表格（2 行），3 个折叠行默认全收起、展开可见正文、`aria-controls` 指向的节点存在、无 error banner。
 - 验证用会话 `s-20261111-181106-9383` 已删除，原有 8 / 33 条两条会话未动。
+
+## update 误报「配置缺失」与 uv 依赖调用者 PATH（2026-11-17，用户复现报告）
+
+现象：非登录 shell 里跑 `syvrio update`，输出「更新配置或启动文件缺失，请先按 Web 文档配置受管理的服务。」；实际 `~/.syvrio/update/config.toml`、`start-web`、systemd unit 都在，服务也是 active。
+
+根因：`app/cli.py` 的 `update()` 把 `open(config.toml)` 与 `apply_update(...)` 包在同一个 `try` 里，`except FileNotFoundError` 一律翻译成「配置缺失」。而这次异常来自调用栈深处——`infra/update.py` 的 `_install()` 调用 `_run("uv", "venv", ...)`，`_run()` 继承调用者的 `os.environ`，uv 不在 PATH 上时 `subprocess.run` 抛 `FileNotFoundError: [Errno 2] ... 'uv'`。uv 只装在开发目录、由 `env.sh` 注入 PATH，而 `wsl.exe -d <发行版> -- bash -s` 既不读 `.bashrc` 也不读 `.profile`。
+
+已核实的现场证据：uv 仅由开发环境脚本注入 PATH，非登录、非交互 shell 不加载该脚本，登录 shell 则可以解析到 uv；Web 服务启动脚本独立加载开发环境，因此服务本身不受影响。失败那次的 stdout 只有那句误导文案，底层是 `_install → _run → subprocess.run` 抛的 `FileNotFoundError`。
+
+改动：
+
+- `app/cli.py`：读配置单独一个 `try`，只有它命中「更新配置缺失（<path>）」；`apply_update` 移到外面走通用分支，缺失可执行文件落到 `OSError` → 「更新失败：[Errno 2] …」。顺带显式校验 `channel`/`service` 缺失（否则只会打出 `更新失败：'channel'`），并把配置里的 `uv` 透传给更新器。
+- `infra/update.py`：新增 `_uv()`，在下载和创建版本目录之前解析 uv——配置里有 `uv = "/abs/path"` 就校验可执行并使用，否则要求 `shutil.which("uv")` 命中，未命中即抛 `UpdateError("uv", ...)`，报错直接给出「换登录 shell / source 开发环境 / 写 uv 绝对路径」三种解法；`_install()` 与 `update()` 增加 `uv` 参数，两处 uv 调用改用解析结果。
+- `app/ui.py`：`fail()` 标注 `NoReturn`（实现本来就是 `raise typer.Exit(code=1)`），使 CLI 中 `fail()` 之后的分支在类型层面不可达。
+- `app/cli.py` + `infra/diagnostics.py`：更新失败时先 `record_event("update.failed", exc)` 再退出，并把它加进事件白名单。此前失败路径落不进诊断日志——`main()` 里 `record_event("cli.failed", exc)` 拿到的是 `typer.Exit`，`traceback` 字段只剩退出码，用 `update|uv` 搜日志自然一无所获。
+- `docs/web.md`：`config.toml` 增加 `uv` 键示例；补充非登录 shell 必须 `bash -lc`、先 `source env.sh` 或写死 uv 路径的说明。
+
+验证：新增 3 项 `_uv` 用例（显式路径可用、显式路径不可用、PATH 上没有 uv，并断言此时未开始下载、未创建 `versions/`）、5 项 CLI 用例（缺配置、缺 `service`、uv 缺失不再被翻译成缺配置、`python`/`uv` 透传、失败落诊断事件）与 1 项 `update() → _install()` 显式路径透传用例；`tests/test_cli.py` + `test_diagnostics.py` + `test_application_architecture.py` + `test_brand.py` 共 **58 passed**，Windows 可执行的更新器子集 **9 passed**，`ruff check` 与 `ruff format --check` 通过。
+
+两点须知：① 退出码：用户先报「0」，复核后确认是自己 `| tail -30; echo exit=$?` 取到了 `tail` 的状态，实际是 1；`fail()` 一直是 `raise typer.Exit(code=1)`，所以「脚本会把失败当成功」不成立，也没有改这条路径。② `tests/test_update.py` 中依赖 POSIX 符号链接与 `#!/bin/sh` 脚本的用例仍需在 Linux/WSL 跑；本轮沙箱拦截了 WSL 环境探测，因此未声称完成 POSIX 全量回归。
+
+遗留：更新器仍没有自己的日志文件，成功/失败只体现在 stdout 与 `~/.syvrio/runtime-v2/logs/syvrio.log` 的 `update.failed` 事件；若将来给 cron 用，建议再补一条 `update.applied` 事件带版本号（`_FIELDS` 目前只接受 bool/int/float，版本号需改成写进 `error` 之外的字段）。

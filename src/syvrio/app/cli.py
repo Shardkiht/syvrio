@@ -80,19 +80,31 @@ def update() -> None:
     from ..infra.update import update as apply_update
 
     root = syvrio_home() / "update"
+    config_path = root / "config.toml"
     try:
-        with (root / "config.toml").open("rb") as file:
+        with config_path.open("rb") as file:
             config = tomllib.load(file)
+    except FileNotFoundError:
+        fail(f"更新配置缺失（{config_path}），请先按 Web 文档配置受管理的服务。")
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        record_event("update.failed", exc)
+        typer.echo(f"更新失败：{exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    missing = [key for key in ("channel", "service") if not config.get(key)]
+    if missing:
+        fail(f"更新配置缺少 {'、'.join(missing)}，请先按 Web 文档配置受管理的服务。")
+    # Only the config lookup above owns the "missing configuration" wording: a FileNotFoundError
+    # raised while updating means a missing executable (uv, previously the service binary), and
+    # must not be reported as an unconfigured service.
+    try:
         result = apply_update(
             root,
             config["channel"],
             config["service"],
             config.get("port", 8765),
             config.get("python"),
+            config.get("uv"),
         )
-    except FileNotFoundError:
-        fail("更新配置或启动文件缺失，请先按 Web 文档配置受管理的服务。")
-        return
     except (
         OSError,
         ValueError,
@@ -101,6 +113,8 @@ def update() -> None:
         subprocess.SubprocessError,
         httpx.HTTPError,
     ) as exc:
+        # 失败原因只在这里拿得到：fail() 会把原始异常换成 typer.Exit，诊断日志里只剩退出码。
+        record_event("update.failed", exc)
         typer.echo(f"更新失败：{exc}", err=True)
         raise typer.Exit(code=1) from exc
     typer.echo(result)

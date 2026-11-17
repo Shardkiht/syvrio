@@ -22,6 +22,7 @@ _EVENTS = frozenset(
         "app.start",
         "app.stop",
         "cli.failed",
+        "update.failed",
         "tui.failed",
         "chat.failed",
         "search.failed",

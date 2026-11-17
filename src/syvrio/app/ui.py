@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import NoReturn
+
 import typer
 from rich import box
 from rich.console import Console
@@ -66,6 +68,6 @@ def print_hits(query: str, hits, center: bool = False) -> None:
     console.print(padded(table) if center else table)
 
 
-def fail(message: str, center: bool = False) -> None:
+def fail(message: str, center: bool = False) -> NoReturn:
     console.print(padded(f"[red]{message}[/red]") if center else f"[red]{message}[/red]")
     raise typer.Exit(code=1)
