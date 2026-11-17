@@ -9,6 +9,7 @@ import tomllib
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from ..errors import SyvrioError
 from .paths import SyvrioPaths, runtime_path, syvrio_home
 
 DEFAULT_BASE_URL = "https://api.deepseek.com/v1"
@@ -27,7 +28,7 @@ _TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 KEYRING_SERVICE = "syvrio"
 
 
-class ConfigError(ValueError):
+class ConfigError(SyvrioError, ValueError):
     """配置读取、TOML 语法或字段校验失败；消息可直接展示给用户。"""
 
 
@@ -87,7 +88,13 @@ class LLMConfig:
             import keyring
 
             return keyring.get_password(KEYRING_SERVICE, self.api_key_env) or None
-        except Exception:
+        except Exception as exc:
+            # Degrading to "no key" misleads users into thinking none is stored;
+            # record once so the broken backend is attributable afterwards.
+            # Imported lazily: diagnostics imports this module at startup.
+            from .diagnostics import record_once
+
+            record_once("degraded.keyring", exc)
             return None
 
 

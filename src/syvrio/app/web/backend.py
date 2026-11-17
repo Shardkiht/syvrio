@@ -22,6 +22,7 @@ from ...agent.session import SESSION_ID_RE, SessionStore
 from ...application.commands import CommandUseCases, parse_command
 from ...application.contracts import TurnCallbacks, UndoOutcome
 from ...application.service import ApplicationService
+from ...errors import SyvrioError
 from ...infra.diagnostics import record_event
 from ...infra.locking import LockTimeout, VaultLock, client_instance_lock
 from ...llm import LiteLLMChatModel
@@ -56,7 +57,7 @@ HISTORY_ITEM_LIMIT = 300
 TOOL_CONTENT_LIMIT = 300
 
 
-class WebError(Exception):
+class WebError(SyvrioError, Exception):
     """Expected failure with a stable, browser-safe error code."""
 
     def __init__(self, code: str, message: str, status: int = 400) -> None:

@@ -46,7 +46,7 @@ uv run python scripts/migrate_to_syvrio.py --apply
 
 工具会把 Vault 内 `.quiet-memo/` 元数据迁移到 `.syvrio/`，把旧转义标签前缀改写为新前缀，迁移配置与可选 Keyring 条目；锁文件不迁移，可重建缓存不复制。重复执行幂等；新旧目录并存时停止并报告。备份默认保留在 Vault 同级目录。退出码 `0` 表示成功，`1` 表示迁移失败（已恢复文件），`2` 表示文件迁移已完成但 Keyring 未完成、需要人工核对（不会回滚文件迁移）。
 
-若 Vault 仍使用 v1 布局，启动 v2 应用前继续执行独立的 [v2 迁移流程](docs/vault-v2.md#upgrade-an-existing-vault)。
+若 Vault 仍使用 v1 布局，启动 v2 应用前继续执行独立的 [v2 迁移流程](docs/vault-v2.md#迁移既有-vault)。
 
 ## 为什么用 Syvrio
 
@@ -672,7 +672,7 @@ uv run python evals/retrieval_eval.py
 
 ## Roadmap
 
-近期重点是 Web 手机实机验收、Evo 构建发布和升级恢复验证；之后继续完善事实时间演化、推断审查、反思与画像。验收条件见[路线图](docs/ROADMAP.md)，单项待办以 [GitHub Issues](https://github.com/Shardkiht/syvrio/issues) 为准。
+近期重点是 Web 手机实机验收、Evo 构建发布和升级恢复验证；之后继续完善事实时间演化、推断审查、反思与画像。产品需求、验收条件与路线图见[产品文档](docs/product.md)，单项待办以 [GitHub Issues](https://github.com/Shardkiht/syvrio/issues) 为准。
 
 ## 推断审查与上下文检索
 
@@ -735,7 +735,7 @@ Windows 交互终端输入框使用原生细竖线光标，以配合中文输入
 | searxng | 0 | 0 |
 | open_websearch | 0 | 0 |
 
-0 表示该周期不限。配置以 `[search.usage_limits.<provider>]` 的 `daily`、`monthly` 覆盖默认值，显式 0 会保留；两周期任意一项耗尽即跳过。Search/Fetch 共池，缓存命中不计数，已发出的失败请求保守计数。按运行机器本地时区的自然日/月重置；状态保存在 `runtime/state/usage.json`，同进程检查与记账互斥，跨进程不保证严格上限。
+0 表示该周期不限。配置以 `[search.usage_limits.<provider>]` 的 `daily`、`monthly` 覆盖默认值，显式 0 会保留；两周期任意一项耗尽即跳过。Search/Fetch 共池，缓存命中不计数；搜索已发出的失败请求保守计数，抓取失败（未拿到正文）退回预扣次数。按运行机器本地时区的自然日/月重置；状态保存在 `runtime/state/usage.json`，同进程检查与记账互斥，跨进程不保证严格上限。
 
 ```toml
 [search.usage_limits.tavily]

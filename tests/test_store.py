@@ -6,7 +6,7 @@ import pytest
 
 from syvrio.memory.legacy import parse_legacy_line
 from syvrio.memory.models import MemoryContext
-from syvrio.memory.schema import SchemaError
+from syvrio.memory.schema import Core, SchemaError, render_record
 from syvrio.memory.store import MemoryStore, slugify
 
 pytestmark = pytest.mark.memory
@@ -280,3 +280,38 @@ def test_legacy_comment_without_id_has_stable_id(tmp_path):
     first = parse_legacy_line(line, "old")
     second = parse_legacy_line(line, "old")
     assert first.id == second.id and first.id.startswith("mem-legacy-")
+
+
+def test_naive_recorded_at_points_at_its_own_line_and_naming_the_migration(tmp_path):
+    """A v1 vault carries offset-free timestamps; the error must locate the field,
+    not the record's opening line, and must say how to normalize the vault."""
+    store = MemoryStore(tmp_path)
+    path = tmp_path / "memories" / "general" / "identity.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    body = render_record(
+        "一条历史记录",
+        Core(id="mem-1", source="import", status="active", confidence=1.0),
+        extensions=[("syvrio.recorded_at", "2026-10-24T12:53:44")],
+    )
+    text = "# 身份\n\n" + body
+    path.write_text(text, encoding="utf-8")
+    expected = next(
+        number for number, line in enumerate(text.splitlines(), 1) if "syvrio.recorded_at" in line
+    )
+
+    with pytest.raises(SchemaError) as raised:
+        store.document(path)
+
+    message = str(raised.value)
+    assert f"identity.md:{expected}:" in message
+    assert expected != 3  # record starts on line 3; the field is further down
+    assert "invalid syvrio.recorded_at" in message
+    assert "migrate_timestamps_to_utc.py" in message
+
+
+def test_offset_bearing_recorded_at_still_loads(tmp_path):
+    store = MemoryStore(tmp_path)
+    store.append("housing", "预算 4000", when=datetime(2026, 10, 22, 18, 0, 0, tzinfo=UTC))
+    path = store.topic_path("housing")
+    assert "`syvrio.recorded_at`: `2026-10-22T18:00:00+00:00`" in path.read_text(encoding="utf-8")
+    assert len(store.entries("housing")) == 1

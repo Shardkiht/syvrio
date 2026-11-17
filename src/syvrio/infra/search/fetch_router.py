@@ -86,10 +86,14 @@ class FetchRouter:
                 result = provider.fetch(FetchQuery(text, max_chars))
             except ProviderError as exc:
                 if self.usage_limiter is not None:
+                    # 抓取没拿到正文就不算一次有效调用，退回预扣的次数。
+                    self.usage_limiter.release(name)
                     self.usage_limiter.note_error(name, exc)
                 failures.append(SearchFailure.from_error(exc))
                 continue
             except Exception as exc:
+                if self.usage_limiter is not None:
+                    self.usage_limiter.release(name)
                 failures.append(SearchFailure(name, "unavailable", str(exc)))
                 continue
             if result.final_url and result.final_url != text:

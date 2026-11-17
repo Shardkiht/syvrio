@@ -33,7 +33,7 @@ def run_chat(service: MemoryService, resume: str | None = None) -> None:
             try:
                 runtime.resume(resume)
             except KeyError as exc:
-                fail(str(exc))
+                fail(str(exc), exc=exc)
                 return
         else:
             runtime.start()

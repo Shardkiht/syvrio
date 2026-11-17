@@ -223,13 +223,82 @@ def test_full_queue_does_not_block_producer(monkeypatch):
 def test_cli_entrypoint_logs_unhandled_error(monkeypatch):
     from syvrio.app import cli
 
-    def fail():
+    def fail(**kwargs):
         raise RuntimeError("synthetic command failure")
 
     monkeypatch.setattr(cli, "app", fail)
+    monkeypatch.setattr(cli.sys, "argv", ["syvrio", "--config", "synthetic-private.toml", "status"])
     with pytest.raises(RuntimeError, match="synthetic command failure"):
         cli.main()
     path = runtime_path() / "logs" / "syvrio.log"
     events = read_events(path)
     assert [event["event"] for event in events] == ["app.start", "cli.failed", "app.stop"]
     assert "synthetic command failure" in events[1]["traceback"]
+    assert events[1]["state"] == {"command": "unknown"}
+
+
+def test_cli_uses_parsed_subcommand_in_diagnostics(tmp_path, monkeypatch):
+    from syvrio.app import cli
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("synthetic command failure")
+
+    config_file = tmp_path / "synthetic-private.toml"
+    monkeypatch.setattr(cli, "_service", fail)
+    monkeypatch.setattr(cli.sys, "argv", ["syvrio", "status", "--config", str(config_file)])
+    with pytest.raises(RuntimeError, match="synthetic command failure"):
+        cli.main()
+
+    events = read_events(runtime_path() / "logs" / "syvrio.log")
+    assert [event["state"] for event in events if event["event"] == "cli.failed"] == [
+        {"command": "status"}
+    ]
+
+
+def test_record_once_retries_when_event_could_not_be_queued(monkeypatch):
+    from queue import Queue
+
+    monkeypatch.setattr(diagnostics, "_RECORDED_ONCE", set())
+    monkeypatch.setattr(diagnostics, "_queue", None)
+    diagnostics.record_once("degraded.keyring", "diagnostics not started")
+
+    queue = Queue(1)
+    monkeypatch.setattr(diagnostics, "_queue", queue)
+    diagnostics.record_event("app.start")
+    diagnostics.record_once("degraded.keyring", "queue full")
+    assert json.loads(queue.get_nowait().getMessage())["event"] == "app.start"
+
+    diagnostics.record_once("degraded.keyring", "backend unavailable")
+    assert json.loads(queue.get_nowait().getMessage())["event"] == "degraded.keyring"
+    diagnostics.record_once("degraded.keyring", "already queued")
+    assert queue.empty()
+
+
+def test_all_record_event_literals_are_allowlisted():
+    """record_event() silently drops event names absent from _EVENTS.
+
+    A new event that forgets the whitelist vanishes without any error, which is
+    exactly the failure mode behind the update misdiagnosis. This scan keeps the
+    two in sync; latency.* names are built dynamically and covered by prefix.
+    """
+    import re
+
+    root = Path(diagnostics.__file__).resolve().parents[1]
+    pattern = re.compile(
+        r"""(?:record_event|record_once)\(\s*(f?)["']([a-z][a-z0-9_.]*)["']""", re.S
+    )
+    used: set[str] = set()
+    dynamic_prefixes: set[str] = set()
+    for path in root.rglob("*.py"):
+        for fstring, name in pattern.findall(path.read_text(encoding="utf-8")):
+            if fstring:
+                dynamic_prefixes.add(name)
+            else:
+                used.add(name)
+    unknown = {
+        name
+        for name in used
+        if name not in diagnostics._EVENTS
+        and not any(name.startswith(prefix) for prefix in dynamic_prefixes)
+    }
+    assert not unknown, f"record_event names missing from _EVENTS: {sorted(unknown)}"

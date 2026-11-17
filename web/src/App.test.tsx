@@ -127,8 +127,25 @@ const send = (text: string) => {
   fireEvent.click(screen.getByRole('button', { name: 'Send' }));
 };
 
+function captureScrolling() {
+  const calls: { node: HTMLElement; options?: ScrollIntoViewOptions }[] = [];
+  Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+    configurable: true,
+    value: function (this: HTMLElement, options?: ScrollIntoViewOptions) {
+      calls.push({ node: this, options });
+    },
+  });
+  return calls;
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
+  // restore the no-op from src/test/setup.ts (captureScrolling replaces it)
+  Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+    configurable: true,
+    writable: true,
+    value: () => {},
+  });
   window.localStorage.clear();
   document.documentElement.removeAttribute('data-theme');
   Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 1024 });
@@ -166,6 +183,48 @@ describe('Web client interactions', () => {
     fireEvent.click(dial);
     expect(dial.getAttribute('aria-expanded')).toBe('true');
     expect(seen).toEqual([null, current.id]);
+  });
+
+  it('starts the context wave at 10% used', async () => {
+    const sessions = [
+      { ...SESSIONS[0], id: 's-10', title: 'Ten percent' },
+      { ...SESSIONS[0], id: 's-9', title: 'Nine percent' },
+    ];
+    vi.stubGlobal('fetch', async (url: string) => {
+      const route = new URL(url, 'http://localhost');
+      switch (route.pathname) {
+        case '/api/health': return json(HEALTH);
+        case '/api/sessions': return json({ items: sessions });
+        case '/api/commands': return json({ items: CATALOG });
+        case '/api/context-usage': {
+          const id = route.searchParams.get('session_id');
+          return json({
+            session_id: id,
+            used: id === null ? 0 : id === 's-10' ? 400 : 360,
+            limit: 4000,
+            compact_threshold: .8,
+          });
+        }
+        case '/api/sessions/s-10/switch': return json({ session_id: 's-10', title: 'Ten percent' });
+        case '/api/sessions/s-10': return json({ session_id: 's-10', items: [], title: 'Ten percent' });
+        case '/api/sessions/s-9/switch': return json({ session_id: 's-9', title: 'Nine percent' });
+        case '/api/sessions/s-9': return json({ session_id: 's-9', items: [], title: 'Nine percent' });
+        default: return json({}, 404);
+      }
+    });
+    render(<App />);
+    await screen.findByRole('button', { name: /Context estimate: 0 \/ 4,000 tokens/ });
+
+    fireEvent.click(screen.getByTestId('session-s-10'));
+    const ten = await screen.findByRole('button', { name: /Context estimate: 400 \/ 4,000 tokens/ });
+    expect(ten.textContent).toBe('10%');
+    expect(ten.getAttribute('data-wave')).toBe('moving');
+
+    // 低于阈值保持静止，避免空会话刚有内容就出现动效。
+    fireEvent.click(screen.getByTestId('session-s-9'));
+    const nine = await screen.findByRole('button', { name: /Context estimate: 360 \/ 4,000 tokens/ });
+    expect(nine.textContent).toBe('9%');
+    expect(nine.getAttribute('data-wave')).toBe('still');
   });
 
   it('sends a message and streams the markdown reply', async () => {
@@ -646,6 +705,26 @@ describe('Slash commands and shortcuts', () => {
     expect(await screen.findByRole('dialog', { name: 'Command palette' })).toBeTruthy();
   });
 
+  it('scrolls the command palette list to follow the arrow-key selection', async () => {
+    const spy = spyCommands(() => commandResult());
+    installFetch(spy.overrides);
+    const { rerender } = render(<App />);
+    await ready();
+    const calls = captureScrolling();
+    fireEvent.click(screen.getByTestId('commands-toggle'));
+    const palette = await screen.findByRole('dialog', { name: 'Command palette' });
+    const paletteInput = screen.getByTestId('palette-input');
+    fireEvent.change(paletteInput, { target: { value: 'e' } });
+    fireEvent.keyDown(paletteInput, { key: 'ArrowDown' });
+    const selected = palette.querySelector('.palette-list [aria-selected="true"]');
+    expect(calls.length).toBeGreaterThan(0);
+    expect(calls.at(-1)?.node).toBe(selected);
+    expect(calls.at(-1)?.options).toEqual({ block: 'nearest', inline: 'nearest' });
+    const scrollCount = calls.length;
+    rerender(<App />);
+    expect(calls).toHaveLength(scrollCount);
+  });
+
   it('opens the Git sync confirmation from its dialog with Ctrl+S', async () => {
     const spy = spyCommands((body) => body.line === '/git'
       ? commandResult({ command: 'git', intent: 'git_status', message: 'modified: 1' })
@@ -698,6 +777,26 @@ describe('Slash commands and shortcuts', () => {
     fireEvent.keyDown(input, { key: 'Escape' });
     expect(screen.queryByTestId('command-suggestions')).toBeNull();
     expect(spy.lines).toEqual([]);
+  });
+
+  it('scrolls the suggestions list to follow the arrow-key selection', async () => {
+    const spy = spyCommands(() => commandResult());
+    installFetch(spy.overrides);
+    const { rerender } = render(<App />);
+    await ready();
+    const calls = captureScrolling();
+    const input = screen.getByTestId('composer-input') as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: '/' } });
+    const suggestions = screen.getByTestId('command-suggestions');
+    fireEvent.keyDown(input, { key: 'ArrowDown' });
+    const selected = suggestions.querySelector('[aria-selected="true"]');
+    expect(selected?.textContent).toContain('/sessions');
+    expect(calls.length).toBeGreaterThan(0);
+    expect(calls.at(-1)?.node).toBe(selected);
+    expect(calls.at(-1)?.options).toEqual({ block: 'nearest', inline: 'nearest' });
+    const scrollCount = calls.length;
+    rerender(<App />);
+    expect(calls).toHaveLength(scrollCount);
   });
 
   it('reports unknown commands explicitly instead of forwarding them to the LLM', async () => {

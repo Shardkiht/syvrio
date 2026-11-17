@@ -89,6 +89,26 @@ def _error_kind(code: str) -> ProviderErrorKind:
     return ProviderErrorKind.BAD_RESPONSE
 
 
+def _response_error(response: httpx.Response) -> str:
+    """失败响应的可读原因：优先 daemon 的 error 信封，其次纯文本正文。"""
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = None
+    if isinstance(payload, dict):
+        error = payload.get("error")
+        if isinstance(error, dict):
+            message = _text(error.get("message")) or _text(error.get("code"))
+        else:
+            message = _text(error)
+        hint = _text(payload.get("hint"))
+        detail = " · ".join(part for part in (message, hint) if part)
+        if detail:
+            return detail
+    # 非信封正文（代理错误页等）压成一行，避免把整页 HTML 塞进错误消息。
+    return " ".join(response.text.split())[:300]
+
+
 def _partial_failure(item: dict) -> SearchFailure:
     """把 daemon partialFailures 里的一条失败转成结构化 SearchFailure。"""
     code = _text(item.get("code"))
@@ -188,18 +208,21 @@ class HttpTransport:
         except httpx.HTTPError as exc:
             raise ProviderError(NAME, ProviderErrorKind.NETWORK, str(exc)) from exc
 
-        if response.status_code == 429:
-            raise ProviderError(
-                NAME, ProviderErrorKind.RATE_LIMIT, "open-websearch 仍在限流（HTTP 429）"
-            )
-        if response.status_code >= 500:
-            raise ProviderError(
-                NAME, ProviderErrorKind.UNAVAILABLE, f"open-websearch HTTP {response.status_code}"
-            )
         if response.status_code >= 400:
-            raise ProviderError(
-                NAME, ProviderErrorKind.BAD_RESPONSE, f"open-websearch HTTP {response.status_code}"
+            # daemon 的失败原因只在正文里（fetch_failed / browser_unavailable / invalid_request），
+            # 丢掉它会让 LLM 只看到 "HTTP 502" 这种无法据以修正的文案。
+            body = _response_error(response)
+            detail = f"HTTP {response.status_code}" + (f"：{body}" if body else "（无错误正文）")
+            if response.status_code == 429:
+                raise ProviderError(
+                    NAME, ProviderErrorKind.RATE_LIMIT, f"open-websearch 仍在限流（{detail}）"
+                )
+            kind = (
+                ProviderErrorKind.UNAVAILABLE
+                if response.status_code >= 500
+                else ProviderErrorKind.BAD_RESPONSE
             )
+            raise ProviderError(NAME, kind, f"open-websearch {detail}")
         return response
 
     def _parse_data(self, response: httpx.Response) -> dict:

@@ -14,7 +14,12 @@ def _encoding():
             import tiktoken
 
             _ENCODING = tiktoken.get_encoding("cl100k_base")
-        except Exception:
+        except Exception as exc:
+            # Token counts silently drift to the char estimate; without an event
+            # the drift is impossible to attribute later.
+            from .diagnostics import record_once
+
+            record_once("degraded.tiktoken", exc)
             _ENCODING = False
     return _ENCODING or None
 

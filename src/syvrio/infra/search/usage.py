@@ -139,6 +139,26 @@ class UsageLimiter:
                 entry.update(entry[limit.period])
             self._save()
 
+    def release(self, provider: str) -> None:
+        """Give one pre-charged call back when dispatch failed.
+
+        ``acquire`` charges before the request so a crash cannot overshoot the
+        limit; a failure that never produced a result must not consume budget.
+        Window rollover resets the counter first, so a late release can never
+        eat into the new window.
+        """
+        with self._lock:
+            self._load()
+            entry = self._entry(provider)
+            for period in ("daily", "monthly"):
+                counter = entry[period]
+                if counter["count"] > 0:
+                    counter["count"] -= 1
+            limit = self._limits.get(provider)
+            if getattr(limit, "period", None) in ("daily", "monthly"):
+                entry.update(entry[limit.period])
+            self._save()
+
     def pause(self, provider: str, reason: str, resume_at: float | None = None) -> None:
         with self._lock:
             self._load()

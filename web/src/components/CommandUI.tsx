@@ -73,9 +73,16 @@ export function CommandSuggestions({
   onHover: (index: number) => void;
   onPick: (suggestion: Suggestion) => void;
 }) {
+  const listRef = useRef<HTMLDivElement>(null);
+  const selectedKey = suggestions[index]?.key;
+  useEffect(() => {
+    listRef.current?.querySelector<HTMLElement>('[aria-selected="true"]')
+      ?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }, [selectedKey]);
+
   if (!suggestions.length) return null;
   return (
-    <div className="command-suggestions" data-testid="command-suggestions" role="listbox">
+    <div ref={listRef} className="command-suggestions" data-testid="command-suggestions" role="listbox">
       {suggestions.map((suggestion, position) => (
         <button
           key={suggestion.key}
@@ -108,12 +115,17 @@ export function CommandPalette({
   const [query, setQuery] = useState('');
   const [index, setIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
   const matches = searchCommands(query, catalog);
+  const selected = matches[Math.max(0, Math.min(index, matches.length - 1))];
+  const selectedName = selected?.name;
 
   useEffect(() => { inputRef.current?.focus(); }, []);
-  useEffect(() => { setIndex(0); }, [query]);
+  useEffect(() => {
+    listRef.current?.querySelector<HTMLElement>('[aria-selected="true"]')
+      ?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }, [selectedName]);
 
-  const selected = matches[Math.min(index, Math.max(0, matches.length - 1))];
   return (
     <CommandDialog title="Command palette" className="command-palette"
       testId="command-palette-overlay" onClose={onClose}>
@@ -123,10 +135,13 @@ export function CommandPalette({
           className="palette-input"
           placeholder="Search commands"
           value={query}
-          onChange={(event) => setQuery(event.target.value)}
+          onChange={(event) => {
+            setQuery(event.target.value);
+            setIndex(0);
+          }}
           onKeyDown={(event) => {
             if (isComposing(event)) return;
-            if (event.key === 'ArrowDown') {
+            if (event.key === 'ArrowDown' && matches.length > 0) {
               event.preventDefault();
               setIndex((value) => Math.min(value + 1, matches.length - 1));
             } else if (event.key === 'ArrowUp') {
@@ -138,14 +153,14 @@ export function CommandPalette({
             }
           }}
         />
-        <div className="palette-list" role="listbox">
+        <div ref={listRef} className="palette-list" role="listbox">
           {matches.map((command, position) => (
             <button
               key={command.name}
               type="button"
               role="option"
-              aria-selected={position === index}
-              className={`palette-row${position === index ? ' active' : ''}`}
+              aria-selected={command.name === selectedName}
+              className={`palette-row${command.name === selectedName ? ' active' : ''}`}
               onMouseEnter={() => setIndex(position)}
               onClick={() => onRun(`/${command.name}`)}
             >

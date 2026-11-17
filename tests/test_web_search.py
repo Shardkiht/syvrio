@@ -589,6 +589,55 @@ def test_5xx_is_unavailable():
     with pytest.raises(ProviderError) as caught:
         provider.search(SearchQuery("q"))
     assert caught.value.kind is ProviderErrorKind.UNAVAILABLE
+    assert "down" in caught.value.detail
+
+
+def test_fetch_5xx_surfaces_daemon_error_body():
+    def handler(request):
+        assert request.url.path == "/fetch-web"
+        return httpx.Response(
+            502,
+            json={
+                "status": "error",
+                "data": None,
+                "error": {
+                    "code": "fetch_failed",
+                    "message": "timeout of 20000ms exceeded",
+                    "retryable": True,
+                },
+                "hint": "Verify that the target is reachable and retry.",
+            },
+        )
+
+    with pytest.raises(ProviderError) as caught:
+        mock_provider(handler).fetch(FetchQuery("https://example.com/news", 2000))
+
+    detail = caught.value.detail
+    assert caught.value.kind is ProviderErrorKind.UNAVAILABLE
+    assert "502" in detail
+    assert "timeout of 20000ms exceeded" in detail
+    assert "Verify that the target is reachable" in detail
+
+
+def test_4xx_surfaces_plain_text_body():
+    provider = mock_provider(
+        lambda request: httpx.Response(400, text="query must be a non-empty string\n")
+    )
+    with pytest.raises(ProviderError) as caught:
+        provider.search(SearchQuery("q"))
+
+    assert caught.value.kind is ProviderErrorKind.BAD_RESPONSE
+    assert "query must be a non-empty string" in caught.value.detail
+
+
+def test_error_without_body_still_reports_status():
+    provider = mock_provider(lambda request: httpx.Response(502))
+    with pytest.raises(ProviderError) as caught:
+        provider.search(SearchQuery("q"))
+
+    assert caught.value.kind is ProviderErrorKind.UNAVAILABLE
+    assert "502" in caught.value.detail
+    assert "无错误正文" in caught.value.detail
 
 
 def test_connection_error_mentions_daemon_command():

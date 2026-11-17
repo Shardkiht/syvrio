@@ -2,12 +2,12 @@
 
 ## 当前接续信息
 
-- 在 `feature-memory-evolution` 或其派生任务分支开发。稳定 `main` 单独维护；同步和发布边界见 [AGENTS.md](../AGENTS.md)。现行文档入口见[文档索引](README.md)；产品需求和未完成工作以 [PRD](PRD.md)、[路线图](ROADMAP.md) 和对应 Issue 为准。
+- 在 `feature-memory-evolution` 或其派生任务分支开发。稳定 `main` 单独维护；同步和发布边界见 [AGENTS.md](../AGENTS.md)。现行文档入口见[文档索引](README.md)；产品需求和未完成工作以[产品需求与路线图](product.md)和对应 Issue 为准。
 - Evo 与稳定版共用 PyPI 包名 `syvrio`。稳定版用正式版本，Evo 发布工作流只从开发分支发布 `rcN`；发版同步 `pyproject.toml`、`src/syvrio/__init__.py` 和 `uv.lock`。发布工件须包含 Vite 静态资源。
 - Web 断开订阅后后台轮次继续写入；重进页面等原轮结束后加载历史。新建、切换及 `/new` 共用快速切换；后台补沉淀复核会话快照再写入，失效或失败保留待处理记录。会话列表由共享存储按最后有效消息排序。
 - Evo 已移除模型候补。同模型重试、手动切换、流式取消和客户端关闭继续适用。搜索和抓取的供应商回退独立于聊天模型。
 - `syvrio update` 适用于受管理的 Linux/WSL 用户级 systemd 服务。新版使用兼容的本机解释器安装到独立环境并校验；链接切换、启动或健康检查失败时尝试恢复并验证旧实例。源码部署、首次接入与手工恢复见 [Web 指南](web.md)。
-- 已有 Vault 先核对 [布局迁移](vault-v2.md) 和 [UTC 迁移](time.md)。时间改写保留原会话的 CR、LF 或 CRLF，已有有效恢复标记的损坏行原样保留，其他损坏行阻止迁移。旧会话没有推理附件也可读取正文。
+- 已有 Vault 先核对[存储、迁移与时间规范](vault-v2.md)（含布局迁移与 UTC 迁移）。时间改写保留原会话的 CR、LF 或 CRLF，已有有效恢复标记的损坏行原样保留，其他损坏行阻止迁移。旧会话没有推理附件也可读取正文。
 
 - Web 的 `/pending` 使用候选列表与详情布局，编辑和决策针对当前选择；成功时刷新候选，失败保留草稿。软键盘缩小可见窗口时隐藏欢迎区，命令建议和输入卡片共用宽度。
 
@@ -286,7 +286,7 @@
 - **长期远程保留 `main` 与 `feature-memory-evolution`**；历史 `base/chat-stability`、`feature/context-review-recall` 已不在远程，审核期间可存在待清理的短期 PR 分支。删除前的祖先检查记录未独立复核。历史章节中的 base 开发、自动同步 main、提交前默认全量测试均已失效。常规开发应在 evolution 或由其派生的短期任务分支进行；main 保留 GitHub 默认分支身份。
 - **后续默认开发分支：`feature-memory-evolution`**。所有新功能、常规问题修复、实验和相应文档工作从此分支（或从它派生的任务分支）开展。执行前确认当前 branch，不在默认的 `main` 上直接开发。
 - **`main`：PR #15 合并后冻结展示源码，PR #16 为经授权的发布元数据维护；此后仅用于简历展示、稳定发布与长期维护**。禁止自动将演进分支、历史 `base/chat-stability` 分支向 `main` 同步或合并；只有本人明确点名授权的必要稳定性/安全修复才可走独立修复与受保护分支 PR 流程。
-- 历史冻结前源码评审基线为 `main@b016ccbf`，详见 [review-2026-11-01-freeze.md](review-2026-11-01-freeze.md)，不得将其当作当前 HEAD。PR #15 合并提交 `316a030` 对应 `portfolio-2026-11-01`；PR #16 合并提交 `22217c2` 对应 `v0.3.3`。历史 base 同步安排全部作废。
+- 历史冻结前源码评审基线为 `main@b016ccbf`，详见[历史代码评审](reviews.md)，不得将其当作当前 HEAD。PR #15 合并提交 `316a030` 对应 `portfolio-2026-11-01`；PR #16 合并提交 `22217c2` 对应 `v0.3.3`。历史 base 同步安排全部作废。
 - PR #15 已合并，`portfolio-2026-11-01` 指向 `316a030`；PR #16 已合并，`main` 当前 HEAD 为 `22217c2`，`v0.3.3` Tag 和 GitHub Release 均已存在。两次 PR 的 Windows/Ubuntu CI 均通过。PyPI `0.3.3` 本轮未通过官方发布记录独立复核；原生终端/IME/系统剪贴板仍待人工验收。
 
 - **PR #16 发布维护已同步（2026-11-02）**：本分支通过 `main@22217c2` → `feature-memory-evolution` 单向合并吸收 PR #16 的四处版本变更：`pyproject.toml`、`__init__.py`、`open_websearch.py` 的 MCP clientInfo、`uv.lock`，统一为 `0.3.3`；中英文 README 保留演进功能说明，修正已过期的“尚未同步”描述。合并提交为双父提交，保留 `main` 的完整祖先历史以及本分支原有功能；未将 evolution 反向合入 main。此前 Windows CI 的会话切换异步测试仍应独立复核，合并行为不代表测试已修复。
@@ -1059,3 +1059,43 @@ Clash Verge 的 TUN 在 IPv6 下返回 `2001:2::xx`，所以只要同时开着�
 两点须知：① 退出码：用户先报「0」，复核后确认是自己 `| tail -30; echo exit=$?` 取到了 `tail` 的状态，实际是 1；`fail()` 一直是 `raise typer.Exit(code=1)`，所以「脚本会把失败当成功」不成立，也没有改这条路径。② `tests/test_update.py` 中依赖 POSIX 符号链接与 `#!/bin/sh` 脚本的用例仍需在 Linux/WSL 跑；本轮沙箱拦截了 WSL 环境探测，因此未声称完成 POSIX 全量回归。
 
 遗留：更新器仍没有自己的日志文件，成功/失败只体现在 stdout 与 `~/.syvrio/runtime-v2/logs/syvrio.log` 的 `update.failed` 事件；若将来给 cron 用，建议再补一条 `update.applied` 事件带版本号（`_FIELDS` 目前只接受 bool/int/float，版本号需改成写进 `error` 之外的字段）。
+
+## Web 端两处 UI 修复：指令列表滚动跟随与模型名截断（2026-11-17）
+
+- **指令弹层/命令面板方向键不跟随滚动**：`CommandSuggestions` 与 `CommandPalette` 的高亮索引随方向键更新，但从不滚动容器。两处都加了 `useEffect`，在选中项（`[aria-selected="true"]`）变化时对它执行 `scrollIntoView({ block: "nearest", inline: "nearest" })`，焦点保持在输入框。边界规则不变（到首尾停止、不循环）。
+- **右上角模型名被截断**：`.model-info` 原来是 `max-width 220px + ellipsis + nowrap`。改为上限放宽到 `min(50vw, 320px)`、去掉省略号与 `nowrap`（过长时在胶囊内换行完整显示）；右侧 `.icon-button`/`.connection` 固定 `flex-shrink: 0` 不被挤压；`max-width: 380px` 窄屏断点同步从 `34vw` 调到 `48vw`。
+- **测试**：`src/test/setup.ts` 补 `scrollIntoView` 全局 no-op（jsdom 未实现，与既有 `scrollTo` 桩同模式）；`App.test.tsx` 用 `captureScrolling()` 在两个组件测试中断言最后一次滚动调用的目标节点即当前选中项、参数为 `{ block: "nearest", inline: "nearest" }`。前端 **102 passed**、`tsc --noEmit` 通过、`pnpm build` 通过。Edge 实测：21 条指令按 ArrowDown 到底选中项始终在可视区、模型名 `spark/spark-x2.6` 完整显示无截断、页面横向溢出 0。
+
+
+## 异常体系完善（2026-11-17，T1+T2+T3 全量，源自 update 误诊的根因分析）
+
+update 误诊暴露的是体系缺口，本轮按三级修复：
+
+- **T1 误诊根源**：`typer.Exit` 是 RuntimeError 子类，被 `main()` 的裸 `except Exception` 记成无信息的 `cli.failed`——全部 ~20 个 `fail()` 命令都受影响。改法：`main()` 对 `typer.Exit`/`click.Abort` 直接放行；`ui.fail()` 增加 `exc=` 参数，在抛出退出码前把原始异常记成 `cli.failed`（新增 str 型 state 字段 `command`，`_FIELDS`/`_STR_FIELDS` 双白名单控制）；16 处 CLI 调用点 + 1 处 TUI 调用点全部传 `exc=`。新增 `record_once`（每进程一次，防事件洪泛）与静态对齐测试（扫描源码中所有 `record_event`/`record_once` 字面量事件名与 `_EVENTS` 比对，`latency.` 动态前缀豁免）——堵住"新事件忘加白名单就静默消失"的口子。
+- **T2 异常基类**：新增 `syvrio/errors.py::SyvrioError`；9 个自定义异常（Config/ChatModel/Document/Extractor/Git/Schema/Update/Provider/Web）改为 `(SyvrioError, 原基类)` 多重继承，旧捕获子句不受影响。`update()` 删掉手写六类型元组，改 `except SyvrioError`（用户可读）+ `except Exception`（兜底，全量 traceback 落 `update.failed`）。静默降级补事件：`degraded.keyring`（config.py 读取 + providers.py 存/删三处）、`degraded.tiktoken`、`degraded.gitsync_state`。
+- **T3 全量审计**：扫描全部 42 处裸吞异常（`except: pass/return None` 模式），41 处是设计内容忍（探针、TOCTOU、轮询、尽力清理、解析容错），6 处 `except BaseException` 均为"释放资源后重抛"；真缺口仅 gitsync 状态写盘 1 处，已补 `record_once`。Web 边界核实**已有统一信封**（`WebError(code,message,status)` + server.py 全局处理器），无需改造。三分级约定（翻译+重抛 / 降级+记录 / 意外+记录+重抛）已写入 `AGENTS.md`「异常处理」章节。
+- 验证：`test_errors`（新增 14 项：MRO、可捕获性、fail 落事件带 command、record_once 去重）+ `test_diagnostics` + `test_cli` + `test_git_sync` + `test_web_api` + `test_web_commands` + `test_brand` + `test_application_architecture` 共 **205 passed / 1 skipped**；ruff check/format 通过。
+
+## 思考面板跟随流式内容（2026-11-17）
+
+用户报告展开的思考面板「不跟随移动」。根因：`.fold-body` 才是 `max-height: 220px` 的内部滚动容器，但 `Thinking` 把 `scrollTop` 写在 `.thinking-text` 上（不是滚动容器），且只在展开瞬间设为 0，流式增量从不调整 `fold-body.scrollTop`。截图里的「Thought for 1.6s + 内容停在顶部、末尾被截断」就是在流式中途展开留下的现场。
+
+改法：`Collapsible` 新增可选 `bodyRef` 指向 `fold-body`；`Thinking` 在真正的滚动容器上处理跟随——展开时已结束的从顶部读、流式中的直接定位到尾部；文本增长时若仍在跟随就滚到 `scrollHeight`；向上滚动超过 24px 停止跟随，回到底部附近恢复（与 `MessageList` 同一套 following 判定）。
+
+验证：新增 `web/src/components/Thinking.test.tsx` 4 项（流式展开到尾部、结束后从顶部、增量跟随、上滚暂停并回底恢复）；前端 106 passed、`tsc --noEmit` 通过。测试里覆盖 `HTMLElement.prototype.scrollHeight/clientHeight` 必须在 `afterEach` 还原——套件是 `singleThread` 单 jsdom，不还原会污染后续文件的布局判定（首次全量跑就因此让 `Composer.test.tsx` 失败）。
+
+## open-websearch 失败响应与抓取计数（2026-11-17）
+
+用户看到的 `open_websearch: unavailable: open-websearch HTTP 502` 只是适配层丢掉了 daemon 的错误正文。实测 daemon `/fetch-web` 对 `google.com` 返回 `502` + `{"status":"error","error":{"code":"fetch_failed","message":"timeout of 20000ms exceeded","retryable":true},"hint":"..."}`，而 `_post` 在 `>=400` 时直接按状态码抛错、不读正文，LLM 因此只能看到「HTTP 502」这种无法据以修正的信息。
+
+- `infra/search/open_websearch.py`：新增 `_response_error(response)`，优先解析 daemon 的 error 信封（`error.message`/`error.code` + 顶层 `hint`，用 ` · ` 拼接），没有信封时把正文压成单行并限长 300；`_post` 对所有 `>=400` 统一拼成 `open-websearch HTTP <code>：<正文>`（无正文时标注「（无错误正文）」）。kind 仍按状态码：429 → rate_limit，5xx → unavailable，其余 4xx → bad_response。
+- `infra/search/usage.py`：新增 `UsageLimiter.release(provider)`，回退一次预扣，计数夹在 0 以上；先经 `_entry()` 判窗口，翻页后的迟到回退不会吃掉新窗口的次数，旧格式 `count`/`window` 镜像同步回退。
+- `infra/search/fetch_router.py`：`provider.fetch` 抛错（`ProviderError` 或其它异常）时先 `release(name)` 再记录失败，失败的抓取不再算一次有效调用。搜索侧不变——`_request` 失败仍保守计数（`test_search_counts_failed_requests` 明确覆盖该语义）。
+- 验证：`tests/test_web_search.py` 新增 3 项（502 信封正文与 hint 透出、4xx 纯文本正文、无正文仍保留状态码）；`tests/test_search_usage.py` 新增 4 项（release 不降为负且同步旧镜像、跨窗口回退不吃新窗口、失败 fetch 不计次、成功 fetch 照常计次）。`test_web_search` + `test_search_usage` 共 **162 passed**。
+- README 两版同步改了计数说明（搜索失败保守计数 / 抓取失败退回）。
+
+## 上下文水波阈值与文档整合（2026-11-17）
+
+- **上下文水波动效**：`web/src/components/Composer.tsx` 的 `ContextMeter` 起始阈值由 15% 降为 10%（`data-wave="moving"` 条件，上限仍为 85%，压缩中 99%）。新增 `App.test.tsx` 一项覆盖 10% 流动 / 9% 静止；前端 **107 passed**、`tsc --noEmit` 通过、`build_web.py` 已重建并暂存（`index-DI-m0ijR.js`），`--check` 通过，Web 服务重启后 `static_ready: true`。`docs/web.md`「上下文占用」同步写为 ≥10%。
+- **撤销回填差异（未改代码）**：TUI 在 `/undo` 后把被撤销的用户原文回填进输入框（`chat_commands._undo_message` 直接写 `#input`，生成中撤销走 `chat_flow._apply_undo_outcome` → `_apply_undo_view`，并按会话暂存待回填文本）。Web 端 `CommandUseCases` 只在命令结果文案里返回 `Restored the last message: …`，`Composer` 的输入值完全是组件本地状态，没有任何通道接收该文本，因此 Web 没有回填行为。补法是给命令结果加可选 `restore_text`（或让前端从 `data` 读取），由 App 写入 Composer 的受控值。
+- **文档整合与中文化**：`docs/time.md` 并入 `docs/vault-v2.md`（记录格式、布局、Vault 迁移、时间规范、时间字段清单、UTC 迁移脚本）；`PRD.md` + `ROADMAP.md` 合并为 `docs/product.md`（路线图改为带「阶段」列的单一表格）；两份历史评审合并为 `docs/reviews.md`（标题降一级，代码围栏内不动）。`vault-v2.md` 全文译为中文，`docs/syvrio-web.service` 注释译为中文。`docs/README.md` 索引与阅读顺序、`architecture.md`、`README.md`/`README.en.md`（`#迁移既有-vault`、product.md）、`AGENTS.md` 时间清单指向、`HANDOFF` 的 PRD/路线图/评审/时间链接均已改写。历史评审中的旧源码链接指向对应评审基线。

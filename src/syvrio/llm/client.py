@@ -13,11 +13,12 @@ from threading import Event
 from typing import Protocol
 from urllib.parse import urlsplit
 
+from ..errors import SyvrioError
 from ..infra.config import LLMConfig
 from ..infra.latency import mark_model, track_completion
 
 
-class ChatModelError(RuntimeError):
+class ChatModelError(SyvrioError, RuntimeError):
     pass
 
 

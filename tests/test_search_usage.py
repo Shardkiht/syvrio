@@ -219,6 +219,71 @@ def test_fetch_router_falls_back_when_limit_reached(tmp_path):
     assert result.content == "正文"
 
 
+def test_release_gives_back_one_pre_charged_call(tmp_path):
+    path = tmp_path / "usage.json"
+    limiter = UsageLimiter(
+        {"tavily": UsageLimit(period="daily", max_calls=2)}, path, clock=lambda: 0.0
+    )
+    limiter.record("tavily")
+    limiter.release("tavily")
+    limiter.release("tavily")  # 不会降到负数
+
+    assert limiter.remaining("tavily") == 2
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["tavily"]["count"] == 0  # 旧格式镜像同步回退
+
+
+def test_release_after_window_rollover_does_not_eat_new_window(tmp_path):
+    now = [0.0]
+    limiter = UsageLimiter({}, tmp_path / "usage.json", clock=lambda: now[0])
+    limiter.record("tavily")
+
+    now[0] = 40 * 24 * 3600.0  # 日/月窗口都已翻页
+    limiter.record("tavily")
+    limiter.release("tavily")
+
+    assert limiter.status("tavily")["daily"]["used"] == 0
+    assert limiter.status("tavily")["monthly"]["used"] == 0
+
+
+def test_failed_fetch_does_not_count_as_a_used_call(tmp_path):
+    broken = _FetchProvider(
+        "limited", error=ProviderError("limited", ProviderErrorKind.UNAVAILABLE, "HTTP 502")
+    )
+    fallback = _FetchProvider("fallback")
+    limiter = UsageLimiter(
+        {"limited": UsageLimit(period="daily", max_calls=1)},
+        tmp_path / "usage.json",
+        clock=lambda: 0.0,
+    )
+    router = FetchRouter(
+        {"limited": broken, "fallback": fallback},
+        order=["limited", "fallback"],
+        usage_limiter=limiter,
+    )
+
+    result = router.fetch("https://example.com/a", 1000)
+
+    # 失败的抓取退回预扣次数：下次仍会给该 provider 一次机会。
+    assert len(broken.calls) == 1
+    assert limiter.remaining("limited") == 1
+    assert result.content == "正文"
+
+
+def test_successful_fetch_still_counts(tmp_path):
+    provider = _FetchProvider("tavily")
+    limiter = UsageLimiter(
+        {"tavily": UsageLimit(period="daily", max_calls=2)},
+        tmp_path / "usage.json",
+        clock=lambda: 0.0,
+    )
+    router = FetchRouter({"tavily": provider}, order=["tavily"], usage_limiter=limiter)
+
+    router.fetch("https://example.com/a", 1000)
+
+    assert limiter.remaining("tavily") == 1
+
+
 def test_build_routers_wire_limiter_from_config(tmp_path):
     search_config = SearchConfig(usage_limits={"tavily": UsageLimit(period="daily", max_calls=5)})
     from syvrio.infra.config import load_config

@@ -37,7 +37,7 @@
 | `Runtime/indexes/`、`cache/` | 向量索引、搜索缓存、画像摘要 |
 | `Runtime/state/`、`jobs/`、`logs/` | Vault 绑定、配额、反思状态、后台任务和本地诊断 |
 
-Vault 与 Runtime 相互独立，Runtime 在 Git 工作树之外。绝对时间持久化为 UTC ISO 8601，界面按本地 24 小时制显示。事件日期、有效期的日历精度独立于写入时间。见 [Vault V2](vault-v2.md) 和 [时间规范](time.md)。
+Vault 与 Runtime 相互独立，Runtime 在 Git 工作树之外。绝对时间持久化为 UTC ISO 8601，界面按本地 24 小时制显示。事件日期、有效期的日历精度独立于写入时间。字段清单与迁移步骤见[存储、迁移与时间规范](vault-v2.md)。
 
 ## 锁与资源生命周期
 
@@ -53,4 +53,4 @@ Vault 与 Runtime 相互独立，Runtime 在 Git 工作树之外。绝对时间�
 - `syvrio update` 从 PyPI 按频道筛选 wheel，验证摘要，准备版本目录并请求用户 systemd 切换。停止旧服务前完成隔离安装和旧实例健康检查；切换、启动或新版健康检查失败时按实际链接目标恢复旧实例，并复查旧版健康。发布和部署各自验收。
 - Foundation 与 Evo 共享会话传输、锁、时间、模型适配和构建契约。稳定线保留独立记忆实现；Evo 的时间演化、推断审查和反思按明确边界晋级。合并前验证测试、存储兼容性、隐私和回退路径。
 
-[索引](README.md) · [产品需求](PRD.md) · [路线图](ROADMAP.md)
+[索引](README.md) · [产品需求与路线图](product.md) · [Web 指南](web.md)

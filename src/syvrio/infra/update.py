@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from ..errors import SyvrioError
 from .locking import VaultLock
 
 PYPI = "https://pypi.org/pypi/syvrio/json"
@@ -24,7 +25,7 @@ STOP_TIMEOUT = 360
 STARTUP_SECONDS = 120
 
 
-class UpdateError(ValueError):
+class UpdateError(SyvrioError, ValueError):
     """An update failure tagged with the stage that produced it."""
 
     def __init__(self, stage: str, detail: str):

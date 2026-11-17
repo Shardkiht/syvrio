@@ -107,8 +107,12 @@ class GitSyncService:
         state["last_push_at"] = serialize_timestamp((now or utc_now()).replace(microsecond=0))
         try:
             self._write_state(state)
-        except OSError:
-            pass
+        except OSError as exc:
+            # The push itself succeeded; a lost timestamp only causes one extra
+            # sync later, but a persistently unwritable state file must be visible.
+            from .diagnostics import record_once
+
+            record_once("degraded.gitsync_state", exc)
 
     def _schedule_time(self) -> time:
         try:

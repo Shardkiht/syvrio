@@ -12,6 +12,8 @@ from enum import Enum
 from typing import Protocol
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+from ...errors import SyvrioError
+
 # 常见 TUN 代理的合成 DNS 段，仅用于域名解析结果，不放行直接 IP 目标。
 #
 # 顺序有意义：open-websearch 2.2.0 的 isAllowedFakeIp 是
@@ -196,7 +198,7 @@ class ProviderErrorKind(str, Enum):
     BUDGET_EXHAUSTED = "budget_exhausted"
 
 
-class ProviderError(Exception):
+class ProviderError(SyvrioError, Exception):
     def __init__(
         self,
         provider: str,

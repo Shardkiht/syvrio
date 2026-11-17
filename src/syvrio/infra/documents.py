@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from ..errors import SyvrioError
+
 TEXT_SUFFIXES = frozenset(
     {
         ".md",
@@ -40,7 +42,7 @@ def document_paths(message: str) -> list[Path]:
     return paths
 
 
-class DocumentError(ValueError):
+class DocumentError(SyvrioError, ValueError):
     """文件无法转换为可导入的文本。"""
 
 

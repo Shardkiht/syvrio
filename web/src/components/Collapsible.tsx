@@ -1,4 +1,4 @@
-import { useId, type ReactNode } from 'react';
+import { useId, type ReactNode, type Ref } from 'react';
 
 /**
  * One row of folded chrome: a pill summary plus an optional body.
@@ -14,6 +14,7 @@ export function Collapsible({
   className,
   testId,
   bodyTestId,
+  bodyRef,
 }: {
   label: ReactNode;
   meta?: ReactNode;
@@ -23,6 +24,8 @@ export function Collapsible({
   className?: string;
   testId?: string;
   bodyTestId?: string;
+  /** The bounded scroll area itself: callers that follow streamed content need it. */
+  bodyRef?: Ref<HTMLDivElement>;
 }) {
   const root = ['fold', expanded ? 'fold-open' : '', className ?? ''].filter(Boolean).join(' ');
   const bodyId = useId();
@@ -55,7 +58,7 @@ export function Collapsible({
         </svg>
       </button>
       {expanded && (
-        <div className="fold-body" id={bodyId} data-testid={bodyTestId}>
+        <div className="fold-body" id={bodyId} data-testid={bodyTestId} ref={bodyRef}>
           {children}
         </div>
       )}

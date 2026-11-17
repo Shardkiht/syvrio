@@ -108,6 +108,16 @@ CI 的测试、构建、CLI 检查与发布作业统一在 Debian 13 容器中�
 - 流式输出：循环级不做重试（重试会重复 delta）；完成时就地定稿，不重复挂载；中途断流保留半截并显式标注。
 - git、LLM 等慢操作在 worker 线程执行，UI 线程只经 `call_from_thread` 接收回调。
 
+## 异常处理
+
+- 用户可达路径上的**故意失败**一律抛继承 `syvrio.errors.SyvrioError` 的异常（保留原基类多重继承，旧的 `except ValueError` 等不受影响）；边界层先 `except SyvrioError` 翻译成用户可读文案，再用裸 `except Exception` 兜底并记录事件，**不得手写枚举异常类型元组**（漏一个类型就冒裸 traceback）。
+- 异常消息按"阶段 + 可操作的解法"写，不按 errno 裸文写（参考 `UpdateError(stage, detail)` 与 `infra/update.py::_uv`）。
+- 用 `typer.Exit`/`click.Abort` 表示流程退出，不表示失败：`main()` 对它们直接放行不记录；`ui.fail(message, exc=exc)` 会在抛出退出码**之前**把原始异常记成 `cli.failed`（带 `command` 字段），调用侧拿到原始异常时必须传 `exc=`，否则诊断日志只剩退出码。
+- 降级路径（keyring 不可用、tiktoken 编码表下载失败等）静默退回默认行为时必须 `diagnostics.record_once` 记录一次，并写注释说明降级语义；`record_once` 的事件名必须加入 `_EVENTS` 白名单（`tests/test_diagnostics.py` 的静态对齐测试会拦截脱钩）。
+- `except BaseException` 只许用于"释放资源后重抛"的模式；裸 `except: pass` 只允许在探针/TOCTOU/尽力清理场景，且必须有注释。
+- Web 边界统一走 `WebError(code, message, status)`，由 `server.py` 的全局处理器产出 `{code, message}` 信封；不得把 traceback 或记忆内容带进 HTTP 响应。
+- 诊断事件名采用 `域.动作` 形式，失败类以 `.failed`/`.unreadable` 等后缀结尾。
+
 ## 文档同步
 
 README 面向用户，必须始终与 `src/syvrio` 的当前架构一致。以下变化必须在同一次改动内更新 README，不能留到后续：
@@ -134,7 +144,7 @@ README 面向用户，必须始终与 `src/syvrio` 的当前架构一致。以�
 ## 时间
 
 - 持久化绝对时间用 `syvrio.time` 生成、解析和序列化为 UTC ISO 8601（`+00:00`）。运行时拒绝无时区值，禁止直接调用 `datetime.now()`、`datetime.utcnow()` 或在业务模块自行解析时间戳。纯日期、本地计划和持续时间保持原有语义。
-- 展示层使用时间工具转换为本地 24 小时制。历史时间只由一次性迁移脚本处理。新增时间字段同步更新 `docs/time.md` 中的清单。
+- 展示层使用时间工具转换为本地 24 小时制。历史时间只由一次性迁移脚本处理。新增时间字段同步更新 `docs/vault-v2.md` 中的时间字段清单。
 
 ## 提交
 

@@ -67,6 +67,14 @@ def _recorded_time(value: str) -> datetime:
     return parse_timestamp(value)
 
 
+def _timestamp_line(entry: Entry) -> int:
+    """Line of syvrio.recorded_at, which sits below the record's opening line."""
+    offset = entry.raw_markdown.find("syvrio.recorded_at")
+    if offset < 0:
+        return entry.line
+    return entry.line + entry.raw_markdown.count("\n", 0, offset)
+
+
 class MemoryStore:
     def __init__(self, vault: Path | SyvrioPaths):
         self.paths = vault if isinstance(vault, SyvrioPaths) else vault_paths(vault)
@@ -133,7 +141,11 @@ class MemoryStore:
                 _recorded_time(record.entry.timestamp)
             except ValueError as exc:
                 raise SchemaError(
-                    f"{relative}:{record.entry.line}: invalid syvrio.recorded_at"
+                    f"{relative}:{_timestamp_line(record.entry)}: invalid syvrio.recorded_at "
+                    f"{record.entry.timestamp!r}; absolute timestamps need an explicit UTC "
+                    "offset. A vault migrated from v1 must be normalized first: "
+                    "python scripts/migrate_timestamps_to_utc.py --vault <vault> "
+                    "--runtime <runtime> --source-timezone <IANA> --apply --backup-dir <new>"
                 ) from exc
         return document
 

@@ -29,7 +29,7 @@ function ContextMeter({ usage, compaction }: { usage: ContextUsage | null; compa
       <button type="button" className="context-dial" aria-expanded={open}
         aria-label={`Context estimate: ${detail}`}
         data-fill={percent === 0 ? 'empty' : percent === 100 ? 'full' : 'partial'}
-        data-wave={percent >= 15 && percent <= waveCeiling ? 'moving' : 'still'}
+        data-wave={percent >= 10 && percent <= waveCeiling ? 'moving' : 'still'}
         style={{ '--context-fill': `${percent}%` } as CSSProperties}
         onClick={() => setOpen((value) => !value)}
         onBlur={() => setOpen(false)}

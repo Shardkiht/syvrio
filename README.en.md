@@ -46,7 +46,7 @@ uv run python scripts/migrate_to_syvrio.py --apply
 
 It moves Vault `.quiet-memo/` metadata to `.syvrio/`, rewrites old escaped tag prefixes, and migrates the config file plus optional Keyring entries. Locks are not copied and rebuildable caches are not migrated. Re-running is idempotent; existing old and new metadata directories stop the migration with a report. Backups are retained beside the Vault by default. Exit code `0` means success, `1` means the migration failed and files were restored, and `2` means file migration completed but Keyring is incomplete and needs manual review; file changes are not rolled back.
 
-For a Vault still using the v1 layout, follow the separate [v2 migration guide](docs/vault-v2.md#upgrade-an-existing-vault) before launching the v2 application.
+For a Vault still using the v1 layout, follow the separate [v2 migration guide](docs/vault-v2.md#迁移既有-vault) before launching the v2 application.
 
 ## Why Syvrio
 
@@ -677,7 +677,7 @@ Hits are matched by target entry ID, comparing keyword / vector / hybrid. See [e
 
 ## Roadmap
 
-Near-term work covers mobile browser acceptance, Evo release builds, and update recovery. Later work continues temporal memory, inference review, reflection, and profiles. See the [roadmap](docs/ROADMAP.md) for acceptance criteria and [GitHub Issues](https://github.com/Shardkiht/syvrio/issues) for individual work items.
+Near-term work covers mobile browser acceptance, Evo release builds, and update recovery. Later work continues temporal memory, inference review, reflection, and profiles. See the [product requirements and roadmap](docs/product.md) for acceptance criteria and [GitHub Issues](https://github.com/Shardkiht/syvrio/issues) for individual work items.
 
 ## Inference review and contextual retrieval
 
@@ -742,7 +742,7 @@ These runtime request-count protection defaults also apply when providers are en
 | searxng | 0 | 0 |
 | open_websearch | 0 | 0 |
 
-Use `daily` / `monthly` under `[search.usage_limits.<provider>]` to override defaults. Explicit zero disables that period's cap. Either exhausted period blocks dispatch. Search and Fetch share counts; cache hits are free of local charges; dispatched failures count conservatively. Local calendar days/months use the runtime machine's timezone. State persists in `runtime/state/usage.json`; check-and-count is synchronized within one process, without a strict cross-process guarantee.
+Use `daily` / `monthly` under `[search.usage_limits.<provider>]` to override defaults. Explicit zero disables that period's cap. Either exhausted period blocks dispatch. Search and Fetch share counts; cache hits are free of local charges; dispatched search failures count conservatively, while a failed fetch (no page content returned) releases its pre-charged count. Local calendar days/months use the runtime machine's timezone. State persists in `runtime/state/usage.json`; check-and-count is synchronized within one process, without a strict cross-process guarantee.
 
 ```toml
 [search.usage_limits.tavily]

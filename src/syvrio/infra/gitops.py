@@ -8,6 +8,7 @@ import subprocess
 from contextlib import contextmanager
 from pathlib import Path
 
+from ..errors import SyvrioError
 from ..time import format_local_timestamp, parse_timestamp, serialize_timestamp
 
 LOCAL_TIMEOUT = 15.0
@@ -98,7 +99,7 @@ def classify_git_error(text: str) -> str:
     return "other"
 
 
-class GitError(RuntimeError):
+class GitError(SyvrioError, RuntimeError):
     def __init__(self, message: str, kind: str = "other") -> None:
         super().__init__(redact_git_message(message))
         self.kind = kind

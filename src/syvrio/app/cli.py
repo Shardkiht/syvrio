@@ -3,14 +3,16 @@ from __future__ import annotations
 import ipaddress
 import json
 import sys
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Annotated
 
+import click
 import typer
 
 from .. import __version__
 from ..agent.session import SessionStore
+from ..errors import SyvrioError
 from ..infra.config import (
     Config,
     default_config_path,
@@ -38,12 +40,19 @@ CONFIG_OPTION = typer.Option(None, "--config", "-c", help="配置文件路径")
 VAULT_OPTION = typer.Option(None, "--vault", help="覆盖配置中的记忆库路径")
 
 
+@dataclass
+class _Invocation:
+    command: str = "unknown"
+
+
 @app.callback()
 def _root(
     ctx: typer.Context,
     version: bool = typer.Option(False, "--version", help="Show Syvrio version", is_eager=True),
 ) -> None:
     """无子命令时直接进入对话；非交互环境回退到帮助。"""
+    if isinstance(ctx.obj, _Invocation):
+        ctx.obj.command = ctx.invoked_subcommand or "chat"
     if version:
         typer.echo(f"Syvrio {__version__}")
         raise typer.Exit()
@@ -71,10 +80,7 @@ def _service(config: Path | None, vault: Path | None) -> MemoryService:
 @app.command()
 def update() -> None:
     """从 PyPI 更新受管理的 Syvrio Web 服务。"""
-    import subprocess
     import tomllib
-
-    import httpx
 
     from ..infra.paths import syvrio_home
     from ..infra.update import update as apply_update
@@ -105,15 +111,15 @@ def update() -> None:
             config.get("python"),
             config.get("uv"),
         )
-    except (
-        OSError,
-        ValueError,
-        KeyError,
-        TypeError,
-        subprocess.SubprocessError,
-        httpx.HTTPError,
-    ) as exc:
-        # 失败原因只在这里拿得到：fail() 会把原始异常换成 typer.Exit，诊断日志里只剩退出码。
+    except SyvrioError as exc:
+        # Deliberate, staged failure (missing uv, broken venv, failed switch…):
+        # the message already tells the user what to do.
+        record_event("update.failed", exc)
+        typer.echo(f"更新失败：{exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    except Exception as exc:
+        # Defense in depth for anything the updater does not stage itself; the
+        # full traceback lands in the diagnostics log via update.failed.
         record_event("update.failed", exc)
         typer.echo(f"更新失败：{exc}", err=True)
         raise typer.Exit(code=1) from exc
@@ -219,7 +225,7 @@ def memorize(
     try:
         result = service.memorize(text, source)
     except ExtractorError as exc:
-        fail(str(exc))
+        fail(str(exc), exc=exc)
         return
     for entry in result.admitted:
         console.print(f"[bold]已写入[/] [{entry.topic}] {entry.text}")
@@ -244,7 +250,7 @@ def note(
     try:
         entry = service.note(text, topic=topic, title=title)
     except ValueError as exc:
-        fail(str(exc))
+        fail(str(exc), exc=exc)
         return
     console.print(f"[bold]已记录[/] [{entry.topic}] {entry.text}")
 
@@ -344,7 +350,7 @@ def recall(
             view=view,
         )
     except ValueError as exc:
-        fail(str(exc))
+        fail(str(exc), exc=exc)
         return
     print_hits(query, hits)
 
@@ -362,7 +368,7 @@ def evolve(
         entry = _service(config, vault).evolve(entry_id, text, effective_from)
         console.print(f"已记录时间变化：{entry.id}")
     except (ValueError, KeyError) as exc:
-        fail(str(exc))
+        fail(str(exc), exc=exc)
 
 
 @app.command("profile")
@@ -391,7 +397,7 @@ def _reflect(service: MemoryService, mode: str, requests: int) -> None:
         service.reflection.cancel()
         fail("回顾已取消；已完成进度保留。")
     except ValueError as exc:
-        fail(str(exc))
+        fail(str(exc), exc=exc)
 
 
 @app.command("dream")
@@ -436,7 +442,7 @@ def inferences(
         for item in items:
             console.print(item.model_dump_json(), markup=False)
     except (KeyError, ValueError) as exc:
-        fail(str(exc))
+        fail(str(exc), exc=exc)
 
 
 @app.command()
@@ -470,10 +476,10 @@ def approve(
     try:
         entry = _service(config, vault).approve(item_id)
     except KeyError as exc:
-        fail(str(exc))
+        fail(str(exc), exc=exc)
         return
     except ValueError as exc:
-        fail(str(exc))
+        fail(str(exc), exc=exc)
         return
     console.print(f"[bold]已写入[/] [{entry.topic}] {entry.text}")
 
@@ -488,7 +494,7 @@ def reject(
     try:
         item = _service(config, vault).reject(item_id)
     except KeyError as exc:
-        fail(str(exc))
+        fail(str(exc), exc=exc)
         return
     console.print(f"[dim]已拒绝[/dim] {item.id} {item.text}")
 
@@ -505,10 +511,10 @@ def correct(
     try:
         entry = _service(config, vault).correct(entry_id, text, reason)
     except KeyError as exc:
-        fail(str(exc))
+        fail(str(exc), exc=exc)
         return
     except ValueError as exc:
-        fail(str(exc))
+        fail(str(exc), exc=exc)
         return
     console.print(f"[bold]已更正[/] [{entry.topic}] {entry.text}")
     console.print(f"[dim]旧条目 {entry_id} 已置为 superseded，审计已记录[/dim]")
@@ -525,10 +531,10 @@ def forget(
     try:
         entry = _service(config, vault).forget(entry_id, reason)
     except KeyError as exc:
-        fail(str(exc))
+        fail(str(exc), exc=exc)
         return
     except ValueError as exc:
-        fail(str(exc))
+        fail(str(exc), exc=exc)
         return
     console.print(f"[bold]已删除[/] {entry.id} [{entry.topic}] {entry.text}")
 
@@ -586,7 +592,7 @@ def commit(
     try:
         result = service.commit(push=push)
     except GitError as exc:
-        fail(str(exc))
+        fail(str(exc), exc=exc)
         return
     if not result["committed"]:
         console.print(f"[dim]{result['summary']}[/dim]")
@@ -656,7 +662,7 @@ def web(
             name = normalize_domain(domain)
             ipaddress.ip_address(domain_ip)
         except ValueError as exc:
-            fail(str(exc))
+            fail(str(exc), exc=exc)
             return
         domains.append(name)
         if remove_domain:
@@ -690,7 +696,7 @@ def web(
     try:
         run_server(host, port, config_path=config, vault_path=vault, domains=domains)
     except RuntimeError as exc:
-        fail(str(exc))
+        fail(str(exc), exc=exc)
 
 
 def main() -> None:
@@ -710,10 +716,16 @@ def main() -> None:
         elif argument.startswith("--config="):
             config_file = Path(argument.split("=", 1)[1])
     start_diagnostics(config_file)
+    invocation = _Invocation()
     try:
-        app()
+        app(obj=invocation)
+    except (typer.Exit, click.Abort):
+        # Deliberate exits (fail(), --version, Ctrl+C on a prompt) are control
+        # flow, not failures; recording them hides the real cause. fail() with
+        # exc= already recorded cli.failed before raising.
+        raise
     except Exception as exc:
-        record_event("cli.failed", exc)
+        record_event("cli.failed", exc, command=invocation.command)
         raise
     finally:
         stop_diagnostics()

@@ -237,7 +237,10 @@ def save_api_key(env_name: str, api_key: str) -> bool:
 
         keyring.set_password(KEYRING_SERVICE, env_name, api_key)
         return True
-    except Exception:
+    except Exception as exc:
+        from .diagnostics import record_once
+
+        record_once("degraded.keyring", exc)
         return False
 
 
@@ -247,7 +250,10 @@ def delete_api_key(env_name: str) -> bool:
 
         keyring.delete_password(KEYRING_SERVICE, env_name)
         return True
-    except Exception:
+    except Exception as exc:
+        from .diagnostics import record_once
+
+        record_once("degraded.keyring", exc)
         return False
 
 
