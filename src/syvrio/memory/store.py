@@ -21,6 +21,7 @@ from .schema import (
     parse_document,
     render_record,
 )
+from .turn_undo import capture_file_write
 
 SLUG_RE = re.compile(r"[^\w\u4e00-\u9fff-]+")
 STATUS_ACTIVE = "active"
@@ -38,6 +39,7 @@ def normalize_text(text: str) -> str:
 
 
 def atomic_write(path: Path, payload: bytes) -> None:
+    capture_file_write(path, payload)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = None
     try:

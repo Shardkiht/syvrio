@@ -645,6 +645,30 @@ button.fold-summary:hover {
   font-size: 13.5px;
 }
 
+.web-send-queue {
+  max-width: var(--content);
+  margin: 0 auto 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.web-send-queue ol {
+  max-height: 76px;
+  overflow-y: auto;
+  margin: 0;
+  padding-inline-start: 24px;
+}
+.web-send-queue li { padding-inline-end: 28px; position: relative; }
+.web-send-queue li span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.web-send-queue button {
+  position: absolute;
+  inset-inline-end: 2px;
+  inset-block-start: 0;
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+}
+
 .composer-lane {
   position: relative;
   max-width: var(--content);

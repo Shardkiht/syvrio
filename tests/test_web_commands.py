@@ -119,7 +119,7 @@ def test_every_command_has_a_capability_marker(client):
     assert by_name["setup"]["intent"] == "open_settings"
     assert by_name["exit"]["support"] == CLIENT
     assert by_name["quit"]["support"] == CLIENT
-    assert by_name["undo"]["confirm"] is True
+    assert by_name["undo"]["confirm"] is False
     # Sub-commands travel with the row so the browser never owns a second list.
     assert by_name["model"]["subcommands"][0]["name"] == "refresh"
 
@@ -233,12 +233,11 @@ def test_import_never_reads_a_browser_supplied_path(client, tmp_path):
     assert setup["intent"] == "open_settings"
 
 
-def test_dangerous_command_requires_server_side_confirmation(client):
-    first = run(client, "/undo").json()
-    assert first["status"] == "confirm_required"
-    assert first["intent"] == "undo"
-    second = run(client, "/undo", confirmed=True).json()
-    assert second["status"] == "ok"
+def test_undo_runs_without_a_confirmation_request(client):
+    result = run(client, "/undo").json()
+    assert result["status"] == "ok"
+    assert result["intent"] == "undo"
+    assert result["data"]["restored"] is None
 
 
 def test_exit_is_client_only_and_never_stops_the_server(client):
@@ -321,7 +320,7 @@ def test_is_mutating_distinguishes_command_forms():
     assert CommandUseCases.is_mutating("pending", "") is False
     assert CommandUseCases.is_mutating("model", "refresh") is True
     assert CommandUseCases.is_mutating("model", "") is False
-    assert CommandUseCases.is_mutating("undo", "") is False
+    assert CommandUseCases.is_mutating("undo", "") is True
 
 
 # ---------- option panels ----------

@@ -15,6 +15,7 @@ from ..infra.paths import SyvrioPaths, vault_paths
 from ..infra.tokens import estimate_tokens
 from ..memory.detect import redact_secrets
 from ..memory.store import atomic_write
+from ..memory.turn_undo import TURN_UNDO_DIR
 from ..time import (
     local_timestamp,
     parse_timestamp,
@@ -239,6 +240,7 @@ class SessionStore:
         paths = vault if isinstance(vault, SyvrioPaths) else vault_paths(vault)
         self.root = paths.sessions_dir
         self._reasoning_root = paths.runtime_dir / "session-reasoning"
+        self._turn_undo_root = paths.runtime_dir.resolve() / TURN_UNDO_DIR
         # 会话追加与 Git 快照共用 Vault 写锁，避免提交到写了一半的 JSONL。
         self._lock = vault_write_lock(paths)
         self._listing_cache: dict[str, tuple[tuple[Path, int, int], dict]] = {}
@@ -416,6 +418,13 @@ class SessionStore:
             if not path.exists():
                 return False
             attachments = self._reasoning_path(session_id, "attachment").parent
+            journals = self._turn_undo_root / session_id
+            if journals.resolve() != journals:
+                raise ValueError("The local undo journal path is redirected.")
+            if journals.is_dir():
+                for journal in journals.glob("*.json"):
+                    journal.unlink()
+                journals.rmdir()
             for attachment in attachments.glob("*.json"):
                 attachment.unlink()
             path.unlink()

@@ -51,6 +51,27 @@ export function useChat() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [panel, setPanel] = useState<CommandPanel | null>(null);
   const [focusSignal, setFocusSignal] = useState(0);
+  const [queued, setQueued] = useState<string[]>([]);
+  const queueRef = useRef<string[]>([]);
+  const [queuePaused, setQueuePaused] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [undoing, setUndoing] = useState(false);
+  const undoRef = useRef(false);
+  const [undoDrafts, setUndoDrafts] = useState<Record<string, string>>({});
+  const changeQueue = useCallback((items: string[]) => {
+    queueRef.current = items;
+    setQueued(items);
+  }, []);
+  const removeQueued = useCallback((index: number) => {
+    changeQueue(queueRef.current.filter((_, position) => position !== index));
+  }, [changeQueue]);
+  const acknowledgeDraft = useCallback((sessionId: string) => {
+    setUndoDrafts((drafts) => {
+      const next = { ...drafts };
+      delete next[sessionId];
+      return next;
+    });
+  }, []);
   const pendingHistoryRef = useRef(false);
   const navigation = useRef<Promise<void> | null>(null);
   const navigationVersion = useRef(0);
@@ -151,11 +172,24 @@ export function useChat() {
   ) => {
     const requestLine = line.trim();
     if (!requestLine) return;
-    while (navigation.current || newCommand.current) await (navigation.current ?? newCommand.current);
+    const name = requestLine.split(/\s+/, 1)[0].toLowerCase();
+    if (name !== '/undo' || !chatRef.current.busy) {
+      while (navigation.current || newCommand.current) await (navigation.current ?? newCommand.current);
+    }
     const version = navigationVersion.current;
     const sequence = ++commandSequence.current;
     const sessionId = chatRef.current.sessionId;
-    const isCompact = requestLine.split(/\s+/, 1)[0].toLowerCase() === '/compact';
+    const isCompact = name === '/compact';
+    const isUndo = name === '/undo';
+    if (name === '/new' && queueRef.current.length) {
+      update((prev) => ({ ...prev, error: 'Wait for queued messages or remove them before changing sessions.' }));
+      return;
+    }
+    if (isUndo) {
+      if (undoRef.current) return;
+      undoRef.current = true;
+      setUndoing(true);
+    }
     if (isCompact) setCompaction('running');
     try {
       const request = api.runCommand({
@@ -234,6 +268,17 @@ export function useChat() {
           else await reloadHistory(result.session_id ?? chatRef.current.sessionId);
         }
       }
+      if (isUndo && result.status === 'ok' && typeof result.data?.restored === 'string') {
+        const target = result.session_id ?? chatRef.current.sessionId;
+        if (target !== null) {
+          const text = result.data.restored;
+          setUndoDrafts((drafts) => ({ ...drafts, [target]: text }));
+        }
+        setQueuePaused(true);
+        if (canPresent()) setPanel(null);
+        setFocusSignal((value) => value + 1);
+        return;
+      }
       if (!commandPanel && canPresent()) {
         const output = resultPanelFor(result);
         if (result.status === 'ok' && result.intent === 'rename' && requestLine.toLowerCase() === '/rename') {
@@ -250,6 +295,11 @@ export function useChat() {
           title: 'Command failed',
           message: error instanceof Error ? error.message : 'unknown error',
         });
+      }
+    } finally {
+      if (isUndo) {
+        undoRef.current = false;
+        setUndoing(false);
       }
     }
   }, [refreshHealth, refreshSessions, reloadHistory, update]);
@@ -303,6 +353,7 @@ export function useChat() {
       if (stillHere()) update((prev) => loadHistory(prev, history));
     } catch {
       if (stillHere()) {
+        setQueuePaused(true);
         update((prev) => ({
           ...prev, busy: false, turnId: null, progress: '',
           error: '暂时无法读取回复，请重新打开会话查看结果',
@@ -311,7 +362,7 @@ export function useChat() {
     }
   }, [update]);
 
-  const send = useCallback(async (text: string) => {
+  const send = useCallback(async (text: string, fromQueue = false) => {
     const trimmed = text.trim();
     if (!trimmed) return;
     // Every slash line goes to the command API, never to the LLM. Commands may
@@ -333,7 +384,18 @@ export function useChat() {
       update((prev) => ({ ...prev, error: '会话已切换，请在目标会话重新发送' }));
       return;
     }
-    if (chatRef.current.busy) return;
+    if (!fromQueue && queuePaused && !undoRef.current && controllerRef.current) {
+      changeQueue([trimmed, ...queueRef.current]);
+      setQueuePaused(false);
+      return;
+    }
+    if (chatRef.current.busy || controllerRef.current || undoRef.current
+        || (!fromQueue && !queuePaused && queueRef.current.length > 0)) {
+      changeQueue([...queueRef.current, trimmed]);
+      return;
+    }
+    if (queuePaused) setQueuePaused(false);
+    setSending(true);
     update((prev) => startTurn(prev, trimmed, sessionId));
     terminalRef.current = false;
     turnRef.current = null;
@@ -348,7 +410,10 @@ export function useChat() {
       flush();
       const turnId = turnRef.current;
       if (controller.signal.aborted) {
-        if (controllerRef.current === controller) controllerRef.current = null;
+        if (controllerRef.current === controller) {
+          controllerRef.current = null;
+          setSending(false);
+        }
         return;
       }
       if (!terminalRef.current && turnId != null) {
@@ -358,20 +423,49 @@ export function useChat() {
           ? failure.message
           : '连接已断开，请重新打开会话查看回复';
         update((prev) => reduceChat(prev, { seq: 0, type: 'failed', message }));
+        setQueuePaused(true);
+        if (fromQueue) changeQueue([trimmed, ...queueRef.current]);
         // An HTTP error still means the server is reachable; only a transport
         // failure (or a stream that ended without a terminal event) is offline.
         if (!failure || failure instanceof NetworkError) setOnline(false);
       } else {
         setOnline(true);
       }
-      if (controllerRef.current === controller) controllerRef.current = null;
       void refreshSessions();
       if (pendingHistoryRef.current) {
         pendingHistoryRef.current = false;
         await reloadHistory(chatRef.current.sessionId);
       }
+      if (controllerRef.current === controller) {
+        controllerRef.current = null;
+        setSending(false);
+      }
     }
-  }, [flush, handleEvent, recoverReply, refreshSessions, reloadHistory, runCommand, update]);
+  }, [changeQueue, flush, handleEvent, queuePaused, recoverReply, refreshSessions, reloadHistory, runCommand, update]);
+
+  useEffect(() => {
+    if (chat.busy || sending || undoing || queuePaused
+        || controllerRef.current || undoRef.current) return;
+    const [first, ...rest] = queueRef.current;
+    if (first === undefined) return;
+    changeQueue(rest);
+    void send(first, true);
+  }, [chat.busy, changeQueue, queuePaused, queued, send, sending, undoing]);
+
+  const insert = useCallback(async (text: string) => {
+    const turnId = turnRef.current ?? chatRef.current.turnId;
+    if (!chatRef.current.busy || turnId == null || undoRef.current) {
+      update((prev) => ({ ...prev, error: 'Cannot insert now. Enter queues the message while a reply is running.' }));
+      return false;
+    }
+    try {
+      await api.insertMessage(turnId, chatRef.current.sessionId, text);
+      return true;
+    } catch (error) {
+      update((prev) => ({ ...prev, error: error instanceof Error ? error.message : 'The message was not inserted.' }));
+      return false;
+    }
+  }, [update]);
 
   const stop = useCallback(async () => {
     const turnId = turnRef.current ?? chatRef.current.turnId;
@@ -384,7 +478,11 @@ export function useChat() {
   }, [update]);
 
   const navigate = useCallback((sessionId: string | null) => {
-    if (chatRef.current.busy) {
+    if (queueRef.current.length || undoRef.current) {
+      update((prev) => ({ ...prev, error: 'Wait for queued messages or remove them before changing sessions.' }));
+      return;
+    }
+    if (chatRef.current.busy || controllerRef.current) {
       update((prev) => ({ ...prev, error: '请先停止当前回复，或等回复结束后再切换会话' }));
       return;
     }
@@ -573,6 +671,13 @@ export function useChat() {
     toggleSidebar,
     refreshSessions,
     send,
+    insert,
+    queued,
+    queuePaused,
+    removeQueued,
+    undoing,
+    undoDraft: chat.sessionId === null ? undefined : undoDrafts[chat.sessionId],
+    acknowledgeDraft,
     stop,
     newSession,
     selectSession,

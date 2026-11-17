@@ -3,6 +3,7 @@
 export type EventType =
   | 'start'
   | 'message_saved'
+  | 'message_inserted'
   | 'reasoning_delta'
   | 'reasoning_end'
   | 'content_delta'

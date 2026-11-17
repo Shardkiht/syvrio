@@ -46,6 +46,7 @@ Core has exactly four fields. The file must be UTF-8. A decoding error names the
     state/{reflection,fingerprints,git-sync,usage,vault-binding}.json
     jobs/dreaming/jobs.jsonl
     session-reasoning/<session-id>/<message-id>.json
+    turn-undo/<session-id>/<first-user-message-id>.json
     locks/{client,vault,git}.lock
     logs/
 ```
@@ -53,6 +54,8 @@ Core has exactly four fields. The file must be UTF-8. A decoding error names the
 Categories can be nested. Use the Vault-relative Markdown path when topic names repeat. Git tracks only the Vault and sees memory, session and record changes. Stop running Syvrio clients before switching the active Vault. A Runtime bound to a different Vault invalidates its known derived files; Vault data stays intact. Deleting Runtime while Syvrio is stopped preserves facts and session text but removes local reasoning attachments, counters, and job progress. Back up Runtime separately if you need those records.
 
 Assistant records may contain a `reasoning_local` flag that points to a private Runtime attachment. The attachment contains reasoning and optional protocol fragments. Keep the Runtime if you need to reopen this reasoning after a restore. Older sessions need no JSONL rewrite: assistant records without the flag still render their replies. If the attachment or its ID is missing, the reply still loads without reasoning. A legacy inline reasoning field is not used for display or model replay.
+
+Supplemental user messages may carry a `turn_root` reference to the first user message. Tool records may carry `turn_undo_recorded` to indicate that rollback depends on the matching private Runtime journal. These optional fields require no migration. The journal records the original state and expected changes before local tool writes. Undo preflights the affected files and inferences, refuses later conflicts, and appends session and audit events. Older turns without a journal marker still support conversation-only undo. Deleting a session also removes its local journal.
 
 Configuration lookup: `SYVRIO_CONFIG`, local `syvrio.toml`, then `~/.syvrio/config.toml`. If the last file does not exist, the previous platform configuration path is still accepted. `vault` and `runtime` are independent top-level settings; `SYVRIO_RUNTIME` overrides the runtime path. Runtime must be outside any Git working tree and separate from the Vault. See [config.example.toml](../config.example.toml).
 

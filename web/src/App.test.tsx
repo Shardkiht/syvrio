@@ -35,7 +35,7 @@ const CATALOG: CommandInfo[] = [
     usage: '/model [refresh]',
     subcommands: [{ name: 'refresh', description: 'Refresh model list' }],
   }),
-  command('undo', { confirm: true }),
+  command('undo'),
   command('import', { support: 'unsupported', note: 'Use the TUI.' }),
   command('help', { shortcut: 'Ctrl+Shift+P / Alt+P' }),
   command('status'),
@@ -340,6 +340,113 @@ describe('Web client interactions', () => {
     await waitFor(() => expect(calls.some((url) => url.includes('/api/chat/cancel'))).toBe(true));
     expect(cancelCalls).toBe(1);
     await waitFor(() => expect(screen.getByTestId('assistant-message').textContent).toContain('Stopped'));
+  });
+
+  it('queues ordinary sends in order and sends Ctrl+Enter to the running turn', async () => {
+    const sent: string[] = [];
+    const inserted: unknown[] = [];
+    let finish!: (value: string) => void;
+    const streamTail = new Promise<string>((resolve) => { finish = resolve; });
+    let readCount = 0;
+    const first = {
+      ok: true, status: 200,
+      body: { getReader: () => ({
+        read: async () => {
+          if (++readCount === 1) return {
+            done: false, value: encoder.encode(frame({ seq: 1, type: 'start', turn_id: 71, session_id: 's-1' })),
+          };
+          if (readCount === 2) return { done: false, value: encoder.encode(await streamTail) };
+          return { done: true };
+        },
+        releaseLock: () => {},
+      }) },
+    } as unknown as Response;
+    installFetch({
+      '/api/chat': (init) => {
+        sent.push(JSON.parse(String(init?.body)).message);
+        return sent.length === 1 ? first : sse(frame({ seq: 1, type: 'done', text: 'Queued reply' }));
+      },
+      '/api/chat/insert': (init) => {
+        inserted.push(JSON.parse(String(init?.body)));
+        return json(null, 204);
+      },
+    });
+    render(<App />);
+    await ready();
+    send('original');
+    await waitFor(() => expect(readCount).toBe(2));
+    const input = screen.getByTestId('composer-input') as HTMLTextAreaElement;
+    for (const text of ['first queued', 'second queued']) {
+      fireEvent.change(input, { target: { value: text } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+    }
+    expect(sent).toEqual(['original']);
+    expect(screen.getByRole('region', { name: 'Send queue' }).textContent).toContain('2 queued');
+
+    fireEvent.change(input, { target: { value: 'new instruction' } });
+    fireEvent.keyDown(input, { key: 'Enter', ctrlKey: true });
+    await waitFor(() => expect(inserted).toEqual([
+      { turn_id: 71, session_id: 's-1', message: 'new instruction' },
+    ]));
+    await waitFor(() => expect(input.value).toBe(''));
+    expect(sent).toEqual(['original']);
+    finish(frame({ seq: 2, type: 'content_delta', text: 'Original response' })
+      + frame({ seq: 3, type: 'message_inserted', session_id: 's-1', text: 'new instruction' })
+      + frame({ seq: 4, type: 'done', session_id: 's-1', text: 'Supplement response' }));
+    await waitFor(() => expect(sent).toEqual(['original', 'first queued', 'second queued']));
+    expect(screen.getByTestId('message-list').textContent).toContain('Original response');
+    expect(screen.getByTestId('message-list').textContent).toContain('Supplement response');
+  });
+
+  it('restores the undone draft and pauses queued messages until the next explicit send', async () => {
+    const sent: string[] = [];
+    let finish!: (value: string) => void;
+    const streamTail = new Promise<string>((resolve) => { finish = resolve; });
+    let readCount = 0;
+    const first = {
+      ok: true, status: 200,
+      body: { getReader: () => ({
+        read: async () => {
+          if (++readCount === 1) return {
+            done: false, value: encoder.encode(frame({ seq: 1, type: 'start', turn_id: 72, session_id: 's-1' })),
+          };
+          if (readCount === 2) return { done: false, value: encoder.encode(await streamTail) };
+          return { done: true };
+        },
+        releaseLock: () => {},
+      }) },
+    } as unknown as Response;
+    installFetch({
+      '/api/chat': (init) => {
+        sent.push(JSON.parse(String(init?.body)).message);
+        return sent.length === 1 ? first : sse(frame({ seq: 1, type: 'done', text: 'Reply' }));
+      },
+      'POST /api/commands': () => {
+        finish(frame({ seq: 2, type: 'cancelled', session_id: 's-1' }));
+        return json(commandResult({
+          command: 'undo', intent: 'undo', session_id: 's-1',
+          data: { restored: 'original question' }, refresh_history: true,
+        }));
+      },
+      '/api/sessions/s-1': () => json({
+        session_id: 's-1', title: 'Session', current: true, has_earlier: false, summary: null, items: [],
+      }),
+    });
+    render(<App />);
+    await ready();
+    send('original question');
+    await waitFor(() => expect(readCount).toBe(2));
+    const input = screen.getByTestId('composer-input') as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: 'queued question' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    await waitFor(() => expect(input.value).toBe('original question'));
+    expect(screen.getByRole('region', { name: 'Send queue' }).textContent).toContain('paused');
+    expect(sent).toEqual(['original question']);
+    fireEvent.change(input, { target: { value: 'edited question' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() => expect(sent).toEqual(['original question', 'edited question', 'queued question']));
   });
 
   it('restores an existing session from the sidebar', async () => {
@@ -698,14 +805,9 @@ describe('Slash commands and shortcuts', () => {
     expect(spy.lines).toContain('/context');
   });
 
-  it('searches the palette and requires server-side confirmation for /undo', async () => {
-    const spy = spyCommands((body) =>
-      body.line === '/undo' && !body.confirmed
-        ? commandResult({
-            status: 'confirm_required', command: 'undo', intent: 'undo',
-            message: 'Discards the last user turn and its reply.',
-          })
-        : commandResult({ command: 'undo', intent: 'undo', message: 'Nothing to undo.' }));
+  it('runs /undo directly from the command palette', async () => {
+    const spy = spyCommands(() =>
+      commandResult({ command: 'undo', intent: 'undo', message: 'Nothing to undo.' }));
     installFetch(spy.overrides);
     render(<App />);
     await ready();
@@ -714,11 +816,9 @@ describe('Slash commands and shortcuts', () => {
     fireEvent.change(paletteInput, { target: { value: 'und' } });
     expect(screen.getAllByRole('option')).toHaveLength(1);
     fireEvent.keyDown(paletteInput, { key: 'Enter' });
-    await waitFor(() => expect(screen.getByTestId('confirm-overlay')).toBeTruthy());
-    expect(screen.getByTestId('confirm-message').textContent).toContain('Discards');
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
-    await waitFor(() => expect(spy.confirmed).toContain(true));
-    expect(screen.getByTestId('composer-input')).toBeTruthy();
+    await waitFor(() => expect(spy.lines).toEqual(['/undo']));
+    expect(spy.confirmed).toEqual([false]);
+    expect(screen.queryByRole('alertdialog')).toBeNull();
   });
 
   it('keeps the composer usable when the command API fails', async () => {

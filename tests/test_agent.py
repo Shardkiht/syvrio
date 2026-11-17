@@ -9,6 +9,7 @@ from syvrio.llm import AssistantTurn, ChatModelError, ToolCall
 from syvrio.memory.extractor import StaticExtractor
 from syvrio.memory.models import Candidate, ExtractionResult
 from syvrio.memory.service import MemoryService
+from syvrio.memory.turn_undo import TurnUndoError
 
 pytestmark = pytest.mark.agent
 
@@ -261,6 +262,137 @@ def test_undo_excludes_original_turn_from_next_model_call(tmp_path):
     assert "旧回答" not in contents
     assert runtime.current.user_texts() == ["编辑后的提问"]
     assert any(record.get("type") == "undo" for record in runtime.current.records)
+
+
+def test_turn_undo_restores_vault_files_after_resume(tmp_path, monkeypatch):
+    candidates = [
+        Candidate(text="合成：新加入的偏好", topic="new-preference", confidence=0.99),
+        Candidate(text="合成：需要核对的偏好", topic="other", confidence=0.1),
+    ]
+    model = FakeChatModel([])
+    runtime, service = build_runtime(tmp_path, model, candidates)
+    correction = service.note("合成：原来的活动是读书", topic="activities")
+    forgotten = service.note("合成：原来的计划是骑车", topic="activities")
+    evolution = service.note("合成：状态是短期试验", topic="projects")
+    inference = service.propose_inference("合成：可能喜欢读书", [correction.id])
+    watched = [
+        service.store.topic_path(correction.topic),
+        service.store.topic_path(evolution.topic),
+    ]
+    before = [path.read_bytes() for path in watched]
+    source = tmp_path / "synthetic-input.txt"
+    source_before = "合成：导入源文件。".encode()
+    source.write_bytes(source_before)
+    imported = Candidate(text="合成：来自文档的偏好", topic="imported", confidence=0.99)
+    monkeypatch.setattr(
+        "syvrio.memory.service.ImportExtractor",
+        lambda *_args, **_kwargs: StaticExtractor(ExtractionResult(memories=[imported])),
+    )
+    model.turns.extend(
+        [
+            AssistantTurn(
+                tool_calls=[
+                    ToolCall("c1", "memorize", {"text": "合成偏好样例"}),
+                    ToolCall(
+                        "c2",
+                        "correct",
+                        {"entry_id": correction.id, "text": "合成：现在的活动是绘画"},
+                    ),
+                    ToolCall("c3", "forget", {"entry_id": forgotten.id}),
+                    ToolCall(
+                        "c4",
+                        "evolve",
+                        {
+                            "entry_id": evolution.id,
+                            "text": "合成：状态进入长期验证",
+                            "effective_from": "2024-01-01",
+                        },
+                    ),
+                    ToolCall("c5", "import_file", {"path": str(source), "apply": True}),
+                ]
+            ),
+            AssistantTurn(content="已处理"),
+        ]
+    )
+    prompt = f'请处理合成样例并导入 "{source}"'
+    runtime.ask(prompt)
+    assert len(service.pending()) == 1
+    assert service.inferences.all()[0].status == "superseded"
+    assert service.store.topic_path("new-preference").exists()
+    assert service.store.topic_path("imported").exists()
+    unrelated = service.note("合成：之后新增的独立主题", topic="unrelated")
+    audit_before = service.audit.path.read_bytes()
+    assert all(
+        f'"action": "{action}"'.encode() in audit_before
+        for action in ("correct", "forget", "evolve")
+    )
+
+    reopened = AgentRuntime(service, model, SessionStore(service.paths), config=service.config.chat)
+    reopened.resume(runtime.current.id)
+    journals = list((service.paths.runtime_dir / "turn-undo" / reopened.current.id).glob("*.json"))
+    assert len(journals) == 1
+    manifest = journals[0].read_bytes()
+    journals[0].unlink()
+    with pytest.raises(TurnUndoError, match="journal is missing"):
+        reopened.undo()
+    assert reopened.current.user_texts() == [prompt]
+    journals[0].write_bytes(manifest)
+    append = reopened.sessions.append
+
+    def fail_at_undo(session, record):
+        if record["type"] == "undo":
+            raise OSError("synthetic session write failure")
+        return append(session, record)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(reopened.sessions, "append", fail_at_undo)
+        with pytest.raises(OSError, match="session write failure"):
+            reopened.undo()
+    assert service.audit.path.read_bytes() == audit_before
+    assert service.store.topic_path("new-preference").exists()
+    assert len(service.pending()) == 1
+    assert service.inferences.all()[0].status == "superseded"
+    assert reopened.current.user_texts() == [prompt]
+    assert reopened.undo() == prompt
+    assert reopened.current.active_records() == []
+    assert [path.read_bytes() for path in watched] == before
+    assert service.pending() == []
+    assert service.inferences.all() == [inference]
+    assert not service.store.topic_path("new-preference").exists()
+    assert not service.store.topic_path("imported").exists()
+    assert service.store.find(unrelated.id) is not None
+    assert source.read_bytes() == source_before
+    audit_after = service.audit.path.read_bytes()
+    assert audit_after.startswith(audit_before)
+    assert b'"action": "undo_tool_writes"' in audit_after
+    assert reopened.sessions.delete(reopened.current.id)
+    assert not journals[0].exists()
+
+
+def test_turn_undo_leaves_all_files_and_messages_when_a_file_changed(tmp_path):
+    model = FakeChatModel(
+        [
+            AssistantTurn(tool_calls=[ToolCall("c", "memorize", {"text": "合成偏好"})]),
+            AssistantTurn(content="已记录"),
+        ]
+    )
+    runtime, service = build_runtime(
+        tmp_path,
+        model,
+        [
+            Candidate(text="合成：要撤销的记录甲", topic="topic-a", confidence=0.99),
+            Candidate(text="合成：要撤销的记录乙", topic="topic-b", confidence=0.99),
+        ],
+    )
+    runtime.ask("合成请求")
+    later = service.note("合成：之后的独立修改", topic="topic-b")
+    first = service.store.topic_path("topic-a")
+    before = first.read_bytes()
+    with pytest.raises(TurnUndoError, match="changed after"):
+        runtime.undo()
+    assert runtime.current.user_texts() == ["合成请求"]
+    assert first.read_bytes() == before
+    assert service.store.find(later.id) is not None
 
 
 def test_memorize_tool_writes_with_session_provenance(tmp_path):

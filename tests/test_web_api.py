@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 from fastapi.testclient import TestClient
 
+from syvrio.agent import runtime as agent_runtime
 from syvrio.app.web.backend import WebBackend, WebError
 from syvrio.app.web.server import create_app
 from syvrio.infra.config import (
@@ -29,7 +30,7 @@ from syvrio.llm import (
     ToolCall,
 )
 from syvrio.memory.extractor import StaticExtractor
-from syvrio.memory.models import ExtractionResult
+from syvrio.memory.models import Candidate, ExtractionResult
 from syvrio.memory.service import MemoryService
 
 pytestmark = pytest.mark.web
@@ -203,6 +204,184 @@ def test_first_message_persists_the_session(client, backend):
     assert backend._sessions.exists(session_id)
     rows = client.get("/api/sessions").json()["items"]
     assert [row["id"] for row in rows if row["current"]] == [session_id]
+
+
+@pytest.mark.parametrize("reserve_before_tools", [True, False])
+def test_web_insert_waits_for_the_model_and_never_splits_a_tool_batch(
+    client, backend, monkeypatch, reserve_before_tools
+):
+    class Model(FakeModel):
+        def __init__(self):
+            super().__init__([])
+            self.entered = threading.Event()
+            self.release = threading.Event()
+            self.followup = []
+
+        def chat(self, messages, tools, on_delta=None, cancel=None, *, on_reasoning=None):
+            self.calls += 1
+            if self.calls == 1:
+                self.entered.set()
+                assert self.release.wait(5)
+                return AssistantTurn(tool_calls=[ToolCall("call-1", "recall", {"query": "sample"})])
+            self.followup = [dict(message) for message in messages]
+            return AssistantTurn(content="Follow-up complete.")
+
+    model = backend._runtime.model = Model()
+    offer_reached = threading.Event()
+    tool_entered = threading.Event()
+    release_tool = threading.Event()
+    original_offer = backend._conversation.insert_message
+    original_results = agent_runtime._tool_results
+
+    def offer(*args):
+        result = original_offer(*args)
+        if result is not None:
+            offer_reached.set()
+        return result
+
+    def gated_tools(*args, **kwargs):
+        tool_entered.set()
+        assert release_tool.wait(5)
+        return original_results(*args, **kwargs)
+
+    monkeypatch.setattr(backend._conversation, "insert_message", offer)
+    monkeypatch.setattr(agent_runtime, "_tool_results", gated_tools)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        stream = pool.submit(collect, client, "original")
+        try:
+            assert model.entered.wait(5)
+            payload = {
+                "turn_id": backend.active_turn_id(),
+                "session_id": backend._conversation.current_id,
+            }
+            pending = None
+            if reserve_before_tools:
+                pending = pool.submit(
+                    client.post, "/api/chat/insert", json={**payload, "message": "a supplement"}
+                )
+                assert offer_reached.wait(5)
+                assert not pending.done()
+            model.release.set()
+            assert tool_entered.wait(5)
+            rejected = client.post(
+                "/api/chat/insert", json={**payload, "message": "must not interrupt the tool"}
+            )
+            assert rejected.status_code == 409
+            assert rejected.json()["error"]["code"] == "insertion_unavailable"
+            if pending is not None:
+                assert not pending.done()
+        finally:
+            model.release.set()
+            release_tool.set()
+        if pending is not None:
+            assert pending.result(timeout=5).status_code == 204
+        events = stream.result(timeout=5)
+    if reserve_before_tools:
+        assert types(events).index("tool_end") < types(events).index("message_inserted")
+        assert model.followup[-2]["role"] == "tool"
+        assert model.followup[-1] == {"role": "user", "content": "a supplement"}
+        assert backend._conversation.current.user_texts() == ["original", "a supplement"]
+        undo = client.post("/api/commands", json={"line": "/undo"}).json()
+        assert undo["data"]["restored"] == "original\n\na supplement"
+        assert backend._conversation.current.user_texts() == []
+    else:
+        assert "message_inserted" not in types(events)
+        assert model.followup[-1]["role"] == "tool"
+        assert backend._conversation.current.user_texts() == ["original"]
+
+
+def test_web_undo_during_generation_returns_saved_text_and_waits_for_rollback(client, backend):
+    model = backend._runtime.model = GatedModel()
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        stream = pool.submit(collect, client, "please undo me")
+        try:
+            assert model.entered.wait(5)
+            session_id = backend._conversation.current_id
+            # A different command already holds the ordinary command mutex.
+            # Undo still registers its cancellation before that lock is released.
+            with backend._command_lock:
+                command = pool.submit(
+                    client.post,
+                    "/api/commands",
+                    json={"line": "/undo", "session_id": session_id},
+                )
+                assert backend._conversation.cancel_event.wait(5)
+                assert not command.done()
+                duplicate = client.post(
+                    "/api/commands", json={"line": "/undo", "session_id": session_id}
+                )
+                assert duplicate.json()["status"] == "busy"
+        finally:
+            model.release.set()
+        response = command.result(timeout=5).json()
+        assert response["status"] == "ok"
+        assert response["data"]["restored"] == "please undo me"
+        assert response["session_id"] == session_id
+        assert types(stream.result(timeout=5))[-1] == "cancelled"
+    assert client.get(f"/api/sessions/{session_id}").json()["items"] == []
+    assert backend._conversation.current.user_texts() == []
+
+
+def test_undo_during_tool_write_reverts_the_completed_write_and_stops_the_next(
+    client, backend, monkeypatch
+):
+    service = backend._service
+    service.extractor = StaticExtractor(
+        ExtractionResult(
+            memories=[
+                Candidate(text="合成：暂时写入的活动偏好", topic="undo-inflight", confidence=0.99),
+            ]
+        )
+    )
+    model = backend._runtime.model = FakeModel(
+        [
+            AssistantTurn(
+                tool_calls=[
+                    ToolCall("write-1", "memorize", {"text": "保存合成偏好"}),
+                    ToolCall(
+                        "write-2", "correct", {"entry_id": "not-run", "text": "must not execute"}
+                    ),
+                ]
+            )
+        ]
+    )
+    entered = threading.Event()
+    release = threading.Event()
+    affected = service.store.topic_path("undo-inflight")
+    memorize = service.memorize
+    written = threading.Event()
+
+    def gated_write(*args, **kwargs):
+        entered.set()
+        assert release.wait(5)
+        result = memorize(*args, **kwargs)
+        if affected.exists():
+            written.set()
+        return result
+
+    monkeypatch.setattr(service, "memorize", gated_write)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        stream = pool.submit(collect, client, "tool undo")
+        try:
+            assert entered.wait(5)
+            session_id = backend._conversation.current_id
+            undo = pool.submit(
+                client.post, "/api/commands", json={"line": "/undo", "session_id": session_id}
+            )
+            assert backend._conversation.cancel_event.wait(5)
+            assert not undo.done()
+        finally:
+            release.set()
+        response = undo.result(timeout=5).json()
+        assert response["status"] == "ok"
+        assert response["data"]["restored"] == "tool undo"
+        events = stream.result(timeout=5)
+    assert written.is_set() and not affected.exists()
+    assert model.calls == 1
+    assert not any(
+        event.get("name") == "correct" for event in events if event["type"] == "tool_start"
+    )
+    assert backend._conversation.current.user_texts() == []
 
 
 # ---------- session deletion ----------

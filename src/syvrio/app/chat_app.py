@@ -17,9 +17,10 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.events import MouseDown, MouseUp
-from textual.widgets import Input, Label, ListItem, ListView, Markdown, Static
+from textual.widgets import Button, Input, Label, ListItem, ListView, Markdown, Static
 from textual.worker import Worker, WorkerState
 
+from ..agent.insertion import InsertionRequest
 from ..agent.runtime import AgentRuntime
 from ..agent.session import Session, SessionStore
 from ..application.service import ApplicationService
@@ -60,6 +61,7 @@ class ChatApp(ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixi
         Binding("ctrl+p", "model_providers", "Manage providers", priority=True, show=False),
         ("ctrl+q", "quit", "Quit"),
         ("ctrl+b", "toggle_sidebar", "Toggle sidebar"),
+        Binding("ctrl+enter", "insert_message", "Insert message", show=False, priority=True),
     ]
 
     def action_model_providers(self) -> None:
@@ -96,6 +98,7 @@ class ChatApp(ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixi
         self._usage_request: tuple | None = None
         self._usage_failed: tuple | None = None
         self._pending_undo_restore: dict[str, str] = {}
+        self._safe_insert: InsertionRequest | None = None
 
     # ---------- 应用层兼容访问面（仅供旧 UI 测试与只读视图） ----------
 
@@ -162,6 +165,7 @@ class ChatApp(ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixi
                 yield Static("", id="send-queue", markup=False)
                 yield BarInput(placeholder="Message or /command", id="input")
                 with Horizontal(id="status-row"):
+                    yield Button("Undo", id="undo-turn")
                     yield self._model_status
                     yield Static("", id="status")
                 yield Static(
@@ -859,8 +863,38 @@ class ChatApp(ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixi
         else:
             palette.close()
 
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "undo-turn":
+            event.stop()
+            self.query_one("#input", Input).focus()
+            self._submit_command("/undo")
+
+    async def action_insert_message(self) -> None:
+        if len(self.screen_stack) != 1 or not isinstance(self.focused, BarInput):
+            return
+        widget = self.focused
+        text = widget.value.strip()
+        if not text:
+            return
+        conversation = self.application.conversation
+        turn_id = conversation.active_turn_id
+        if turn_id is None:
+            await widget.action_submit()
+            return
+        if not self._ask_in_current_view():
+            self.notify("Insert is only available in the generating session.")
+            return
+        request = conversation.insert_message(turn_id, text)
+        if request is None:
+            self.notify("Cannot insert now. Enter queues the message for the next turn.")
+            return
+        self._safe_insert = request
+        self.notify("Message will be inserted at the next safe boundary.")
+
     def on_input_submitted(self, event: Input.Submitted) -> None:
         line = event.value.strip()
+        if self._safe_insert and self._safe_insert.text == line:
+            return
         event.input.value = ""
         if not line:
             return

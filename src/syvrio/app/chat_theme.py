@@ -121,6 +121,8 @@ APP_CSS = """
     }
     /* 模型与上下文保持单行，快捷键独立一行，避免小窗口互相挤压。 */
     #status-row { height: 2; width: 1fr; background: $bg; padding: 1 3 0 3; }
+    #undo-turn { height: 1; min-width: 0; border: none; background: #242424; color: #d4d4d4; margin-right: 1; padding: 0 1; }
+    #undo-turn:hover, #undo-turn:focus { background: #303030; color: $accent; }
     #composer-hint { height: 1; color: #858585; padding: 0 3; }
     #model-status { width: 1fr; height: 1; color: $muted; overflow-x: hidden; }
     #status { width: auto; max-width: 55%; height: 1; color: $faint; text-align: right; }

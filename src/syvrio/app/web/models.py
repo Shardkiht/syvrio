@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 EventType = Literal[
     "start",
     "message_saved",
+    "message_inserted",
     "reasoning_delta",
     "reasoning_end",
     "content_delta",
@@ -116,6 +117,10 @@ class ActionResponse(BaseModel):
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=100_000)
     session_id: str | None = None
+
+
+class InsertRequest(ChatRequest):
+    turn_id: int
 
 
 class CancelRequest(BaseModel):

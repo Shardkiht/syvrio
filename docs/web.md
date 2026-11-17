@@ -93,6 +93,7 @@ uv run python scripts/build_web.py --wheel dist/*.whl  # 校验实际 wheel 内�
 | GET | `/api/commands` | 共享命令目录（名称、用法、能力标记、子命令、快捷键） |
 | POST | `/api/commands` | 执行斜杠命令，返回结构化结果，不经过 LLM |
 | POST | `/api/chat` | 流式聊天，`text/event-stream` |
+| POST | `/api/chat/insert` | 提交 `turn_id`、`session_id` 和 `message`；回合加入补充消息后返回 204，时机不可用返回 409 |
 | POST | `/api/chat/cancel` | 按 `turn_id` 取消当前请求 |
 
 Web、TUI 与 CLI 共用 `SessionStore.list()`：在应用列表条数上限前，按最后一条有效消息的时间倒序。撤销后的消息不计入排序；改名、摘要和沉淀记录不会把旧会话顶到前面。没有有效消息时使用创建时间。
@@ -137,7 +138,7 @@ FastAPI 自动提供 `/openapi.json` 与 `/docs`。
 - `/git` 显示同步状态，`/git sync` 二次确认后执行同步。`/pending approve|reject|edit <id>` 和 `/inferences confirm|reject|correct <id>` 可从 Web 审查记录。
 - `/pending` 每条候选只列一次。选中后查看完整正文、主题及原因，可编辑多行内容、批准或拒绝；提交前需确认。写入成功原位刷新列表，失败时可重试且保留编辑内容。编辑表单通过命令请求的 `pending_text` 字段发送正文，独立于斜杠命令的长度上限。
 - `/profile refresh [n]` 手动刷新画像，`/dream <n>` 运行有请求预算的回顾，`/dream status|cancel|resume` 管理状态。TUI 仍提供更完整的专用审查界面和空闲调度。
-- `/undo` 前端弹二次确认，服务端仍独立复核 `confirmed` 才执行。
+- 输入 `/undo` 或点击输入框旁的 **Undo** 会立即发出取消信号，跳过普通命令等待。已经开始的写工具先安全收尾，再撤销该回合的对话和有日志的本地文件写入。撤销成功后回填原文，暂停队列直到下一次主动发送。已有输入草稿时，等清空后再回填；受影响的文件后来被改动时，整次撤销会被拒绝。
 - 未识别的 `/` 命令返回 `unknown` 并提示 `/help`；前端把所有 `/` 行发往 `/api/commands`，后端 `/api/chat` 也会拒绝斜杠开头的消息（`422 command_required`），双重保证不会误发给 LLM。
 - 多标签页：`POST /api/commands` 携带的 `session_id` 与 Runtime 当前会话不一致时返回 `409 session_mismatch`，提示刷新，避免旧标签页操作到别人的会话。
 
@@ -205,7 +206,8 @@ Web 单 Turn 模型下，`CommandUseCases.BUSY_READ_ONLY` 与 `BUSY_NO_ARGUMENT`
 ## 并发与 TUI 边界
 
 - 单进程单 Worker，进程内共享一个 `ApplicationService` / `AgentRuntime`。
-- 同一时刻只允许一个生成中的 Turn；第二个 `POST /api/chat` 返回 `409 busy`（`code="busy"`），不排队、不串线。
+- 脚本直接发送第二个 `POST /api/chat` 时仍会收到 `409 busy`。浏览器页面中的 Enter 和发送按钮会把消息加到本页队列，等当前回合结束后按顺序发出。离开或刷新页面会清空浏览器队列。
+- Ctrl+Enter 或 **Insert** 请求补充当前回合。接收窗口只在模型请求期间开放，工具执行中拒绝新的插入。已接收的补充消息在当前响应完整结束、已有工具结果写入后加入上下文，并通过 `message_inserted` 通知当前页面。上下文预算不足、回合已结束或取消时，输入草稿保留。
 - 取消请求必须带匹配的 `turn_id`；过期或伪造 ID 不会取消当前请求。
 - 浏览器切后台、退出或刷新导致流式连接断开时，当前回复继续生成并保存。重新打开页面后会等待在途回复完成并刷新历史。主动点停止仍会按该轮 ID 取消回复。
 - `runtime/locks/client.lock` 是整进程持有的独占标记：**TUI 与 Web 不能同时使用同一 Vault**。后启动的一方会收到明确错误（Web 拒绝启动，TUI 提示先关闭另一客户端）。进程退出或崩溃时由操作系统释放锁，不会残留。
@@ -330,7 +332,7 @@ uv run pytest -m web -q              # 后端 API / SSE / 并发 / 安全 / 命�
 uv run python scripts/build_web.py --check  # 校验已暂存静态资源
 ```
 
-命令相关自动化覆盖：目录与 TUI 一致性、能力标记、未知命令不转发 LLM、`/import` 不读取浏览器路径、`/undo` 服务端确认、忙期策略、会话错配 409、跨站写拒绝、选项面板不重开；前端覆盖前缀/子命令补全、`Tab`/`Enter`/`Escape`、方向键、IME 组字、快捷键冲突、命令面板、设置面板（模型切换、思考强度、上下文、供应商分区、About 不泄露 Key）、危险确认、命令失败后输入框恢复、生成中只读命令不打断流式回复。
+命令相关自动化覆盖：目录与 TUI 一致性、能力标记、未知命令不转发 LLM、`/import` 不读取浏览器路径、`/undo` 优先取消与回填、忙期策略、会话错配 409、跨站写拒绝、选项面板不重开；前端覆盖前缀/子命令补全、`Tab`/`Enter`/`Escape`、方向键、IME 组字、快捷键冲突、命令面板、设置面板（模型切换、思考强度、上下文、供应商分区、About 不泄露 Key）、危险确认、命令失败后输入框恢复、生成中只读命令不打断流式回复。
 
 
 ## PyPI 自动更新

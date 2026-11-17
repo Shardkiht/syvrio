@@ -369,19 +369,22 @@ class ChatCommandsMixin:
         if not self.application.conversation.has_session:
             self.add_card("No message to undo.")
             return
-        text = self.application.conversation.undo_current()
+        conversation = self.application.conversation
+        try:
+            text = conversation.undo_current()
+        except (ValueError, OSError) as exc:
+            record_event("undo.failed", exc)
+            self.notify(f"Undo failed: {exc}", severity="error")
+            return
         if text is None:
             self.add_card("No message to undo.")
             return
-        self._clear_chat()
-        self.build_transcript()
-        self.refresh_sessions()
-        self.update_status()
-        widget = self.query_one("#input", Input)
-        widget.value = text
-        widget.cursor_position = len(text)
-        widget.focus()
-        self.notify("Message restored for editing.")
+        session_id = conversation.current.id
+        self._pending_undo_restore[session_id] = text
+        if self._apply_undo_view(session_id, text):
+            self._pending_undo_restore.pop(session_id, None)
+            self.notify("Message restored for editing.")
+        conversation.pause_after_undo(True)
 
     def _run_compact(self) -> None:
         self._begin_navigation()

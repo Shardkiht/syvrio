@@ -22,6 +22,13 @@ export default function App() {
     setSidebarOpen,
     toggleSidebar,
     send,
+    insert,
+    queued,
+    queuePaused,
+    removeQueued,
+    undoDraft,
+    undoing,
+    acknowledgeDraft,
     stop,
     newSession,
     selectSession,
@@ -215,6 +222,15 @@ export default function App() {
               contextUsage={contextUsage}
               compaction={compaction}
               onSend={(text) => void send(text)}
+              onInsert={insert}
+              queued={queued}
+              queuePaused={queuePaused}
+              onRemoveQueued={removeQueued}
+              undoDraft={undoDraft}
+              onUndo={chat.busy || chat.messages.some((message) => message.role === 'user')
+                ? () => void runCommand('/undo') : undefined}
+              undoing={undoing}
+              onUndoDraftApplied={() => { if (chat.sessionId !== null) acknowledgeDraft(chat.sessionId); }}
               onStop={() => void stop()}
               catalog={catalog}
               focusSignal={focusSignal}

@@ -12,7 +12,7 @@ from threading import Event, Lock
 from ..infra.config import ChatConfig, Config, load_config
 from ..infra.documents import document_paths
 from ..infra.latency import TurnLatency, elapsed_ms, track_turn
-from ..infra.tokens import truncate_to_tokens
+from ..infra.tokens import estimate_messages_tokens, truncate_to_tokens
 from ..llm import (
     AssistantTurn,
     ChatModel,
@@ -27,8 +27,12 @@ from ..llm import (
 )
 from ..memory.detect import redact_secrets
 from ..memory.extractor import LLMExtractor, split_chunks
+from ..memory.queue import rollback_files
 from ..memory.service import MemoryService, load_persona
+from ..memory.store import atomic_write
+from ..memory.turn_undo import TurnFileJournal, TurnUndoError
 from .context import CompactionPhase, ContextManager, record_to_message
+from .insertion import TurnInsertion
 from .prompts import build_system_prompt
 from .recall import (
     RecallQueryBuilder,
@@ -275,6 +279,8 @@ class AgentRuntime:
         on_tool: Callable[[bool], None] | None = None,
         on_compaction: Callable[[CompactionPhase], None] | None = None,
         cancel: Event | None = None,
+        insertion: TurnInsertion | None = None,
+        on_inserted: Callable[[str, str], None] | None = None,
     ) -> AgentReply:
         """执行一轮对话。
 
@@ -304,6 +310,8 @@ class AgentRuntime:
                     on_thinking,
                     on_tool,
                     on_compaction,
+                    insertion,
+                    on_inserted,
                 )
         except GenerationCancelled as exc:
             partial = getattr(exc, "partial_content", "")
@@ -342,6 +350,8 @@ class AgentRuntime:
         on_thinking: Callable[[ThinkingUpdate], None] | None = None,
         on_tool: Callable[[bool], None] | None = None,
         on_compaction: Callable[[CompactionPhase], None] | None = None,
+        insertion: TurnInsertion | None = None,
+        on_inserted: Callable[[str, str], None] | None = None,
     ) -> AgentReply:
         # Settings can change while this turn waits on a model or tool.
         model = self.model
@@ -358,6 +368,7 @@ class AgentRuntime:
                 raise GenerationCancelled("Stopped by user")
 
         message_id = new_message_id()
+        journal = TurnFileJournal(self.service.paths, session.id, message_id)
         self.sessions.append(
             session,
             {"type": "message", "id": message_id, "role": "user", "content": text},
@@ -422,6 +433,7 @@ class AgentRuntime:
         steps = 0
         final = ""
         completed = False
+        needs_wrap_up = True
 
         def request_model(schemas: list[dict]) -> AssistantTurn:
             with latency.model_step() as started:
@@ -459,20 +471,55 @@ class AgentRuntime:
                 )
                 return turn
 
+        def apply_insertion() -> bool:
+            nonlocal text, tools
+            pending = insertion.pending if insertion is not None else None
+            if pending is None or (cancel is not None and cancel.is_set()):
+                return False
+            supplement = redact_secrets(pending.text)
+            candidate = {"role": "user", "content": supplement}
+            if estimate_messages_tokens([*messages, candidate]) > context.input_budget:
+                insertion.settle()
+                return False
+            text = supplement
+            message = self.sessions.append(
+                session,
+                {"type": "message", "id": new_message_id(), "turn_root": message_id, **candidate},
+            )
+            messages.append(self._message_from_record(message))
+            insertion.settle(applied=True)
+            if on_inserted is not None:
+                on_inserted(message["id"], text)
+            # A new user message authorizes only the file paths it explicitly supplies.
+            tools = build_tools(
+                self.service, session, timeout=config.tool_timeout, file_paths=document_paths(text)
+            )
+            return True
+
         while steps < config.max_tool_steps:
             progress("Waiting for model")
-            turn = request_model(tools.schemas())
+            if insertion is None:
+                turn = request_model(tools.schemas())
+            else:
+                with insertion.model_request():
+                    turn = request_model(tools.schemas())
             usage.add(turn.usage)
             steps += 1
             record = self._append_assistant(session, turn, on_thinking)
             messages.append(self._message_from_record(record))
             if not turn.tool_calls:
+                if apply_insertion():
+                    needs_wrap_up = False
+                    continue
                 final = turn.content
                 completed = True
                 break
+            needs_wrap_up = True
             started = time.monotonic()
             latency.event("tools.started", tool_count=len(turn.tool_calls))
-            results = _tool_results(tools, turn.tool_calls, on_progress, cancel, user_text=text)
+            results = self._journaled_tool_results(
+                journal, tools, turn.tool_calls, on_progress, cancel, text
+            )
             for index, (call, outcome) in enumerate(results, 1):
                 latency.event(
                     "tool.finished", tool_index=index, ok=outcome.ok, elapsed_ms=outcome.duration_ms
@@ -488,6 +535,11 @@ class AgentRuntime:
                         "ok": outcome.ok,
                         "duration_ms": outcome.duration_ms,
                         "content": content,
+                        **(
+                            {"turn_undo_recorded": True}
+                            if journal.files or journal.inferences
+                            else {}
+                        ),
                     },
                 )
                 messages.append({"role": "tool", "tool_call_id": call.id, "content": content})
@@ -499,22 +551,25 @@ class AgentRuntime:
             # 工具结果预算随上下文窗口走；200K 窗口下 8K 会过早丢证据。
             compact_tool_outputs(messages, max_tokens=max(8000, config.context_window // 4))
             latency.event("tools.finished", elapsed_ms=elapsed_ms(started))
+            apply_insertion()
 
         if not completed:
             progress("Generating final answer")
-            messages.append(
-                {
-                    "role": "user",
-                    "content": "已达到工具调用上限。请基于以上信息直接给出最终回答，不要再调用工具。",
-                    **({"_tool_wrap_up": True} if isinstance(model, LiteLLMChatModel) else {}),
-                }
-            )
+            if needs_wrap_up:
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": "已达到工具调用上限。请基于以上信息直接给出最终回答，不要再调用工具。",
+                        **({"_tool_wrap_up": True} if isinstance(model, LiteLLMChatModel) else {}),
+                    }
+                )
             turn = request_model([])
             usage.add(turn.usage)
             steps += 1
             self._append_assistant(session, turn, on_thinking)
             final = turn.content or "(no answer generated)"
-            emit("Tool-step limit reached; forced wrap-up")
+            if needs_wrap_up:
+                emit("Tool-step limit reached; forced wrap-up")
 
         return AgentReply(
             content=final,
@@ -524,6 +579,11 @@ class AgentRuntime:
             usage=usage,
             estimated_tokens=plan.estimated_tokens,
         )
+
+    @staticmethod
+    def _journaled_tool_results(journal, tools, calls, on_progress, cancel, text):
+        with journal.capture():
+            yield from _tool_results(tools, calls, on_progress, cancel, user_text=text)
 
     def force_compact(
         self, on_compaction: Callable[[CompactionPhase], None] | None = None
@@ -746,18 +806,52 @@ class AgentRuntime:
             )
         if target is None:
             return None
-        self.sessions.append(
-            target_session,
-            {
-                "type": "undo",
-                "id": new_message_id(),
-                "message_id": target["id"],
-            },
+        root_id = target.get("turn_root") or target["id"]
+        inputs = [record for record in records if record.get("role") == "user"]
+        start = next(
+            (index for index, record in enumerate(inputs) if record.get("id") == root_id), None
         )
+        if start is None or any(
+            record.get("turn_root") != root_id for record in inputs[start + 1 :]
+        ):
+            raise TurnUndoError("Only the latest turn can be undone.")
+        event = {"type": "undo", "id": new_message_id(), "message_id": root_id}
+        journal = TurnFileJournal(self.service.paths, target_session.id, root_id)
+        with self.service.write_lock:
+            first = records.index(inputs[start])
+            if not journal.path.is_file() and any(
+                record.get("turn_undo_recorded") is True for record in records[first:]
+            ):
+                raise TurnUndoError(
+                    "This turn's local undo journal is missing. Restore the matching Runtime to undo it."
+                )
+            files, inferences = journal.plan(self.service.inferences.all)
+            if files or inferences:
+                paths = [*files, self.service.audit.path, target_session.path]
+                if inferences:
+                    paths.append(self.service.inferences.path)
+                with rollback_files(paths):
+                    for path, original in files.items():
+                        if original is None:
+                            path.unlink()
+                        else:
+                            atomic_write(path, original)
+                    if inferences:
+                        self.service.inferences.record(*inferences)
+                    self.service.audit.write(
+                        "undo_tool_writes",
+                        session=target_session.id,
+                        message=root_id,
+                        paths=len(files),
+                        inferences=len(inferences),
+                    )
+                    self.sessions.append(target_session, event)
+            else:
+                self.sessions.append(target_session, event)
         if self.session is not None and target_session.id == self.session.id:
             self.last_plan = None
             self.last_plan_session = None
-        return str(target.get("content") or "")
+        return "\n\n".join(str(record.get("content") or "") for record in inputs[start:])
 
     def _system_prompt(self) -> str:
         """每轮读 vault/SOUL.md，人设改动下一轮即生效；拼接规则见 prompts.py。"""

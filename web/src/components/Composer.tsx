@@ -57,6 +57,14 @@ export function Composer({
   contextUsage = null,
   compaction = null,
   onSend,
+  onInsert,
+  queued = [],
+  queuePaused = false,
+  onRemoveQueued,
+  undoDraft,
+  onUndo,
+  undoing = false,
+  onUndoDraftApplied,
   onStop,
   catalog = [],
   focusSignal = 0,
@@ -68,6 +76,14 @@ export function Composer({
   contextUsage?: ContextUsage | null;
   compaction?: CompactionPhase | null;
   onSend: (text: string) => void;
+  onInsert?: (text: string) => Promise<boolean>;
+  queued?: string[];
+  queuePaused?: boolean;
+  onRemoveQueued?: (index: number) => void;
+  undoDraft?: string;
+  onUndo?: () => void;
+  undoing?: boolean;
+  onUndoDraftApplied?: () => void;
   onStop: () => void;
   catalog?: CommandInfo[];
   focusSignal?: number;
@@ -76,6 +92,7 @@ export function Composer({
   onOpenCommands?: () => void;
 }) {
   const [value, setValue] = useState('');
+  const [inserting, setInserting] = useState<string | null>(null);
   const [index, setIndex] = useState(0);
   const [dismissed, setDismissed] = useState(false);
   const ref = useRef<HTMLTextAreaElement>(null);
@@ -118,6 +135,12 @@ export function Composer({
     if (focusSignal > 0) ref.current?.focus();
   }, [focusSignal]);
 
+  useEffect(() => {
+    if (undoDraft === undefined || value.trim()) return;
+    setValue(undoDraft);
+    onUndoDraftApplied?.();
+  }, [undoDraft, value, onUndoDraftApplied]);
+
   const suggestions = suggestionsFor(value, catalog);
   const showSuggestions = !dismissed && suggestions.length > 0;
   const active = suggestions[Math.min(index, Math.max(0, suggestions.length - 1))];
@@ -133,18 +156,33 @@ export function Composer({
   const submit = () => {
     const text = value.trim();
     if (!text) return;
-    // Read-only slash commands stay available while a reply streams; the
-    // backend decides which ones are safe instead of freezing the composer.
-    if (busy && !isCommandLine(text)) return;
+    if (text === inserting) return;
     onSend(text);
     setValue('');
     setDismissed(false);
     setIndex(0);
   };
 
+  const insert = async () => {
+    const text = value.trim();
+    if (!text || isCommandLine(text) || inserting !== null || !onInsert) return;
+    setInserting(text);
+    try {
+      if (await onInsert(text)) setValue((draft) => draft.trim() === text ? '' : draft);
+    } finally {
+      setInserting(null);
+    }
+  };
+
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     // A Chinese/Japanese IME composition must never trigger shortcuts.
     if (isComposing(event)) return;
+    if (event.key === 'Enter' && event.ctrlKey && !event.shiftKey && !isCommandLine(value)) {
+      event.preventDefault();
+      if (busy) void insert();
+      else submit();
+      return;
+    }
     if (showSuggestions) {
       if (event.key === 'ArrowDown') {
         event.preventDefault();
@@ -199,6 +237,20 @@ export function Composer({
   return (
     <div className={`composer${hero ? ' composer-hero' : ''}`}>
       {busy && <div className="progress" data-testid="progress">{progress || 'Working...'}</div>}
+      {queued.length > 0 && (
+        <section className="web-send-queue" aria-label="Send queue">
+          <div role="status">{queued.length} queued{queuePaused ? ' · paused until you send again' : ''}</div>
+          <ol>
+            {queued.map((text, index) => (
+              <li key={index}>
+                <span title={text}>{text}</span>
+                <button type="button" aria-label={`Remove queued message ${index + 1}`}
+                  onClick={() => onRemoveQueued?.(index)}>×</button>
+              </li>
+            ))}
+          </ol>
+        </section>
+      )}
       <div className="composer-lane">
         <CommandSuggestions
           suggestions={showSuggestions ? suggestions : []}
@@ -238,10 +290,29 @@ export function Composer({
                 <button type="button" className="send run-command" onClick={submit}>Run</button>
               )}
               <ContextMeter usage={contextUsage} compaction={compaction} />
-              {busy ? (
-                <button type="button" className="stop" onClick={onStop} aria-label="Stop">
-                  <StopIcon size={20} />
+              {onUndo && (
+                <button type="button" className="send run-command" onClick={onUndo}
+                  disabled={undoing} title="Undo the last turn and restore its input">
+                  {undoing ? 'Undoing…' : 'Undo'}
                 </button>
+              )}
+              {busy ? (
+                <>
+                  {!isCommandLine(value) && (
+                    <>
+                      <button type="button" className="send run-command" onClick={() => void insert()}
+                        title="Insert at the next safe boundary (Ctrl+Enter)"
+                        disabled={!value.trim() || inserting !== null}>{inserting ? 'Waiting…' : 'Insert'}</button>
+                      <button type="button" className="send" onClick={submit}
+                        disabled={!value.trim() || inserting === value.trim()} aria-label="Queue message">
+                        <ArrowUpIcon size={23} />
+                      </button>
+                    </>
+                  )}
+                  <button type="button" className="stop" onClick={onStop} aria-label="Stop">
+                    <StopIcon size={20} />
+                  </button>
+                </>
               ) : (
                 <button
                   type="button"
@@ -266,7 +337,7 @@ export function Composer({
           ))}
         </div>
       )}
-      <div className="composer-hint">Enter to send · Shift+Enter for a new line · / for commands</div>
+      <div className="composer-hint">Enter to send or queue · Ctrl+Enter to insert · Shift+Enter for a new line</div>
     </div>
   );
 }

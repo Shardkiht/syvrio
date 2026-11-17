@@ -971,8 +971,7 @@ async def test_undo_restores_last_message_for_editing(tmp_path):
         await pilot.press("enter")
         await _wait_reply(app, pilot)
 
-        widget.value = "/undo"
-        await pilot.press("enter")
+        await pilot.click("#undo-turn")
         await pilot.pause()
 
         assert widget.value == "原始提问"
@@ -3978,6 +3977,54 @@ async def _wait_idle(app, pilot, limit=400):
         if not app.busy:
             return
     raise AssertionError("等待空闲超时")
+
+
+async def test_ctrl_enter_inserts_in_current_turn_before_fifo(tmp_path):
+    app = build_app(tmp_path, [])
+    gated = GatedChatModel(
+        [AssistantTurn(content=text) for text in ("First", "Supplement reply", "Queue reply")],
+        stream_first=True,
+    )
+    gated.gates = [threading.Event() for _ in range(3)]
+    app.runtime.model = gated
+    async with app.run_test(size=(120, 40)) as pilot:
+        widget = app.query_one("#input", Input)
+        try:
+            widget.value = "original"
+            await pilot.press("enter")
+            for _ in range(100):
+                await pilot.pause()
+                if gated.calls:
+                    break
+            assert gated.calls == ["original"]
+
+            widget.value = "queue it"
+            await pilot.press("enter")
+            widget.value = "insert it"
+            await pilot.press("ctrl+enter")
+            assert [row.line for row in app._queue] == ["queue it"]
+            assert widget.value == "insert it"
+
+            gated.gates[0].set()
+            for _ in range(100):
+                await pilot.pause()
+                if len(gated.calls) == 2:
+                    break
+            assert gated.calls == ["original", "insert it"]
+            assert widget.value == ""
+            assert [row.line for row in app._queue] == ["queue it"]
+            assert app.runtime.current.user_texts() == ["original", "insert it"]
+
+            gated.gates[1].set()
+            for _ in range(100):
+                await pilot.pause()
+                if len(gated.calls) == 3:
+                    break
+            assert gated.calls == ["original", "insert it", "queue it"]
+        finally:
+            for gate in gated.gates:
+                gate.set()
+        await _wait_idle(app, pilot)
 
 
 async def test_input_stays_enabled_during_ask(tmp_path):

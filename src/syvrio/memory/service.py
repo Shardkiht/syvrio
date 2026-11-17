@@ -61,6 +61,7 @@ from .temporal import (
     select_facts,
     validate_range,
 )
+from .turn_undo import capture_inference_updates
 
 VAULT_README = """# Syvrio vault
 
@@ -548,12 +549,14 @@ class MemoryService:
             return records
         active = {entry.id: source_fingerprint(entry) for entry in self.current_facts()}
         changed: list[Inference] = []
+        previous: list[Inference] = []
         for index, item in enumerate(records):
             changed_sources = not set(item.source_ids) <= active.keys() or any(
                 active.get(source) != fingerprint
                 for source, fingerprint in item.source_fingerprints.items()
             )
             if item.status in ("hypothesis", "confirmed") and changed_sources:
+                previous.append(item)
                 item = item.model_copy(
                     update={
                         "status": "superseded",
@@ -563,6 +566,7 @@ class MemoryService:
                 changed.append(item)
                 records[index] = item
         if changed:
+            capture_inference_updates(previous, changed)
             self.inferences.record(*changed)
         return records
 

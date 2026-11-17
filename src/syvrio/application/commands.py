@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from ..infra.diagnostics import record_event
+from ..memory.turn_undo import TurnUndoError
 
 if TYPE_CHECKING:
     from .service import ApplicationService
@@ -107,7 +108,7 @@ WEB_CAPABILITIES: dict[str, WebCapability] = {
     "sessions": WebCapability(CLIENT, "open_sessions", shortcut="Ctrl+B / Alt+B"),
     "compact": WebCapability(SERVER, "compact"),
     "undo": WebCapability(
-        SERVER, "undo", confirm=True, note="Discards the last user turn and its reply."
+        SERVER, "undo", note="Stops generation and restores the last turn for editing."
     ),
     "summary": WebCapability(SERVER, "summary"),
     "status": WebCapability(SERVER, "status"),
@@ -284,7 +285,7 @@ class CommandUseCases:
         /dream status is read-only while /dream 3 runs a reflection job.
         """
         head = argument.strip().lower().split(" ", 1)[0] if argument.strip() else ""
-        if name in ("new", "compact", "rename"):
+        if name in ("new", "compact", "rename", "undo"):
             return True
         if name in ("model", "think", "context"):
             return bool(argument.strip())
@@ -345,6 +346,9 @@ class CommandUseCases:
             )
         try:
             return self._dispatch(name, argument, busy)
+        except TurnUndoError as exc:
+            record_event("undo.failed", exc)
+            return CommandResult("error", name, capability.intent, message=str(exc))
         except Exception as exc:  # noqa: BLE001 - never leak a traceback to the browser
             record_event("command.failed", exc)
             return CommandResult(
@@ -598,22 +602,23 @@ class CommandUseCases:
                     return CommandResult(
                         "busy", name, "undo", submission.message or "Undo already in progress."
                     )
-                return CommandResult(
-                    "ok",
-                    name,
-                    "undo",
-                    "Generation stopped; the last turn is being undone.",
-                    refresh_history=True,
-                    refresh_sessions=True,
-                )
+                if submission.kind == "undo":
+                    return CommandResult(
+                        "ok",
+                        name,
+                        "undo",
+                        "Generation stopped; the last turn is being undone.",
+                        data={"undo_pending": True},
+                    )
             restored = conversation.undo_current()
             return CommandResult(
                 "ok",
                 name,
                 "undo",
-                f"Restored the last message: {restored}" if restored else "Nothing to undo.",
-                refresh_history=True,
-                refresh_sessions=True,
+                "Last turn undone." if restored is not None else "Nothing to undo.",
+                data={"restored": restored},
+                refresh_history=restored is not None,
+                refresh_sessions=restored is not None,
             )
 
         return CommandResult(

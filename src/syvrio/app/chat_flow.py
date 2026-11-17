@@ -260,6 +260,10 @@ class ChatFlowMixin:
             record_event("tui.finalize_failed", exc)
             self.notify("UI update failed; request state was released.", severity="warning")
         finally:
+            if self._safe_insert is not None:
+                if not self._safe_insert.applied:
+                    self.notify("Message was not inserted. You can still send it from the input.")
+                self._safe_insert = None
             if self._end_ask(turn_id):
                 self._drain_pending_intent()
 
@@ -279,6 +283,7 @@ class ChatFlowMixin:
                 self._thinking_update, turn_id, update
             ),
             on_progress=lambda phase: self.call_from_thread(self._progress_update, phase),
+            on_inserted=lambda text: self.call_from_thread(self._show_inserted_message, text),
             on_session=lambda session: self.call_from_thread(self._bind_ask_session, session.id),
             on_user_message=lambda message_id: self.call_from_thread(
                 self._bind_ask_user_message, message_id
@@ -326,6 +331,18 @@ class ChatFlowMixin:
         )
 
     # ---------- 流式渲染：帧合并更新，完成/中断后收尾 ----------
+
+    def _show_inserted_message(self, text: str) -> None:
+        request = self._safe_insert
+        self._safe_insert = None
+        self._finalize_stream_segment(self._stream_buffer)
+        self._stream_buffer = ""
+        if self._ask_in_current_view():
+            widget = self.query_one("#input", Input)
+            if request is not None and widget.value.strip() == request.text:
+                widget.value = ""
+            stamp = format_local_timestamp(utc_timestamp(), "%H:%M")
+            self.add_user_turn(text, stamp)
 
     def _stream_append(self, stamp: str, delta: str) -> None:
         self._progress_phase = "Streaming"

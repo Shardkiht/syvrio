@@ -35,6 +35,7 @@ from .models import (
     ErrorDetail,
     HealthResponse,
     HistoryResponse,
+    InsertRequest,
     ProviderActionRequest,
     ProviderListResponse,
     SessionListResponse,
@@ -222,6 +223,10 @@ def create_app(
                 "X-Accel-Buffering": "no",
             },
         )
+
+    @app.post("/api/chat/insert", status_code=204, tags=["web"])
+    async def insert(body: InsertRequest):
+        await asyncio.to_thread(owner.insert, body.turn_id, body.session_id, body.message)
 
     @app.post("/api/chat/cancel", response_model=CancelResponse, tags=["web"])
     async def cancel(body: CancelRequest):

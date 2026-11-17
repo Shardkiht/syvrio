@@ -74,6 +74,15 @@ export const api = {
   history: (sessionId: string) =>
     jsonRequest<HistoryResponse>(`/api/sessions/${encodeURIComponent(sessionId)}`),
 
+  insertMessage: async (turnId: number, sessionId: string | null, message: string) => {
+    const response = await fetchChecked('/api/chat/insert', {
+      method: 'POST',
+      headers: jsonHeaders,
+      body: JSON.stringify({ turn_id: turnId, session_id: sessionId, message }),
+    });
+    if (!response.ok) throw new Error(await readError(response));
+  },
+
   cancelTurn: (turnId: number) =>
     jsonRequest<CancelResponse>('/api/chat/cancel', {
       method: 'POST',
