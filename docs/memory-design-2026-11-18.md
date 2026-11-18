@@ -214,7 +214,8 @@ LLM 已判断某项事实具有记忆价值，但在对话和 Recall 结果中**
 | 组件 | 应负责 | 不应负责 |
 |---|---|---|
 | **Agent LLM** | 判断记忆价值、事实提炼、语义重复/冲突、变化/纠错、是否需要用户确认；选择工具 | 直接修改 Vault；自评置信度作为写入依据 |
-| **Recall** | 检索相关正式记忆并返回事实及必要 ID/上下文 | 决定事实之间的业务关系 |
+| **Agent Runtime** | 拦截所有记忆变更工具调用，确保执行前已有有效 Recall；维护 RecallContext；必要时直接调用统一 Recall 接口并把结果交回 Agent | 替 Agent 判断事实之间的语义关系 |
+| **Recall** | 提供唯一的记忆检索接口，返回结构化事实及必要 ID/Context | 决定事实之间的业务关系 |
 | **MemoryService** | 确定性参数/状态/凭据/并发约束，协调可靠写入 | 自己推断语义冲突、根据阈值决定 Pending、重复调用 LLM 提取 |
 | **MemoryStore / Schema** | Markdown 无损解析、路径校验、持久化、身份和状态修改 | 记忆价值判断或语义裁决 |
 | **PendingQueue** | Pending 的创建、取回、确认/拒绝及处理记录 | 对自然语言进行二次理解 |
@@ -246,34 +247,48 @@ LLM 已判断某项事实具有记忆价值，但在对话和 Recall 结果中**
 flowchart TD
     A[Agent 处理对话] --> B{内容值得长期记忆?}
     B -- 否 --> Z[正常回复，不进入记忆流程]
-    B -- 是 --> C[Recall 相关已有记忆]
-    C --> D{Agent 能确定语义关系及操作?}
-    D -- 否 --> P[创建 Pending: Draft + question + related_ids]
-    D -- 是 --> E[调用 memorize / transition / correct / forget]
-    E --> F{MemoryService 确定性校验}
-    F -- 通过 --> G[MemoryStore 写入 + Audit]
-    F -- 失败 --> H[明确错误；Agent 视情况重新 Recall 或修正参数]
+    B -- 是 --> C[Agent 判断并准备记忆操作]
+    C --> D[Runtime 拦截记忆变更工具调用]
+    D --> E{RecallContext 是否仍有效?}
+    E -- 否 --> F[调用统一 Recall 接口]
+    F --> G[结构化结果加入对话上下文并返回 Agent]
+    G --> H[Agent 基于 Recall 结果重新判断]
+    H --> I[提交记忆变更操作]
+    E -- 是 --> I
+    I --> J{操作/目标/内容是否与 Recall 时一致?}
+    J -- 否 --> D
+    J -- 是 --> K{MemoryService 确定性校验}
+    K -- 通过 --> L[MemoryStore 写入 + Audit]
+    K -- 失败 --> M[将校验结果返回 Agent]
+    H --> P[必要时创建 Pending: Draft + question + related_ids]
     P --> U[用户查看 question，确认 / 编辑 text 后确认 / 否定]
     U --> V[已明确操作走相同 Service 校验与写入通道]
 ```
 
 - 这是**逻辑职责流**，不是规定所有入口都必须生成完全相同的执行栈。
-- 确认/编辑等普通 Pending 操作默认不再调用 LLM；“用户新回答一个语义问题”可能触发一次新的 Agent 解释。
-- `Recall` 必须实际发生，但“如何可靠追踪相关检索已执行”尚未确定；先避免为此设计过度复杂的凭证体系。
+- **所有记忆变更操作**都必须经过 Runtime 的前置 Recall 检查；不能依赖系统提示词保证 Agent 一定主动调用 Recall。
+- 如果没有可复用的有效 RecallContext，Runtime 在执行变更工具前拦截调用，直接调用统一 Recall 接口，并把结果交回 Agent；Agent 结合结果重新判断后再提交操作。
+- 如果操作类型、目标或内容发生变化，必须重新 Recall；操作与目标内容未变、证据未变化且上下文未压缩时，复用已有 Recall，一次即可。
+- LLM 主动调用 Recall 与 Runtime 自动 Recall 共用同一个接口和结果格式；两者不需要额外的触发来源参数或独立 Recall Tool Handler。
+- 确认/编辑等普通 Pending 操作默认不再调用 LLM；用户新回答一个语义问题可能触发一次新的 Agent 解释。
 - Recall 未命中不代表 Vault 中绝对不存在相关记忆；用检索质量评测优化，而不是让 Service 再开发一套自然语言理解规则。
-
 ### 6.2 各层的拟议边界
 
 ```text
 App / Agent / Tools / CLI / TUI / Web / MCP
-  ├─ Agent：提取事实、调用 Recall、决定操作
+  ├─ Agent：提取事实、判断语义、选择记忆操作
   └─ Pending 审核 UI：question 只读展示，text 可编辑
           ↓
+Agent Runtime
+  ├─ Tool-call interception：拦截每个记忆变更操作
+  ├─ RecallContext：保存本轮 Recall 的有效性元数据
+  └─ Recall：显式工具调用或 Runtime 直接调用同一个接口
+          ↓
 Application / MemoryService（确定性用例、参数、并发、状态）
-          ├─ MemoryStore + Markdown Schema（原文无损读写）
-          ├─ Retrieval（关键词 / 向量 / 混合，返回过滤后的视图）
-          ├─ PendingQueue（持久化待确认项）
-          └─ Audit / Sessions（操作历史与来源回溯）
+  ├─ MemoryStore + Markdown Schema（原文无损读写）
+  ├─ Retrieval（关键词 / 向量 / 混合）
+  ├─ PendingQueue（持久化待确认项）
+  └─ Audit / Sessions（操作历史与来源回溯）
 ```
 
 建议的边界调整（均未进入实施）：
@@ -302,30 +317,91 @@ Application / MemoryService（确定性用例、参数、并发、状态）
 - **纠错**：旧事实本来就不正确；将错误记录设为 `deprecated`，新事实独立保存，保留审计。
 - **冲突**：是 Agent 对证据关系的判断或未确定的状态，不预设要额外开发一个 `conflict` 工具。
 
-## 7. 检索视图与模型上下文精简 [已确定方向 + 架构构想]
+## 7. Recall 接口、结果与上下文管理 [已确定]
 
-### 7.1 LLM 最小必要输出
+### 7.1 统一 Recall 接口与调用方式
 
-正常 Recall 给 LLM 的结果应以**事实正文和必要 Context**为核心，并保留后续操作所需的 `id`。
+Recall 只有一套应用接口，供两种调用方式复用：
 
-| 字段 | 是否语义索引 | 是否默认交给 LLM |
-|---|---|---|
-| `text` | 是 | 是 |
-| `topic` | 可按检索机制选择增强/过滤 | 是 |
-| 相关 `context` | 有选择地索引 | 是（按需） |
-| `id` | 不参与语义索引 | 是（用于 `correct` / `transition` / `forget`） |
-| `status` | 用于查询过滤 | 视需要 |
-| `recorded_at` | 可用于排序，不应误作事实发生时间 | 默认无需 |
-| `session_id/message_id` | 不参与普通语义索引 | 默认无需，溯源时再读取 |
-| Audit、原始 Markdown、文件路径与行号 | 不参与 | 默认无需 |
-| Pending `question`、队列处理信息 | 不参与正式记忆检索 | 不应混入 |
+- **LLM 主动 Recall**：通过 Agent 暴露的 Recall 工具调用该接口。
+- **Runtime 自动 Recall**：Runtime 拦截记忆变更工具调用后，程序直接调用同一个 Recall 接口。
 
-### 7.2 改进检索文本生成 [架构构想]
+两者使用相同的请求参数、检索实现和结构化结果。**不增加独立的 Recall Tool Handler，也不增加用于区分触发来源的参数**；Runtime 的职责是前置拦截和状态管理，不是再包装一层 Recall 业务接口。
 
-当前 `Entry.index_text` 会拼入大量 Context/Extensions 字段并采用**排除名单**过滤内部元数据。建议改为**允许名单**：只纳入 `text` 和明确具有语义检索价值的 Context 字段，扩展元数据默认不索引。这样新增 Extensions 字段也不会意外污染向量或关键词内容。
+Recall 请求参数：
 
-检索命中后按操作场景提供“精简事实视图”或“溯源详情视图”；不要为减少上下文而丢掉持久化元数据本身。
+| 参数 | 必需 | 默认值 | 语义 |
+|---|---|---|---|
+| **query** | 是 | — | 检索所需的语义查询 |
+| **limit** | 否 | **7** | 最多返回的记忆条数 |
+| **time_range** | 否 | — | 一个时间区间，用于按事实发生时间或有效期筛选 |
+| **location** | 否 | — | 地点筛选条件 |
+| **emotion** | 否 | — | 情绪筛选条件 |
 
+- 删除 **view** 参数，不再提供多种 Recall 视图。
+- 时间筛选只接收一个 **time_range**，不再把多个时间字段暴露成独立请求参数。
+- **time_range** 命中规则：**event_time** 落在查询区间内，或记忆的 **valid_from/valid_to** 有效区间与查询区间重叠。
+- **recorded_at** 表示记录写入时间，不参与 **time_range** 过滤；它不代表事实发生或有效时间。
+- 时间区间的具体序列化形式及边界精度在实现阶段确定，不在本次设计中额外扩展参数。
+
+### 7.2 结构化结果与 MemoryDraft 复用
+
+Recall 返回结构化数据，不再把 Markdown 原文作为正常工具结果交给 LLM，也不为 Recall 重新设计一套重复的事实字段模型。
+
+**RecallEntry 复用 MemoryDraft，并只增加 id 与 status：**
+
+```python
+class RecallEntry(MemoryDraft):
+    id: str
+    status: Literal["active", "deprecated"]
+```
+
+其中 MemoryDraft 已定义 **text**、**topic**、**context**；RecallEntry 只补充已持久化记录的 **id** 与 **status**。
+
+**返回范围：Core + Context 全部返回，Extensions 不返回。**
+
+- Core：返回全部核心字段，包括 **id**、**status**。
+- 内容字段：复用 Draft 的 **text**、**topic**。
+- Context：当前定义的 Context 字段全部返回，包括 **event_time**、**valid_from**、**valid_to**、**location**、**emotion**、**emotion_at**；字段不存在时按可选字段处理。
+- Extensions：不返回，包括 **recorded_at**、session/message 来源引用及其他程序维护的扩展元数据。
+- 检索分数、Markdown 原文、文件路径、行号、Audit 和 Pending 队列信息也不属于 RecallEntry，不放入正常 Recall 结果。
+
+Recall 不调用 LLM 对存储内容进行二次提取或改写；只将已有 MemoryEntry 的 Core 与 Context 提取为上述结构化结果。
+
+### 7.3 RecallContext 与强制前置 Recall
+
+**RecallContext** 是 Agent Runtime 内部的运行时状态类，**不是记忆内容，也不是对话上下文本身**。它用于判断当前操作是否仍可复用之前的 Recall 结果。
+
+目标记录的信息：
+
+| 字段 | 用途 |
+|---|---|
+| **operation** | Recall 对应的记忆操作类型 |
+| **target_id** | 操作目标记录 ID |
+| **payload_hash** | 操作内容的指纹 |
+| **evidence_version** | Recall 所依据的记忆证据版本 |
+| **context_generation** | 对话上下文代次，用于识别上下文压缩 |
+
+复用与失效规则：
+
+- 操作类型、目标、操作内容均未变化，证据版本未变化，且上下文代次未变化时，复用已有 Recall。
+- 操作类型、目标或操作内容变化时，原 Recall 不再适用于新操作，必须重新 Recall。
+- Recall 之后相关记忆证据发生变化时，必须重新 Recall。
+- 对话上下文发生压缩时，当前 RecallContext 失效，后续记忆变更操作必须重新 Recall。
+
+**Recall 结果与 RecallContext 分开管理：**
+
+- Recall 的结构化结果直接加入 Agent 对话上下文，供 LLM 理解和决策；不是只存放在一个对 LLM 不可见的独立缓存中。
+- RecallContext 只保存用于判断结果能否复用的元数据，不复制或替代 Recall 事实内容。
+- 上下文压缩时，Recall 结果随对话上下文一起处理；但压缩会使 RecallContext 失效，不能继续把压缩前的 Recall 当作当前操作的有效证据。
+
+### 7.4 Recall 上下文预算与检索文本
+
+Recall 结果会占用 Agent 上下文，因此需要受上下文预算约束。默认 **limit=7** 是条数上限；实际返回还需要考虑上下文容量，避免一次 Recall 填入过多内容。具体 Token 预算、排序和裁剪策略留待实现审查，不在此处增加额外参数。
+
+当前 **Entry.index_text** 会拼入大量 Context/Extensions 字段并采用**排除名单**过滤内部元数据。建议改为**允许名单**：只纳入 **text** 和明确具有语义检索价值的 Context 字段，扩展元数据默认不索引。这样新增 Extensions 字段也不会意外污染向量或关键词内容。
+
+不要为减少上下文而丢掉持久化元数据本身；持久化结构与交给 LLM 的 Recall 投影是两回事。
 ## 8. 统一 Dream：先 Profile，后 Inference [已确定方向，执行细节待定]
 
 ### 8.1 一个 Dream 入口与调度器
@@ -379,7 +455,7 @@ flowchart TD
 |---|---|---|
 | 高 | **MemoryService 的统一写入 API** | Service 仅确定性校验；如何组织 `memorize/transition/correct/forget` 的具体命令与返回结果未定 |
 | 高 | **Pending 审批与原计划操作的映射** | `Draft + question + related_ids` 已确定为最小业务内容；但若涉及旧记录变化/纠错，如何保留明确且安全的操作意图尚未定 |
-| 高 | **Agent 的 Recall 前置约束** | 逻辑上必须 Recall；如何追踪一次写入关联的检索和 Vault 是否已变化，未定 |
+| 中 | **Recall 上下文预算与检索质量** | 参数、结果结构和 RecallContext 已确定；Token 预算、排序与检索质量仍需结合评测确定 |
 | 高 | **`transition` 的时间处理与历史事实检索** | 不猜生效日期、区分纠错；部分日期/区间精度和有效期更新规则待明确 |
 | 中 | **修改 Pending.text 后的 Context 处理** | 不能盲目沿用可能失效的旧 Context；是清除全部还是只清除受影响字段，未定 |
 | 中 | **`source` 的字段位置与溯源形态** | 必须由程序提供；Context / Extensions 如何避免重复，未定 |
@@ -398,7 +474,7 @@ flowchart TD
 1. **MemoryService 用例与工具接口**：统一确定性校验、写入事务和错误返回。
 2. **Pending 确认的操作语义**：保持三种 UI 操作，同时保证不会误覆盖旧事实。
 3. **transition / correct / forget 的状态边界与时间语义**。
-4. **Recall 的最小输出与检索文本生成**。
+4. **Recall 的检索质量与上下文预算**：在已确定的参数、结果结构和 RecallContext 之上，审查排序、Token 预算与评测。
 5. **非 Agent 入口、Dream 调度、Inference Markdown 与迁移/验收方案**。
 
 ---
@@ -408,5 +484,7 @@ flowchart TD
 **已确定**：`MemoryDraft(text, topic, context?)`；`PendingItem = Draft + question + related_ids`（队列元数据另存）；`MemoryEntry = Draft + id + status + recorded_at`；`status = active/deprecated`；Core `id/status`；Markdown Content/Core/Context/Extensions 分层；Agent 主导语义判断；Service 只做确定性校验；Recall 是有记忆意图时的前置步骤；Pending 仅用于 Agent 无法判断的情况；用户确认/仅编辑 text 后确认/否定；普通审批不再额外调用 LLM；程序只阻止凭据写入长期记忆。
 
 **本轮新增已确定**：Inference 独立于事实，`kind` 对应用户推断领域、动态复用/新建，`status=hypothesis/confirmed/deprecated`；单个 `vault/profile.md` 定期由有效 Memory + confirmed Inference 重建，允许编辑并被下一次更新覆盖；Profile 作为 LLM 上下文参考，不反向写回事实；Dream 统一调度，**先一次调用生成 Profile，再分批生成 Inference**；Profile 前端只读展示，无独立刷新；Dream 支持自动与手动触发，阶段成功独立保留。
+
+**本轮 Recall 决策已确定**：统一 Recall 应用接口，Runtime 自动 Recall 直接调用该接口，LLM 通过工具调用同一接口；所有记忆变更工具调用由 Runtime 拦截并强制检查 Recall，操作类型/目标/内容变化或证据变化、上下文压缩后重新 Recall，其他情况复用；请求参数为 `query`（必填）、`limit`（默认 7）、`time_range`、`location`、`emotion`，删除 `view`；`time_range` 按 `event_time` 或有效期重叠过滤，不使用 `recorded_at`；Recall 返回结构化 `RecallEntry(MemoryDraft)`，Core + Context 全部返回，Extensions 不返回；Recall 结果加入对话上下文，`RecallContext` 只保存操作、目标、内容指纹、证据版本和上下文代次等复用元数据。
 
 **构想但未定稿**：Inference 改为 Markdown 的具体存储/审计实现，Dream 阶段续跑与调度参数、Profile 输入预算、具体工具参数与服务流程、Pending 审批的操作目标、安全的 Recall 追踪机制、Extensions 来源字段落点、编辑正文后的 Context 处理、真实数据迁移策略及检索视图细节。
