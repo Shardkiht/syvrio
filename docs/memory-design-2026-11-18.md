@@ -102,7 +102,7 @@ class MemoryEntry(MemoryDraft):
 
 - 从旧模型中移除 `time_text`、`location_kind`、`emotion_source` 等冗余字段。
 - 不把 LLM 猜测出的情绪当作用户事实；时间精度、区间校验应保持明确。
-- **来源（`source`）由程序管理，不由 LLM 填写。**此前曾讨论在 Context 中保留来源字段，但它与 Extensions 的溯源职责存在重叠；**最终落在哪层仍待确认**，不在此处强行定稿。
+- **Context 只保留记忆形成时的事实语义上下文**；来源分类 `source` 不属于 Context，目标设计中删除该字段，不要求 LLM 或程序为每条 Memory 维护来源类型。
 
 ### 2.5 事实与待确认模型关系
 
@@ -157,7 +157,7 @@ class Inference(BaseModel):
 | **Content** | 可被理解和检索的事实正文 | 保留 |
 | **Core** | 记录身份与生命周期：`id`、`status` | 已确定精简目标 |
 | **Context** | 可选的事实语义（时间、地点、情绪等） | 保留；具体字段见 2.4 |
-| **Extensions** | `recorded_at`、session/message 引用等程序维护的来源信息；其他扩展字段按需 | 保留；逐字段细节尚未全部定稿 |
+| **Extensions** | `recorded_at` 等必要的程序维护元数据；不保存独立的 `source` 字段，也不要求 Memory 固定保存 `session_id/message_id` | 保留；按实际需要使用，不为来源分类预留字段 |
 | **Audit** | 纠错、事实变化、弃用、用户审核等操作过程 | 与事实正文分离 |
 
 **长期数据组织方案**：
@@ -173,7 +173,7 @@ class Inference(BaseModel):
 `profile.md` 与 `SOUL.md` 都可作为 LLM 的参考材料，但语义不同：前者描述用户，后者约束助手自身。Profile **不是新的事实来源**，不反向覆盖 Memory/Inference；允许用户直接编辑且下次 Dream 自动重建时覆盖这些编辑，不额外维护保护、合并或锁定区域。
 
 - `topic` 映射主题文件或分类，不必在每条 Markdown Core 中重复存储。
-- 原始对话已有 sessions JSONL；记忆只需指向必要的 `session_id/message_id`，**不再复制一遍完整对话作为 evidence**。
+- 原始对话已有 Sessions JSONL；目标 Memory 模型不要求保存 `session_id/message_id` 引用，也不复制完整对话作为 evidence。未来如需回查原始对话，可由程序根据 Memory ID 定位，不要求 LLM 直接处理底层会话/消息 ID。
 - 纠错或状态变化由历史记录和事实有效期表达，不能凭 `related_ids` 自动设置任何旧记忆为弃用。
 - 不为了精简业务模型而丢弃 Markdown 无损解析能力：源码位置、未知扩展字段、手工编辑内容仍由 Schema/Store 处理。
 
@@ -363,12 +363,26 @@ class RecallEntry(MemoryDraft):
 - Core：返回全部核心字段，包括 **id**、**status**。
 - 内容字段：复用 Draft 的 **text**、**topic**。
 - Context：当前定义的 Context 字段全部返回，包括 **event_time**、**valid_from**、**valid_to**、**location**、**emotion**、**emotion_at**；字段不存在时按可选字段处理。
-- Extensions：不返回，包括 **recorded_at**、session/message 来源引用及其他程序维护的扩展元数据。
+- Extensions：不返回，包括 **recorded_at** 及其他程序维护的内部元数据；目标设计不要求在 Memory 中保存或向 LLM 暴露 `session_id/message_id`。
 - 检索分数、Markdown 原文、文件路径、行号、Audit 和 Pending 队列信息也不属于 RecallEntry，不放入正常 Recall 结果。
 
 Recall 不调用 LLM 对存储内容进行二次提取或改写；只将已有 MemoryEntry 的 Core 与 Context 提取为上述结构化结果。
 
-### 7.3 RecallContext 与强制前置 Recall
+### 7.3 原始对话查阅工具 [架构构想]
+
+未来如需让 Agent 核实某条记忆的原始对话依据，可考虑增加一个独立的查阅工具：
+
+```python
+def read_memory_source(memory_id: str) -> ToolResult:
+    ...
+```
+
+- LLM 只传入 Recall 已返回的 `memory_id`；不需要知道或传入 `session_id`、`message_id`。
+- 由程序根据 Memory ID 自行定位可能相关的 Session / Message，再读取原始对话。
+- 不要求 Memory Extensions 保存固定的会话/消息引用；可研究基于记忆正文、时间等信息检索原始会话的方式。
+- 具体定位算法、匹配可靠性及歧义处理留待真正需要时设计；当前仓库没有面向 Agent 的原始会话/消息查阅工具，本构想不代表立即新增工具。
+
+### 7.4 RecallContext 与强制前置 Recall
 
 **RecallContext** 是 Agent Runtime 内部的运行时状态类，**不是记忆内容，也不是对话上下文本身**。它用于判断当前操作是否仍可复用之前的 Recall 结果。
 
@@ -458,7 +472,7 @@ flowchart TD
 | 中 | **Recall 上下文预算与检索质量** | 参数、结果结构和 RecallContext 已确定；Token 预算、排序与检索质量仍需结合评测确定 |
 | 高 | **`transition` 的时间处理与历史事实检索** | 不猜生效日期、区分纠错；部分日期/区间精度和有效期更新规则待明确 |
 | 中 | **修改 Pending.text 后的 Context 处理** | 不能盲目沿用可能失效的旧 Context；是清除全部还是只清除受影响字段，未定 |
-| 中 | **`source` 的字段位置与溯源形态** | 必须由程序提供；Context / Extensions 如何避免重复，未定 |
+| 低 | **原始对话查阅工具** | 仅作为后续构想：工具接收 `memory_id`，由程序定位相关 Session / Message；具体检索算法与歧义处理待需要时设计，当前不实施 |
 | 中 | **`forget` 与 `deprecated` 的边界** | 逻辑弃用和真正删除、隐私要求及 Git/审计留痕的关系，未定 |
 | 中 | **Inference 证据失效及审计的实现** | 三态已定为 `hypothesis/confirmed/deprecated`；来源变更触发弃用及原因记录、指纹机制细节待定 |
 | 中 | **导入、后台沉淀等非实时 Agent 入口** | 不能继续走旧二次抽取 + 阈值裁决；是否使用单独 Agent/提取流程及如何共享校验，未定 |
@@ -487,4 +501,4 @@ flowchart TD
 
 **本轮 Recall 决策已确定**：统一 Recall 应用接口，Runtime 自动 Recall 直接调用该接口，LLM 通过工具调用同一接口；所有记忆变更工具调用由 Runtime 拦截并强制检查 Recall，操作类型/目标/内容变化或证据变化、上下文压缩后重新 Recall，其他情况复用；请求参数为 `query`（必填）、`limit`（默认 7）、`time_range`、`location`、`emotion`，删除 `view`；`time_range` 按 `event_time` 或有效期重叠过滤，不使用 `recorded_at`；Recall 返回结构化 `RecallEntry(MemoryDraft)`，Core + Context 全部返回，Extensions 不返回；Recall 结果加入对话上下文，`RecallContext` 只保存操作、目标、内容指纹、证据版本和上下文代次等复用元数据。
 
-**构想但未定稿**：Inference 改为 Markdown 的具体存储/审计实现，Dream 阶段续跑与调度参数、Profile 输入预算、具体工具参数与服务流程、Pending 审批的操作目标、安全的 Recall 追踪机制、Extensions 来源字段落点、编辑正文后的 Context 处理、真实数据迁移策略及检索视图细节。
+**构想但未定稿**：Inference 改为 Markdown 的具体存储/审计实现，Dream 阶段续跑与调度参数、Profile 输入预算、具体工具参数与服务流程、Pending 审批的操作目标、安全的 Recall 追踪机制、编辑正文后的 Context 处理、真实数据迁移策略及检索视图细节。原始对话查阅工具（仅传 `memory_id`、由程序定位 Session / Message）作为后续扩展构想，当前不实施。
