@@ -139,6 +139,11 @@ export function reduceChat(state: ChatState, event: StreamEvent): ChatState {
     case 'start':
       return { ...base, turnId: event.turn_id ?? null, progress: 'Thinking' };
 
+    case 'message_inserted': {
+      const completed = finishLive(base, (live) => ({ ...live, streaming: false }));
+      return { ...startTurn(completed, event.text || '', sessionId), turnId: base.turnId };
+    }
+
     case 'progress':
       return { ...base, progress: event.text || '' };
 

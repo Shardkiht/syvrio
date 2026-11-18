@@ -6,6 +6,8 @@ from syvrio.memory.models import Candidate
 from syvrio.memory.policy import decide
 
 pytestmark = pytest.mark.memory
+
+
 def test_high_confidence_is_admitted():
     result = decide(Candidate(text="事实", confidence=0.9), threshold=0.8)
     assert result.admit

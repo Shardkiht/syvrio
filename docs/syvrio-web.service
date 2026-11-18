@@ -1,0 +1,38 @@
+# Syvrio Web 的 systemd unit 模板（WSL Debian / Linux）。
+#
+# 复制到 /etc/systemd/system/syvrio-web.service，替换所有 REPLACE_* 值，
+# 完整清单见 docs/web.md。
+#
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now syvrio-web
+#   systemctl status syvrio-web
+#   journalctl -u syvrio-web -f
+#
+# 不要把本 unit 用于公网端点。服务只监听 loopback；私有 tailnet 访问由
+# Tailscale Serve（不要用 Funnel）提供。
+
+[Unit]
+Description=Syvrio Web 私有客户端
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=REPLACE_USER
+WorkingDirectory=REPLACE_REPO
+Environment=PYTHONUTF8=1
+# 浏览器看到的 tailnet HTTPS 来源；多个用逗号分隔。
+Environment=SYVRIO_WEB_ALLOWED_HOSTS=REPLACE_TAILSCALE_HOST
+# 只跑一个进程：单个 Application/Runtime 独占 Vault。
+ExecStart=REPLACE_UV run syvrio web --host 127.0.0.1 --port 8765
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

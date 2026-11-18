@@ -14,7 +14,12 @@ def _encoding():
             import tiktoken
 
             _ENCODING = tiktoken.get_encoding("cl100k_base")
-        except Exception:
+        except Exception as exc:
+            # Token counts silently drift to the char estimate; without an event
+            # the drift is impossible to attribute later.
+            from .diagnostics import record_once
+
+            record_once("degraded.tiktoken", exc)
             _ENCODING = False
     return _ENCODING or None
 
@@ -37,6 +42,8 @@ def estimate_messages_tokens(messages: list[dict]) -> int:
     for message in messages:
         total += 4
         total += estimate_tokens(str(message.get("content") or ""))
+        if reasoning := message.get("reasoning_content"):
+            total += estimate_tokens(reasoning)
         for call in message.get("tool_calls") or []:
             function = call.get("function", {})
             total += estimate_tokens(str(function.get("name", "")))

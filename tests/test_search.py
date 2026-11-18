@@ -6,6 +6,8 @@ from syvrio.memory.store import MemoryStore
 from syvrio.retrieval import KeywordRetriever, tokenize
 
 pytestmark = pytest.mark.retrieval
+
+
 def seed(tmp_path):
     store = MemoryStore(tmp_path)
     store.append("preferences", "喜欢清淡、像茶的风味")

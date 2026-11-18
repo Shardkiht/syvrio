@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import threading
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -20,8 +20,9 @@ from ... import __version__
 from ...agent.runtime import AgentRuntime, ThinkingUpdate
 from ...agent.session import SESSION_ID_RE, SessionStore
 from ...application.commands import CommandUseCases, parse_command
-from ...application.contracts import TurnCallbacks
+from ...application.contracts import TurnCallbacks, UndoOutcome
 from ...application.service import ApplicationService
+from ...errors import SyvrioError
 from ...infra.diagnostics import record_event
 from ...infra.locking import LockTimeout, VaultLock, client_instance_lock
 from ...llm import LiteLLMChatModel
@@ -31,6 +32,7 @@ from .models import (
     CommandCatalogResponse,
     CommandInfo,
     CommandResponse,
+    ContextUsageResponse,
     CreateSessionResponse,
     DeleteSessionResponse,
     HealthResponse,
@@ -55,7 +57,7 @@ HISTORY_ITEM_LIMIT = 300
 TOOL_CONTENT_LIMIT = 300
 
 
-class WebError(Exception):
+class WebError(SyvrioError, Exception):
     """Expected failure with a stable, browser-safe error code."""
 
     def __init__(self, code: str, message: str, status: int = 400) -> None:
@@ -73,6 +75,8 @@ class ActiveTurn:
     loop: asyncio.AbstractEventLoop
     finished: threading.Event = field(default_factory=threading.Event)
     stream_detached: bool = False
+    undone: UndoOutcome | None = None
+    undo_claimed: bool = False
 
 
 class EventPump:
@@ -116,8 +120,8 @@ class EventPump:
         # The first message creates the session; later frames carry its real ID.
         self._session_id = session_id
 
-    def on_user_message(self, message_id: str) -> None:
-        pass  # Bind stays internal (used by undo and cancellation).
+    def on_user_message(self, _message_id: str) -> None:
+        self.send("message_saved")
 
     def on_progress(self, text: str) -> None:
         if text.startswith(TOOL_PREFIX):
@@ -178,6 +182,8 @@ class WebBackend:
         service: MemoryService | None = None,
     ) -> None:
         self._service = service or get_service(config_path, vault_path)
+        if not (self._service.config.vault / ".git").exists():
+            self._service.init_vault()
         self._sessions = SessionStore(self._service.paths)
         self._runtime = AgentRuntime(
             self._service, LiteLLMChatModel(self._service.config.llm), self._sessions
@@ -185,9 +191,7 @@ class WebBackend:
         self._runtime.start()
         self._app_service = ApplicationService(self._runtime, self._service)
         self._conversation = self._app_service.conversation
-        self._commands = CommandUseCases(
-            self._app_service, excluded=frozenset({"dream", "git", "inferences", "profile"})
-        )
+        self._commands = CommandUseCases(self._app_service)
         self._lock = threading.RLock()
         # Serializes mutating commands/session ops; held across slow LLM/Git work
         # so ``_lock`` itself stays free for health/cancel/turn bookkeeping.
@@ -214,12 +218,6 @@ class WebBackend:
                 "Close it before starting the Web server.",
                 503,
             ) from exc
-        try:
-            if not self._service.repo.is_repo:
-                self._service.init_vault()
-        except BaseException:
-            self._client_lock.release()
-            raise
         self._started = True
         # Reuse the Application layer's own startup/shutdown hooks; failures
         # must not prevent the server from starting.
@@ -300,6 +298,27 @@ class WebBackend:
             static_ready=static_ready,
         )
 
+    def context_usage(self, session_id: str | None) -> ContextUsageResponse:
+        used = 0
+        if session_id is not None:
+            self._validate_session_id(session_id)
+            current = self._runtime.session
+            if current is not None and current.id == session_id:
+                # Estimate from a snapshot while the turn may append new records.
+                session = replace(current, records=list(current.records))
+            else:
+                try:
+                    session = self._sessions.load(session_id, include_reasoning=False)
+                except KeyError as exc:
+                    raise WebError("not_found", "Session not found.", 404) from exc
+            used = self._conversation.estimate_usage(session)
+        return ContextUsageResponse(
+            session_id=session_id,
+            used=used,
+            limit=self._app_service.settings.context_window,
+            compact_threshold=self._conversation.compact_threshold(),
+        )
+
     # ---------- slash commands ----------
 
     def command_catalog(self) -> CommandCatalogResponse:
@@ -337,24 +356,65 @@ class WebBackend:
                 busy = self._active is not None
             result = self._commands.execute(line, busy=busy, confirmed=confirmed)
             return self._command_response(result)
-        if not self._command_lock.acquire(blocking=False):
-            raise WebError("busy", "Another command is still running. Wait for it to finish.", 409)
-        try:
-            with self._lock:
-                self._require_open()
-                self._check_session_match(session_id)
-                busy = self._active is not None
+        with self._lock:
+            self._require_open()
+            self._check_session_match(session_id)
+            active = self._active
+            interrupt = name == "undo" and active is not None
+            if interrupt:
+                if active.undo_claimed:
+                    return CommandResponse(
+                        status="busy",
+                        command="undo",
+                        intent="undo",
+                        message="Undo already in progress.",
+                    )
+                result = self._commands.execute(line, busy=True, confirmed=confirmed)
+                active.undo_claimed = bool((result.data or {}).get("undo_pending"))
+            else:
+                if not self._command_lock.acquire(blocking=False):
+                    raise WebError(
+                        "busy", "Another command is still running. Wait for it to finish.", 409
+                    )
                 self._operation = name or "command"
-            try:
-                result = self._commands.execute(line, busy=busy, confirmed=confirmed)
-                if result.status == "ok" and result.intent == "new_session":
-                    self._schedule_distill()
-            finally:
-                with self._lock:
-                    self._operation = None
+        if interrupt:
+            return self._finish_active_undo(active, result)
+        try:
+            result = self._commands.execute(line, busy=active is not None, confirmed=confirmed)
+            if result.status == "ok" and result.intent == "new_session":
+                self._schedule_distill()
+            return self._command_response(result)
         finally:
+            with self._lock:
+                self._operation = None
             self._command_lock.release()
-        return self._command_response(result)
+
+    def _finish_active_undo(self, active: ActiveTurn, result) -> CommandResponse:
+        if not (result.data or {}).get("undo_pending"):
+            return self._command_response(result)
+        active.finished.wait()
+        outcome = active.undone
+        restored = outcome.restored if outcome else None
+        if outcome is None or outcome.failed:
+            status = "error"
+            message = (
+                outcome.public_error
+                if outcome and outcome.public_error
+                else "Unable to undo the last turn."
+            )
+        else:
+            status = "ok"
+            message = "Last turn undone." if restored is not None else "Nothing to undo."
+        return CommandResponse(
+            status=status,
+            command="undo",
+            intent="undo",
+            message=message,
+            data={"restored": restored},
+            session_id=outcome.target_session_id if outcome else None,
+            refresh_history=restored is not None,
+            refresh_sessions=restored is not None,
+        )
 
     def _check_session_match(self, session_id: str | None, *, exact: bool = False) -> None:
         current = self._conversation.current_id
@@ -656,8 +716,10 @@ class WebBackend:
             on_progress=pump.on_progress,
             on_thinking=pump.on_thinking,
             on_tool=pump.on_tool,
+            on_compaction=lambda phase: pump.send("compaction", text=phase),
             on_session=lambda session: pump.on_session(session.id),
             on_user_message=pump.on_user_message,
+            on_inserted=lambda content: pump.send("message_inserted", text=content),
         )
         try:
             result = self._conversation.run_turn(text, callbacks, token, turn.session_id)
@@ -665,7 +727,25 @@ class WebBackend:
             record_event("web.turn_failed", exc)
             pump.finish("failed", message="Request failed unexpectedly.")
         else:
-            if result.status == "ok":
+            with self._lock:
+                turn.undone = result.undo
+                if turn.undone is None and self._conversation.undo_requested:
+                    # An undo can arrive after run_turn has returned but before
+                    # the Web worker has released the active turn.
+                    turn.undone = self._conversation.perform_undo(
+                        result.session_id, result.user_message_id, result.error
+                    )
+                if turn.undone is not None and turn.undone.restored is not None:
+                    target = turn.undone.target_session_id
+                    if target is not None:
+                        try:
+                            self._conversation.reload_current_session(target)
+                        except (KeyError, OSError, ValueError) as exc:
+                            record_event("web.history_unreadable", exc)
+                self.release(turn.turn_id)
+            if turn.undone is not None:
+                pump.finish("cancelled", session_id=result.session_id or pump.session_id)
+            elif result.status == "ok":
                 reply = result.reply
                 pump.finish(
                     "done",
@@ -703,6 +783,22 @@ class WebBackend:
             turn.stream_detached = True
             while not turn.queue.empty():
                 turn.queue.get_nowait()
+
+    def insert(self, turn_id: int, session_id: str | None, message: str) -> None:
+        with self._lock:
+            self._require_open()
+            active = self._active
+            if active is None or active.turn_id != turn_id:
+                raise WebError("inactive_turn", "This reply has already finished.", 409)
+            self._check_session_match(session_id, exact=True)
+            request = self._conversation.insert_message(turn_id, message)
+        if request is None:
+            raise WebError(
+                "insertion_unavailable", "Cannot insert now. Enter queues the message.", 409
+            )
+        request.finished.wait()
+        if not request.applied:
+            raise WebError("insertion_unavailable", "The message was not inserted.", 409)
 
     def cancel(self, turn_id: int) -> bool:
         with self._lock:

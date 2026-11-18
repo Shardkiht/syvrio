@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from syvrio.agent.recall import memory_references
 from syvrio.agent.session import SessionStore
 from syvrio.infra.config import Config, RetrievalConfig
 from syvrio.memory.schema import SchemaError, parse_document
@@ -128,22 +129,28 @@ def test_retrieval_returns_complete_record_and_reindexes_edit(tmp_path):
     path = service.store.topic_path("events")
     path.parent.mkdir(parents=True)
     path.write_text(EXAMPLE, encoding="utf-8")
-    # main 的关键字检索只索引条目正文；Context/Extensions 字段检索属 Evo 检索业务，不在本次范围。
-    hits = service.recall("exhibit", limit=1)
-    assert hits[0].id == "mem-001"
-    assert hits[0].text.startswith("An **exhibit** and a [link]")
-    assert hits[0].topic == "memories/general/events.md"
-    assert "unrelated" not in hits[0].text
+    original = service.store.find("mem-001").raw_markdown
+    for query in (
+        "exhibit",
+        "2024-06",
+        "Synthetic Harbor",
+        "delighted",
+        "Sample Agent",
+        "cobalt-fox",
+    ):
+        hits = service.recall(query, limit=1)
+        assert hits[0].id == "mem-001"
+        assert hits[0].raw_markdown == original
+        assert original in memory_references(hits)
+        assert "unrelated" not in memory_references(hits)
+        assert not memory_references(hits, max_tokens=40)
 
     before = path.stat()
-    path.write_text(
-        EXAMPLE.replace("an ordinary nested bullet", "an ordinary silver bullet"),
-        encoding="utf-8",
-    )
+    path.write_text(EXAMPLE.replace("cobalt-fox", "silver-fox"), encoding="utf-8")
     os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
-    assert "silver bullet" in service.recall("silver bullet", limit=1)[0].text
+    assert "`silver-fox`" in service.recall("silver-fox", limit=1)[0].raw_markdown
     service.store.set_status("mem-001", "deleted")
-    assert not service.recall("silver bullet")
+    assert not service.recall("silver-fox")
 
 
 def test_relative_topics_disambiguate_equal_stems(tmp_path):
@@ -170,14 +177,14 @@ def test_runtime_binding_invalidates_derived_data_without_vault_writes(tmp_path,
     cache = first.paths.index_dir / "vectors.npz"
     cache.parent.mkdir()
     cache.write_bytes(b"old")
-    search_cache = first.paths.cache_dir / "search" / "search-cache.json"
-    search_cache.parent.mkdir(parents=True)
-    search_cache.write_text("{}", encoding="utf-8")
+    summary = first.reflection.summary_path
+    summary.parent.mkdir(parents=True)
+    summary.write_text("{}", encoding="utf-8")
     assert not (first.config.vault / ".syvrio").exists()
 
     second = app(tmp_path / "second")
     assert second.paths.runtime_dir == first.paths.runtime_dir
-    assert not cache.exists() and not search_cache.exists()
+    assert not cache.exists() and not summary.exists()
     assert first.store.find(entry.id) == entry
     shutil.rmtree(runtime)
     reloaded = app(first.config.vault)

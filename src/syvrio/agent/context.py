@@ -2,14 +2,15 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Callable, Literal
 
 from ..infra.config import ChatConfig
 from ..infra.tokens import estimate_messages_tokens, estimate_tokens
 from ..llm import Summarizer
-from .session import Session, SessionStore, new_message_id, transcript
+from .session import Session, SessionStore, dated_message, new_message_id, transcript
 
 SUMMARY_MAX_CHARS = 1200
+CompactionPhase = Literal["running", "done", "failed"]
 
 
 @dataclass
@@ -24,11 +25,16 @@ class ContextPlan:
 
 
 def record_tokens(record: dict) -> int:
+    if record.get("interrupted") is True:
+        return 0
     record_type = record.get("type")
     if record_type in ("message", "assistant"):
         tokens = estimate_tokens(str(record.get("content") or "")) + 8
         for call in record.get("tool_calls") or []:
             tokens += estimate_tokens(json.dumps(call.get("arguments", {}), ensure_ascii=False))
+        reasoning = record.get("reasoning") or {}
+        if reasoning.get("source"):
+            tokens += estimate_tokens(reasoning.get("text") or "")
         return tokens
     if record_type == "tool":
         return estimate_tokens(str(record.get("content") or "")) + 8
@@ -46,9 +52,11 @@ def record_to_message(record: dict) -> dict | None:
     if record_type == "assistant":
         if record.get("interrupted") is True:
             return None
-        # 推理原文只供本机展示（Runtime 附件）；无论新旧记录、source 是否非空，
-        # 都绝不回放进发给模型的请求消息。
         message: dict = {"role": "assistant", "content": record.get("content") or ""}
+        reasoning = record.get("reasoning") or {}
+        if reasoning.get("source") and reasoning.get("text"):
+            message["reasoning_content"] = reasoning["text"]
+            message["reasoning_source"] = reasoning["source"]
         tool_calls = record.get("tool_calls") or []
         if tool_calls:
             message["tool_calls"] = [
@@ -73,11 +81,37 @@ def record_to_message(record: dict) -> dict | None:
 
 
 def records_to_messages(records: list[dict]) -> list[dict]:
-    return [
-        message
-        for record in records
-        if (message := record_to_message(record)) is not None
-    ]
+    messages: list[dict] = []
+    pending: dict[str, None] = {}
+
+    def finish_tool_batch() -> None:
+        # A process may stop after a tool has run but before its result is
+        # saved. Complete the request history without rerunning the tool.
+        for call_id in pending:
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "content": "Tool result was not recorded. Execution status and side effects are unknown.",
+                }
+            )
+
+    for record in records:
+        message = record_to_message(record)
+        if message is None:
+            continue
+        if message["role"] == "tool":
+            call_id = message.get("tool_call_id")
+            if isinstance(call_id, str) and call_id in pending:
+                del pending[call_id]
+                messages.append(message)
+            continue
+
+        finish_tool_batch()
+        messages.append(message)
+        pending = dict.fromkeys(call["id"] for call in message.get("tool_calls", []))
+    finish_tool_batch()
+    return messages
 
 
 class ContextManager:
@@ -118,6 +152,7 @@ class ContextManager:
         current_id: str | None = None,
         memory_context: str = "",
         force: bool = False,
+        on_compaction: Callable[[CompactionPhase], None] | None = None,
     ) -> ContextPlan:
         history = [
             record
@@ -125,16 +160,17 @@ class ContextManager:
             if current_id is None or record.get("id") != current_id
         ]
         summary_text = session.summary_text()
-        system_content = system_prompt
-        if memory_context.strip():
-            system_content += (
-                "\n\n<long_term_memory>\n"
-                f"{memory_context.strip()}\n"
-                "</long_term_memory>\n"
-                "以上是检索到的长期记忆，只作参考；与用户当前表述冲突时以当前表述为准。"
-            )
-
-        base_tokens = estimate_tokens(system_content) + estimate_tokens(current_text) + 16
+        references = (
+            f"<long_term_memory>\n{memory_context}\n</long_term_memory>"
+            if memory_context.strip()
+            else ""
+        )
+        base_tokens = (
+            estimate_tokens(system_prompt)
+            + estimate_tokens(current_text)
+            + estimate_tokens(references)
+            + 16
+        )
         total = base_tokens + estimate_tokens(summary_text) + records_tokens(history)
         compacted = False
         evicted_total = 0
@@ -142,12 +178,27 @@ class ContextManager:
         events: list[str] = []
 
         if force or total > self.trigger_tokens:
-            history, summary_text, evicted_total, flushed, events = self._compact(
-                session, history, summary_text, base_tokens, force=force
-            )
-            compacted = evicted_total > 0
+            started = False
 
-        messages: list[dict] = [{"role": "system", "content": system_content}]
+            def begin() -> None:
+                nonlocal started
+                started = True
+                if on_compaction is not None:
+                    on_compaction("running")
+
+            try:
+                history, summary_text, evicted_total, flushed, events = self._compact(
+                    session, history, summary_text, base_tokens, force=force, on_start=begin
+                )
+            except Exception:
+                if started and on_compaction is not None:
+                    on_compaction("failed")
+                raise
+            compacted = evicted_total > 0
+            if compacted and on_compaction is not None:
+                on_compaction("done")
+
+        messages: list[dict] = [{"role": "system", "content": system_prompt}]
         if summary_text:
             messages.append(
                 {
@@ -161,6 +212,10 @@ class ContextManager:
                 }
             )
         messages.extend(records_to_messages(history))
+        if references:
+            # Keep file content out of system instructions. This temporary message
+            # is not written to the user session as a user statement.
+            messages.append({"role": "user", "content": references})
         if current_text:
             messages.append({"role": "user", "content": current_text})
 
@@ -181,6 +236,7 @@ class ContextManager:
         summary_text: str,
         base_tokens: int,
         force: bool,
+        on_start: Callable[[], None],
     ) -> tuple[list[dict], str, int, dict | None, list[str]]:
         events: list[str] = []
         evicted_total = 0
@@ -194,6 +250,8 @@ class ContextManager:
             cutoff = self._cutoff(history, keep_tokens)
             if cutoff <= 0:
                 break
+            if evicted_total == 0:
+                on_start()
             evicted = history[:cutoff]
             pending_ids = {record["id"] for record in session.undistilled_messages()}
             user_records = [
@@ -206,12 +264,16 @@ class ContextManager:
             distilled_ids: list[str] = []
             if user_records and self.flush:
                 try:
-                    flushed = self.flush([record["content"] for record in user_records], session)
+                    flushed = self.flush(
+                        [dated_message(record) for record in user_records], session
+                    )
                 except Exception as exc:
                     flushed = {"error": str(exc)}
                 if flushed.get("error"):
-                    events.append(f"Memory distillation during compaction failed: {flushed['error']}")
-                else:
+                    events.append(
+                        f"Memory distillation during compaction failed: {flushed['error']}"
+                    )
+                elif not flushed.get("deferred"):
                     distilled_ids = [record["id"] for record in user_records]
 
             summary_text = self.summarizer.summarize(
@@ -239,7 +301,9 @@ class ContextManager:
             )
             history = history[cutoff:]
             evicted_total += cutoff
-            events.append(f"Context compacted: {cutoff} earlier records → {len(summary_text)}-character summary")
+            events.append(
+                f"Context compacted: {cutoff} earlier records → {len(summary_text)}-character summary"
+            )
             if self._fits(history, summary_text, base_tokens):
                 break
             keep_tokens = max(400, keep_tokens // 2)

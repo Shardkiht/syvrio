@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { CommandDialog } from './CommandUI';
 import { api } from '../api/client';
 import { SHORTCUT_HELP } from '../state/shortcuts';
 import type { ThemeMode } from '../state/theme';
@@ -88,21 +89,23 @@ export function SettingsPanel({
   onTheme,
   onClose,
   onChanged,
-  onNotice,
+  initialSection = 'model',
 }: {
   health: HealthResponse | null;
   theme: ThemeMode;
   onTheme: (mode: ThemeMode) => void;
   onClose: () => void;
   onChanged: () => void;
-  onNotice: (message: string) => void;
+  initialSection?: SectionKey;
 }) {
-  const [section, setSection] = useState<SectionKey>('model');
+  const [section, setSection] = useState<SectionKey>(initialSection);
   const [models, setModels] = useState<ModelOption[]>([]);
   const [think, setThink] = useState<ThinkState | null>(null);
   const [context, setContext] = useState<ContextState | null>(null);
+  const [customContext, setCustomContext] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
   const [loadingModel, setLoadingModel] = useState(true);
   const [customModel, setCustomModel] = useState('');
 
@@ -148,11 +151,12 @@ export function SettingsPanel({
 
   const run = async (line: string, after?: () => void) => {
     setBusy(true);
+    setNotice('');
     setError('');
     try {
       const result = await api.runCommand({ line, session_id: null, confirmed: false });
       if (result.status === 'ok') {
-        onNotice(result.message);
+        setNotice(result.message);
         after?.();
         onChanged();
       } else {
@@ -167,17 +171,20 @@ export function SettingsPanel({
     }
   };
 
+  const applyContext = (value: number) => void run(`/context ${value}`, () => {
+    setCustomContext('');
+    void loadThinking();
+  });
+  const customContextValue = Number(customContext);
+  const validCustomContext = /^\d+$/.test(customContext.trim())
+    && Number.isSafeInteger(customContextValue) && customContextValue >= 2_000;
+
   const currentModel = models.find((item) => item.current);
   const currentLabel = health ? `${health.provider}/${health.model}` : '(loading)';
 
   return (
-    <div className="overlay" data-testid="settings-overlay" onClick={onClose}>
-      <div
-        className="settings-dialog"
-        role="dialog"
-        aria-label="Settings"
-        onClick={(event) => event.stopPropagation()}
-      >
+    <CommandDialog title="Settings" className="settings-dialog"
+      testId="settings-overlay" onClose={onClose}>
         <div className="settings-head">
           <div className="confirm-title">Settings</div>
           <button type="button" onClick={onClose} aria-label="Close settings">Close</button>
@@ -324,10 +331,11 @@ export function SettingsPanel({
               <div className="settings-section" data-testid="settings-context">
                 <div className="settings-section-title">Context window</div>
                 <p className="settings-hint">
-                  Larger windows keep more history in one turn and cost more tokens.
+                  {context && `Current: ${context.current.toLocaleString()} tokens. `}
+                  Larger windows can keep more history. The selected model may cap the budget.
                 </p>
                 <div className="option-list">
-                  {!context && <div className="empty">No context options available.</div>}
+                  {context && !context.options.length && <p className="settings-hint">Use a custom budget for this model.</p>}
                   {context?.options.map((value) => (
                     <button
                       key={value}
@@ -336,15 +344,25 @@ export function SettingsPanel({
                       aria-pressed={context.current === value}
                       disabled={busy}
                       data-testid={`context-${value}`}
-                      onClick={() => void run(`/context ${value}`, () => {
-                        void loadThinking();
-                      })}
+                      onClick={() => applyContext(value)}
                     >
                       <span>{value.toLocaleString()} tokens</span>
                       <small>{context.current === value ? 'current' : ''}</small>
                     </button>
                   ))}
                 </div>
+                <form className="context-custom" onSubmit={(event) => {
+                  event.preventDefault();
+                  if (!busy && validCustomContext) applyContext(customContextValue);
+                }}>
+                  <label className="settings-section-title" htmlFor="custom-context-window">Custom budget</label>
+                  <div className="context-custom-controls">
+                    <input id="custom-context-window" type="number" min={2000} step={1} inputMode="numeric"
+                      placeholder="Tokens" disabled={busy} value={customContext}
+                      onChange={(event) => setCustomContext(event.target.value)} />
+                    <button type="submit" disabled={busy || !validCustomContext}>Apply</button>
+                  </div>
+                </form>
               </div>
             )}
 
@@ -354,7 +372,7 @@ export function SettingsPanel({
                   onChanged();
                   void loadModel();
                 }}
-                onNotice={onNotice}
+                onNotice={setNotice}
               />
             )}
 
@@ -383,10 +401,10 @@ export function SettingsPanel({
               </div>
             )}
 
+            {notice && <div role="status" className="command-result-body">{notice}</div>}
             {error && <div className="provider-error" data-testid="settings-error">{error}</div>}
           </div>
         </div>
-      </div>
-    </div>
+    </CommandDialog>
   );
 }

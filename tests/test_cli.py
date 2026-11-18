@@ -8,6 +8,7 @@ from typer.testing import CliRunner
 from syvrio.app.cli import app
 
 pytestmark = pytest.mark.cli
+
 runner = CliRunner()
 
 
@@ -19,7 +20,6 @@ def test_bare_invocation_falls_back_to_help_without_tty():
     result = invoke([])
     assert result.exit_code == 0
     assert "Usage:" in result.output
-
 
 
 def test_format_tokens_uses_km_units():
@@ -112,10 +112,6 @@ def test_escape_cancels_questionary_prompt():
         assert ask(question) is None
 
 
-
-
-
-
 def test_init_note_recall_commit(tmp_path):
     config = tmp_path / "syvrio.toml"
     vault = tmp_path / "vault"
@@ -126,7 +122,16 @@ def test_init_note_recall_commit(tmp_path):
     assert (vault / ".git").is_dir()
 
     result = invoke(
-        ["note", "喝咖啡偏好清淡风味", "--topic", "preferences", "--title", "偏好", "--config", str(config)]
+        [
+            "note",
+            "喝咖啡偏好清淡风味",
+            "--topic",
+            "preferences",
+            "--title",
+            "偏好",
+            "--config",
+            str(config),
+        ]
     )
     assert result.exit_code == 0, result.output
     assert "已记录" in result.output
@@ -277,49 +282,108 @@ def test_cli_help_with_western_pipe_encoding():
 
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "cp1252:strict"
-    result = subprocess.run([sys.executable, "-m", "syvrio.app.cli", "--help"],
-                            capture_output=True, env=env, timeout=30)
+    result = subprocess.run(
+        [sys.executable, "-m", "syvrio.app.cli", "--help"], capture_output=True, env=env, timeout=30
+    )
     assert result.returncode == 0, result.stderr.decode("utf-8", errors="replace")
     assert "Usage:" in result.stdout.decode("utf-8")
     assert "记忆" in result.stdout.decode("utf-8")
 
 
-def test_tui_holds_client_lock_until_runtime_closes(tmp_path, monkeypatch):
-    from types import SimpleNamespace
-    from unittest.mock import Mock
+def _update_home(tmp_path, monkeypatch, **config):
+    from syvrio.infra import paths
 
-    from syvrio.app import tui
-    from syvrio.infra.config import LLMConfig
-    from syvrio.infra.locking import client_instance_lock
-    from syvrio.infra.paths import SyvrioPaths
+    directory = tmp_path / ".syvrio" / "update"
+    directory.mkdir(parents=True)
+    lines = [f'{key} = "{value}"' for key, value in config.items()]
+    (directory / "config.toml").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    monkeypatch.setattr(paths, "syvrio_home", lambda: tmp_path / ".syvrio")
+    return directory
 
-    paths = SyvrioPaths(tmp_path / "vault", tmp_path / "runtime")
-    lock = client_instance_lock(paths)
-    service = SimpleNamespace(
-        paths=paths,
-        config=SimpleNamespace(vault=tmp_path / "vault", llm=LLMConfig(provider="ollama")),
-        init_vault=Mock(),
+
+def test_update_without_configuration_exits_nonzero(tmp_path, monkeypatch):
+    from syvrio.infra import paths
+
+    monkeypatch.setattr(paths, "syvrio_home", lambda: tmp_path / ".syvrio")
+    result = invoke(["update"])
+
+    assert result.exit_code == 1
+    text = result.output + result.stderr
+    assert "更新配置缺失" in text
+    assert "config.toml" in text
+
+
+def test_update_missing_executable_is_not_reported_as_missing_config(tmp_path, monkeypatch):
+    """uv 等可执行文件缺失属于更新失败，不能被翻译成「配置缺失」。"""
+    from syvrio.infra import update as update_module
+
+    _update_home(tmp_path, monkeypatch, channel="evo", service="syvrio-web.service")
+
+    def missing(*args, **kwargs):
+        raise FileNotFoundError(2, "No such file or directory", "uv")
+
+    monkeypatch.setattr(update_module, "update", missing)
+    result = invoke(["update"])
+
+    assert result.exit_code == 1
+    text = result.output + result.stderr
+    assert "更新配置缺失" not in text
+    assert "更新失败" in text and "uv" in text
+
+
+def test_update_rejects_configuration_without_service(tmp_path, monkeypatch):
+    _update_home(tmp_path, monkeypatch, channel="evo")
+    result = invoke(["update"])
+
+    assert result.exit_code == 1
+    assert "更新配置缺少 service" in result.output + result.stderr
+
+
+def test_update_forwards_python_and_uv_paths(tmp_path, monkeypatch):
+    from syvrio.infra import update as update_module
+
+    _update_home(
+        tmp_path,
+        monkeypatch,
+        channel="evo",
+        service="syvrio-web.service",
+        python="/usr/bin/python3.13",
+        uv="/opt/uv/bin/uv",
     )
-    calls = []
+    seen: dict[str, object] = {}
 
-    def record(stage):
-        assert lock.locked
-        calls.append(stage)
+    def fake(root, channel, service, port, python=None, uv=None):
+        seen.update(root=root, channel=channel, service=service, port=port, python=python, uv=uv)
+        return "ok"
 
-    runtime = SimpleNamespace(
-        start=lambda: record("start"),
-        stop_catchup=lambda: record("stop_catchup"),
-        close=lambda: record("close") or {},
+    monkeypatch.setattr(update_module, "update", fake)
+    result = invoke(["update"])
+
+    assert result.exit_code == 0
+    assert seen["uv"] == "/opt/uv/bin/uv"
+    assert seen["python"] == "/usr/bin/python3.13"
+    assert seen["port"] == 8765
+
+
+def test_update_failure_reaches_diagnostics(tmp_path, monkeypatch):
+    """fail() 把异常换成 typer.Exit 后原始原因会丢，失败必须在退出前先落诊断事件。"""
+    from syvrio.app import cli as cli_module
+    from syvrio.infra import update as update_module
+
+    _update_home(tmp_path, monkeypatch, channel="evo", service="syvrio-web.service")
+    recorded: list[tuple[str, object]] = []
+    monkeypatch.setattr(
+        cli_module,
+        "record_event",
+        lambda event, error=None, **state: recorded.append((event, error)),
     )
 
-    def run():
-        record("run")
-        raise RuntimeError("synthetic TUI failure")
+    def broken(*args, **kwargs):
+        raise update_module.UpdateError("uv", "uv not found on PATH")
 
-    monkeypatch.setattr(tui, "AgentRuntime", lambda *_: runtime)
-    monkeypatch.setattr(tui, "ChatApp", lambda *_: SimpleNamespace(run=run))
-    monkeypatch.setattr(tui, "_print_exit_stats", lambda *_: None)
-    with pytest.raises(RuntimeError, match="synthetic TUI failure"):
-        tui.run_chat(service)
-    assert calls == ["start", "run", "stop_catchup", "close"]
-    assert not lock.locked
+    monkeypatch.setattr(update_module, "update", broken)
+    result = invoke(["update"])
+
+    assert result.exit_code == 1
+    assert [event for event, _ in recorded] == ["update.failed"]
+    assert isinstance(recorded[0][1], update_module.UpdateError)

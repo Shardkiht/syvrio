@@ -2,6 +2,8 @@
 
 export type EventType =
   | 'start'
+  | 'message_saved'
+  | 'message_inserted'
   | 'reasoning_delta'
   | 'reasoning_end'
   | 'content_delta'
@@ -9,6 +11,7 @@ export type EventType =
   | 'tool_end'
   | 'event'
   | 'progress'
+  | 'compaction'
   | 'done'
   | 'cancelled'
   | 'failed';
@@ -39,6 +42,15 @@ export interface HealthResponse {
   active_turn_id: number | null;
   single_client: boolean;
   static_ready: boolean;
+}
+
+export type CompactionPhase = 'running' | 'done' | 'failed';
+
+export interface ContextUsage {
+  session_id: string | null;
+  used: number;
+  limit: number;
+  compact_threshold: number;
 }
 
 export interface SessionInfo {
@@ -163,6 +175,8 @@ export interface CommandCatalogResponse {
 
 export interface CommandRequest {
   line: string;
+  pending_text?: string;
+  inference_text?: string;
   session_id: string | null;
   confirmed: boolean;
 }

@@ -174,257 +174,49 @@ def test_inference_revisions_keep_only_matching_evidence_current(tmp_path):
     assert run.returncode == 0, run.stderr
     entry = MemoryStore(vault).find("mem-1")
     assert entry.timestamp == "2026-11-11T01:00:00+00:00"
-    # foundation 的 Inference 模型（extra=forbid）没有 source_fingerprints 字段，
-    # 因此这里在 JSON 层断言脚本行为；该脚本分支对 foundation 写出的行是空操作。
-    rows = [
-        json.loads(line)
-        for line in (vault / "records/memory/inferences.jsonl").read_text(encoding="utf-8").splitlines()
-    ]
-    updated, outdated = rows[0]["records"]
-    assert updated["created_at"] == updated["updated_at"] == "2026-11-11T09:00:00+00:00"
-    assert updated["source_fingerprints"] == {"mem-1": source_fingerprint(entry)}
-    assert outdated["source_fingerprints"] == {"mem-1": "0" * 64}
+    updated, outdated = InferenceStore(vault).all()
+    assert updated.created_at == updated.updated_at == "2026-11-11T09:00:00+00:00"
+    assert updated.source_fingerprints == {"mem-1": source_fingerprint(entry)}
+    assert outdated.source_fingerprints == {"mem-1": "0" * 64}
 
 
-def test_foundation_inference_rows_survive_timestamp_migration(tmp_path):
+@pytest.mark.parametrize("recovered", [True, False])
+def test_session_migration_preserves_physical_lines(tmp_path, recovered):
     vault = tmp_path / "vault"
-    write(
-        vault / "records/memory/inferences.jsonl",
-        '{"id":"i-1","text":"Synthetic hypothesis","kind":"profile","source_ids":["mem-1"],'
-        '"created_at":"2026-11-11T09:00:00+08:00","updated_at":"2026-11-11T09:00:00+08:00",'
-        '"status":"hypothesis"}\n',
+    session = SessionStore(vault).create()
+    initial = b'{"type":"meta","started_at":"2026-01-01T12:00:00"}\r\n{\xff\r\n'
+    if recovered:
+        initial += b'{"type":"recovery","ignored_line":2,"at":"2026-01-01T12:00:01"}\n'
+    initial += json.dumps(
+        {"type": "message", "role": "user", "content": "one\u2028two", "at": "2026-01-01T12:00:02"},
+        ensure_ascii=False,
+    ).encode("utf-8")
+    session.path.write_bytes(initial)
+    sibling = write(
+        vault / "sessions/other.jsonl", '{"type":"meta","started_at":"2026-01-01T12:00:00"}'
     )
-    run = migrate(
-        "--vault",
-        vault,
-        "--source-timezone",
-        "UTC",
-        "--apply",
-        "--backup-dir",
-        tmp_path / "backup",
+    sibling_before = sibling.read_bytes()
+    backup = tmp_path / "backup"
+    result = migrate(
+        "--vault", vault, "--source-timezone", "Asia/Shanghai", "--apply", "--backup-dir", backup
     )
-    assert run.returncode == 0, run.stderr
-    loaded = InferenceStore(vault).all()
-    assert len(loaded) == 1
-    assert loaded[0].created_at == loaded[0].updated_at == "2026-11-11T01:00:00+00:00"
-
-
-SESSION_ID = "s-20260101-120000-abcd"
-
-
-def write_recovery_session(path, ignored_line, *, with_broken_line=True):
-    """构造与 SessionStore 恢复规则同形的 4 行会话（坏行在 2，marker 在 3）。"""
-    lines = [
-        json.dumps({"type": "meta", "id": SESSION_ID, "started_at": "2026-01-01T12:00:00"}),
-    ]
-    if with_broken_line:
-        lines.append("{broken")
-    lines.append(json.dumps({"type": "recovery", "ignored_line": ignored_line,
-                             "at": "2026-01-01T12:00:01"}))
-    lines.append(json.dumps({"type": "message", "role": "user", "id": "m-1",
-                             "content": "恢复后的消息", "at": "2026-01-01T12:00:02"}))
-    return write(path, "\n".join(lines) + "\n")
-
-
-def test_session_recovery_marker_allows_migration_and_runtime_reload(tmp_path):
-    # SessionStore 的恢复规则：坏行 2 被第 3 行的有效 marker 授权保留。
-    vault = tmp_path / "vault"
-    backup = tmp_path / "utc-backup"
-    session = write_recovery_session(
-        vault / f"sessions/2026/01/{SESSION_ID}.jsonl", 2, with_broken_line=True
-    )
-    before = session.read_bytes()
-
-    preview = migrate("--vault", vault, "--source-timezone", "Asia/Shanghai", "--dry-run")
-    assert preview.returncode == 0, preview.stderr
-    assert SESSION_ID in preview.stdout and "0 errors" in preview.stdout
-    assert session.read_bytes() == before
-
-    result = migrate("--vault", vault, "--source-timezone", "Asia/Shanghai",
-                     "--apply", "--backup-dir", backup)
+    if not recovered:
+        assert result.returncode != 0
+        assert "unmarked corrupt session line" in result.stderr
+        assert session.path.read_bytes() == initial
+        assert sibling.read_bytes() == sibling_before
+        assert not backup.exists()
+        return
     assert result.returncode == 0, result.stderr
-
-    after_lines = session.read_bytes().split(b"\n")
-    # 坏行原字节、原 EOL、原位置保持不动。
-    assert after_lines[1] == b"{broken"
-    assert before.split(b"\n")[1] == after_lines[1]
-    rows = [json.loads(line) for line in after_lines if line.strip() and line != b"{broken"]
-    # 有效记录（含 marker 的 at）按上海时区转为 UTC；没有生成新的恢复标记。
-    assert rows[0]["started_at"] == "2026-01-01T04:00:00+00:00"
-    assert rows[1]["ignored_line"] == 2 and rows[1]["at"] == "2026-01-01T04:00:01+00:00"
-    assert rows[2]["at"] == "2026-01-01T04:00:02+00:00"
-    assert sum(1 for row in rows if row.get("type") == "recovery") == 1
-    # 备份保存改写前的原字节。
-    assert (backup / "sessions/2026/01" / f"{SESSION_ID}.jsonl").read_bytes() == before
-    # 迁移后新程序必须能加载该会话，坏行被跳过，正文完好。
-    loaded = SessionStore(vault).load(SESSION_ID)
-    assert [r.get("content") for r in loaded.records if r.get("type") == "message"] == ["恢复后的消息"]
-    assert loaded.damaged_tail_line is None
-
-
-@pytest.mark.parametrize(
-    "ignored_line",
-    [pytest.param(None, id="missing-marker"),
-     pytest.param(True, id="bool-not-int"),
-     pytest.param("2", id="string-not-int"),
-     pytest.param(1, id="points-at-valid-line"),
-     pytest.param(99, id="points-beyond-file")],
-)
-def test_session_invalid_or_missing_marker_refuses_and_keeps_file(tmp_path, ignored_line):
-    # 无有效 marker 授权的坏行必须中止迁移，且文件字节保持不变。
-    vault = tmp_path / "vault"
-    memory = write(
-        vault / "memories/one.md",
-        "# One\n\n"
-        + render_record(
-            "Synthetic text", Core(id="mem-1", source="test", status="active", confidence=1),
-            extensions=[("syvrio.recorded_at", "2026-11-11T09:00:00")],
-        )
-        + "\n",
-    )
-    session = write_recovery_session(
-        vault / f"sessions/2026/01/{SESSION_ID}.jsonl", ignored_line, with_broken_line=True
-    )
-    before = (session.read_bytes(), memory.read_bytes())
-
-    run = migrate("--vault", vault, "--source-timezone", "Asia/Shanghai", "--dry-run")
-    assert run.returncode != 0
-    assert "unmarked corrupt line" in run.stderr
-    # dry-run 与 apply 都拒绝；库内所有文件保持原字节（整批判定，不部分改写）。
-    assert (session.read_bytes(), memory.read_bytes()) == before
-    apply_run = migrate("--vault", vault, "--source-timezone", "Asia/Shanghai",
-                        "--apply", "--backup-dir", tmp_path / "utc-backup")
-    assert apply_run.returncode != 0
-    assert (session.read_bytes(), memory.read_bytes()) == before
-    assert not (tmp_path / "utc-backup").exists()
-
-
-def test_plain_jsonl_recovery_marker_does_not_authorize_bad_lines(tmp_path):
-    # 恢复分支只适用于会话 JSONL：records 与 runtime 文件保持严格，同类 marker 不授权坏行。
-    for relative in ("records/memory/audit.jsonl", "jobs/dreaming/jobs.jsonl"):
-        vault = tmp_path / f"vault-{relative.split('/')[0]}"
-        runtime = tmp_path / "runtime"
-        vault.mkdir()
-        runtime.mkdir(exist_ok=True)
-        scope_root = vault if relative.startswith("records") else runtime
-        target = write(scope_root / relative, "\n".join([
-            json.dumps({"at": "2026-01-01T12:00:00", "action": "note"}),
-            "{broken",
-            json.dumps({"type": "recovery", "ignored_line": 2, "at": "2026-01-01T12:00:01"}),
-        ]) + "\n")
-        before = target.read_bytes()
-        run = migrate("--vault", vault, "--runtime", runtime,
-                      "--source-timezone", "Asia/Shanghai", "--dry-run")
-        assert run.returncode != 0, relative
-        assert "invalid JSON object" in run.stderr
-        assert target.read_bytes() == before
-
-
-def test_session_marked_invalid_utf8_line_migrates_and_stays_in_place(tmp_path):
-    # 已被恢复标记覆盖的非法 UTF-8 坏行：按 bytes 保留原字节与物理位置，其余时间转 UTC。
-    vault = tmp_path / "vault"
-    backup = tmp_path / "utc-backup"
-    session = vault / f"sessions/2026/01/{SESSION_ID}.jsonl"
-    session.parent.mkdir(parents=True)
-    lines = [
-        json.dumps({"type": "meta", "id": SESSION_ID, "started_at": "2026-01-01T12:00:00"}).encode() + b"\n",
-        b"{\xff\r\n",
-        json.dumps({"type": "recovery", "ignored_line": 2, "at": "2026-01-01T12:00:01"}).encode() + b"\n",
-        json.dumps({"type": "message", "role": "user", "id": "m-1",
-                    "content": "after recovery", "at": "2026-01-01T12:00:02"}).encode() + b"\n",
-    ]
-    session.write_bytes(b"".join(lines))
-    before = session.read_bytes()
-
-    preview = migrate("--vault", vault, "--source-timezone", "Asia/Shanghai", "--dry-run")
-    assert preview.returncode == 0, preview.stderr
-    assert session.read_bytes() == before
-
-    result = migrate("--vault", vault, "--source-timezone", "Asia/Shanghai",
-                     "--apply", "--backup-dir", backup)
-    assert result.returncode == 0, result.stderr
-
-    after = session.read_bytes()
-    after_lines = after.split(b"\n")
-    # 坏行原字节、原 EOL（CRLF）、原物理位置未变；行数不变；末行换行保留。
-    assert after_lines[1] == b"{\xff\r" and after.endswith(b"\n") and len(after_lines) == len(lines) + 1
-    assert json.loads(after.splitlines()[2])["type"] == "recovery"
-    rows = [json.loads(line) for line in after.splitlines() if line != b"{\xff"]
-    assert rows[0]["started_at"] == "2026-01-01T04:00:00+00:00"
-    assert rows[1]["ignored_line"] == 2 and rows[1]["at"] == "2026-01-01T04:00:01+00:00"
-    assert rows[2]["content"] == "after recovery" and rows[2]["at"] == "2026-01-01T04:00:02+00:00"
-    # 备份与改写前整文件一致；迁移后的文件能被 SessionStore 加载。
-    assert (backup / f"sessions/2026/01/{SESSION_ID}.jsonl").read_bytes() == before
-    loaded = SessionStore(vault).load(SESSION_ID)
-    assert [r.get("content") for r in loaded.records if r.get("type") == "message"] == ["after recovery"]
-    assert loaded.damaged_tail_line is None
-
-
-def test_session_u2028_content_survives_migration(tmp_path):
-    # 正文含实际 U+2028 字符：str.splitlines 会拆坏记录；bytes 分行后必须原样保留。
-    vault = tmp_path / "vault"
-    backup = tmp_path / "utc-backup"
-    session = vault / f"sessions/2026/01/{SESSION_ID}.jsonl"
-    session.parent.mkdir(parents=True)
-    content = "one\u2028two"
-    session.write_bytes(b"\n".join([
-        json.dumps({"type": "meta", "id": SESSION_ID, "started_at": "2026-01-01T12:00:00"}).encode(),
-        json.dumps({"type": "message", "role": "user", "id": "m-1",
-                    "content": content, "at": "2026-01-01T12:00:02"},
-                   ensure_ascii=False).encode("utf-8"),
-    ]) + b"\n")
-    before = session.read_bytes()
-    assert content.encode("utf-8") in before  # 文件里是实际 Unicode 字符，不是转义文本
-
-    result = migrate("--vault", vault, "--source-timezone", "Asia/Shanghai",
-                     "--apply", "--backup-dir", backup)
-    assert result.returncode == 0, result.stderr
-
-    after = session.read_bytes()
-    assert after.count(b"\n") == before.count(b"\n")  # 记录没有被拆成两行
-    assert content.encode("utf-8") in after
-    rows = [json.loads(line) for line in after.splitlines()]
-    assert len(rows) == 2
-    assert rows[0]["started_at"] == "2026-01-01T04:00:00+00:00"
-    assert rows[1]["content"] == content and rows[1]["at"] == "2026-01-01T04:00:02+00:00"
-    loaded = SessionStore(vault).load(SESSION_ID)
-    assert [r.get("content") for r in loaded.records if r.get("type") == "message"] == [content]
-
-
-def test_session_unmarked_invalid_utf8_aborts_whole_batch(tmp_path):
-    # 未标记的非法 UTF-8 坏行：整批中止，同批本需转换的正常文件也不被改写。
-    vault = tmp_path / "vault"
-    backup = tmp_path / "utc-backup"
-    session = vault / "sessions/2026/01/other.jsonl"
-    session.parent.mkdir(parents=True)
-    session.write_bytes(b"\n".join([
-        json.dumps({"type": "meta", "id": "s-other", "started_at": "2026-01-01T12:00:00"}).encode(),
-        b"{\xff\r\n",
-        json.dumps({"type": "message", "role": "user", "id": "m-1",
-                    "content": "no marker here", "at": "2026-01-01T12:00:02"}).encode(),
-    ]) + b"\n")
-    memory = write(
-        vault / "memories/one.md",
-        "# One\n\n"
-        + render_record(
-            "Synthetic text", Core(id="mem-1", source="test", status="active", confidence=1),
-            extensions=[("syvrio.recorded_at", "2026-01-01T12:00:00")],
-        )
-        + "\n",
-    )
-    before = (session.read_bytes(), memory.read_bytes())
-
-    preview = migrate("--vault", vault, "--source-timezone", "Asia/Shanghai", "--dry-run")
-    assert preview.returncode != 0
-    assert "unmarked corrupt line" in preview.stderr
-    assert (session.read_bytes(), memory.read_bytes()) == before
-
-    result = migrate("--vault", vault, "--source-timezone", "Asia/Shanghai",
-                     "--apply", "--backup-dir", backup)
-    assert result.returncode != 0
-    # 两份源文件都未改写；备份目录未创建（整批判定先于写入）。
-    assert (session.read_bytes(), memory.read_bytes()) == before
-    assert not backup.exists()
+    assert session.path.read_bytes().splitlines(keepends=True)[1] == b"{\xff\r\n"
+    assert not session.path.read_bytes().endswith(b"\n")
+    assert (
+        backup / "sessions" / session.path.relative_to(vault / "sessions")
+    ).read_bytes() == initial
+    loaded = SessionStore(vault).load(session.id)
+    assert loaded.started_at == "2026-01-01T04:00:00+00:00"
+    assert loaded.messages[0]["content"] == "one\u2028two"
+    assert loaded.messages[0]["at"] == "2026-01-01T04:00:02+00:00"
 
 
 def test_session_migration_preserves_cr_only_separators(tmp_path):

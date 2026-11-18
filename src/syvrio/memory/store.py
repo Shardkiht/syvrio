@@ -21,6 +21,7 @@ from .schema import (
     parse_document,
     render_record,
 )
+from .turn_undo import capture_file_write
 
 SLUG_RE = re.compile(r"[^\w\u4e00-\u9fff-]+")
 STATUS_ACTIVE = "active"
@@ -38,6 +39,7 @@ def normalize_text(text: str) -> str:
 
 
 def atomic_write(path: Path, payload: bytes) -> None:
+    capture_file_write(path, payload)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = None
     try:
@@ -63,6 +65,14 @@ def _recorded_time(value: str) -> datetime:
         # Day-precision records have no instant. Use their date as a sort bucket only.
         return datetime.combine(date.fromisoformat(value), time.min, tzinfo=UTC)
     return parse_timestamp(value)
+
+
+def _timestamp_line(entry: Entry) -> int:
+    """Line of syvrio.recorded_at, which sits below the record's opening line."""
+    offset = entry.raw_markdown.find("syvrio.recorded_at")
+    if offset < 0:
+        return entry.line
+    return entry.line + entry.raw_markdown.count("\n", 0, offset)
 
 
 class MemoryStore:
@@ -131,7 +141,11 @@ class MemoryStore:
                 _recorded_time(record.entry.timestamp)
             except ValueError as exc:
                 raise SchemaError(
-                    f"{relative}:{record.entry.line}: invalid syvrio.recorded_at"
+                    f"{relative}:{_timestamp_line(record.entry)}: invalid syvrio.recorded_at "
+                    f"{record.entry.timestamp!r}; absolute timestamps need an explicit UTC "
+                    "offset. A vault migrated from v1 must be normalized first: "
+                    "python scripts/migrate_timestamps_to_utc.py --vault <vault> "
+                    "--runtime <runtime> --source-timezone <IANA> --apply --backup-dir <new>"
                 ) from exc
         return document
 
@@ -156,11 +170,11 @@ class MemoryStore:
         known_ids: set[str] | None = None,
         context: MemoryContext | None = None,
     ) -> Entry:
-        """追加条目；批量调用可传入含停用条目的完整 ID 集合，由调用方增量维护。"""
         stamp = when or utc_now()
         if known_ids is None:
             known_ids = {entry.id for entry in self.entries(include_inactive=True)}
-        # 显式传入的 entry_id 若与现有 ID 冲突，静默换新 ID 重试（main 语义，不抛错）。
+        if entry_id is not None and entry_id in known_ids:
+            raise ValueError("duplicate memory id")
         while entry_id is None or entry_id in known_ids:
             entry_id = self.new_entry_id(stamp)
         path = self.topic_path(topic)

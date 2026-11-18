@@ -7,11 +7,13 @@
 - 时间词/事件词归入 freshness/intent，不要求结果完整命中。
 全部为确定性规则，不访问 LLM。
 """
+
 from __future__ import annotations
 
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
+from functools import lru_cache
 
 from .base import SearchResult
 
@@ -73,10 +75,64 @@ _FRESHNESS_PATTERN = re.compile(
     "|".join(re.escape(word) for word in _FRESHNESS_WORDS), re.IGNORECASE
 )
 
+# 专有名词短语：连续首字母大写的词，允许中间一个 of/the/and 等连接词。
+# 例："Clash of Clans Town Hall 15" → "Clash of Clans" + "Town Hall"。
+_PHRASE_CONNECTORS = frozenset("of the and for de la van von der da di du".split())
+_PHRASE_ARTICLES = frozenset("the a an".split())
+_PHRASE_MAX_WORDS = 3
 
-# 拉丁词边界匹配：前后不能紧邻字母数字，避免 tibo 命中 tibonacci。
+
+@lru_cache(maxsize=256)
 def _latin_pattern(word: str) -> re.Pattern[str]:
+    # 拉丁词边界匹配：前后不能紧邻字母数字，避免 tibo 命中 tibonacci。
     return re.compile(rf"(?<![0-9a-z]){re.escape(word)}(?![0-9a-z])")
+
+
+@lru_cache(maxsize=256)
+def _phrase_pattern(phrase: str) -> re.Pattern[str]:
+    # 词间只允许空白/标点，不做跨词跳跃，避免把无关短语拼成命中。
+    joined = r"[^0-9a-z]{1,3}".join(re.escape(word) for word in phrase.split())
+    return re.compile(rf"(?<![0-9a-z]){joined}(?![0-9a-z])")
+
+
+def _extract_latin_phrases(source: str) -> list[str]:
+    """从原始查询提取首字母大写短语，作为完整专有名词的高权重证据。"""
+    matches = list(_LATIN_RUN.finditer(source))
+    phrases: list[str] = []
+    index = 0
+    while index < len(matches) - 1:
+        token = matches[index].group()
+        if not token[0].isupper() or token.lower() in _PHRASE_ARTICLES:
+            index += 1
+            continue
+        words = [token]
+        cursor = index
+        while cursor + 1 < len(matches) and len(words) < _PHRASE_MAX_WORDS:
+            gap = source[matches[cursor].end() : matches[cursor + 1].start()]
+            following = matches[cursor + 1].group()
+            if gap.strip() == "" and following[0].isupper():
+                words.append(following)
+                cursor += 1
+                continue
+            if (
+                len(words) == 1
+                and gap.strip() == ""
+                and following.lower() in _PHRASE_CONNECTORS
+                and cursor + 2 < len(matches)
+            ):
+                gap2 = source[matches[cursor + 1].end() : matches[cursor + 2].start()]
+                tail = matches[cursor + 2].group()
+                if gap2.strip() == "" and tail[0].isupper():
+                    words.extend([following.lower(), tail])
+                    cursor += 2
+            break
+        meaningful = [word for word in words if word.lower() not in _PHRASE_CONNECTORS]
+        if len(words) >= 2 and not any(word.lower() in _LATIN_STOPWORDS for word in meaningful):
+            phrases.append(" ".join(words).lower())
+            index = cursor + 1
+        else:
+            index += 1
+    return phrases
 
 
 @dataclass(frozen=True)
@@ -126,6 +182,9 @@ def _split_cjk(run: str) -> list[str]:
 
 def _extract_terms(source: str) -> list[QueryTerm]:
     terms: list[QueryTerm] = []
+    # 短语先入列：同分时完整专有名词优先于零散单词。
+    for phrase in _extract_latin_phrases(source):
+        terms.append(QueryTerm(phrase, "latin_phrase", phrase))
     for raw in _LATIN_RUN.findall(source):
         token = raw.strip("@._-").lower()
         if len(token) >= 2 and token not in _LATIN_STOPWORDS:
@@ -155,6 +214,8 @@ def _extract_terms(source: str) -> list[QueryTerm]:
 def _match(term: QueryTerm, text_lower: str) -> bool:
     if term.kind == "latin":
         return _latin_pattern(term.text).search(text_lower) is not None
+    if term.kind == "latin_phrase":
+        return _phrase_pattern(term.text).search(text_lower) is not None
     return term.text in text_lower
 
 
@@ -237,16 +298,17 @@ def score_entry(
     snippet = result.snippet.lower()
     title_core = snippet_core = 0.0
     for term in analysis.core_terms:
-        if _match(term, title):
+        if term.kind == "latin_phrase":
+            if _match(term, title):
+                title_core += 6.0
+            elif _match(term, snippet):
+                snippet_core += 2.0
+        elif _match(term, title):
             title_core += 3.0 if term.kind != "cjk_gram" else 1.0
         elif _match(term, snippet):
             snippet_core += 1.0 if term.kind != "cjk_gram" else 0.5
-    covered = sum(
-        1 for term in analysis.core_terms if _match(term, title) or _match(term, snippet)
-    )
-    core_coverage = (
-        2.0 if analysis.core_terms and covered == len(analysis.core_terms) else 0.0
-    )
+    covered = sum(1 for term in analysis.core_terms if _match(term, title) or _match(term, snippet))
+    core_coverage = 2.0 if analysis.core_terms and covered == len(analysis.core_terms) else 0.0
     intent = sum(
         0.5
         for word in analysis.intent_terms
@@ -298,6 +360,8 @@ def is_strong_hit(result: SearchResult, analysis: QueryAnalysis) -> bool:
     """高置信相关：高置信实体在标题命中，且核心词覆盖达到多数。
 
     摘要级弱命中永远不算强命中，防止“任意一处提到”就早停。
+    查询含首字母大写专有名词短语时，标题必须命中至少一个完整短语，
+    且覆盖需要超过一半核心词——避免只看懂部分单词的跑题结果早停。
     """
     if not analysis.core_terms:
         return True
@@ -306,9 +370,12 @@ def is_strong_hit(result: SearchResult, analysis: QueryAnalysis) -> bool:
     title_hits = sum(1 for term in analysis.core_terms if _match(term, title))
     if not title_hits:
         return False
-    covered = sum(
-        1 for term in analysis.core_terms if _match(term, title) or _match(term, snippet)
-    )
+    phrase_terms = [term for term in analysis.core_terms if term.kind == "latin_phrase"]
+    if phrase_terms and not any(_match(term, title) for term in phrase_terms):
+        return False
+    covered = sum(1 for term in analysis.core_terms if _match(term, title) or _match(term, snippet))
+    if phrase_terms:
+        return covered * 2 > len(analysis.core_terms)
     # 覆盖一半以上核心词；只有 1 个核心词时标题命中即可（导航型查询）。
     return covered * 2 >= len(analysis.core_terms)
 
@@ -321,8 +388,7 @@ def quality_gate(ranked: list[SearchResult], analysis: QueryAnalysis) -> GateDec
     strong = sum(1 for result in ranked if is_strong_hit(result, analysis))
     # 标题完整覆盖全部核心词的结果本身就是决定性命中，单条即可早停。
     full_title = any(
-        all(_match(term, result.title.lower()) for term in analysis.core_terms)
-        for result in ranked
+        all(_match(term, result.title.lower()) for term in analysis.core_terms) for result in ranked
     )
     if strong >= 2 or full_title:
         return GateDecision(True, strong, "multiple_strong" if strong >= 2 else "full_title")

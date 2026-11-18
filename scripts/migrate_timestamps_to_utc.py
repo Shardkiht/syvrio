@@ -229,61 +229,6 @@ def migrate_markdown(
     return replace_spans(updated, markers), len(replacements) + len(markers)
 
 
-def migrate_session_jsonl(
-    old: bytes,
-    target: Target,
-    zone: ZoneInfo | None,
-    label: str,
-    evidence: dict[str, tuple[str, str]],
-) -> tuple[bytes, int]:
-    """会话 JSONL 按 bytes 物理行处理，恢复规则与 SessionStore 对齐。
-
-    与 SessionStore 相同：json 或 UTF-8 解码失败的行，只有被后续有效恢复标记
-    授权时才保留原字节；重复键等结构校验失败不视为可忽略数据。其他 JSONL
-    （records、runtime）不走此分支，坏行一律中止。
-    """
-    lines = old.splitlines(keepends=True)
-    rows: list[bytes] = []
-    changed = 0
-    errors: dict[int, None] = {}
-    recovered: set[int] = set()
-    for number, line in enumerate(lines, 1):
-        if not line.strip():
-            rows.append(line)
-            continue
-        try:
-            text = line.decode("utf-8")
-        except UnicodeDecodeError:
-            # 先原样占位：是否保留取决于后面有没有指向此行的有效恢复标记。
-            errors[number] = None
-            rows.append(line)
-            continue
-        try:
-            obj = json.loads(text, object_pairs_hook=unique_object)
-        except json.JSONDecodeError:
-            errors[number] = None
-            rows.append(line)
-            continue
-        migrated, count = migrate_object(text, target, zone, f"{label}:{number}", evidence)
-        changed += count
-        # 只有发生时间转换的记录才重新编码；空行、坏行、未变化行按原 bytes 拼回。
-        rows.append(migrated.encode("utf-8") if count else line)
-        ignored = (
-            obj.get("ignored_line")
-            if isinstance(obj, dict) and obj.get("type") == "recovery"
-            else None
-        )
-        # int 而非 bool、1 起物理行号，且必须指向 marker 之前一条真实损坏的行。
-        if type(ignored) is int and 1 <= ignored < number and ignored in errors:
-            recovered.add(ignored)
-    unrecovered = sorted(set(errors) - recovered)
-    if unrecovered:
-        number = unrecovered[0]
-        raise ValueError(f"{label}:{number}: invalid JSON object (unmarked corrupt line)")
-    # 末行有无换行、CRLF 均随原文件保留。
-    return b"".join(rows), changed
-
-
 def targets(args: argparse.Namespace) -> Iterator[Target]:
     if args.vault:
         vault = args.vault
@@ -301,6 +246,37 @@ def targets(args: argparse.Namespace) -> Iterator[Target]:
             yield Target("runtime", runtime, runtime / name, fields)
 
 
+def migrate_session_jsonl(
+    raw: bytes, target: Target, zone: ZoneInfo | None, label: str
+) -> tuple[bytes, int]:
+    """Keep repaired physical lines byte-for-byte, as the session reader does."""
+    rows = raw.splitlines(keepends=True)
+    damaged: set[int] = set()
+    recovered: set[int] = set()
+    changed = 0
+    for number, row in enumerate(rows, 1):
+        if not row.strip():
+            continue
+        try:
+            line = row.decode("utf-8")
+            record = json.loads(line)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            damaged.add(number)
+            continue
+        # Keep the usual strict object and duplicate-key checks for complete records.
+        updated, count = migrate_object(line, target, zone, f"{label}:{number}", {})
+        if count:
+            rows[number - 1] = updated.encode("utf-8")
+            changed += count
+        if record.get("type") == "recovery":
+            ignored = record.get("ignored_line")
+            if type(ignored) is int and ignored in damaged:
+                recovered.add(ignored)
+    if unrecovered := damaged - recovered:
+        raise ValueError(f"{label}:{min(unrecovered)}: unmarked corrupt session line")
+    return b"".join(rows), changed
+
+
 def inspect_target(
     target: Target, zone: ZoneInfo | None, evidence: dict[str, tuple[str, str]]
 ) -> Change | None:
@@ -314,8 +290,7 @@ def inspect_target(
     old = path.read_bytes()
     label = f"{target.scope}/{target.relative}"
     if target.scope == "sessions" and path.suffix == ".jsonl":
-        # 会话分支按 bytes 处理（坏行可能不是合法 UTF-8），返回值已是最终 bytes。
-        after, changed = migrate_session_jsonl(old, target, zone, label, evidence)
+        after, changed = migrate_session_jsonl(old, target, zone, label)
         return Change(target, old, after, changed) if changed else None
     raw = old.decode("utf-8")
     if path.suffix == ".md":

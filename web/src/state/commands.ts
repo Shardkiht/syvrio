@@ -57,45 +57,58 @@ export function isCommandLine(value: string): boolean {
   return value.trimStart().startsWith('/');
 }
 
-export interface CommandPanel {
+export interface OptionPanel {
   title: string;
   options: { label: string; value: string }[];
   prefix: string;
+  message?: string;
 }
+
+export interface PendingCandidate {
+  id: string;
+  text: string;
+  topic: string;
+  reason: string;
+}
+
+export interface ReviewPanel {
+  kind: 'pending' | 'inferences';
+  title: string;
+  rows: PendingCandidate[];
+  count: number;
+}
+
+export interface ResultPanel {
+  title: string;
+  message: string;
+  action?: { label: string; line: string; saveShortcut?: boolean };
+  rename?: boolean;
+}
+
+export type CommandPanel = OptionPanel | ReviewPanel | ResultPanel | { kind: 'sessions' };
+export type PendingAction = 'approve' | 'reject' | 'edit';
 
 /** Model / reasoning / context choices share one small clickable panel. */
 export function panelFor(result: CommandResponse): CommandPanel | null {
   const data = result.data;
   if (!data) return null;
 
-  // Review screens (pending / inferences / reflection) expose their items as
-  // clickable action rows, so the browser never needs a second business model.
+  if ((data.kind === 'pending' || data.kind === 'inferences') && Array.isArray(data.rows)) {
+    return {
+      kind: data.kind,
+      title: data.kind === 'pending' ? 'Pending review' : 'Inference review',
+      rows: data.rows as PendingCandidate[],
+      count: typeof data.count === 'number' ? data.count : data.rows.length,
+    };
+  }
+
+  // Inferences and reflection use the generic option panel.
   const rows = data.rows as { id: string; text: string }[] | undefined;
   if (Array.isArray(rows) && rows.length) {
     const kind = String(data.kind ?? '');
-    const label = (prefix: string, row: { id: string; text: string }) =>
-      `${prefix} · ${row.text || row.id}`.slice(0, 120);
-    if (kind === 'pending') {
-      return {
-        title: 'Pending review', prefix: '/pending',
-        options: rows.flatMap((row) => [
-          { label: label('Approve', row), value: `approve ${row.id}` },
-          { label: label('Reject', row), value: `reject ${row.id}` },
-        ]),
-      };
-    }
-    if (kind === 'inferences') {
-      return {
-        title: 'Inference review', prefix: '/inferences',
-        options: rows.flatMap((row) => [
-          { label: label('Confirm', row), value: `confirm ${row.id}` },
-          { label: label('Reject', row), value: `reject ${row.id}` },
-        ]),
-      };
-    }
     if (kind === 'dream') {
       return {
-        title: 'Reflection', prefix: '/dream',
+        title: 'Reflection', prefix: '/dream', message: result.message,
         options: rows.map((row) => ({ label: row.text, value: row.id })),
       };
     }
@@ -152,4 +165,15 @@ export function commandMessage(result: CommandResponse): string {
     }).join('\n');
   }
   return message ? title + '\n' + message : title;
+}
+
+export function resultPanelFor(result: CommandResponse): ResultPanel {
+  const [title, ...lines] = commandMessage(result).split('\n');
+  const panel: ResultPanel = { title, message: lines.join('\n') };
+  if (result.status === 'ok' && result.intent === 'git_status') {
+    panel.action = { label: 'Synchronize', line: '/git sync', saveShortcut: true };
+  } else if (result.status === 'ok' && result.intent === 'profile') {
+    panel.action = { label: 'Refresh profile', line: '/profile refresh' };
+  }
+  return panel;
 }

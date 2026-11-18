@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import pytest
 
-from syvrio.agent.context import ContextManager
+from syvrio.agent.context import ContextManager, records_to_messages
 from syvrio.agent.session import SessionStore, new_message_id
 from syvrio.infra.config import ChatConfig
 from syvrio.infra.tokens import estimate_messages_tokens
 
 pytestmark = pytest.mark.agent
+
+
 class FakeSummarizer:
     def __init__(self):
         self.calls = []
@@ -57,11 +59,70 @@ def test_prepare_under_budget_does_not_compact(tmp_path):
     assert plan.messages[-1] == {"role": "user", "content": "继续"}
 
 
+@pytest.mark.parametrize("fail", [False, True])
+def test_compaction_phases_follow_summary_persistence(tmp_path, fail):
+    store = SessionStore(tmp_path)
+    session = build_session(store, repeat=45)
+    summarizer = FakeSummarizer()
+    manager = ContextManager(
+        ChatConfig(context_window=2500, keep_recent_tokens=350, reserve_output_tokens=300),
+        summarizer,
+        store,
+    )
+    phases = []
+
+    def on_compaction(phase):
+        phases.append((phase, bool(session.summary_text())))
+
+    if fail:
+
+        def fail_summary(*args):
+            raise ValueError("synthetic summary failure")
+
+        summarizer.summarize = fail_summary
+        with pytest.raises(ValueError, match="synthetic summary failure"):
+            manager.prepare(session, "system", "", force=True, on_compaction=on_compaction)
+        assert phases == [("running", False), ("failed", False)]
+    else:
+        plan = manager.prepare(session, "system", "", force=True, on_compaction=on_compaction)
+        assert plan.compacted
+        assert phases == [("running", False), ("done", True)]
+
+
+def test_tool_replay_drops_orphans_and_duplicates_and_closes_each_batch():
+    records = [
+        {"type": "tool", "tool_call_id": "orphan", "content": "orphan"},
+        {"type": "assistant", "tool_calls": [{"id": "a", "name": "recall"}]},
+        {"type": "tool", "tool_call_id": "a", "content": "original"},
+        {"type": "tool", "tool_call_id": "a", "content": "duplicate"},
+        {"type": "assistant", "tool_calls": [{"id": "b", "name": "recall"}]},
+        {"type": "message", "role": "user", "content": "next turn"},
+        {"type": "tool", "tool_call_id": "b", "content": "late"},
+        {"type": "assistant", "tool_calls": [{"id": "c", "name": "recall"}]},
+    ]
+    messages = records_to_messages(records)
+    assert [message["role"] for message in messages] == [
+        "assistant",
+        "tool",
+        "assistant",
+        "tool",
+        "user",
+        "assistant",
+        "tool",
+    ]
+    results = [message for message in messages if message["role"] == "tool"]
+    assert [message["tool_call_id"] for message in results] == ["a", "b", "c"]
+    assert results[0]["content"] == "original"
+    assert all("was not recorded" in message["content"] for message in results[1:])
+
+
 def test_force_compact_summarizes_and_flushes(tmp_path):
     store = SessionStore(tmp_path)
     session = build_session(store)
     current_id = new_message_id()
-    store.append(session, {"type": "message", "id": current_id, "role": "user", "content": "当前问题"})
+    store.append(
+        session, {"type": "message", "id": current_id, "role": "user", "content": "当前问题"}
+    )
     flushed = []
 
     def flush(texts, session):
@@ -178,7 +239,9 @@ def test_failed_flush_still_compacts_and_keeps_messages_for_retry(tmp_path, rais
     store = SessionStore(tmp_path)
     session = build_session(store, repeat=80)
     original_texts = session.user_texts()
-    store.append(session, {"type": "message", "id": "current", "role": "user", "content": "当前问题"})
+    store.append(
+        session, {"type": "message", "id": "current", "role": "user", "content": "当前问题"}
+    )
 
     def failed_flush(texts, session):
         if raise_error:
@@ -187,7 +250,9 @@ def test_failed_flush_still_compacts_and_keeps_messages_for_retry(tmp_path, rais
 
     manager = ContextManager(
         ChatConfig(context_window=4096, reserve_output_tokens=512, keep_recent_tokens=1500),
-        FakeSummarizer(), store, flush=failed_flush,
+        FakeSummarizer(),
+        store,
+        flush=failed_flush,
     )
     plan = manager.prepare(session, "系统提示", "当前问题", current_id="current")
 
@@ -214,21 +279,28 @@ def test_later_successful_compaction_does_not_cover_an_earlier_failed_flush(tmp_
 
     manager = ContextManager(
         ChatConfig(context_window=4096, reserve_output_tokens=512, keep_recent_tokens=1500),
-        FakeSummarizer(), store, flush=flush,
+        FakeSummarizer(),
+        store,
+        flush=flush,
     )
     manager.prepare(session, "系统提示", "继续", force=True)
     failed_texts = list(attempts[0])
     loaded = store.load(session.id)
     for number in range(3):
-        store.append(loaded, {
-            "type": "message", "id": f"later-{number}", "role": "user",
-            "content": f"后续合成陈述 {number}：" + "合成陈述" * 80,
-        })
+        store.append(
+            loaded,
+            {
+                "type": "message",
+                "id": f"later-{number}",
+                "role": "user",
+                "content": f"后续合成陈述 {number}：" + "合成陈述" * 80,
+            },
+        )
     plan = manager.prepare(loaded, "系统提示", "继续", force=True)
 
     assert plan.compacted
     assert len(attempts) >= 2
-    pending = store.load(session.id).user_texts_after_distilled()
+    pending = store.load(session.id).distillation_texts()
     assert all(text in pending for text in failed_texts)
     assert all(text not in pending for text in attempts[-1])
 
@@ -238,7 +310,8 @@ def test_compaction_without_flush_does_not_acknowledge_messages(tmp_path):
     session = build_session(store)
     manager = ContextManager(
         ChatConfig(context_window=1000, reserve_output_tokens=100, keep_recent_tokens=100),
-        FakeSummarizer(), store,
+        FakeSummarizer(),
+        store,
     )
     plan = manager.prepare(session, "系统提示", "继续", force=True)
     assert plan.compacted
@@ -252,7 +325,9 @@ def test_compaction_does_not_flush_already_distilled_messages(tmp_path):
     flushed = []
     manager = ContextManager(
         ChatConfig(context_window=1000, reserve_output_tokens=100, keep_recent_tokens=100),
-        FakeSummarizer(), store, flush=lambda texts, session: flushed.append(texts),
+        FakeSummarizer(),
+        store,
+        flush=lambda texts, session: flushed.append(texts),
     )
     plan = manager.prepare(session, "系统提示", "继续", force=True)
     assert plan.compacted

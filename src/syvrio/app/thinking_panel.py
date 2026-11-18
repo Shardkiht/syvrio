@@ -10,10 +10,9 @@ from textual.widgets import Button, TextArea
 
 
 class ThinkingText(TextArea):
-    """Keep wheel events inside the reasoning pane, including at its edges."""
+    """Keep focus and wheel scrolling inside the reasoning pane."""
 
     def focus(self, scroll_visible: bool = False) -> Self:
-        # The reasoning pane scrolls independently; focusing it must not recenter the transcript.
         return super().focus(scroll_visible=scroll_visible)
 
     def on_mouse_scroll_up(self, event: MouseScrollUp) -> None:

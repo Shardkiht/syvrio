@@ -9,8 +9,8 @@ import {
   toggleSegment,
   type ChatState,
 } from '../state/chat';
-import { commandMessage, isCommandLine, panelFor, type CommandPanel } from '../state/commands';
-import type { CommandInfo, HealthResponse, SessionInfo, StreamEvent } from '../types';
+import { isCommandLine, panelFor, resultPanelFor, type CommandPanel, type PendingAction, type ReviewPanel } from '../state/commands';
+import type { CommandInfo, CompactionPhase, ContextUsage, HealthResponse, SessionInfo, StreamEvent } from '../types';
 
 const TERMINAL = new Set(['done', 'cancelled', 'failed']);
 const FLUSH_MS = 16;
@@ -20,6 +20,9 @@ export function useChat() {
   const chatRef = useRef<ChatState>(chat);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [health, setHealth] = useState<HealthResponse | null>(null);
+  const [usage, setUsage] = useState<ContextUsage | null>(null);
+  const [compaction, setCompaction] = useState<CompactionPhase | null>(null);
+  const [historyRevision, setHistoryRevision] = useState(0);
   const [online, setOnline] = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(() => {
     // Desktop honours the last choice; the mobile drawer always starts closed.
@@ -48,12 +51,34 @@ export function useChat() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [panel, setPanel] = useState<CommandPanel | null>(null);
   const [focusSignal, setFocusSignal] = useState(0);
+  const [queued, setQueued] = useState<string[]>([]);
+  const queueRef = useRef<string[]>([]);
+  const [queuePaused, setQueuePaused] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [undoing, setUndoing] = useState(false);
+  const undoRef = useRef(false);
+  const [undoDrafts, setUndoDrafts] = useState<Record<string, string>>({});
+  const changeQueue = useCallback((items: string[]) => {
+    queueRef.current = items;
+    setQueued(items);
+  }, []);
+  const removeQueued = useCallback((index: number) => {
+    changeQueue(queueRef.current.filter((_, position) => position !== index));
+  }, [changeQueue]);
+  const acknowledgeDraft = useCallback((sessionId: string) => {
+    setUndoDrafts((drafts) => {
+      const next = { ...drafts };
+      delete next[sessionId];
+      return next;
+    });
+  }, []);
   const pendingHistoryRef = useRef(false);
   const navigation = useRef<Promise<void> | null>(null);
   const navigationVersion = useRef(0);
   const navigationHistory = useRef<Promise<void> | null>(null);
   const sessionsVersion = useRef(0);
   const newCommand = useRef<Promise<void> | null>(null);
+  const commandSequence = useRef(0);
 
   // Crossing the mobile breakpoint must fold the drawer away; otherwise a
   // desktop window narrowed to phone width leaves the scrim covering the chat.
@@ -111,6 +136,21 @@ export function useChat() {
     }
   }, []);
 
+  useEffect(() => {
+    if (!health || compaction === 'running' || compaction === 'failed') return;
+    const controller = new AbortController();
+    void api.contextUsage(chat.sessionId, controller.signal)
+      .then((value) => { if (!controller.signal.aborted) setUsage(value); })
+      .catch(() => { if (!controller.signal.aborted) setUsage(null); });
+    return () => controller.abort();
+  }, [chat.sessionId, chat.busy, historyRevision, health, compaction]);
+
+  useEffect(() => {
+    if (compaction !== 'done' && compaction !== 'failed') return;
+    const timer = setTimeout(() => setCompaction(null), 2200);
+    return () => clearTimeout(timer);
+  }, [compaction]);
+
   const reloadHistory = useCallback(async (sessionId: string | null) => {
     if (!sessionId) return;
     const version = navigationVersion.current;
@@ -118,21 +158,44 @@ export function useChat() {
       const history = await api.history(sessionId);
       if (version === navigationVersion.current && chatRef.current.sessionId === sessionId) {
         update((prev) => loadHistory(prev, history));
+        setHistoryRevision((value) => value + 1);
       }
     } catch {
       // Keep the current view; a failed refresh must never disable the composer.
     }
   }, [update]);
 
-  const runCommand = useCallback(async (line: string, confirmed = false) => {
+  const runCommand = useCallback(async (
+    line: string,
+    confirmed = false,
+    review?: { kind: ReviewPanel['kind']; text?: string },
+  ) => {
     const requestLine = line.trim();
     if (!requestLine) return;
-    while (navigation.current || newCommand.current) await (navigation.current ?? newCommand.current);
+    const name = requestLine.split(/\s+/, 1)[0].toLowerCase();
+    if (name !== '/undo' || !chatRef.current.busy) {
+      while (navigation.current || newCommand.current) await (navigation.current ?? newCommand.current);
+    }
     const version = navigationVersion.current;
+    const sequence = ++commandSequence.current;
     const sessionId = chatRef.current.sessionId;
+    const isCompact = name === '/compact';
+    const isUndo = name === '/undo';
+    if (name === '/new' && queueRef.current.length) {
+      update((prev) => ({ ...prev, error: 'Wait for queued messages or remove them before changing sessions.' }));
+      return;
+    }
+    if (isUndo) {
+      if (undoRef.current) return;
+      undoRef.current = true;
+      setUndoing(true);
+    }
+    if (isCompact) setCompaction('running');
     try {
       const request = api.runCommand({
         line: requestLine,
+        pending_text: review?.kind === 'pending' ? review.text : undefined,
+        inference_text: review?.kind === 'inferences' ? review.text : undefined,
         session_id: sessionId,
         confirmed,
       });
@@ -145,24 +208,50 @@ export function useChat() {
       }
       const result = await request;
       if (version !== navigationVersion.current) return;
+      if (isCompact) {
+        setCompaction(result.status !== 'ok' ? 'failed' : result.data?.compacted === true ? 'done' : null);
+      }
+      if (review) {
+        const refreshed = panelFor(result);
+        if (result.status !== 'ok' || !refreshed || !('rows' in refreshed) || refreshed.kind !== review.kind) {
+          throw new Error(result.message || 'Unable to update the candidate.');
+        }
+        setPanel(refreshed);
+        return result;
+      }
+      const canPresent = () => sequence === commandSequence.current && version === navigationVersion.current;
       if (result.status === 'confirm_required') {
+        if (!canPresent()) return;
+        setPanel(null);
         setConfirm({ line: requestLine, message: result.message });
         return;
       }
-      setConfirm(null);
+      if (canPresent()) setConfirm(null);
 
       if (result.status === 'client') {
-        if (result.intent === 'open_sessions') setSidebarOpen(true);
-        if (result.intent === 'open_settings') setSettingsOpen(true);
-        if (result.intent === 'leave') {
+        if (!canPresent()) return;
+        if (result.intent === 'open_sessions') {
+          setPanel({ kind: 'sessions' });
+        } else if (result.intent === 'open_settings') {
+          setPanel(null);
+          setSettingsOpen(true);
+        } else if (result.intent === 'leave') {
           // A Web /exit never stops the background server.
           update((prev) => ({ ...initialChatState, sessionId: prev.sessionId }));
+          setPanel(resultPanelFor(result));
+        } else {
+          setPanel(resultPanelFor(result));
         }
         return;
       }
-
+      if (result.status === 'ok' && result.intent === 'help') {
+        if (!canPresent()) return;
+        setPanel(null);
+        setPaletteOpen(true);
+        return;
+      }
       const commandPanel = panelFor(result);
-      if (commandPanel) setPanel(commandPanel);
+      if (commandPanel && canPresent()) setPanel(commandPanel);
       // /model, /think and /context can change the active model; keep the
       // header label in sync without a full page reload.
       if (result.data?.model_changed === true) void refreshHealth();
@@ -171,30 +260,69 @@ export function useChat() {
         // The file appears with the first message; until then this is just the
         // empty home view, so no session id is expected and there is no history
         // to reload (reading the old one would only flash before this reset).
+        setCompaction(null);
         update(() => ({ ...initialChatState }));
       } else {
         if (result.refresh_history) {
           if (chatRef.current.busy) pendingHistoryRef.current = true;
           else await reloadHistory(result.session_id ?? chatRef.current.sessionId);
         }
-        update((prev) => addInfo(prev, commandMessage(result)));
+      }
+      if (isUndo && result.status === 'ok' && typeof result.data?.restored === 'string') {
+        const target = result.session_id ?? chatRef.current.sessionId;
+        if (target !== null) {
+          const text = result.data.restored;
+          setUndoDrafts((drafts) => ({ ...drafts, [target]: text }));
+        }
+        setQueuePaused(true);
+        if (canPresent()) setPanel(null);
+        setFocusSignal((value) => value + 1);
+        return;
+      }
+      if (!commandPanel && canPresent()) {
+        const output = resultPanelFor(result);
+        if (result.status === 'ok' && result.intent === 'rename' && requestLine.toLowerCase() === '/rename') {
+          setPanel({ ...output, title: 'Rename session', message: '', rename: true });
+        } else {
+          setPanel(output);
+        }
       }
     } catch (error) {
-      update((prev) => addInfo(
-        prev,
-        `Command failed: ${error instanceof Error ? error.message : 'unknown error'}`,
-      ));
+      if (review) throw error;
+      if (isCompact && version === navigationVersion.current) setCompaction('failed');
+      if (version === navigationVersion.current && sequence === commandSequence.current) {
+        setPanel({
+          title: 'Command failed',
+          message: error instanceof Error ? error.message : 'unknown error',
+        });
+      }
     } finally {
-      setFocusSignal((value) => value + 1);
+      if (isUndo) {
+        undoRef.current = false;
+        setUndoing(false);
+      }
     }
   }, [refreshHealth, refreshSessions, reloadHistory, update]);
 
   const handleEvent = useCallback((event: StreamEvent) => {
+    if (event.type === 'compaction') {
+      const phase = event.text;
+      if (phase === 'running' || phase === 'done' || phase === 'failed') setCompaction(phase);
+      return;
+    }
+    if (event.type === 'failed' || event.type === 'cancelled') {
+      setCompaction((value) => value === 'running' ? 'failed' : value);
+    }
     if (event.type === 'start' && event.turn_id != null) turnRef.current = event.turn_id;
     if (TERMINAL.has(event.type)) terminalRef.current = true;
     pendingRef.current.push(event);
-    if (timerRef.current === null) timerRef.current = setTimeout(flush, FLUSH_MS);
-  }, [flush]);
+    if (event.type === 'message_saved') {
+      flush();
+      void refreshSessions();
+    } else if (timerRef.current === null) {
+      timerRef.current = setTimeout(flush, FLUSH_MS);
+    }
+  }, [flush, refreshSessions]);
 
   const recoverReply = useCallback(async (
     turnId: number, sessionId: string | null, controller: AbortController,
@@ -225,6 +353,7 @@ export function useChat() {
       if (stillHere()) update((prev) => loadHistory(prev, history));
     } catch {
       if (stillHere()) {
+        setQueuePaused(true);
         update((prev) => ({
           ...prev, busy: false, turnId: null, progress: '',
           error: '暂时无法读取回复，请重新打开会话查看结果',
@@ -233,7 +362,7 @@ export function useChat() {
     }
   }, [update]);
 
-  const send = useCallback(async (text: string) => {
+  const send = useCallback(async (text: string, fromQueue = false) => {
     const trimmed = text.trim();
     if (!trimmed) return;
     // Every slash line goes to the command API, never to the LLM. Commands may
@@ -255,7 +384,18 @@ export function useChat() {
       update((prev) => ({ ...prev, error: '会话已切换，请在目标会话重新发送' }));
       return;
     }
-    if (chatRef.current.busy) return;
+    if (!fromQueue && queuePaused && !undoRef.current && controllerRef.current) {
+      changeQueue([trimmed, ...queueRef.current]);
+      setQueuePaused(false);
+      return;
+    }
+    if (chatRef.current.busy || controllerRef.current || undoRef.current
+        || (!fromQueue && !queuePaused && queueRef.current.length > 0)) {
+      changeQueue([...queueRef.current, trimmed]);
+      return;
+    }
+    if (queuePaused) setQueuePaused(false);
+    setSending(true);
     update((prev) => startTurn(prev, trimmed, sessionId));
     terminalRef.current = false;
     turnRef.current = null;
@@ -270,7 +410,10 @@ export function useChat() {
       flush();
       const turnId = turnRef.current;
       if (controller.signal.aborted) {
-        if (controllerRef.current === controller) controllerRef.current = null;
+        if (controllerRef.current === controller) {
+          controllerRef.current = null;
+          setSending(false);
+        }
         return;
       }
       if (!terminalRef.current && turnId != null) {
@@ -280,20 +423,49 @@ export function useChat() {
           ? failure.message
           : '连接已断开，请重新打开会话查看回复';
         update((prev) => reduceChat(prev, { seq: 0, type: 'failed', message }));
+        setQueuePaused(true);
+        if (fromQueue) changeQueue([trimmed, ...queueRef.current]);
         // An HTTP error still means the server is reachable; only a transport
         // failure (or a stream that ended without a terminal event) is offline.
         if (!failure || failure instanceof NetworkError) setOnline(false);
       } else {
         setOnline(true);
       }
-      if (controllerRef.current === controller) controllerRef.current = null;
       void refreshSessions();
       if (pendingHistoryRef.current) {
         pendingHistoryRef.current = false;
         await reloadHistory(chatRef.current.sessionId);
       }
+      if (controllerRef.current === controller) {
+        controllerRef.current = null;
+        setSending(false);
+      }
     }
-  }, [flush, handleEvent, recoverReply, refreshSessions, reloadHistory, runCommand, update]);
+  }, [changeQueue, flush, handleEvent, queuePaused, recoverReply, refreshSessions, reloadHistory, runCommand, update]);
+
+  useEffect(() => {
+    if (chat.busy || sending || undoing || queuePaused
+        || controllerRef.current || undoRef.current) return;
+    const [first, ...rest] = queueRef.current;
+    if (first === undefined) return;
+    changeQueue(rest);
+    void send(first, true);
+  }, [chat.busy, changeQueue, queuePaused, queued, send, sending, undoing]);
+
+  const insert = useCallback(async (text: string) => {
+    const turnId = turnRef.current ?? chatRef.current.turnId;
+    if (!chatRef.current.busy || turnId == null || undoRef.current) {
+      update((prev) => ({ ...prev, error: 'Cannot insert now. Enter queues the message while a reply is running.' }));
+      return false;
+    }
+    try {
+      await api.insertMessage(turnId, chatRef.current.sessionId, text);
+      return true;
+    } catch (error) {
+      update((prev) => ({ ...prev, error: error instanceof Error ? error.message : 'The message was not inserted.' }));
+      return false;
+    }
+  }, [update]);
 
   const stop = useCallback(async () => {
     const turnId = turnRef.current ?? chatRef.current.turnId;
@@ -306,11 +478,17 @@ export function useChat() {
   }, [update]);
 
   const navigate = useCallback((sessionId: string | null) => {
-    if (chatRef.current.busy) {
+    if (queueRef.current.length || undoRef.current) {
+      update((prev) => ({ ...prev, error: 'Wait for queued messages or remove them before changing sessions.' }));
+      return;
+    }
+    if (chatRef.current.busy || controllerRef.current) {
       update((prev) => ({ ...prev, error: '请先停止当前回复，或等回复结束后再切换会话' }));
       return;
     }
     const version = ++navigationVersion.current;
+    setPanel(null);
+    setCompaction(null);
     navigationHistory.current = null;
     const previous = navigation.current ?? newCommand.current;
     const next = (async () => {
@@ -399,6 +577,7 @@ export function useChat() {
     let alive = true;
     const recovery = new AbortController();
     const version = navigationVersion.current;
+    const sessionListVersion = sessionsVersion.current;
     void (async () => {
       try {
         const [info, listing, commands] = await Promise.all([
@@ -408,7 +587,9 @@ export function useChat() {
         ]);
         if (!alive) return;
         setHealth(info);
-        if (version === navigationVersion.current) setSessions(listing.items);
+        if (version === navigationVersion.current && sessionListVersion === sessionsVersion.current) {
+          setSessions(listing.items);
+        }
         setCatalog(commands.items);
         setOnline(true);
         if (!info.static_ready) {
@@ -464,6 +645,15 @@ export function useChat() {
     await runCommand(line, true);
   }, [confirm, runCommand]);
 
+  const reviewMemory = useCallback(async (
+    kind: ReviewPanel['kind'], action: PendingAction, id: string, text?: string,
+  ) => {
+    const inferenceAction = { approve: 'confirm', reject: 'reject', edit: 'correct' };
+    const verb = kind === 'pending' ? action : inferenceAction[action];
+    const result = await runCommand(`/${kind} ${verb} ${id}`, true, { kind, text });
+    if (!result) throw new Error('The current session changed. Reopen the review.');
+  }, [runCommand]);
+
   const runPanelCommand = useCallback(async (line: string) => {
     setPanel(null);
     await runCommand(line);
@@ -471,6 +661,8 @@ export function useChat() {
 
   return {
     chat,
+    contextUsage: usage?.session_id === chat.sessionId ? usage : null,
+    compaction,
     sessions,
     health,
     online,
@@ -479,6 +671,13 @@ export function useChat() {
     toggleSidebar,
     refreshSessions,
     send,
+    insert,
+    queued,
+    queuePaused,
+    removeQueued,
+    undoing,
+    undoDraft: chat.sessionId === null ? undefined : undoDrafts[chat.sessionId],
+    acknowledgeDraft,
     stop,
     newSession,
     selectSession,
@@ -496,9 +695,9 @@ export function useChat() {
     confirmDeleteSession,
     settingsOpen,
     setSettingsOpen,
-    notice: (message: string) => update((prev) => addInfo(prev, message)),
     refreshHealth,
     runPanelCommand,
+    reviewMemory,
     runCommand,
     handleEscape,
     focusSignal,

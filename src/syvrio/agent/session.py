@@ -9,12 +9,20 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from ..infra.diagnostics import record_event
 from ..infra.locking import vault_write_lock
 from ..infra.paths import SyvrioPaths, vault_paths
 from ..infra.tokens import estimate_tokens
 from ..memory.detect import redact_secrets
 from ..memory.store import atomic_write
-from ..time import parse_timestamp, serialize_timestamp, utc_now, utc_timestamp
+from ..memory.turn_undo import TURN_UNDO_DIR
+from ..time import (
+    local_timestamp,
+    parse_timestamp,
+    serialize_timestamp,
+    utc_now,
+    utc_timestamp,
+)
 
 _LOG = logging.getLogger(__name__)
 
@@ -70,7 +78,8 @@ def _validate_record(record: Any) -> None:
             raise ValueError("Invalid session distilled IDs")
     calls = record.get("tool_calls")
     if calls is not None and (
-        not isinstance(calls, list) or any(
+        not isinstance(calls, list)
+        or any(
             not isinstance(call, dict) or not isinstance(call.get("name", ""), str)
             for call in calls
         )
@@ -120,7 +129,7 @@ class Session:
 
     @property
     def last_message_at(self) -> str:
-        """最后一条有效消息的时间；重命名/摘要等控制记录不得改变会话顺序。"""
+        """最后一条有效消息的时间；重命名/摘要/沉淀等控制记录不得改变会话顺序。"""
         for record in reversed(self.active_records()):
             if record.get("type") == "message" and record.get("at"):
                 return str(record["at"])
@@ -168,8 +177,7 @@ class Session:
         return [
             record
             for record in self.records[self.covered_records() :]
-            if id(record) in active_ids
-            and record.get("type") in ("message", "assistant", "tool")
+            if id(record) in active_ids and record.get("type") in ("message", "assistant", "tool")
         ]
 
     def needs_consolidation(self) -> bool:
@@ -189,9 +197,7 @@ class Session:
 
     def undistilled_messages(self) -> list[dict]:
         positions = {
-            record["id"]: index
-            for index, record in enumerate(self.records)
-            if record.get("id")
+            record["id"]: index for index, record in enumerate(self.records) if record.get("id")
         }
         covered = 0
         distilled_ids: set[str] = set()
@@ -218,6 +224,9 @@ class Session:
     def user_texts_after_distilled(self) -> list[str]:
         return [record["content"] for record in self.undistilled_messages()]
 
+    def distillation_texts(self) -> list[str]:
+        return [dated_message(record) for record in self.undistilled_messages()]
+
     def estimated_tokens(self) -> int:
         return sum(
             estimate_tokens(str(record.get("content") or ""))
@@ -230,13 +239,13 @@ class SessionStore:
     def __init__(self, vault: Path | SyvrioPaths):
         paths = vault if isinstance(vault, SyvrioPaths) else vault_paths(vault)
         self.root = paths.sessions_dir
-        # 推理原文只存 Runtime 附件，绝不进入 Vault（否则会被 Git 提交并进入摘要输入）。
         self._reasoning_root = paths.runtime_dir / "session-reasoning"
+        self._turn_undo_root = paths.runtime_dir.resolve() / TURN_UNDO_DIR
         # 会话追加与 Git 快照共用 Vault 写锁，避免提交到写了一半的 JSONL。
         self._lock = vault_write_lock(paths)
-        self._listing_cache: dict[str, tuple[tuple[int, int], dict]] = {}
+        self._listing_cache: dict[str, tuple[tuple[Path, int, int], dict]] = {}
         # 补沉淀扫描只需知道文件还有多少待抽取消息，不必保留完整会话。
-        self._undistilled_cache: dict[str, tuple[tuple[int, int], int]] = {}
+        self._undistilled_cache: dict[str, tuple[tuple[Path, int, int], int]] = {}
 
     def create(self) -> Session:
         stamp = utc_now()
@@ -255,7 +264,8 @@ class SessionStore:
                     path = archive / f"{session_id}.jsonl"
                     continue
                 meta = {
-                    "type": "meta", "id": session_id,
+                    "type": "meta",
+                    "id": session_id,
                     "started_at": serialize_timestamp(stamp.replace(microsecond=0)),
                     "cwd": str(Path.cwd()),
                 }
@@ -273,13 +283,22 @@ class SessionStore:
         return self._path(session_id).exists()
 
     def load(self, session_id: str, *, include_reasoning: bool = True) -> Session:
-        return self._load_file(self._path(session_id), include_reasoning=include_reasoning)
+        return self._load_path(self._path(session_id), include_reasoning=include_reasoning)
 
-    def _load_file(self, path: Path, include_reasoning: bool = False) -> Session:
+    def _load_path(self, path: Path, *, include_reasoning: bool) -> Session:
         session_id = path.stem
         self._validate_session_id(session_id)
         if not path.exists():
             raise KeyError(f"会话不存在：{session_id}")
+        if (
+            self.root.is_symlink()
+            or path.is_symlink()
+            or not path.resolve().is_relative_to(self.root.resolve())
+            or any(
+                parent.is_symlink() for parent in path.parents if parent.is_relative_to(self.root)
+            )
+        ):
+            raise ValueError("symlink in session archive")
         lines = path.read_bytes().splitlines()
         records: list[dict] = []
         errors: dict[int, ValueError] = {}
@@ -293,6 +312,7 @@ class SessionStore:
                 errors[number] = exc
                 continue
             _validate_record(record)
+            record.pop("reasoning", None)  # Only local Runtime attachments can carry replay data.
             records.append(record)
             if record.get("type") == "recovery":
                 ignored = record.get("ignored_line")
@@ -303,7 +323,10 @@ class SessionStore:
             if number in recovered:
                 continue
             if number == len(lines):
-                if isinstance(error, UnicodeDecodeError) and error.reason != "unexpected end of data":
+                if (
+                    isinstance(error, UnicodeDecodeError)
+                    and error.reason != "unexpected end of data"
+                ):
                     raise error
                 damaged_tail = number
             else:
@@ -313,28 +336,33 @@ class SessionStore:
             raise ValueError("Session ID differs from archive filename")
         if include_reasoning:
             for record in records:
-                if record.get("type") != "assistant" or record.get("reasoning_local") is not True:
-                    continue
-                # 旧版本可能写入缺 id 的 reasoning_local 标记：先取并校验记录 ID，
-                # 走附件降级路径保留正文，绝不能让 KeyError 阻断整个会话加载。
-                record_id = record.get("id")
-                if not isinstance(record_id, str) or not SESSION_ID_RE.fullmatch(record_id):
-                    _LOG.warning(
-                        "Skipping reasoning attachment for %s: record has no valid id", session_id
-                    )
-                    continue
-                try:
-                    reasoning = self._read_reasoning(session_id, record_id)
-                except FileNotFoundError:
-                    # Runtime 可能落后于 Vault（换机、清理）；缺附件只影响思考展示，正文必须能加载。
-                    continue
-                except (ValueError, OSError) as exc:
-                    _LOG.warning(
-                        "Skipping corrupt reasoning attachment for %s/%s (%s)",
-                        session_id, record_id, type(exc).__name__,
-                    )
-                    continue
-                record["reasoning"] = reasoning
+                if record.get("type") == "assistant" and record.get("reasoning_local") is True:
+                    record_id = record.get("id")
+                    if not isinstance(record_id, str) or not SESSION_ID_RE.fullmatch(record_id):
+                        continue
+                    try:
+                        attachment = self._reasoning_path(session_id, record_id)
+                        reasoning = json.loads(attachment.read_text(encoding="utf-8"))
+                        if (
+                            not isinstance(reasoning, dict)
+                            or not isinstance(reasoning.get("text"), str)
+                            or not isinstance(reasoning.get("source", ""), str)
+                            or not isinstance(reasoning.get("fragments", []), list)
+                            or reasoning.get("seconds") is not None
+                            and type(reasoning["seconds"]) not in (float, int)
+                        ):
+                            raise ValueError("Invalid local session reasoning")
+                    except FileNotFoundError:
+                        continue  # Runtime is local and may be absent after a Vault sync.
+                    except (OSError, ValueError, RecursionError) as exc:
+                        _LOG.warning(
+                            "Skipping unreadable reasoning attachment for %s/%s (%s)",
+                            session_id,
+                            record_id,
+                            type(exc).__name__,
+                        )
+                        continue
+                    record["reasoning"] = reasoning
         return Session(
             id=session_id,
             started_at=meta.get("started_at", ""),
@@ -346,10 +374,9 @@ class SessionStore:
     def append(self, session: Session, record: dict) -> dict:
         raw_reasoning = record.get("reasoning")
         record = _redact_record(record)
-        # 推理原文改写为 Runtime 附件：Vault JSONL 只留 reasoning_local 标记。
         reasoning = record.pop("reasoning", None)
         if reasoning and reasoning != raw_reasoning:
-            # 已被脱敏改写的推理片段绝不能按原始协议数据回放。
+            # A scrubbed reasoning fragment must never be replayed as original protocol data.
             reasoning.pop("source", None)
         record["at"] = (
             serialize_timestamp(parse_timestamp(record["at"])) if "at" in record else now_iso()
@@ -368,7 +395,8 @@ class SessionStore:
                         handle.write(b"\n")
                 if session.damaged_tail_line is not None:
                     recovery = {
-                        "type": "recovery", "ignored_line": session.damaged_tail_line,
+                        "type": "recovery",
+                        "ignored_line": session.damaged_tail_line,
                         "at": now_iso(),
                     }
                     handle.write((json.dumps(recovery) + "\n").encode("utf-8"))
@@ -376,10 +404,19 @@ class SessionStore:
                     session.damaged_tail_line = None
                 handle.write((json.dumps(record, ensure_ascii=False) + "\n").encode("utf-8"))
             if reasoning:
-                # 内存中的记录保留推理原文，供本次运行的思考展示使用。
                 record["reasoning"] = reasoning
             session.records.append(record)
         return record
+
+    def _reasoning_path(self, session_id: str, record_id: str) -> Path:
+        if not SESSION_ID_RE.fullmatch(session_id) or not SESSION_ID_RE.fullmatch(record_id):
+            raise ValueError("Invalid local session reasoning identifier")
+        path = self._reasoning_root / session_id / f"{record_id}.json"
+        if any(
+            p.is_symlink() for p in (self._reasoning_root, path.parent, path)
+        ) or not path.resolve().is_relative_to(self._reasoning_root.parent.resolve()):
+            raise ValueError("Local session reasoning cannot redirect outside Runtime")
+        return path
 
     def rename(self, session: Session, title: str) -> None:
         self.append(session, {"type": "title", "title": title.strip()[:80]})
@@ -390,57 +427,33 @@ class SessionStore:
             if not path.exists():
                 return False
             attachments = self._reasoning_path(session_id, "attachment").parent
+            journals = self._turn_undo_root / session_id
+            if journals.resolve() != journals:
+                raise ValueError("The local undo journal path is redirected.")
+            if journals.is_dir():
+                for journal in journals.glob("*.json"):
+                    journal.unlink()
+                journals.rmdir()
             for attachment in attachments.glob("*.json"):
                 attachment.unlink()
-            try:
-                attachments.rmdir()
-            except OSError:
-                # 目录里还有未知文件时保守保留，绝不能因此阻断会话删除。
-                pass
             path.unlink()
             self._listing_cache.pop(session_id, None)
             self._undistilled_cache.pop(session_id, None)
         return True
-
-    def _reasoning_path(self, session_id: str, record_id: str) -> Path:
-        self._validate_session_id(session_id)
-        if not SESSION_ID_RE.fullmatch(record_id):
-            raise ValueError(f"非法推理附件 ID：{record_id}")
-        path = self._reasoning_root / session_id / f"{record_id}.json"
-        if (
-            self._reasoning_root.is_symlink()
-            or path.is_symlink()
-            or not path.resolve().is_relative_to(self._reasoning_root.resolve())
-        ):
-            raise ValueError("推理附件不能重定向到 Runtime 之外")
-        return path
-
-    def _read_reasoning(self, session_id: str, record_id: str) -> dict:
-        path = self._reasoning_path(session_id, record_id)
-        reasoning = json.loads(path.read_text(encoding="utf-8"))
-        if (
-            not isinstance(reasoning, dict)
-            or not isinstance(reasoning.get("text"), str)
-            or not isinstance(reasoning.get("source", ""), str)
-            or not isinstance(reasoning.get("fragments", []), list)
-            or reasoning.get("seconds") is not None
-            and type(reasoning["seconds"]) not in (float, int)
-        ):
-            raise ValueError("推理附件结构无效")
-        return reasoning
 
     def _listing_row(self, path: Path, with_tokens: bool) -> dict | None:
         try:
             stat = path.stat()
         except OSError:
             return None
-        signature = (stat.st_mtime_ns, stat.st_size)
+        signature = (path, stat.st_mtime_ns, stat.st_size)
         cached = self._listing_cache.get(path.stem)
         if cached is None or cached[0] != signature:
             try:
-                session = self._load_file(path)
+                session = self._load_path(path, include_reasoning=False)
             except (ValueError, KeyError, OSError) as exc:
                 _LOG.warning("Unable to list session %s (%s)", path.stem, type(exc).__name__)
+                record_event("session.scan_failed", exc)
                 return None
             row = {
                 "id": session.id,
@@ -450,7 +463,9 @@ class SessionStore:
                 "messages": len(session.messages),
                 # token 估算要遍历全部记录，按需计算后缓存在同一行里。
                 "tokens": session.estimated_tokens() if with_tokens else None,
-                "summaries": sum(1 for record in session.records if record.get("type") == "summary"),
+                "summaries": sum(
+                    1 for record in session.records if record.get("type") == "summary"
+                ),
                 "title": session.title(),
             }
             self._listing_cache[path.stem] = (signature, row)
@@ -458,9 +473,12 @@ class SessionStore:
             row = cached[1]
             if with_tokens and row.get("tokens") is None:
                 try:
-                    row["tokens"] = self._load_file(path).estimated_tokens()
+                    row["tokens"] = self._load_path(
+                        path, include_reasoning=False
+                    ).estimated_tokens()
                 except (ValueError, KeyError, OSError) as exc:
                     _LOG.warning("Unable to list session %s (%s)", path.stem, type(exc).__name__)
+                    record_event("session.scan_failed", exc)
                     return None
         result = dict(row)
         if not with_tokens:
@@ -505,22 +523,24 @@ class SessionStore:
             except OSError:
                 continue
             seen.add(path.stem)
-            signature = (stat.st_mtime_ns, stat.st_size)
+            signature = (path, stat.st_mtime_ns, stat.st_size)
             cached = self._undistilled_cache.get(path.stem)
             if cached is not None and cached[0] == signature:
                 if cached[1] < needed:
                     continue
                 try:
-                    session = self._load_file(path)
+                    session = self._load_path(path, include_reasoning=False)
                 except (ValueError, KeyError, OSError) as exc:
                     _LOG.warning("Unable to scan session %s (%s)", path.stem, type(exc).__name__)
+                    record_event("session.scan_failed", exc)
                     continue
                 found.append((session.updated_at, session))
                 continue
             try:
-                session = self._load_file(path)
+                session = self._load_path(path, include_reasoning=False)
             except (ValueError, KeyError, OSError) as exc:
                 _LOG.warning("Unable to scan session %s (%s)", path.stem, type(exc).__name__)
+                record_event("session.scan_failed", exc)
                 continue
             count = len(session.user_texts_after_distilled())
             self._undistilled_cache[path.stem] = (signature, count)
@@ -551,6 +571,14 @@ class SessionStore:
             (path for path in self._files() if path.stem == session_id),
             self.root / "legacy" / "undated" / f"{session_id}.jsonl",
         )
+
+
+def dated_message(record: dict) -> str:
+    raw = record.get("at")
+    if not raw:
+        return record.get("content", "")
+    stamp = local_timestamp(raw)
+    return f"[原始消息时间：{stamp}]\n{record.get('content', '')}"
 
 
 def record_label(record: dict) -> str:

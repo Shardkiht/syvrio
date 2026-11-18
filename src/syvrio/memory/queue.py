@@ -10,6 +10,7 @@ from pathlib import Path
 from ..infra.paths import vault_paths
 from ..time import utc_timestamp
 from .models import PendingItem
+from .store import atomic_write
 
 
 @contextmanager
@@ -40,7 +41,9 @@ def rollback_files(paths: list[Path]) -> Iterator[None]:
                 if temporary is not None:
                     temporary.unlink(missing_ok=True)
         if errors:
-            raise ExceptionGroup("Write failed and rollback was incomplete", [failure, *errors]) from failure
+            raise ExceptionGroup(
+                "Write failed and rollback was incomplete", [failure, *errors]
+            ) from failure
         raise
 
 
@@ -61,21 +64,8 @@ class PendingQueue:
         return items
 
     def _save(self, items: list[PendingItem]) -> None:
-        self.dir.mkdir(parents=True, exist_ok=True)
-        content = "\n".join(item.model_dump_json() for item in items)
-        temporary: Path | None = None
-        try:
-            # 使用独立临时文件，只在完整写入并关闭后替换 pending。
-            with tempfile.NamedTemporaryFile(
-                mode="w", encoding="utf-8", dir=self.dir,
-                prefix=f".{self.pending_path.name}.", suffix=".tmp", delete=False,
-            ) as handle:
-                temporary = Path(handle.name)
-                handle.write(content + ("\n" if content else ""))
-            os.replace(temporary, self.pending_path)
-        finally:
-            if temporary is not None:
-                temporary.unlink(missing_ok=True)
+        content = "".join(item.model_dump_json() + os.linesep for item in items)
+        atomic_write(self.pending_path, content.encode("utf-8"))
 
     def all(self) -> list[PendingItem]:
         return self._load()

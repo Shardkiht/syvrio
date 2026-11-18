@@ -5,6 +5,7 @@
 Snippet[].Text，日期在 DocumentInfo.PublishTime。Custom 的响应形状
 文档描述较少，映射写得偏防御，真实冒烟后固化。
 """
+
 from __future__ import annotations
 
 from typing import Any, Callable
@@ -215,5 +216,7 @@ def _api_error(status: int, payload: dict) -> ProviderError | None:
         return None
     code = str(error.get("CodeN") or error.get("Code") or "")
     if code in {"10406", "10412"}:
-        return ProviderError(NAME, ProviderErrorKind.QUOTA, code, code=code, pause_reason="official_quota_" + code)
+        return ProviderError(
+            NAME, ProviderErrorKind.QUOTA, code, code=code, pause_reason="official_quota_" + code
+        )
     return None

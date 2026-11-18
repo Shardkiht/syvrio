@@ -3,32 +3,37 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import sys
 import tomllib
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from .paths import SyvrioPaths, runtime_path
+from ..errors import SyvrioError
+from .paths import SyvrioPaths, runtime_path, syvrio_home
 
 DEFAULT_BASE_URL = "https://api.deepseek.com/v1"
 DEFAULT_MODEL = "deepseek-flash"
 DEFAULT_API_KEY_ENV = "DEEPSEEK_API_KEY"
+CONTEXT_WINDOW_PRESETS = (100_000, 200_000, 400_000, 600_000)
+DEFAULT_CONTEXT_WINDOW = CONTEXT_WINDOW_PRESETS[0]
 DEFAULT_EMBEDDING_MODEL = "BAAI/bge-small-zh-v1.5"
 DEFAULT_EMBEDDING_BASE_URL = "https://api.siliconflow.cn/v1"
-CONFIG_FILENAME = "syvrio.toml"
 SPARK_THINKING_MODES = ("enabled", "auto", "disabled")
+CONFIG_FILENAME = "syvrio.toml"
 RECENT_MODEL_LIMIT = 5
+_TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 
 
 KEYRING_SERVICE = "syvrio"
 
 
-class ConfigError(ValueError):
+class ConfigError(SyvrioError, ValueError):
     """配置读取、TOML 语法或字段校验失败；消息可直接展示给用户。"""
 
 
 def toml_literal(value: str | list[str] | list[tuple[str, str]]) -> str:
-    """序列化 TOML 字符串及字符串数组，保留 Unicode 标量。"""
+    """序列化 TOML 字符串和数组，保留 Unicode 标量。"""
     # ASCII 模式会把非 BMP 字符拆成 TOML 不接受的代理对；DEL 也必须转义。
     return json.dumps(value, ensure_ascii=False).replace("\x7f", "\\u007f")
 
@@ -43,7 +48,6 @@ class LLMConfig:
     num_retries: int = 2
     temperature: float = 0.1
     timeout: float = 60.0
-
     spark_thinking: str = ""
     provider_urls: dict[str, str] = field(default_factory=dict)
     recent_models: list[tuple[str, str]] = field(default_factory=list)
@@ -84,13 +88,19 @@ class LLMConfig:
             import keyring
 
             return keyring.get_password(KEYRING_SERVICE, self.api_key_env) or None
-        except Exception:
+        except Exception as exc:
+            # Degrading to "no key" misleads users into thinking none is stored;
+            # record once so the broken backend is attributable afterwards.
+            # Imported lazily: diagnostics imports this module at startup.
+            from .diagnostics import record_once
+
+            record_once("degraded.keyring", exc)
             return None
 
 
 @dataclass(slots=True)
 class ChatConfig:
-    context_window: int = 32000
+    context_window: int = DEFAULT_CONTEXT_WINDOW
     reserve_output_tokens: int = 1500
     keep_recent_tokens: int = 6000
     compact_threshold: float = 0.8
@@ -99,7 +109,22 @@ class ChatConfig:
     auto_recall: int = 3
     recall_rewrite: bool = True
     recall_context_turns: int = 2
+    auto_reflect: bool = True
+    reflect_idle_seconds: float = 60.0
+    # 任意两个自动回顾之间的最小间隔；自动任务本身按天/周周期调度。
+    reflect_interval_seconds: float = 300.0
+    profile_auto_interval_hours: float = 168.0
+    profile_min_cooldown_hours: float = 24.0
+    profile_min_changes: int = 20
+    dream_auto_interval_hours: float = 24.0
     extract_on_exit: bool = True
+
+
+@dataclass(slots=True)
+class GitConfig:
+    auto_sync: bool = True
+    sync_time: str = "03:00"
+    retry_interval_minutes: int = 30
 
 
 @dataclass(slots=True)
@@ -134,10 +159,18 @@ class SearchConfig:
     fallback_engines: list[str] = field(default_factory=lambda: ["baidu", "duckduckgo", "sogou"])
     # 每次自动搜索最多尝试的上游引擎数（含首选）；显式指定引擎时不回退。
     max_engines: int = 3
+    # 显式 search_engine 数组允许的最大引擎数；0 表示不限制。
+    max_search_engines: int = 0
     # 一次搜索所有引擎回退共享的超时预算，秒；超出即停止候补。
     timeout_budget: float = 25.0
     # 一次搜索跨所有 provider 共享的请求次数上限；超出即返回当前最佳候选。
     max_requests: int = 9
+    # AnySearch 的检索区域与语言；匿名和 Key 模式共用。
+    anysearch_zone: str = "cn"
+    anysearch_language: str = "zh-CN"
+    # 自托管 SearXNG 实例；与 open-websearch 的 base_url 相互独立。
+    searxng_base_url: str = "http://127.0.0.1:8888"
+    searxng_timeout: float = 10.0
     # 每厂商调用上限（Search/Fetch 共池）；键为 provider 名。
     usage_limits: dict[str, UsageLimit] = field(default_factory=lambda: default_usage_limits())
 
@@ -171,14 +204,25 @@ class UsageLimit:
 
 
 DEFAULT_USAGE_LIMITS = {
-    "baidu_search": (50, 0), "tavily": (0, 800), "exa": (0, 1000),
-    "you": (0, 1500), "volcengine": (0, 450), "open_websearch": (0, 0),
+    "baidu_search": (50, 0),
+    "tavily": (0, 800),
+    "exa": (0, 1000),
+    "you": (0, 1500),
+    "volcengine": (0, 450),
+    "open_websearch": (0, 0),
+    # 匿名服务也可用；本地默认仅作请求量保护，不代表服务商额度。
+    "anysearch": (20, 0),
+    "parallel_mcp": (20, 0),
+    # 自托管实例默认不限制本地计数，实际调用仍受全局请求/超时预算约束。
+    "searxng": (0, 0),
 }
 
 
 def default_usage_limits() -> dict[str, UsageLimit]:
-    return {name: UsageLimit(daily=day, monthly=month)
-            for name, (day, month) in DEFAULT_USAGE_LIMITS.items()}
+    return {
+        name: UsageLimit(daily=day, monthly=month)
+        for name, (day, month) in DEFAULT_USAGE_LIMITS.items()
+    }
 
 
 @dataclass(slots=True)
@@ -192,12 +236,12 @@ class Config:
     vault: Path
     llm: LLMConfig = field(default_factory=LLMConfig)
     chat: ChatConfig = field(default_factory=ChatConfig)
+    git: GitConfig = field(default_factory=GitConfig)
     retrieval: RetrievalConfig = field(default_factory=RetrievalConfig)
     search: SearchConfig = field(default_factory=SearchConfig)
     fetch: FetchConfig = field(default_factory=FetchConfig)
     confidence_threshold: float = 0.8
     auto_push: bool = False
-    # Runtime 与 Vault 分离；空值回落 ~/.syvrio/runtime，SYVRIO_RUNTIME 优先。
     runtime: str = ""
 
     def paths(self, config_file: Path | None = None) -> SyvrioPaths:
@@ -223,14 +267,16 @@ def default_config_path() -> Path:
     local = Path.cwd() / CONFIG_FILENAME
     if local.exists():
         return local
-    return _default_config_dir() / CONFIG_FILENAME
+    preferred = syvrio_home() / "config.toml"
+    legacy = _default_config_dir() / CONFIG_FILENAME
+    return legacy if not preferred.exists() and legacy.exists() else preferred
 
 
 def default_vault_path() -> Path:
     env_vault = os.environ.get("SYVRIO_VAULT")
     if env_vault:
         return Path(env_vault).expanduser()
-    return Path.home() / ".syvrio" / "vault"
+    return syvrio_home() / "vault"
 
 
 def infer_provider(base_url: str) -> str:
@@ -261,8 +307,6 @@ def _validate_types(data: dict, defaults: dict, prefix: str = "") -> None:
                 raise ConfigError(f"配置字段 {name} 必须是表（section）。")
             _validate_types(value, default, name)
         elif isinstance(default, list):
-            if not isinstance(value, list):
-                raise ConfigError(f"配置字段 {name} 必须是字符串数组。")
             if name == "llm.recent_models":
                 if not isinstance(value, list) or any(
                     not isinstance(pair, list)
@@ -319,25 +363,48 @@ def _validate_range(
 
 def _validate_config(data: dict) -> None:
     _validate_types(data, asdict(Config(vault=Path("."))))
-    llm = data.get("llm", {})
-    if any(not isinstance(url, str) or not url.strip() for url in llm.get("provider_urls", {}).values()):
+    if any(
+        not isinstance(url, str) or not url.strip()
+        for url in data.get("llm", {}).get("provider_urls", {}).values()
+    ):
         raise ConfigError("配置字段 llm.provider_urls 的值必须是非空字符串。")
-    if llm.get("spark_thinking", "") not in ("", *SPARK_THINKING_MODES):
+    if data.get("llm", {}).get("spark_thinking", "") not in ("", *SPARK_THINKING_MODES):
         raise ConfigError("配置字段 llm.spark_thinking 必须为空或为 enabled、auto、disabled。")
     for name in (
-        "llm.timeout", "chat.context_window", "chat.max_tool_steps", "chat.tool_timeout",
-        "search.timeout", "search.max_results", "search.fetch_timeout",
-        "search.max_engines", "search.timeout_budget", "search.max_requests",
+        "llm.timeout",
+        "chat.context_window",
+        "chat.max_tool_steps",
+        "chat.tool_timeout",
+        "search.timeout",
+        "search.max_results",
+        "search.fetch_timeout",
+        "chat.reflect_idle_seconds",
+        "chat.reflect_interval_seconds",
+        "search.max_engines",
+        "search.timeout_budget",
+        "search.max_requests",
+        "git.retry_interval_minutes",
     ):
         _validate_range(data, name, positive=True)
     for name in (
-        "llm.num_retries", "llm.temperature", "chat.reserve_output_tokens",
-        "chat.keep_recent_tokens", "chat.auto_recall", "chat.recall_context_turns",
+        "llm.num_retries",
+        "llm.temperature",
+        "chat.reserve_output_tokens",
+        "chat.keep_recent_tokens",
+        "chat.auto_recall",
+        "chat.recall_context_turns",
         "search.cache_ttl",
+        "search.max_search_engines",
+        "chat.reflect_request_budget",
     ):
         _validate_range(data, name)
     for name in ("confidence_threshold", "chat.compact_threshold"):
         _validate_range(data, name, unit_interval=True)
+    git_raw = data.get("git", {})
+    if isinstance(git_raw, dict) and "sync_time" in git_raw:
+        value = git_raw["sync_time"]
+        if not isinstance(value, str) or not _TIME_RE.match(value):
+            raise ConfigError("配置字段 git.sync_time 必须是 HH:MM（24 小时制）。")
 
 
 def load_config(path: Path | str | None = None) -> Config:
@@ -368,11 +435,10 @@ def load_config(path: Path | str | None = None) -> Config:
         spark_thinking=llm_raw.get("spark_thinking", ""),
         provider_urls=dict(llm_raw.get("provider_urls", {})),
         recent_models=[(provider, model) for provider, model in llm_raw.get("recent_models", [])],
-
     )
     chat_raw = data.get("chat", {})
     chat = ChatConfig(
-        context_window=int(chat_raw.get("context_window", 32000)),
+        context_window=int(chat_raw.get("context_window", DEFAULT_CONTEXT_WINDOW)),
         reserve_output_tokens=int(chat_raw.get("reserve_output_tokens", 1500)),
         keep_recent_tokens=int(chat_raw.get("keep_recent_tokens", 6000)),
         compact_threshold=float(chat_raw.get("compact_threshold", 0.8)),
@@ -381,7 +447,20 @@ def load_config(path: Path | str | None = None) -> Config:
         auto_recall=int(chat_raw.get("auto_recall", 3)),
         recall_rewrite=bool(chat_raw.get("recall_rewrite", True)),
         recall_context_turns=int(chat_raw.get("recall_context_turns", 2)),
+        auto_reflect=bool(chat_raw.get("auto_reflect", True)),
+        reflect_idle_seconds=float(chat_raw.get("reflect_idle_seconds", 60.0)),
+        reflect_interval_seconds=float(chat_raw.get("reflect_interval_seconds", 300.0)),
+        profile_auto_interval_hours=float(chat_raw.get("profile_auto_interval_hours", 168.0)),
+        profile_min_cooldown_hours=float(chat_raw.get("profile_min_cooldown_hours", 24.0)),
+        profile_min_changes=int(chat_raw.get("profile_min_changes", 20)),
+        dream_auto_interval_hours=float(chat_raw.get("dream_auto_interval_hours", 24.0)),
         extract_on_exit=bool(chat_raw.get("extract_on_exit", True)),
+    )
+    git_raw = data.get("git", {})
+    git = GitConfig(
+        auto_sync=bool(git_raw.get("auto_sync", True)),
+        sync_time=str(git_raw.get("sync_time", "03:00")),
+        retry_interval_minutes=int(git_raw.get("retry_interval_minutes", 30)),
     )
     retrieval_raw = data.get("retrieval", {})
     embedding_raw = retrieval_raw.get("embedding", {})
@@ -449,27 +528,31 @@ def load_config(path: Path | str | None = None) -> Config:
         fetch_timeout=float(search_raw.get("fetch_timeout", 45.0)),
         fallback_engines=fallback_engines,
         max_engines=max(1, int(search_raw.get("max_engines", 3))),
+        max_search_engines=max(0, int(search_raw.get("max_search_engines", 0))),
         timeout_budget=float(search_raw.get("timeout_budget", 25.0)),
         max_requests=int(search_raw.get("max_requests", 9)),
+        anysearch_zone=str(search_raw.get("anysearch_zone", "cn")),
+        anysearch_language=str(search_raw.get("anysearch_language", "zh-CN")),
+        searxng_base_url=str(search_raw.get("searxng_base_url", "http://127.0.0.1:8888")),
+        searxng_timeout=float(search_raw.get("searxng_timeout", 10.0)),
         usage_limits=usage_limits,
     )
     fetch_raw = data.get("fetch", {})
     fetch_providers = fetch_raw.get("providers", ["open_websearch"])
     if not isinstance(fetch_providers, list):
         fetch_providers = ["open_websearch"]
-    fetch = FetchConfig(
-        providers=[str(item) for item in fetch_providers if str(item).strip()]
-    )
+    fetch = FetchConfig(providers=[str(item) for item in fetch_providers if str(item).strip()])
     return Config(
         vault=Path(vault_raw).expanduser(),
         llm=llm,
         chat=chat,
+        git=git,
         retrieval=retrieval,
         search=search,
         fetch=fetch,
         confidence_threshold=float(data.get("confidence_threshold", 0.8)),
         auto_push=bool(data.get("auto_push", False)),
-        runtime=str(data.get("runtime", "")),
+        runtime=data.get("runtime", ""),
     )
 
 
@@ -478,20 +561,24 @@ def usage_limits_toml(limits: dict[str, "UsageLimit"]) -> str:
     parts = []
     for name, limit in limits.items():
         parts.append(
-            f"\n[search.usage_limits.{name}]"
-            f"\ndaily = {limit.daily}"
-            f"\nmonthly = {limit.monthly}\n"
+            f"\n[search.usage_limits.{name}]\ndaily = {limit.daily}\nmonthly = {limit.monthly}\n"
         )
     return "".join(parts)
 
 
 def write_example_config(path: Path, vault: Path) -> None:
-    content = f'''# Syvrio 配置
+    content = f"""# Syvrio 配置
 vault = {toml_literal(vault.as_posix())}
+runtime = "~/.syvrio/runtime"
 
 confidence_threshold = 0.8
 auto_push = false
-runtime = {toml_literal("~/.syvrio/runtime")}
+
+[git]
+# 每日定时 Commit + Push，仅在 TUI 运行时执行；错过的计划在下次启动补执行。
+auto_sync = true
+sync_time = {toml_literal("03:00")}
+retry_interval_minutes = 30
 
 [llm]
 provider = {toml_literal("deepseek")}
@@ -499,7 +586,7 @@ base_url = {toml_literal(DEFAULT_BASE_URL)}
 model = {toml_literal(DEFAULT_MODEL)}
 api_key_env = {toml_literal(DEFAULT_API_KEY_ENV)}
 reasoning_effort = {toml_literal("")}
-spark_thinking = ""
+spark_thinking = {toml_literal("")}
 provider_urls = {{}}
 recent_models = []
 num_retries = 2
@@ -507,7 +594,7 @@ temperature = 0.1
 timeout = 60.0
 
 [chat]
-context_window = 32000
+context_window = {DEFAULT_CONTEXT_WINDOW}
 reserve_output_tokens = 1500
 keep_recent_tokens = 6000
 compact_threshold = 0.8
@@ -516,6 +603,13 @@ tool_timeout = 60.0
 auto_recall = 3
 recall_rewrite = true
 recall_context_turns = 2
+auto_reflect = true
+reflect_idle_seconds = 60.0
+reflect_interval_seconds = 300.0
+profile_auto_interval_hours = 168.0
+profile_min_cooldown_hours = 24.0
+profile_min_changes = 20
+dream_auto_interval_hours = 24.0
 extract_on_exit = true
 
 [retrieval]
@@ -549,16 +643,26 @@ engines = {toml_literal(["bing"])}
 fetch_timeout = 45.0
 # 一次搜索跨所有 provider 共享的请求次数上限；超出即返回当前最佳候选。
 max_requests = 9
+# AnySearch 的检索区域与语言；匿名和 Key 模式共用。
+anysearch_zone = "cn"
+anysearch_language = "zh-CN"
+# 自托管 SearXNG：需显式加入 providers；实例须启用 format=json。
+searxng_base_url = "http://127.0.0.1:8888"
+searxng_timeout = 10.0
 # 每厂商调用上限（Search/Fetch 共用同一计数池）；按需取消注释并修改。
 # 本地计数不等于服务商实际账单上限。
 # [search.usage_limits.tavily]
 # daily = 0  # 0 means no local request-count cap
 # monthly = 800
+# [search.usage_limits.anysearch]
+# daily = 20
+# [search.usage_limits.parallel_mcp]
+# daily = 20
 
 [fetch]
 # 网页抓取的 provider 顺序；与搜索的 providers 相互独立。
 providers = {toml_literal(["open_websearch"])}
-'''
+"""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(content, encoding="utf-8")
