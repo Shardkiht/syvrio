@@ -409,7 +409,7 @@ def read_memory_source(memory_id: str) -> ToolResult:
 - RecallContext 只保存用于判断结果能否复用的元数据，不复制或替代 Recall 事实内容。
 - 上下文压缩时，Recall 结果随对话上下文一起处理；但压缩会使 RecallContext 失效，不能继续把压缩前的 Recall 当作当前操作的有效证据。
 
-### 7.4 Recall 上下文预算与检索文本
+### 7.5 Recall 上下文预算与检索文本
 
 Recall 结果会占用 Agent 上下文，因此需要受上下文预算约束。默认 **limit=7** 是条数上限；实际返回还需要考虑上下文容量，避免一次 Recall 填入过多内容。具体 Token 预算、排序和裁剪策略留待实现审查，不在此处增加额外参数。
 
@@ -501,4 +501,6 @@ flowchart TD
 
 **本轮 Recall 决策已确定**：统一 Recall 应用接口，Runtime 自动 Recall 直接调用该接口，LLM 通过工具调用同一接口；所有记忆变更工具调用由 Runtime 拦截并强制检查 Recall，操作类型/目标/内容变化或证据变化、上下文压缩后重新 Recall，其他情况复用；请求参数为 `query`（必填）、`limit`（默认 7）、`time_range`、`location`、`emotion`，删除 `view`；`time_range` 按 `event_time` 或有效期重叠过滤，不使用 `recorded_at`；Recall 返回结构化 `RecallEntry(MemoryDraft)`，Core + Context 全部返回，Extensions 不返回；Recall 结果加入对话上下文，`RecallContext` 只保存操作、目标、内容指纹、证据版本和上下文代次等复用元数据。
 
-**构想但未定稿**：Inference 改为 Markdown 的具体存储/审计实现，Dream 阶段续跑与调度参数、Profile 输入预算、具体工具参数与服务流程、Pending 审批的操作目标、安全的 Recall 追踪机制、编辑正文后的 Context 处理、真实数据迁移策略及检索视图细节。原始对话查阅工具（仅传 `memory_id`、由程序定位 Session / Message）作为后续扩展构想，当前不实施。
+**本轮新增决定**：删除独立的 `source` 字段；目标 Memory 不要求保存或向 LLM 暴露 `session_id/message_id`。原始对话查阅仅作为后续构想：未来工具接收 `memory_id`，由程序自行定位相关 Session / Message；当前不新增工具，具体检索方式待实际需要时设计。
+
+**构想但未定稿**：Inference 改为 Markdown 的具体存储/审计实现，Dream 阶段续跑与调度参数、Profile 输入预算、具体工具参数与服务流程、Pending 审批的操作目标、安全的 Recall 追踪机制、编辑正文后的 Context 处理、真实数据迁移策略及检索视图细节。
