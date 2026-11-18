@@ -229,7 +229,7 @@ LLM 已判断某项事实具有记忆价值，但在对话和 Recall 结果中**
 | **Agent LLM** | 判断记忆价值、事实提炼、语义重复/冲突、变化/纠错、是否需要用户确认；选择工具 | 直接修改 Vault；自评置信度作为写入依据 |
 | **Agent Runtime** | 拦截所有记忆变更工具调用，确保执行前已有有效 Recall；维护 RecallContext；必要时直接调用统一 Recall 接口并把结果交回 Agent | 替 Agent 判断事实之间的语义关系 |
 | **Recall** | 提供唯一的记忆检索接口，返回结构化事实及必要 ID/Context | 决定事实之间的业务关系 |
-| **MemoryService** | 确定性参数/状态/凭据/并发约束，协调可靠写入 | 自己推断语义冲突、根据阈值决定 Pending、重复调用 LLM 提取 |
+| **MemoryService** | 提供 `add()` 与 `apply()` 两个写入入口；负责确定性参数/状态/凭据/并发校验及可靠执行 | 自己推断语义冲突、根据阈值决定 Pending、重复调用 LLM 提取 |
 | **MemoryStore / Schema** | Markdown 无损解析、路径校验、持久化、身份和状态修改 | 记忆价值判断或语义裁决 |
 | **PendingQueue** | Pending 的创建、取回、确认/拒绝及处理记录 | 对自然语言进行二次理解 |
 | **Audit** | 记录操作历史以便追溯 | 替代事实正文或承担 Recall 语义检索 |
@@ -314,15 +314,37 @@ Application / MemoryService（确定性用例、参数、并发、状态）
 
 ### 6.3 工具词汇与事实生命周期
 
-讨论中的主要工具：
+讨论中的主要 Agent 工具：
 
-| 工具 | 目标语义 | 状态 |
-|---|---|---|
-| `recall` | 读取相关事实及必要 ID | 已确定保留 |
-| `memorize` | 添加新长期事实 | 已确定保留；目标参数改为已整理的 Draft |
-| `transition` | 真实世界中的状态变化，保留历史时间关系 | 已确定采用此命名，替代 `evolve` |
-| `correct` | 原事实错误；保留新事实，弃用错误旧记录 | 已确定保留 |
-| `forget` | 用户要求不再使用相关记忆 | 工具保留方向，彻底删除还是逻辑弃用的边界待审 |
+| 工具 | 目标语义 | 对应 MemoryService | 状态 |
+|---|---|---|---|
+| `recall` | 读取相关事实及必要 ID | 统一 Recall 接口 | 已确定保留 |
+| `memorize` | 添加新长期事实 | `add(draft)` | 已确定保留；参数为整理好的 Draft |
+| `transition` | 真实世界中的状态变化，保留历史时间关系 | `apply(add=..., updates=...)` | 已确定采用此命名，替代 `evolve` |
+| `correct` | 原事实错误；新增正确事实并弃用错误旧记录 | `apply(add=..., updates=...)` | 已确定保留 |
+| `deprecate` | 将不再使用的旧记忆标记为弃用 | `apply(updates=...)` | 已确定命名，替代 `forget` |
+
+MemoryService 只提供两个写入入口：
+
+```python
+class MemoryUpdate(BaseModel):
+    id: str
+    context: MemoryContext | None = None
+    status: Literal["active", "deprecated"] | None = None
+
+
+def add(draft: MemoryDraft) -> ToolResult: ...
+
+def apply(
+    add: MemoryDraft | None = None,
+    updates: list[MemoryUpdate] | None = None,
+) -> ToolResult: ...
+```
+
+- `memorize` 单独调用 `add()`；其他三个变更工具统一调用 `apply()`。
+- `apply()` 的 `add` 是可选的新 Draft；`updates` 是按旧记忆 ID 指定的修改列表。
+- `MemoryUpdate.context` 只允许补充旧记录中原本为空的 Context 字段，不覆盖已有非空值；`status` 可以按允许的状态值变更。
+- 旧记忆的 `text`、`topic` 和已有非空 Context 不允许原地覆盖；纠错通过新增正确事实并弃用旧记录完成。
 
 事实变化和纠错**不是同一件事**：
 
@@ -480,7 +502,7 @@ flowchart TD
 
 | 优先级 | 问题 | 已知边界 |
 |---|---|---|
-| 高 | **MemoryService 的统一写入 API** | Service 仅确定性校验；如何组织 `memorize/transition/correct/forget` 的具体命令与返回结果未定 |
+| 高 | **Pending 审批与原计划操作的映射** | `Draft + question + related_ids` 已确定为最小业务内容；但若涉及旧记录变化/纠错，如何保留明确且安全的操作意图尚未定 |
 | 高 | **Pending 审批与原计划操作的映射** | `Draft + question + related_ids` 已确定为最小业务内容；但若涉及旧记录变化/纠错，如何保留明确且安全的操作意图尚未定 |
 | 中 | **Recall 上下文预算与检索质量** | 参数、结果结构和 RecallContext 已确定；Token 预算、排序与检索质量仍需结合评测确定 |
 | 高 | **`transition` 的时间处理与历史事实检索** | 不猜生效日期、区分纠错；部分日期/区间精度和有效期更新规则待明确 |
@@ -498,9 +520,8 @@ flowchart TD
 
 ## 11. 后续设计审查顺序 [建议]
 
-1. **MemoryService 用例与工具接口**：统一确定性校验、写入事务和错误返回。
-2. **Pending 确认的操作语义**：保持三种 UI 操作，同时保证不会误覆盖旧事实。
-3. **transition / correct / forget 的状态边界与时间语义**。
+1. **Pending 确认的操作语义**：保持三种 UI 操作，同时保证不会误覆盖旧事实。
+2. **transition / correct / deprecate 的状态边界与时间语义**。
 4. **Recall 的检索质量与上下文预算**：在已确定的参数、结果结构和 RecallContext 之上，审查排序、Token 预算与评测。
 5. **非 Agent 入口、Dream 调度、Inference Markdown 与迁移/验收方案**。
 
@@ -508,7 +529,7 @@ flowchart TD
 
 ### 决策摘要
 
-**已确定**：`MemoryDraft(text, topic, context?)`；`PendingItem = Draft + question + related_ids`（队列元数据另存）；`MemoryEntry = Draft + id + status + recorded_at`；`status = active/deprecated`；Core `id/status`；Markdown Content/Core/Context/Extensions 分层；Agent 主导语义判断；Service 只做确定性校验；Recall 是有记忆意图时的前置步骤；Pending 仅用于 Agent 无法判断的情况；用户确认/仅编辑 text 后确认/否定；普通审批不再额外调用 LLM；程序只阻止凭据写入长期记忆。
+**已确定**：`MemoryDraft(text, topic, context?)`；`PendingItem = Draft + question + related_ids`（队列元数据另存）；`MemoryEntry = Draft + id + status + recorded_at`；`status = active/deprecated`；Core `id/status`；Markdown Content/Core/Context/Extensions 分层；Agent 主导语义判断；Service 只做确定性校验；Service 写入入口为 `add(draft)` 与 `apply(add?, updates?)`，Agent 保留 `memorize/transition/correct/deprecate` 四个业务工具；`MemoryUpdate` 以旧记忆 ID 指定目标，只允许补充空 Context 字段或变更 status，不覆盖旧事实正文；Recall 是有记忆意图时的前置步骤；Pending 仅用于 Agent 无法判断且需要后续用户确认的情况；用户确认/仅编辑 text 后确认/否定；普通审批不再额外调用 LLM；程序只阻止凭据写入长期记忆。
 
 **本轮新增已确定**：Inference 独立于事实，`kind` 对应用户推断领域、动态复用/新建，`status=hypothesis/confirmed/deprecated`；单个 `vault/profile.md` 定期由有效 Memory + confirmed Inference 重建，允许编辑并被下一次更新覆盖；Profile 作为 LLM 上下文参考，不反向写回事实；Dream 统一调度，**先一次调用生成 Profile，再分批生成 Inference**；Profile 前端只读展示，无独立刷新；Dream 支持自动与手动触发，阶段成功独立保留。
 
