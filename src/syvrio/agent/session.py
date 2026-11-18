@@ -340,19 +340,28 @@ class SessionStore:
                     record_id = record.get("id")
                     if not isinstance(record_id, str) or not SESSION_ID_RE.fullmatch(record_id):
                         continue
-                    attachment = self._reasoning_path(session_id, record_id)
                     try:
+                        attachment = self._reasoning_path(session_id, record_id)
                         reasoning = json.loads(attachment.read_text(encoding="utf-8"))
+                        if (
+                            not isinstance(reasoning, dict)
+                            or not isinstance(reasoning.get("text"), str)
+                            or not isinstance(reasoning.get("source", ""), str)
+                            or not isinstance(reasoning.get("fragments", []), list)
+                            or reasoning.get("seconds") is not None
+                            and type(reasoning["seconds"]) not in (float, int)
+                        ):
+                            raise ValueError("Invalid local session reasoning")
                     except FileNotFoundError:
                         continue  # Runtime is local and may be absent after a Vault sync.
-                    if (
-                        not isinstance(reasoning, dict)
-                        or not isinstance(reasoning.get("text"), str)
-                        or not isinstance(reasoning.get("source", ""), str)
-                        or reasoning.get("seconds") is not None
-                        and type(reasoning["seconds"]) not in (float, int)
-                    ):
-                        raise ValueError("Invalid local session reasoning")
+                    except (OSError, ValueError, RecursionError) as exc:
+                        _LOG.warning(
+                            "Skipping unreadable reasoning attachment for %s/%s (%s)",
+                            session_id,
+                            record_id,
+                            type(exc).__name__,
+                        )
+                        continue
                     record["reasoning"] = reasoning
         return Session(
             id=session_id,

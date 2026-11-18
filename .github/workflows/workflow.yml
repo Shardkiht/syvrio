@@ -65,6 +65,9 @@ jobs:
       - name: Verify wheel contains Web assets
         run: uv run python scripts/build_web.py --wheel dist/*.whl
 
+      - name: Verify distribution contents
+        run: uv run --frozen python scripts/check_distributions.py
+
       - uses: actions/upload-artifact@v4
         with:
           name: pypi-distributions

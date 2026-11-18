@@ -45,6 +45,8 @@ jobs:
       - run: uv build --clear
       - name: Verify wheel contains Web assets
         run: uv run python scripts/build_web.py --wheel dist/*.whl
+      - name: Verify distribution contents
+        run: uv run --frozen python scripts/check_distributions.py
       - run: uv run syvrio --help
       - run: uv run syvrio --version
       - run: uv run python -m syvrio --version

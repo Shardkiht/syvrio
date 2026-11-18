@@ -598,3 +598,44 @@ def test_invalid_reasoning_reference_keeps_assistant_body(tmp_path, identifier):
     assert assistant["content"] == "Synthetic reply"
     assert "reasoning" not in assistant
     assert session.path.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        None,
+        b"\xff",
+        b"{",
+        b"[]",
+        b'{"text": "bad", "seconds": []}',
+        b'{"text": "bad", "fragments": {}}',
+    ],
+)
+def test_unreadable_reasoning_attachment_keeps_session_and_other_reasoning(tmp_path, caplog, bad):
+    store, session = make_store(tmp_path)
+    for record_id in ("broken", "healthy"):
+        store.append(
+            session,
+            {
+                "type": "assistant",
+                "id": record_id,
+                "content": "Synthetic reply",
+                "reasoning": {"text": "Synthetic reasoning", "source": "synthetic"},
+            },
+        )
+    attachment = store._reasoning_path(session.id, "broken")
+    if bad is None:
+        attachment.unlink()
+        attachment.mkdir()
+    else:
+        attachment.write_bytes(bad)
+    original = session.path.read_bytes()
+
+    broken, healthy = store.load(session.id).records[-2:]
+
+    assert broken["content"] == "Synthetic reply"
+    assert "reasoning" not in broken
+    assert healthy["reasoning"]["text"] == "Synthetic reasoning"
+    assert "Skipping unreadable reasoning attachment" in caplog.text
+    assert "Synthetic reasoning" not in caplog.text
+    assert session.path.read_bytes() == original

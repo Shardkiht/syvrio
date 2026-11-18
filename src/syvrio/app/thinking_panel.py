@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Self
+
 from textual import on
 from textual.app import ComposeResult
 from textual.containers import Vertical
@@ -8,7 +10,10 @@ from textual.widgets import Button, TextArea
 
 
 class ThinkingText(TextArea):
-    """Keep wheel events inside the reasoning pane, including at its edges."""
+    """Keep focus and wheel scrolling inside the reasoning pane."""
+
+    def focus(self, scroll_visible: bool = False) -> Self:
+        return super().focus(scroll_visible=scroll_visible)
 
     def on_mouse_scroll_up(self, event: MouseScrollUp) -> None:
         event.stop()
