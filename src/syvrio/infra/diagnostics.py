@@ -22,6 +22,7 @@ _EVENTS = frozenset(
         "app.start",
         "app.stop",
         "cli.failed",
+        "update.failed",
         "tui.failed",
         "chat.failed",
         "search.failed",
@@ -39,6 +40,9 @@ _EVENTS = frozenset(
         "session.scan_failed",
         "session.delete_failed",
         "web.startup_hook_failed",
+        "degraded.keyring",
+        "degraded.tiktoken",
+        "degraded.gitsync_state",
         "web.shutdown_distill_failed",
         "web.history_unreadable",
         "web.switch_failed",
@@ -92,8 +96,13 @@ _FIELDS = frozenset(
         "cursor_x",
         "cursor_y",
         "elapsed_ms",
+        # String state: which CLI command produced a cli.failed event.
+        "command",
     }
 )
+# String-valued state keys; every other whitelisted key stays numeric/bool so
+# free-form text can never leak into latency-adjacent state by accident.
+_STR_FIELDS = frozenset({"command"})
 _LATENCY_FIELDS = frozenset(
     {
         "turn",
@@ -116,6 +125,7 @@ _listener: QueueListener | None = None
 _handler: RotatingFileHandler | None = None
 _queue: Queue[logging.LogRecord] | None = None
 _path: Path | None = None
+_RECORDED_ONCE: set[str] = set()
 
 
 class _QuietFileHandler(RotatingFileHandler):
@@ -204,14 +214,14 @@ def _safe_traceback(error: BaseException | str) -> str:
 
 
 def record_event(
-    event: str, error: BaseException | str | None = None, **state: bool | int | float
-) -> None:
-    """Write allowlisted events and state. Latency entries never include error text."""
+    event: str, error: BaseException | str | None = None, **state: bool | int | float | str
+) -> bool:
+    """Return whether the allowlisted event was queued for writing."""
     if event not in _EVENTS:
-        return
+        return False
     with _lock:
         if _queue is None:
-            return
+            return False
         latency = event.startswith("latency.")
         fields = _LATENCY_FIELDS if latency else _FIELDS
         payload = {
@@ -226,7 +236,11 @@ def record_event(
             "state": {
                 key: value
                 for key, value in state.items()
-                if key in fields and type(value) in (bool, int, float)
+                if key in fields
+                and (
+                    (event == "cli.failed" and key in _STR_FIELDS and isinstance(value, str))
+                    or (key not in _STR_FIELDS and type(value) in (bool, int, float))
+                )
             },
         }
         if error is not None and not latency:
@@ -243,7 +257,19 @@ def record_event(
         try:
             _queue.put_nowait(record)
         except Full:
-            pass  # Slow disks must not block the UI; diagnostics are best effort.
+            return False  # Slow disks must not block the UI.
+        return True
+
+
+def record_once(event: str, error: BaseException | str) -> None:
+    """Record a degradation event at most once per process.
+
+    Fallback paths (broken keyring backend, tiktoken download failure) sit on
+    hot code paths; without the guard a persistent failure would flood the log.
+    """
+    with _lock:
+        if event not in _RECORDED_ONCE and record_event(event, error):
+            _RECORDED_ONCE.add(event)
 
 
 atexit.register(stop_diagnostics)

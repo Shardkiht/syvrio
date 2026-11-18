@@ -3,6 +3,7 @@ __pycache__/
 .venv/
 .pytest_cache/
 .cache/
+logs/
 .worktrees/
 .idea/
 .vscode/
@@ -18,8 +19,5 @@ demo_vault/
 *.key
 sessions/
 vault/
-
-# Vite dependencies, intermediates and staged assets
-/web/node_modules/
-/web/dist/
-/src/syvrio/app/web/static/
+web/node_modules/
+src/syvrio/app/web/static/

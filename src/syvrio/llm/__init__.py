@@ -13,6 +13,7 @@ from .client import (
     fetch_provider_models,
     model_metadata,
     supported_params,
+    warm_model_metadata,
 )
 from .summarizer import LLMSummarizer, Summarizer, fallback_summary
 
@@ -39,4 +40,5 @@ __all__ = [
     "fetch_provider_models",
     "model_metadata",
     "supported_params",
+    "warm_model_metadata",
 ]

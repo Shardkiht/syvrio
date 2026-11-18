@@ -49,7 +49,7 @@ function installFetch() {
       }
       if (body.line === '/context') {
         return json(commandResult({
-          command: 'context', data: { current: 128000, options: [64000, 128000] },
+          command: 'context', data: { current: 100000, options: [100000, 200000, 400000, 600000] },
         }));
       }
       return json(commandResult({ command: 'model', intent: 'model', message: `applied ${body.line}` }));
@@ -65,9 +65,8 @@ describe('settings panel', () => {
   it('lists models and switches through the shared /model command', async () => {
     const lines = installFetch();
     const onChanged = vi.fn();
-    const onNotice = vi.fn();
     render(
-      <SettingsPanel health={HEALTH} theme="auto" onTheme={() => {}} onClose={() => {}} onChanged={onChanged} onNotice={onNotice} />,
+      <SettingsPanel health={HEALTH} theme="auto" onTheme={() => {}} onClose={() => {}} onChanged={onChanged} />,
     );
 
     await waitFor(() => expect(screen.getByTestId('settings-models').textContent).toContain('deepseek-pro'));
@@ -75,14 +74,14 @@ describe('settings panel', () => {
 
     fireEvent.click(screen.getByTestId('model-deepseek-deepseek-pro'));
     await waitFor(() => expect(lines).toContain('/model deepseek/deepseek-pro'));
-    expect(onNotice).toHaveBeenCalledWith('applied /model deepseek/deepseek-pro');
+    expect(await screen.findByText('applied /model deepseek/deepseek-pro')).toBeTruthy();
     expect(onChanged).toHaveBeenCalled();
   });
 
   it('shows reasoning options and applies one', async () => {
     const lines = installFetch();
     render(
-      <SettingsPanel health={HEALTH} theme="auto" onTheme={() => {}} onClose={() => {}} onChanged={() => {}} onNotice={() => {}} />,
+      <SettingsPanel health={HEALTH} theme="auto" onTheme={() => {}} onClose={() => {}} onChanged={() => {}} />,
     );
     fireEvent.click(screen.getByTestId('settings-tab-thinking'));
     await waitFor(() => expect(screen.getByTestId('settings-thinking').textContent).toContain('default'));
@@ -93,18 +92,34 @@ describe('settings panel', () => {
   it('applies a context window choice', async () => {
     const lines = installFetch();
     render(
-      <SettingsPanel health={HEALTH} theme="auto" onTheme={() => {}} onClose={() => {}} onChanged={() => {}} onNotice={() => {}} />,
+      <SettingsPanel health={HEALTH} theme="auto" onTheme={() => {}} onClose={() => {}} onChanged={() => {}} />,
     );
     fireEvent.click(screen.getByTestId('settings-tab-context'));
-    await waitFor(() => expect(screen.getByTestId('context-64000')).toBeTruthy());
-    fireEvent.click(screen.getByTestId('context-64000'));
-    await waitFor(() => expect(lines).toContain('/context 64000'));
+    await waitFor(() => expect(screen.getByTestId('context-200000')).toBeTruthy());
+    fireEvent.click(screen.getByTestId('context-200000'));
+    await waitFor(() => expect(lines).toContain('/context 200000'));
+  });
+
+  it('submits a custom budget as an integer token count', async () => {
+    const lines = installFetch();
+    render(
+      <SettingsPanel health={HEALTH} theme="auto" onTheme={() => {}} onClose={() => {}}
+        onChanged={() => {}} initialSection="context" />,
+    );
+    const input = screen.getByRole('spinbutton', { name: 'Custom budget' });
+    const apply = screen.getByRole('button', { name: 'Apply' }) as HTMLButtonElement;
+    fireEvent.change(input, { target: { value: '1000' } });
+    expect(apply.disabled).toBe(true);
+    fireEvent.change(input, { target: { value: '275000' } });
+    expect(apply.disabled).toBe(false);
+    fireEvent.click(apply);
+    await waitFor(() => expect(lines).toContain('/context 275000'));
   });
 
   it('reuses provider management under the providers tab', async () => {
     installFetch();
     render(
-      <SettingsPanel health={HEALTH} theme="auto" onTheme={() => {}} onClose={() => {}} onChanged={() => {}} onNotice={() => {}} />,
+      <SettingsPanel health={HEALTH} theme="auto" onTheme={() => {}} onClose={() => {}} onChanged={() => {}} />,
     );
     fireEvent.click(screen.getByTestId('settings-tab-providers'));
     await waitFor(() => expect(screen.getByTestId('provider-deepseek').textContent).toContain('DeepSeek'));
@@ -121,7 +136,7 @@ describe('settings panel', () => {
         onTheme={onTheme}
         onClose={() => {}}
         onChanged={() => {}}
-        onNotice={() => {}}
+
       />,
     );
     fireEvent.click(screen.getByTestId('settings-tab-appearance'));
@@ -133,7 +148,7 @@ describe('settings panel', () => {
   it('reports the build info without exposing any secret', async () => {
     installFetch();
     render(
-      <SettingsPanel health={HEALTH} theme="auto" onTheme={() => {}} onClose={() => {}} onChanged={() => {}} onNotice={() => {}} />,
+      <SettingsPanel health={HEALTH} theme="auto" onTheme={() => {}} onClose={() => {}} onChanged={() => {}} />,
     );
     fireEvent.click(screen.getByTestId('settings-tab-about'));
     const about = screen.getByTestId('settings-about');

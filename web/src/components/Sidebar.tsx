@@ -5,8 +5,6 @@ export function Sidebar({
   sessions,
   currentId,
   open,
-  model,
-  online,
   onNew,
   onSelect,
   onDelete,
@@ -15,8 +13,6 @@ export function Sidebar({
   sessions: SessionInfo[];
   currentId: string | null;
   open: boolean;
-  model: string;
-  online: boolean;
   onNew: () => void;
   onSelect: (sessionId: string) => void;
   onDelete: (session: SessionInfo) => void;
@@ -76,14 +72,6 @@ export function Sidebar({
           ))}
         </div>
 
-        <div className="sidebar-foot">
-          <img className="foot-avatar" src="/syvrio.svg" alt="" width={24} height={24} />
-          <span className="foot-model" title={model}>{model}</span>
-          <span
-            className={`foot-dot ${online ? 'online' : 'offline'}`}
-            aria-hidden="true"
-          />
-        </div>
       </aside>
     </>
   );

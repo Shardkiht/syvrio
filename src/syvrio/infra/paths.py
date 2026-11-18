@@ -54,6 +54,10 @@ class SyvrioPaths:
         return self.runtime_dir / "state"
 
     @property
+    def jobs_dir(self) -> Path:
+        return self.runtime_dir / "jobs"
+
+    @property
     def lock_dir(self) -> Path:
         return self.runtime_dir / "locks"
 
@@ -74,9 +78,12 @@ class SyvrioPaths:
             self.index_dir,
             self.cache_dir,
             self.state_dir,
+            self.jobs_dir,
             self.lock_dir,
             self.log_dir,
+            self.cache_dir / "profile",
             self.cache_dir / "search",
+            self.jobs_dir / "dreaming",
         ):
             if directory.is_symlink() or not directory.resolve().is_relative_to(runtime):
                 raise ValueError("Runtime subdirectories cannot redirect outside Runtime")
@@ -96,10 +103,12 @@ class SyvrioPaths:
             previous = None
         if previous == {"version": 2, "vault": vault}:
             return
-        # 换绑 Vault 时只失效已知的派生文件；缓存可重建，绝不误删用户数据。
         for path in (
             self.index_dir / "vectors.npz",
-            self.cache_dir / "search" / "search-cache.json",
+            self.cache_dir / "profile" / "profile-summary.json",
+            self.state_dir / "fingerprints.json",
+            self.state_dir / "reflection.json",
+            self.state_dir / "git-sync.json",
         ):
             path.unlink(missing_ok=True)
         self.state_dir.mkdir(parents=True, exist_ok=True)

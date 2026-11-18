@@ -134,10 +134,13 @@ def test_switch_model_preserves_chat_configuration(tmp_path, monkeypatch):
     service.config_path = tmp_path / "config.toml"
     chat = replace(
         service.config.chat,
-        extract_on_exit=False,
-        recall_rewrite=False,
-        recall_context_turns=4,
-        auto_recall=2,
+        auto_reflect=False,
+        reflect_idle_seconds=91,
+        reflect_interval_seconds=301,
+        profile_auto_interval_hours=171,
+        profile_min_cooldown_hours=28,
+        profile_min_changes=21,
+        dream_auto_interval_hours=25,
     )
     service.config.chat = chat
     monkeypatch.setattr(settings_module, "model_metadata", lambda *_: {})
@@ -207,8 +210,7 @@ def test_apply_model_caps_context_to_model_limit(tmp_path, monkeypatch):
 def test_context_options_and_apply_limits(tmp_path, monkeypatch):
     service, runtime, settings = build(tmp_path)
     monkeypatch.setattr(settings_module, "model_metadata", lambda *_: {"max_input_tokens": 32_000})
-    options = settings.context_options()
-    assert all(size <= 32_000 for size in options)
+    assert settings.context_options() == []
 
     invalid = settings.apply_context(1000)
     assert invalid.ok is False and "2000" in invalid.message
@@ -216,6 +218,15 @@ def test_context_options_and_apply_limits(tmp_path, monkeypatch):
     capped = settings.apply_context(64_000)
     assert capped.ok is True
     assert service.config.chat.context_window == 32_000
+
+
+def test_context_presets_skip_model_overflow_without_promoting_custom_values(tmp_path, monkeypatch):
+    service, runtime, settings = build(tmp_path)
+    service.config.chat.context_window = 250_000
+    monkeypatch.setattr(settings_module, "model_metadata", lambda *_: {"max_input_tokens": 500_000})
+    assert settings.context_options() == [100_000, 200_000, 400_000]
+    monkeypatch.setattr(settings_module, "model_metadata", lambda *_: {})
+    assert settings.context_options() == [100_000, 200_000, 400_000, 600_000]
 
 
 def test_reasoning_options_follow_model_support(tmp_path, monkeypatch):

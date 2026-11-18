@@ -4,11 +4,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from threading import Event, RLock
+from typing import Callable
 
+from ..agent.context import CompactionPhase
+from ..agent.insertion import InsertionRequest, TurnInsertion
 from ..agent.runtime import AgentRuntime
 from ..agent.session import Session, SessionStore
 from ..infra.diagnostics import record_event
 from ..llm import ChatModelError, GenerationCancelled
+from ..memory.turn_undo import TurnUndoError
 from .contracts import (
     QueuedItem,
     QueueSnapshot,
@@ -64,6 +68,7 @@ class ConversationUseCases:
         self._active_turn_id: int | None = None
         self._turn_seq = 0
         self._cancel: Event | None = None
+        self._insertion: TurnInsertion | None = None
         self._undo_requested = False
         self._undo_target_session_id: str | None = None
         self._undo_target_message_id: str | None = None
@@ -277,6 +282,7 @@ class ConversationUseCases:
             self._turn_seq += 1
             self._active_turn_id = self._turn_seq
             self._cancel = token
+            self._insertion = TurnInsertion()
             self._ask_active = True
             self._ask_in_flight = session_id
             self._ask_user_message_id = None
@@ -284,6 +290,20 @@ class ConversationUseCases:
             self._undo_target_session_id = None
             self._undo_target_message_id = None
         return token
+
+    def insert_message(self, turn_id: int, text: str) -> InsertionRequest | None:
+        text = text.strip()
+        if not text or text.startswith("/"):
+            return None
+        with self._lock:
+            if (
+                self._active_turn_id != turn_id
+                or self._insertion is None
+                or self._cancel is None
+                or self._cancel.is_set()
+            ):
+                return None
+            return self._insertion.offer(text)
 
     def bind_session(self, session: Session) -> None:
         with self._lock:
@@ -339,6 +359,12 @@ class ConversationUseCases:
             if callbacks.on_user_message is not None:
                 callbacks.on_user_message(message_id)
 
+        def on_inserted(message_id: str, text: str) -> None:
+            bound["user_message_id"] = message_id
+            self.bind_user_message(message_id)
+            if callbacks.on_inserted is not None:
+                callbacks.on_inserted(text)
+
         session = None
         status = "ok"
         reply = None
@@ -347,6 +373,7 @@ class ConversationUseCases:
         exception = None
         with self._lock:
             turn_id = self._active_turn_id
+            insertion = self._insertion
         if turn_id is None:
             record_event("turn.unbound", RuntimeError("run_turn without begin_turn"))
             return TurnResult(status="failed", error="No active turn", turn_id=None)
@@ -366,7 +393,10 @@ class ConversationUseCases:
                 on_thinking=callbacks.on_thinking,
                 on_progress=callbacks.on_progress,
                 on_tool=callbacks.on_tool,
+                on_compaction=callbacks.on_compaction,
                 cancel=cancel,
+                insertion=insertion,
+                on_inserted=on_inserted,
             )
             content = reply.content
         except GenerationCancelled:
@@ -381,6 +411,9 @@ class ConversationUseCases:
             error = f"Request failed: {exc}"
             exception = exc
             record_event("chat.failed", exc)
+        finally:
+            if insertion is not None:
+                insertion.settle()
 
         undo = None
         if self.undo_requested:
@@ -410,6 +443,9 @@ class ConversationUseCases:
             self._ask_user_message_id = None
             self._active_turn_id = None
             self._cancel = None
+            if self._insertion is not None:
+                self._insertion.settle()
+                self._insertion = None
             return True
 
     def perform_undo(
@@ -423,6 +459,7 @@ class ConversationUseCases:
             target_mid = user_message_id or self._undo_target_message_id
         restored: str | None = None
         failed = False
+        public_error = None
         if target_sid and target_mid:
             try:
                 # 始终从磁盘加载目标会话：后台 Worker 的写入可能晚于切回时
@@ -432,6 +469,7 @@ class ConversationUseCases:
             except Exception as exc:
                 failed = True
                 record_event("undo.failed", exc)
+                public_error = str(exc) if isinstance(exc, TurnUndoError) else None
                 error = error or str(exc)
         with self._lock:
             queued_count = len(self.queue)
@@ -448,6 +486,7 @@ class ConversationUseCases:
             error=error,
             queued_count=queued_count,
             paused=self.queue_paused_after_undo,
+            public_error=public_error,
         )
 
     def undo_current(self) -> str | None:
@@ -531,5 +570,7 @@ class ConversationUseCases:
     def compact_threshold(self) -> float:
         return self.runtime.config.compact_threshold
 
-    def force_compact(self) -> list[str]:
-        return self.runtime.force_compact()
+    def force_compact(
+        self, on_compaction: Callable[[CompactionPhase], None] | None = None
+    ) -> list[str]:
+        return self.runtime.force_compact(on_compaction=on_compaction)

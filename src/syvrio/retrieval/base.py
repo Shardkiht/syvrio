@@ -3,17 +3,24 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Protocol
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class SearchHit(BaseModel):
     id: str = ""
     file: str = ""
     line: int = 0
+    end_line: int = 0
+    source_path: str = ""
+    raw_markdown: str = ""
+    index_text: str = ""
     text: str
     topic: str
     timestamp: str = ""
     score: float = 0.0
+    status: str = "active"
+    context: dict[str, str] | None = None
+    matched_field: str = Field(default="", exclude=True)
 
 
 class Retriever(Protocol):

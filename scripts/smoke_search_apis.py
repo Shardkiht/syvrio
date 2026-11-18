@@ -12,6 +12,7 @@
 
 Key 从环境变量或系统凭据读取，输出只含状态与数量，不回显 Key。
 """
+
 from __future__ import annotations
 
 import argparse
@@ -27,13 +28,16 @@ from syvrio.infra.search.base import (  # noqa: E402
     FetchQuery,
     ProviderError,
     SearchQuery,
+    assert_public_fetch_url,
 )
 from syvrio.infra.search.fetch_router import (  # noqa: E402
     _EXTERNAL_FETCH_PROVIDERS,
+    _OPTIONAL_FETCH_KEY_PROVIDERS,
     build_fetch_registry,
 )
 from syvrio.infra.search.router import (  # noqa: E402
     _EXTERNAL_PROVIDERS,
+    _OPTIONAL_KEY_PROVIDERS,
     build_registry,
 )
 
@@ -49,15 +53,23 @@ UNVERIFIED_FIELDS = {
     "you": "Contents 响应字段形状（markdown/title）与 Search 日期字段",
     "volcengine": "Fetch 的 Result.Title/Content 字段名与 Custom NeedContent 行为",
     "open_websearch": "无",
+    "anysearch": "匿名 zone/language 行为与免费调用限制",
+    "parallel_mcp": "匿名速率和厂商额度",
+    "searxng": "实例是否启用 JSON 输出与 publishedDate 字段形状",
 }
+
+
+def _search_key_env(name: str) -> str | None:
+    entry = _EXTERNAL_PROVIDERS.get(name)
+    if entry is not None:
+        return entry[1]
+    return _OPTIONAL_KEY_PROVIDERS.get(name)
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="多厂商搜索/抓取受控冒烟")
     parser.add_argument("--provider", help="只检查/调用指定厂商；缺省列出全部")
-    parser.add_argument(
-        "--operation", choices=("search", "fetch"), default="search"
-    )
+    parser.add_argument("--operation", choices=("search", "fetch"), default="search")
     parser.add_argument(
         "--live",
         action="store_true",
@@ -75,18 +87,29 @@ def build_arg_parser() -> argparse.ArgumentParser:
 def _dry_report(config) -> list[dict]:
     """本地检查：Key 可读性与注册预判，零网络请求。"""
     rows = []
-    for operation, listed, externals in (
-        ("search", config.search.providers, _EXTERNAL_PROVIDERS),
-        ("fetch", config.fetch.providers, _EXTERNAL_FETCH_PROVIDERS),
+    for operation, listed in (
+        ("search", config.search.providers),
+        ("fetch", config.fetch.providers),
     ):
+        optional = (
+            _OPTIONAL_KEY_PROVIDERS if operation == "search" else _OPTIONAL_FETCH_KEY_PROVIDERS
+        )
         for name in listed:
-            env_name = externals.get(name, (None, None))[1]
+            if operation == "search":
+                env_name = _search_key_env(name)
+            else:
+                env_name = (
+                    optional.get(name) or _EXTERNAL_FETCH_PROVIDERS.get(name, (None, None))[1]
+                )
+            key_present = None if env_name is None else bool(read_api_key(env_name))
+            # 匿名 Provider 无 Key 也注册；官方厂商必须有 Key。
+            would_register = env_name is None or name in optional or key_present
             row = {
                 "provider": name,
                 "operation": operation,
                 "in_config": True,
-                "key_present": None if env_name is None else bool(read_api_key(env_name)),
-                "would_register": True if env_name is None else bool(read_api_key(env_name)),
+                "key_present": key_present,
+                "would_register": would_register,
                 "unverified_fields": UNVERIFIED_FIELDS.get(name, "无"),
             }
             rows.append(row)
@@ -137,7 +160,7 @@ def _live_search(config, provider: str, max_requests: int) -> dict:
     }
 
 
-def _live_fetch(config, provider: str, max_requests: int) -> dict:
+def _live_fetch(config, provider: str) -> dict:
     registry = build_fetch_registry(config.fetch, config.search)
     instance = registry.get(provider)
     if instance is None:
@@ -150,16 +173,27 @@ def _live_fetch(config, provider: str, max_requests: int) -> dict:
         }
     started = time.perf_counter()
     try:
+        assert_public_fetch_url(SMOKE_URL)
         result = instance.fetch(FetchQuery(SMOKE_URL, 4000))
+        if result.final_url and result.final_url != SMOKE_URL:
+            assert_public_fetch_url(result.final_url)
     except ProviderError as exc:
         return {
             "provider": provider,
             "operation": "fetch",
             "ok": False,
+            "requests": 1,
             "error_kind": exc.kind.value,
             "detail": exc.detail,
             "duration_ms": int((time.perf_counter() - started) * 1000),
             "unverified_fields": UNVERIFIED_FIELDS.get(provider, "无"),
+        }
+    except ValueError:
+        return {
+            "provider": provider,
+            "operation": "fetch",
+            "ok": False,
+            "error_kind": "unsafe_url",
         }
     return {
         "provider": provider,
@@ -183,8 +217,7 @@ def main(argv: list[str] | None = None, config=None) -> int:
             rows = [
                 row
                 for row in rows
-                if row["provider"] == args.provider
-                and row["operation"] == args.operation
+                if row["provider"] == args.provider and row["operation"] == args.operation
             ]
         print(json.dumps({"mode": "dry", "rows": rows}, ensure_ascii=False, indent=2))
         return 0
@@ -203,7 +236,7 @@ def main(argv: list[str] | None = None, config=None) -> int:
     if args.operation == "search":
         report = _live_search(config, args.provider, args.max_requests)
     else:
-        report = _live_fetch(config, args.provider, args.max_requests)
+        report = _live_fetch(config, args.provider)
     print(json.dumps({"mode": "live", "reports": [report]}, ensure_ascii=False, indent=2))
     return 0
 

@@ -4,6 +4,7 @@
 qianfan 接口，name 固定 `baidu_search`，不得与引擎名混用。
 响应形状按 2026-10 官方文档：references[] 含 type/title/url/content/date。
 """
+
 from __future__ import annotations
 
 from typing import Any, Callable
@@ -46,7 +47,9 @@ class BaiduSearchProvider:
         # 官方文档写 Authorization，同一页面的 cURL 示例却写
         # X-Appbuilder-Authorization；两种官方写法都可配置，真实冒烟后定夺。
         self._auth_header = (
-            "x-appbuilder-authorization" if auth_header == "x-appbuilder-authorization" else "authorization"
+            "x-appbuilder-authorization"
+            if auth_header == "x-appbuilder-authorization"
+            else "authorization"
         )
 
     def search(self, query: SearchQuery) -> list[SearchResult]:
@@ -68,14 +71,17 @@ class BaiduSearchProvider:
         code = payload.get("code")
         if code is not None:
             message = str(payload.get("message") or "")
-            raise ProviderError(NAME, _business_kind(code, message), f"code={safe_error_code(payload)}", code=safe_error_code(payload))
+            raise ProviderError(
+                NAME,
+                _business_kind(code, message),
+                f"code={safe_error_code(payload)}",
+                code=safe_error_code(payload),
+            )
         references = payload.get("references")
         if references is None:
             return []
         if not isinstance(references, list):
-            raise ProviderError(
-                NAME, ProviderErrorKind.BAD_RESPONSE, "references 字段类型异常"
-            )
+            raise ProviderError(NAME, ProviderErrorKind.BAD_RESPONSE, "references 字段类型异常")
         return [item for item in map(_map_reference, references) if item is not None]
 
 
@@ -102,11 +108,15 @@ def _api_error(status: int, payload: dict) -> ProviderError | None:
     code = str(payload.get("code") or "")
     if status in (401, 403) or status >= 500:
         return None
-    pauses = {"QUOTA_USER_DAILY_REQUEST": "daily_request_quota",
-              "QUOTA_USER_DAILY_FREE": "daily_free_quota",
-              "BILLING_INSUFFICIENT_BALANCE": "insufficient_balance"}
+    pauses = {
+        "QUOTA_USER_DAILY_REQUEST": "daily_request_quota",
+        "QUOTA_USER_DAILY_FREE": "daily_free_quota",
+        "BILLING_INSUFFICIENT_BALANCE": "insufficient_balance",
+    }
     if code in pauses:
-        return ProviderError(NAME, ProviderErrorKind.QUOTA, code, code=code, pause_reason=pauses[code])
+        return ProviderError(
+            NAME, ProviderErrorKind.QUOTA, code, code=code, pause_reason=pauses[code]
+        )
     if code in {"RATE_LIMIT_TOTAL_QPS", "RATE_LIMIT_SEARCH_TOTAL_QPS", "RATE_LIMIT_SEARCH_QPS"}:
         return ProviderError(NAME, ProviderErrorKind.RATE_LIMIT, code, code=code)
     return None

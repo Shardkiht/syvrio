@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import time
 from collections.abc import Callable, Sequence
 from contextlib import AsyncExitStack
@@ -10,11 +11,14 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from threading import Event
 from typing import Protocol
+from urllib.parse import urlsplit
 
+from ..errors import SyvrioError
 from ..infra.config import LLMConfig
+from ..infra.latency import mark_model, track_completion
 
 
-class ChatModelError(RuntimeError):
+class ChatModelError(SyvrioError, RuntimeError):
     pass
 
 
@@ -71,8 +75,64 @@ def _reasoning_fields(message) -> tuple[str, dict]:
     ), metadata
 
 
+def _reasoning_route(config: LLMConfig) -> tuple[str, str]:
+    """Only verified request shapes can receive session reasoning."""
+    provider = config.provider.strip().lower()
+    endpoint = (config.base_url or "").rstrip("/")
+    url = urlsplit(endpoint)
+    if provider == "deepseek" and (
+        not endpoint or (url.scheme == "https" and url.hostname == "api.deepseek.com")
+    ):
+        policy = "history"
+    elif (
+        provider == "dashscope"
+        and url.scheme == "https"
+        and url.hostname in {"dashscope.aliyuncs.com", "dashscope-intl.aliyuncs.com"}
+        and config.litellm_model() == "dashscope/deepseek-v4.1-flash-1017"
+    ):
+        # Limit the compatible endpoint to the active tool chain.
+        policy = "turn"
+    else:
+        return "", ""
+    source = hashlib.sha256(
+        f"{provider}\n{endpoint}\n{config.litellm_model()}".encode()
+    ).hexdigest()
+    return source, policy
+
+
+def _chat_history(config: LLMConfig, messages: list[dict]) -> tuple[list[dict], str]:
+    source, policy = _reasoning_route(config)
+    last_user = max(
+        (
+            i
+            for i, msg in enumerate(messages)
+            if msg["role"] == "user" and not msg.get("_tool_wrap_up")
+        ),
+        default=-1,
+    )
+    private = {
+        "reasoning_content",
+        "reasoning_source",
+        "reasoning",
+        "reasoning_details",
+        "thinking_blocks",
+        "_tool_wrap_up",
+    }
+    clean = [{k: v for k, v in msg.items() if k not in private} for msg in messages]
+    primary = [
+        {**msg, "reasoning_content": original["reasoning_content"]}
+        if source
+        and msg["role"] == "assistant"
+        and original.get("reasoning_source") == source
+        and original.get("reasoning_content")
+        and (policy == "history" or index > last_user)
+        else msg
+        for index, (msg, original) in enumerate(zip(clean, messages, strict=True))
+    ]
+    return primary, source
+
+
 def _litellm():
-    import os
 
     os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
     os.environ.setdefault("LITELLM_LOG", "ERROR")
@@ -113,11 +173,13 @@ def complete(
     if max_tokens is not None:
         kwargs["max_tokens"] = max_tokens
     _adapt_spark_params(config, kwargs)
-    return litellm.completion(**kwargs)
+    mark_model("request")
+    with track_completion():
+        return litellm.completion(**kwargs)
 
 
 def _adapt_spark_params(config: LLMConfig, kwargs: dict) -> None:
-    if config.provider.strip().lower() != "spark":
+    if not config.is_spark:
         return
     # MaaS 固定采样参数，thinking 不等于 OpenAI reasoning_effort；JSON 由提示词约束。
     for name in ("temperature", "reasoning_effort", "response_format", "stream_options"):
@@ -192,13 +254,23 @@ def supported_params(model: str) -> tuple[str, ...]:
         return ("tools", "tool_choice", "stream", "max_tokens", "max_completion_tokens")
     # 自定义 OpenAI 兼容端点统一用 openai/ 前缀；LiteLLM 对未知 id 会回退成
     # 通用 OpenAI 参数表，不能据此判断供应商真的支持 reasoning_effort 等能力。
-    if model.startswith("openai/") and "/" in model[len("openai/"):]:
+    if model.startswith("openai/") and "/" in model[len("openai/") :]:
         return ()
     litellm = _litellm()
     try:
         return tuple(litellm.get_supported_openai_params(model=model) or ())
     except Exception:
         return ()
+
+
+def warm_model_metadata(model: str) -> None:
+    """预热 LiteLLM 导入与当前模型元数据；纯本地读取，不访问网络或凭据。"""
+    try:
+        model_metadata(model)
+        supported_params(model)
+    except Exception:
+        # 预热只影响首次打开速度，失败留到实际使用时再报错。
+        pass
 
 
 def fetch_provider_models(
@@ -322,8 +394,10 @@ class LiteLLMChatModel:
                 "or run syvrio setup to save it to system credentials."
             )
         litellm = _litellm()
+        primary, source = _chat_history(self.config, messages)
+        source = source if tools else ""
         if on_delta is None and on_reasoning is None:
-            response = complete(self.config, messages, tools=tools or None)
+            response = complete(self.config, primary, tools=tools or None)
             choice = response.choices[0]
             message = choice.message
             reasoning, metadata = _reasoning_fields(message)
@@ -336,9 +410,10 @@ class LiteLLMChatModel:
                 usage=_usage(response, litellm),
                 reasoning_content=reasoning,
                 reasoning_fragments=[metadata] if metadata else [],
+                reasoning_source=source if reasoning else "",
             )
-        parser = _StreamAccumulator(on_delta, litellm, on_reasoning)
-        return self._chat_stream(messages, tools or None, parser, litellm, cancel)
+        parser = _StreamAccumulator(on_delta, litellm, on_reasoning, source)
+        return self._chat_stream(primary, tools or None, parser, litellm, cancel)
 
     def _chat_stream(self, messages, tools, parser, litellm, cancel) -> AssistantTurn:
         """流式：文本 delta 实时回调，tool_calls 增量累积，结束时返回聚合结果。"""
@@ -362,7 +437,9 @@ class LiteLLMChatModel:
 
         if cancel is not None:
             return asyncio.run(self._cancellable_stream(kwargs, parser, litellm, cancel))
+        mark_model("request")
         stream = litellm.completion(**kwargs)
+        mark_model("stream_open")
         try:
             for chunk in stream:
                 parser.feed(chunk)
@@ -377,28 +454,27 @@ class LiteLLMChatModel:
         async def consume() -> AssistantTurn:
             async with AsyncExitStack() as resources:
                 kwargs = request
-                if getattr(litellm, "aclient_session", None) is None:
+                if (
+                    getattr(litellm, "aclient_session", None) is None
+                    and self.config.litellm_model().startswith("openai/")
+                    and request.get("api_key")
+                ):
                     from litellm.llms.openai.common_utils import BaseOpenAILLM
+                    from openai import AsyncOpenAI
 
-                    # Let LiteLLM choose the SDK client and credentials for the
-                    # selected model. Borrow one request-owned HTTP client on
-                    # this event loop while preserving LiteLLM's transport settings.
-                    if self.config.litellm_model().startswith("openai/") and request.get(
-                        "api_key"
-                    ):
-                        from openai import AsyncOpenAI
-
-                        http_client = BaseOpenAILLM.get_async_http_client()
-                        resources.push_async_callback(http_client.aclose)
-                        client = AsyncOpenAI(
-                            api_key=request["api_key"],
-                            base_url=request.get("api_base"),
-                            timeout=request["timeout"],
-                            max_retries=request["num_retries"],
-                            http_client=http_client,
-                        )
-                        kwargs = {**request, "client": client}
+                    http_client = BaseOpenAILLM.get_async_http_client()
+                    resources.push_async_callback(http_client.aclose)
+                    client = AsyncOpenAI(
+                        api_key=request["api_key"],
+                        base_url=request.get("api_base"),
+                        timeout=request["timeout"],
+                        max_retries=request["num_retries"],
+                        http_client=http_client,
+                    )
+                    kwargs = {**request, "client": client}
+                mark_model("request")
                 stream = await litellm.acompletion(**kwargs)
+                mark_model("stream_open")
                 try:
                     async for chunk in stream:
                         if cancel.is_set():
@@ -424,9 +500,10 @@ class LiteLLMChatModel:
 
 
 class _StreamAccumulator:
-    def __init__(self, on_delta, litellm, on_reasoning=None) -> None:
+    def __init__(self, on_delta, litellm, on_reasoning=None, source: str = "") -> None:
         self.on_delta = on_delta
         self.on_reasoning = on_reasoning
+        self.source = source
         self.litellm = litellm
         self.content_parts: list[str] = []
         self.reasoning_parts: list[str] = []
@@ -439,6 +516,7 @@ class _StreamAccumulator:
         self.usage = Usage()
 
     def feed(self, chunk) -> None:
+        mark_model("first_chunk")
         chunk_usage = _field(chunk, "usage")
         if chunk_usage is not None:
             try:
@@ -461,6 +539,7 @@ class _StreamAccumulator:
         if metadata:
             self.reasoning_fragments.append(metadata)
         if reasoning:
+            mark_model("first_reasoning")
             if self.reasoning_started is None:
                 self.reasoning_started = time.monotonic()
             self.reasoning_parts.append(reasoning)
@@ -471,9 +550,12 @@ class _StreamAccumulator:
         if text.strip() or tool_calls or _field(choices[0], "finish_reason"):
             self._finish_reasoning()
         if text:
+            mark_model("first_text")
             self.content_parts.append(text)
             if self.on_delta is not None:
                 self.on_delta(text)
+        if tool_calls:
+            mark_model("first_tool")
         for tc in tool_calls:
             index = _field(tc, "index")
             tc_id = _field(tc, "id")
@@ -539,5 +621,6 @@ class _StreamAccumulator:
             usage=self.usage,
             reasoning_content="".join(self.reasoning_parts),
             reasoning_fragments=self.reasoning_fragments,
+            reasoning_source=self.source if self.reasoning_parts else "",
             reasoning_seconds=self.reasoning_seconds,
         )

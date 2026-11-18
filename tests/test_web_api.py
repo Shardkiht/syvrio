@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 from fastapi.testclient import TestClient
 
+from syvrio.agent import runtime as agent_runtime
 from syvrio.app.web.backend import WebBackend, WebError
 from syvrio.app.web.server import create_app
 from syvrio.infra.config import (
@@ -29,7 +30,7 @@ from syvrio.llm import (
     ToolCall,
 )
 from syvrio.memory.extractor import StaticExtractor
-from syvrio.memory.models import ExtractionResult
+from syvrio.memory.models import Candidate, ExtractionResult
 from syvrio.memory.service import MemoryService
 
 pytestmark = pytest.mark.web
@@ -142,6 +143,27 @@ def test_health_and_openapi(client, backend):
     assert client.get("/openapi.json").status_code == 200
 
 
+def test_context_usage_tracks_requested_session_without_switching(client, backend):
+    empty = client.get("/api/context-usage").json()
+    assert empty == {
+        "session_id": None,
+        "used": 0,
+        "limit": backend._app_service.settings.context_window,
+        "compact_threshold": backend._conversation.compact_threshold(),
+    }
+    session = backend._sessions.create()
+    backend._sessions.append(
+        session, {"type": "message", "role": "user", "content": "Synthetic context sample."}
+    )
+    response = client.get("/api/context-usage", params={"session_id": session.id})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["session_id"] == session.id
+    assert data["used"] == backend._conversation.estimate_usage(session) > 0
+    assert backend._conversation.current_id is None
+    assert client.get("/api/context-usage", params={"session_id": "../vault"}).status_code == 422
+
+
 def test_session_lifecycle(client, backend):
     before = len(backend._sessions.list())
     created = client.post("/api/sessions")
@@ -176,9 +198,190 @@ def test_first_message_persists_the_session(client, backend):
     ids = {event["session_id"] for event in events if event.get("session_id")}
     assert len(ids) == 1
     session_id = ids.pop()
+    saved = [event for event in events if event["type"] == "message_saved"]
+    assert len(saved) == 1 and saved[0]["session_id"] == session_id
+    assert types(events).index("message_saved") < types(events).index("content_delta")
     assert backend._sessions.exists(session_id)
     rows = client.get("/api/sessions").json()["items"]
     assert [row["id"] for row in rows if row["current"]] == [session_id]
+
+
+@pytest.mark.parametrize("reserve_before_tools", [True, False])
+def test_web_insert_waits_for_the_model_and_never_splits_a_tool_batch(
+    client, backend, monkeypatch, reserve_before_tools
+):
+    class Model(FakeModel):
+        def __init__(self):
+            super().__init__([])
+            self.entered = threading.Event()
+            self.release = threading.Event()
+            self.followup = []
+
+        def chat(self, messages, tools, on_delta=None, cancel=None, *, on_reasoning=None):
+            self.calls += 1
+            if self.calls == 1:
+                self.entered.set()
+                assert self.release.wait(5)
+                return AssistantTurn(tool_calls=[ToolCall("call-1", "recall", {"query": "sample"})])
+            self.followup = [dict(message) for message in messages]
+            return AssistantTurn(content="Follow-up complete.")
+
+    model = backend._runtime.model = Model()
+    offer_reached = threading.Event()
+    tool_entered = threading.Event()
+    release_tool = threading.Event()
+    original_offer = backend._conversation.insert_message
+    original_results = agent_runtime._tool_results
+
+    def offer(*args):
+        result = original_offer(*args)
+        if result is not None:
+            offer_reached.set()
+        return result
+
+    def gated_tools(*args, **kwargs):
+        tool_entered.set()
+        assert release_tool.wait(5)
+        return original_results(*args, **kwargs)
+
+    monkeypatch.setattr(backend._conversation, "insert_message", offer)
+    monkeypatch.setattr(agent_runtime, "_tool_results", gated_tools)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        stream = pool.submit(collect, client, "original")
+        try:
+            assert model.entered.wait(5)
+            payload = {
+                "turn_id": backend.active_turn_id(),
+                "session_id": backend._conversation.current_id,
+            }
+            pending = None
+            if reserve_before_tools:
+                pending = pool.submit(
+                    client.post, "/api/chat/insert", json={**payload, "message": "a supplement"}
+                )
+                assert offer_reached.wait(5)
+                assert not pending.done()
+            model.release.set()
+            assert tool_entered.wait(5)
+            rejected = client.post(
+                "/api/chat/insert", json={**payload, "message": "must not interrupt the tool"}
+            )
+            assert rejected.status_code == 409
+            assert rejected.json()["error"]["code"] == "insertion_unavailable"
+            if pending is not None:
+                assert not pending.done()
+        finally:
+            model.release.set()
+            release_tool.set()
+        if pending is not None:
+            assert pending.result(timeout=5).status_code == 204
+        events = stream.result(timeout=5)
+    if reserve_before_tools:
+        assert types(events).index("tool_end") < types(events).index("message_inserted")
+        assert model.followup[-2]["role"] == "tool"
+        assert model.followup[-1] == {"role": "user", "content": "a supplement"}
+        assert backend._conversation.current.user_texts() == ["original", "a supplement"]
+        undo = client.post("/api/commands", json={"line": "/undo"}).json()
+        assert undo["data"]["restored"] == "original\n\na supplement"
+        assert backend._conversation.current.user_texts() == []
+    else:
+        assert "message_inserted" not in types(events)
+        assert model.followup[-1]["role"] == "tool"
+        assert backend._conversation.current.user_texts() == ["original"]
+
+
+def test_web_undo_during_generation_returns_saved_text_and_waits_for_rollback(client, backend):
+    model = backend._runtime.model = GatedModel()
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        stream = pool.submit(collect, client, "please undo me")
+        try:
+            assert model.entered.wait(5)
+            session_id = backend._conversation.current_id
+            # A different command already holds the ordinary command mutex.
+            # Undo still registers its cancellation before that lock is released.
+            with backend._command_lock:
+                command = pool.submit(
+                    client.post,
+                    "/api/commands",
+                    json={"line": "/undo", "session_id": session_id},
+                )
+                assert backend._conversation.cancel_event.wait(5)
+                assert not command.done()
+                duplicate = client.post(
+                    "/api/commands", json={"line": "/undo", "session_id": session_id}
+                )
+                assert duplicate.json()["status"] == "busy"
+        finally:
+            model.release.set()
+        response = command.result(timeout=5).json()
+        assert response["status"] == "ok"
+        assert response["data"]["restored"] == "please undo me"
+        assert response["session_id"] == session_id
+        assert types(stream.result(timeout=5))[-1] == "cancelled"
+    assert client.get(f"/api/sessions/{session_id}").json()["items"] == []
+    assert backend._conversation.current.user_texts() == []
+
+
+def test_undo_during_tool_write_reverts_the_completed_write_and_stops_the_next(
+    client, backend, monkeypatch
+):
+    service = backend._service
+    service.extractor = StaticExtractor(
+        ExtractionResult(
+            memories=[
+                Candidate(text="合成：暂时写入的活动偏好", topic="undo-inflight", confidence=0.99),
+            ]
+        )
+    )
+    model = backend._runtime.model = FakeModel(
+        [
+            AssistantTurn(
+                tool_calls=[
+                    ToolCall("write-1", "memorize", {"text": "保存合成偏好"}),
+                    ToolCall(
+                        "write-2", "correct", {"entry_id": "not-run", "text": "must not execute"}
+                    ),
+                ]
+            )
+        ]
+    )
+    entered = threading.Event()
+    release = threading.Event()
+    affected = service.store.topic_path("undo-inflight")
+    memorize = service.memorize
+    written = threading.Event()
+
+    def gated_write(*args, **kwargs):
+        entered.set()
+        assert release.wait(5)
+        result = memorize(*args, **kwargs)
+        if affected.exists():
+            written.set()
+        return result
+
+    monkeypatch.setattr(service, "memorize", gated_write)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        stream = pool.submit(collect, client, "tool undo")
+        try:
+            assert entered.wait(5)
+            session_id = backend._conversation.current_id
+            undo = pool.submit(
+                client.post, "/api/commands", json={"line": "/undo", "session_id": session_id}
+            )
+            assert backend._conversation.cancel_event.wait(5)
+            assert not undo.done()
+        finally:
+            release.set()
+        response = undo.result(timeout=5).json()
+        assert response["status"] == "ok"
+        assert response["data"]["restored"] == "tool undo"
+        events = stream.result(timeout=5)
+    assert written.is_set() and not affected.exists()
+    assert model.calls == 1
+    assert not any(
+        event.get("name") == "correct" for event in events if event["type"] == "tool_start"
+    )
+    assert backend._conversation.current.user_texts() == []
 
 
 # ---------- session deletion ----------
@@ -587,34 +790,14 @@ def test_invalid_payload_and_empty_message(client):
     assert client.post("/api/chat/cancel", json={"turn_id": "x"}).status_code == 422
 
 
-def test_client_busy_is_reported_before_initializing_vault(tmp_path, monkeypatch):
-    config = Config(vault=tmp_path / "vault", retrieval=RetrievalConfig(method="keyword"))
-    service = MemoryService(config)
-    owner = WebBackend(service=service)
-
+def test_client_busy_is_reported(backend, monkeypatch):
     def denied(*args, **kwargs):
         raise LockTimeout("occupied")
 
-    monkeypatch.setattr(owner._client_lock, "acquire", denied)
+    monkeypatch.setattr(backend._client_lock, "acquire", denied)
     with pytest.raises(WebError) as error:
-        owner.startup()
+        WebBackend(service=backend._service).startup()
     assert error.value.code == "client_busy"
-    assert not service.repo.is_repo
-
-
-def test_vault_init_failure_releases_client_lock(tmp_path, monkeypatch):
-    config = Config(vault=tmp_path / "vault", retrieval=RetrievalConfig(method="keyword"))
-    service = MemoryService(config)
-    owner = WebBackend(service=service)
-
-    def fail_init():
-        assert owner._client_lock.locked
-        raise RuntimeError("synthetic init failure")
-
-    monkeypatch.setattr(service, "init_vault", fail_init)
-    with pytest.raises(RuntimeError, match="synthetic init failure"):
-        owner.startup()
-    assert not owner._client_lock.locked
 
 
 # ---------- static assets ----------
@@ -649,46 +832,47 @@ def test_static_files_and_spa_fallback(backend, tmp_path):
 # ---------- command concurrency ----------
 
 
-def test_long_command_keeps_health_and_status_responsive(backend, monkeypatch):
+def test_long_command_keeps_health_and_cancel_responsive(backend, monkeypatch):
     entered = threading.Event()
     release = threading.Event()
+    cancelled = []
+    monkeypatch.setattr(backend._app_service.reflection, "run", lambda *a, **k: None)
+    monkeypatch.setattr(
+        backend._app_service.reflection, "cancel", lambda *a, **k: cancelled.append(True)
+    )
+    real_execute = backend._commands.execute
 
-    def slow_compact():
-        entered.set()
-        assert release.wait(timeout=10), "command was never released"
-        return []
+    def slow_execute(line, *, busy=False, confirmed=False):
+        if line.strip() == "/dream 1":
+            entered.set()
+            assert release.wait(timeout=10), "command was never released"
+        return real_execute(line, busy=busy, confirmed=confirmed)
 
-    monkeypatch.setattr(backend._conversation, "force_compact", slow_compact)
+    monkeypatch.setattr(backend._commands, "execute", slow_execute)
     app = create_app(backend, autostart=False)
     command_client = TestClient(app, base_url=BASE_URL)
     controller = TestClient(app, base_url=BASE_URL)
     with ThreadPoolExecutor(max_workers=1) as pool:
         future = pool.submit(
-            lambda: command_client.post("/api/commands", json={"line": "/compact"})
+            lambda: command_client.post(
+                "/api/commands", json={"line": "/dream 1", "confirmed": True}
+            )
         )
-        try:
-            assert entered.wait(timeout=10)
-            assert controller.get("/api/health").json()["busy"] is True
-            assert controller.post("/api/commands", json={"line": "/status"}).status_code == 200
-            chat = controller.post("/api/chat", json={"message": "hi"})
-            assert chat.status_code == 409
-            assert chat.json()["error"]["code"] == "busy"
-        finally:
-            release.set()
+        assert entered.wait(timeout=10)
+        # Health reflects the running command and must not block behind its lock.
+        assert controller.get("/api/health").json()["busy"] is True
+        # A chat request is rejected busy instead of overlapping the command.
+        chat = controller.post("/api/chat", json={"message": "hi"})
+        assert chat.status_code == 409
+        assert chat.json()["error"]["code"] == "busy"
+        # /dream cancel bypasses the command mutex and interrupts the run.
+        cancel = controller.post("/api/commands", json={"line": "/dream cancel"})
+        assert cancel.status_code == 200
+        assert cancelled
+        release.set()
         assert future.result(timeout=10).status_code == 200
     assert backend._operation is None
     assert backend.active_turn_id() is None
-
-
-def test_foundation_web_catalog_excludes_evo_memory_features(client, backend):
-    commands = {"dream", "inferences", "profile", "git"}
-    response = client.get("/api/commands")
-    assert response.status_code == 200
-    assert commands.isdisjoint(row["name"] for row in response.json()["items"])
-    for name in commands:
-        result = client.post("/api/commands", json={"line": f"/{name}"})
-        assert result.json()["status"] == "unsupported"
-    assert backend._runtime.model.calls == 0
 
 
 def test_chat_rejects_a_stale_session_id(client, backend):

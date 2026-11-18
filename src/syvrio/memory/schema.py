@@ -10,6 +10,7 @@ from markdown_it import MarkdownIt
 from markdown_it.tree import SyntaxTreeNode
 from pydantic import BaseModel, ConfigDict, Field
 
+from ..errors import SyvrioError
 from .models import Entry, FieldNode
 
 _MARKDOWN = MarkdownIt("commonmark")
@@ -22,7 +23,7 @@ CORE = frozenset(("id", "status", "source", "confidence"))
 STATUSES = frozenset(("active", "superseded", "deleted"))
 
 
-class SchemaError(ValueError):
+class SchemaError(SyvrioError, ValueError):
     pass
 
 

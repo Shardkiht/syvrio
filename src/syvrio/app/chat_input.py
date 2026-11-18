@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import os
+import platform
 import sys
 
-from rich.cells import cell_len
+from rich.control import Control
 from rich.segment import Segment
 from textual.geometry import Offset
 from textual.strip import Strip
 from textual.widgets import Input
+from textual.widgets.input import Selection
+
+from ..infra.diagnostics import record_event
 
 
 class BarInput(Input):
@@ -38,25 +42,43 @@ class BarInput(Input):
     @property
     def _uses_native_cursor(self) -> bool:
         driver = self.app._driver
+        if driver is None or driver.is_headless:
+            return False
+        if sys.platform == "win32":
+            return self._terminal_supports_native_cursor()
+        # Windows OpenSSH starts the remote TUI inside WSL without WT_SESSION.
+        # Its xterm-compatible frontend still anchors IME to the terminal caret.
         return (
-            sys.platform == "win32"
-            and driver is not None
-            and not driver.is_headless
-            and self._terminal_supports_native_cursor()
+            sys.platform == "linux"
+            and "microsoft" in platform.release().lower()
+            and os.environ.get("TERM", "").startswith("xterm")
         )
 
     @property
     def cursor_screen_offset(self) -> Offset:
-        # Input adds an end-of-value cell for scroll visibility. The terminal
-        # caret must instead sit at the actual insertion point (also when empty).
-        offset = super().cursor_screen_offset
-        return offset - Offset(1, 0) if self.cursor_at_end else offset
+        viewport = self.scrollable_content_region
+        return Offset(
+            viewport.x + self._position_to_cell(self.cursor_position) - self.scroll_offset.x,
+            viewport.y,
+        )
+
+    def _sync_caret(self) -> None:
+        viewport = self.scrollable_content_region
+        if not viewport.width:
+            return
+        # Commit the scroll before publishing the terminal coordinate. A deferred
+        # scroll can otherwise leave the caret using the previous viewport.
+        cell = self._position_to_cell(self.cursor_position)
+        self.scroll_x = min(cell, max(self.scroll_offset.x, cell - viewport.width + 1))
+        if self.has_focus:
+            self.app.cursor_position = self.cursor_screen_offset
+
+    def _watch_selection(self, selection: Selection) -> None:
+        self.app.clear_selection()
+        self._sync_caret()
 
     def on_resize(self) -> None:
-        # 折叠侧栏/窗口缩放会移动输入框，但 App 每帧只回放上次记录的光标坐标；
-        # 不及时刷新硬件光标就会落在旧位置（看起来停在文字中间）。
-        if self._native_cursor_active and self.has_focus:
-            self.app.cursor_position = self.cursor_screen_offset
+        self._sync_caret()
 
     def _restart_blink(self) -> None:
         if self._uses_native_cursor:
@@ -80,26 +102,12 @@ class BarInput(Input):
             and not self._cursor_suspended
         ):
             # IME preedit belongs to the terminal; a painted glyph cannot follow it.
-            self.app._driver.write("\x1b[5 q\x1b[?25h")
+            app = self.app
+            app.cursor_position = self.cursor_screen_offset
+            position = self.screen.outer_size.clamp_offset(app.cursor_position)
+            app._driver.write(Control.move_to(*position).segment.text)
+            app._driver.write("\x1b[5 q\x1b[?25h")
             self._native_cursor_active = True
-
-    def suspend_cursor(self) -> None:
-        """拖选正文时暂停输入区光标，避免每帧重定位硬件光标干扰选择。"""
-        self._cursor_suspended = True
-        self._hide_native_cursor()
-        self.refresh()
-
-    def _resume_cursor(self) -> None:
-        if self._cursor_suspended:
-            self._cursor_suspended = False
-            self._show_native_cursor()
-            self.refresh()
-
-    def on_mouse_down(self) -> None:
-        self._resume_cursor()
-
-    def on_key(self) -> None:
-        self._resume_cursor()
 
     def _hide_native_cursor(self) -> None:
         if self._native_cursor_active:
@@ -113,6 +121,40 @@ class BarInput(Input):
     def on_unmount(self) -> None:
         self._hide_native_cursor()
 
+    def suspend_cursor(self) -> None:
+        # 拖选正文时暂停输入区光标，避免终端每帧重定位硬件光标干扰选择。
+        changed = not self._cursor_suspended
+        self._cursor_suspended = True
+        self._hide_native_cursor()
+        if changed:
+            self._record_cursor_state()
+        self.refresh()
+
+    def _resume_cursor(self) -> None:
+        if self._cursor_suspended:
+            self._cursor_suspended = False
+            self._show_native_cursor()
+            self._record_cursor_state()
+            self.refresh()
+
+    def _record_cursor_state(self) -> None:
+        position = self.cursor_screen_offset
+        record_event(
+            "cursor.changed",
+            native=self._native_cursor_active,
+            suspended=self._cursor_suspended,
+            cursor_x=position.x,
+            cursor_y=position.y,
+        )
+
+    def on_mouse_down(self) -> None:
+        self._resume_cursor()
+        self.app.clear_selection()
+        self.app._chat().resume_output()
+
+    def on_key(self) -> None:
+        self._resume_cursor()
+
     def set_hint(self, hint: str) -> None:
         self._hint = hint
         self.border_title = None if self.value else (hint or None)
@@ -120,6 +162,7 @@ class BarInput(Input):
     def _watch_value(self, value: str) -> None:
         super()._watch_value(value)
         self.border_title = None if value else (self._hint or None)
+        self._sync_caret()
 
     def render_line(self, y: int) -> Strip:
         strip = super().render_line(y)
@@ -134,7 +177,7 @@ class BarInput(Input):
 
         # 在渲染结果里插竖线，不能改 _value：额外字符会让 Textual 的输入框重绘
         # 把背景刷到左侧，形成横贯侧栏的黑条。
-        cursor_cell = cell_len(self.value[: self.cursor_position]) - self.scroll_offset.x
+        cursor_cell = self._position_to_cell(self.cursor_position) - self.scroll_offset.x
         if not 0 <= cursor_cell < strip.cell_length:
             return strip
         prefix = strip.crop(0, cursor_cell)

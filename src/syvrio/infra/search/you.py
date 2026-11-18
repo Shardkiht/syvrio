@@ -4,6 +4,7 @@
 api.you.com 的 Answer/Research 入口不是同一服务，不得混用。
 响应为 results.web[]（新闻等类型不在最小实现内）。
 """
+
 from __future__ import annotations
 
 from typing import Any, Callable
@@ -136,5 +137,11 @@ class YouFetchProvider:
 
 def _api_error(status: int, payload: dict) -> ProviderError | None:
     if status == 402 and payload.get("detail") == "Insufficient credits":
-        return ProviderError(NAME, ProviderErrorKind.QUOTA, "Insufficient credits", code="402", pause_reason="insufficient_credits")
+        return ProviderError(
+            NAME,
+            ProviderErrorKind.QUOTA,
+            "Insufficient credits",
+            code="402",
+            pause_reason="insufficient_credits",
+        )
     return None

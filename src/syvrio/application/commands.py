@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from ..infra.diagnostics import record_event
+from ..memory.turn_undo import TurnUndoError
 
 if TYPE_CHECKING:
     from .service import ApplicationService
@@ -107,7 +108,7 @@ WEB_CAPABILITIES: dict[str, WebCapability] = {
     "sessions": WebCapability(CLIENT, "open_sessions", shortcut="Ctrl+B / Alt+B"),
     "compact": WebCapability(SERVER, "compact"),
     "undo": WebCapability(
-        SERVER, "undo", confirm=True, note="Discards the last user turn and its reply."
+        SERVER, "undo", note="Stops generation and restores the last turn for editing."
     ),
     "summary": WebCapability(SERVER, "summary"),
     "status": WebCapability(SERVER, "status"),
@@ -205,34 +206,39 @@ class CommandResult:
     refresh_history: bool = False
 
 
-def _item_rows(items, limit: int = MAX_ROWS) -> list[dict[str, str]]:
-    """Frontend-neutral review rows: id plus a short, safe text preview."""
-    rows: list[dict[str, str]] = []
-    for item in items[:limit]:
-        text = ""
-        for field in ("text", "content", "body", "statement", "summary", "title"):
-            value = getattr(item, field, None)
-            if isinstance(value, str) and value.strip():
-                text = value.strip()
-                break
-        rows.append({"id": str(getattr(item, "id", "") or ""), "text": text[:160]})
-    return rows
+def _inference_data(items) -> dict[str, Any]:
+    return {
+        "kind": "inferences",
+        "count": len(items),
+        "rows": [
+            {"id": item.id, "text": item.text, "topic": item.kind, "reason": item.status}
+            for item in items[:MAX_ROWS]
+        ],
+    }
+
+
+def _pending_data(items) -> dict[str, Any]:
+    return {
+        "kind": "pending",
+        "count": len(items),
+        "rows": [
+            {"id": item.id, "text": item.text, "topic": item.topic, "reason": item.reason}
+            for item in items[:MAX_ROWS]
+        ],
+    }
 
 
 class CommandUseCases:
     """Dispatch slash commands through existing Application use cases only."""
 
-    def __init__(
-        self, application: ApplicationService, *, excluded: frozenset[str] = frozenset()
-    ) -> None:
+    def __init__(self, application: ApplicationService) -> None:
         self.app = application
-        self.excluded = excluded
         self.conversation = application.conversation
         # Mirror the TUI's per-client reflection pause (UI state, not a Vault write).
         self.reflection_paused = False
 
     def catalog(self) -> tuple[WebCommandInfo, ...]:
-        return tuple(info for info in web_command_catalog() if info.name not in self.excluded)
+        return web_command_catalog()
 
     # The Web client runs a single turn at a time, so only read-only commands
     # (plus /undo, which cancels that turn) may run while a reply streams.
@@ -279,7 +285,7 @@ class CommandUseCases:
         /dream status is read-only while /dream 3 runs a reflection job.
         """
         head = argument.strip().lower().split(" ", 1)[0] if argument.strip() else ""
-        if name in ("new", "compact", "rename"):
+        if name in ("new", "compact", "rename", "undo"):
             return True
         if name in ("model", "think", "context"):
             return bool(argument.strip())
@@ -309,10 +315,6 @@ class CommandUseCases:
                 name,
                 message=f"Unknown command: /{name}. Type /help for available commands.",
             )
-        if name in self.excluded:
-            return CommandResult(
-                "unsupported", name, message=f"/{name} is unavailable in this edition."
-            )
         capability = WEB_CAPABILITIES[name]
         if capability.support == CLIENT:
             return CommandResult(
@@ -330,15 +332,23 @@ class CommandUseCases:
             )
         # The server re-checks confirmation independently of any browser dialog.
         if (capability.confirm or self._needs_confirmation(name, argument)) and not confirmed:
+            description = (
+                " ".join(argument.split(maxsplit=2)[:2])
+                if name in {"pending", "inferences"}
+                else argument
+            )
             return CommandResult(
                 "confirm_required",
                 name,
                 capability.intent,
-                message=f"Confirm this action: /{name} {argument}".strip()
+                message=f"Confirm this action: /{name} {description}".strip()
                 + ". This changes stored data and cannot be undone.",
             )
         try:
             return self._dispatch(name, argument, busy)
+        except TurnUndoError as exc:
+            record_event("undo.failed", exc)
+            return CommandResult("error", name, capability.intent, message=str(exc))
         except Exception as exc:  # noqa: BLE001 - never leak a traceback to the browser
             record_event("command.failed", exc)
             return CommandResult(
@@ -350,7 +360,7 @@ class CommandUseCases:
         application = self.app
 
         if name == "help":
-            lines = [f"{info.usage:<30}{info.description}" for info in self.catalog()]
+            lines = [f"{info.usage:<30}{info.description}" for info in web_command_catalog()]
             lines.append("")
             lines.append("Type / to complete. Ctrl+Shift+P / Alt+P opens the command palette.")
             lines.append("Ctrl+P and Ctrl+Q stay with the browser; use /exit to leave the view.")
@@ -411,7 +421,7 @@ class CommandUseCases:
                     name,
                     "pending",
                     f"{len(items)} pending item(s)." if items else "No pending items.",
-                    data={"kind": "pending", "rows": _item_rows(items), "count": len(items)},
+                    data=_pending_data(items),
                 )
             if head in ("approve", "reject", "edit"):
                 item_id, _, override = rest.partition(" ")
@@ -426,7 +436,7 @@ class CommandUseCases:
                     name,
                     "pending",
                     f"Pending item {item_id}: {head} applied.",
-                    refresh_sessions=True,
+                    data=_pending_data(memory.pending().items),
                 )
             return CommandResult(
                 "error", name, "pending", "Usage: /pending [approve|reject|edit <id>]"
@@ -443,11 +453,7 @@ class CommandUseCases:
                     name,
                     "inferences",
                     f"{len(review.items)} inference(s).",
-                    data={
-                        "kind": "inferences",
-                        "rows": _item_rows(review.items),
-                        "count": len(review.items),
-                    },
+                    data=_inference_data(review.items),
                 )
             if head in ("confirm", "reject", "correct", "edit"):
                 item_id, _, text = rest.partition(" ")
@@ -462,6 +468,7 @@ class CommandUseCases:
                     name,
                     "inferences",
                     result.feedback or f"Inference {item_id}: {action} applied.",
+                    data=_inference_data(result.items),
                 )
             return CommandResult(
                 "error", name, "inferences", "Usage: /inferences [confirm|reject|correct <id>]"
@@ -575,7 +582,8 @@ class CommandUseCases:
             )
 
         if name == "compact":
-            events = conversation.force_compact()
+            phases = []
+            events = conversation.force_compact(on_compaction=phases.append)
             return CommandResult(
                 "ok",
                 name,
@@ -583,6 +591,7 @@ class CommandUseCases:
                 "Context compacted."
                 if not events
                 else "\n".join(str(event) for event in events)[:MAX_TEXT],
+                data={"compacted": "done" in phases},
                 refresh_history=True,
             )
 
@@ -593,22 +602,23 @@ class CommandUseCases:
                     return CommandResult(
                         "busy", name, "undo", submission.message or "Undo already in progress."
                     )
-                return CommandResult(
-                    "ok",
-                    name,
-                    "undo",
-                    "Generation stopped; the last turn is being undone.",
-                    refresh_history=True,
-                    refresh_sessions=True,
-                )
+                if submission.kind == "undo":
+                    return CommandResult(
+                        "ok",
+                        name,
+                        "undo",
+                        "Generation stopped; the last turn is being undone.",
+                        data={"undo_pending": True},
+                    )
             restored = conversation.undo_current()
             return CommandResult(
                 "ok",
                 name,
                 "undo",
-                f"Restored the last message: {restored}" if restored else "Nothing to undo.",
-                refresh_history=True,
-                refresh_sessions=True,
+                "Last turn undone." if restored is not None else "Nothing to undo.",
+                data={"restored": restored},
+                refresh_history=restored is not None,
+                refresh_sessions=restored is not None,
             )
 
         return CommandResult(

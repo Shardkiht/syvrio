@@ -13,6 +13,7 @@
     # 全量：740 条语料 + 50 题
     uv run python evals/generate_retrieval_data.py --corpus 740 --cases 50 --real-vault ~/.syvrio/vault-v2
 """
+
 from __future__ import annotations
 
 import argparse
@@ -29,8 +30,17 @@ CORPUS_FILE = DATA_DIR / "retrieval_corpus.json"
 CASES_FILE = DATA_DIR / "retrieval_cases.json"
 
 CATEGORIES = [
-    "food", "housing", "career", "learning", "identity", "health",
-    "schedule", "devices", "entertainment", "finance", "relationships",
+    "food",
+    "housing",
+    "career",
+    "learning",
+    "identity",
+    "health",
+    "schedule",
+    "devices",
+    "entertainment",
+    "finance",
+    "relationships",
 ]
 
 CORPUS_PROMPT = """你在为一个检索评测构造**完全虚构**的个人记忆库语料。
@@ -58,7 +68,9 @@ CASES_PROMPT = """下面是若干条**虚构**的个人记忆条目（编号从 
 # 生成期脱敏过滤：只拦真正像个人信息的内容（邮箱/URL/手机号/身份证号/车牌）。
 # 真实品牌、城市、产品名等专有名词允许出现——它们不指向特定个人。
 _IDENT = re.compile(r"https?://|www\.|[\w.+-]+@[\w-]+\.[\w.-]+|\b1[3-9]\d{9}\b|\d{17}[\dXx]")
-_PLATE = re.compile(r"[京津沪渝冀豫云辽黑湘皖鲁新苏浙赣鄂桂甘晋蒙陕吉闽贵粤青藏川宁琼][A-Z][A-Z0-9]{5}")
+_PLATE = re.compile(
+    r"[京津沪渝冀豫云辽黑湘皖鲁新苏浙赣鄂桂甘晋蒙陕吉闽贵粤青藏川宁琼][A-Z][A-Z0-9]{5}"
+)
 
 
 def _identifiable(text: str) -> bool:
@@ -89,7 +101,7 @@ def _parse_array(text: str) -> list:
     lo, hi = text.find("["), text.rfind("]")
     if lo != -1 and hi > lo:
         try:
-            return json.loads(text[lo:hi + 1])
+            return json.loads(text[lo : hi + 1])
         except json.JSONDecodeError:
             pass
     items = []
@@ -115,7 +127,10 @@ def gen_corpus(cfg, total: int, batch: int, seed: int, workers: int = 4) -> list
     with ThreadPoolExecutor(max_workers=workers) as ex:
         while len(out) < total:
             todo = min(workers, max(1, (total - len(out) + batch - 1) // batch))
-            tasks = [(min(batch, total - len(out)), "、".join(rng.sample(CATEGORIES, 6))) for _ in range(todo)]
+            tasks = [
+                (min(batch, total - len(out)), "、".join(rng.sample(CATEGORIES, 6)))
+                for _ in range(todo)
+            ]
             before = len(out)
             for arr in ex.map(lambda t: run(*t), tasks):
                 for item in arr:
@@ -135,7 +150,9 @@ def gen_corpus(cfg, total: int, batch: int, seed: int, workers: int = 4) -> list
     return out[:total]
 
 
-def gen_cases(cfg, corpus: list[dict], count: int, batch: int, seed: int, workers: int = 4) -> list[dict]:
+def gen_cases(
+    cfg, corpus: list[dict], count: int, batch: int, seed: int, workers: int = 4
+) -> list[dict]:
     rng = random.Random(seed + 1)
     eligible = [i for i, c in enumerate(corpus) if len(c["text"]) >= 16] or list(range(len(corpus)))
     rng.shuffle(eligible)
@@ -144,11 +161,13 @@ def gen_cases(cfg, corpus: list[dict], count: int, batch: int, seed: int, worker
     def run(chunk: list[int]):
         listing = "\n".join(f"{j + 1}. {corpus[t]['text']}" for j, t in enumerate(chunk))
         try:
-            return chunk, _parse_array(_chat(cfg, CASES_PROMPT.format(listing=listing), max_tokens=4000))
+            return chunk, _parse_array(
+                _chat(cfg, CASES_PROMPT.format(listing=listing), max_tokens=4000)
+            )
         except Exception:
             return chunk, []
 
-    chunks = [targets[i:i + batch] for i in range(0, len(targets), batch)]
+    chunks = [targets[i : i + batch] for i in range(0, len(targets), batch)]
     cases: list[dict] = []
     with ThreadPoolExecutor(max_workers=workers) as ex:
         for chunk, arr in ex.map(run, chunks):
@@ -183,8 +202,11 @@ def stats(corpus: list[dict]) -> dict:
     return {
         "entries": len(texts),
         "len_min": lens[0] if lens else 0,
-        "len_p25": pct(25), "len_median": pct(50), "len_p75": pct(75),
-        "len_p90": pct(90), "len_max": lens[-1] if lens else 0,
+        "len_p25": pct(25),
+        "len_median": pct(50),
+        "len_p75": pct(75),
+        "len_p90": pct(90),
+        "len_max": lens[-1] if lens else 0,
         "len_mean": round(statistics.mean(lens), 1) if lens else 0,
         "pct_with_de": round(sum("的" in t for t in texts) / len(texts), 3) if texts else 0,
         "pct_with_colon": round(sum("：" in t for t in texts) / len(texts), 3) if texts else 0,
@@ -204,7 +226,14 @@ def print_compare(gen: dict, real: dict | None) -> None:
     print("\n生成语料统计：", json.dumps(gen, ensure_ascii=False))
     if real:
         print("真实库统计：  ", json.dumps(real, ensure_ascii=False))
-        keys = ["len_median", "len_p90", "pct_with_de", "pct_with_colon", "pct_mixed", "mean_cjk_ratio"]
+        keys = [
+            "len_median",
+            "len_p90",
+            "pct_with_de",
+            "pct_with_colon",
+            "pct_mixed",
+            "mean_cjk_ratio",
+        ]
         print("\n质量对照（生成 / 真实）：")
         for k in keys:
             print(f"  {k:16} {gen[k]} / {real[k]}")

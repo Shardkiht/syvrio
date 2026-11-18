@@ -3,25 +3,43 @@ from __future__ import annotations
 import ipaddress
 import json
 import os
+import re
 import socket
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from datetime import date, timedelta
 from enum import Enum
 from typing import Protocol
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-MAX_SEARCH_ENGINES = 3
+from ...errors import SyvrioError
+
 # 常见 TUN 代理的合成 DNS 段，仅用于域名解析结果，不放行直接 IP 目标。
-DEFAULT_FAKE_IP_CIDRS = "198.18.0.0/15,2001:2::/48"
+#
+# 顺序有意义：open-websearch 2.2.0 的 isAllowedFakeIp 是
+#   parsed.match(ipaddr.parseCIDR(cidr)) 套在 some() 里，整段包在 try/catch。
+# 当被校验地址是 IPv6、而列表里先出现 IPv4 段时，ipaddr 的 IPv6.match 会
+# 抛 "cannot match ipv6 address with non-ipv6 one"，异常被 catch 吞掉并返回
+# false，于是该 IPv6 地址永远得不到豁免。IPv6 段必须排在前面。
+DEFAULT_FAKE_IP_CIDRS = "2001:2::/48,198.18.0.0/15"
+
+
+def order_fake_ip_cidrs(value: str) -> str:
+    """把 IPv6 段排到 IPv4 段之前，规避 open-websearch 的顺序敏感缺陷。
+
+    用户自定义 FAKE_IP_CIDRS 时同样适用；空项与多余空白一并清掉。
+    """
+    parts = [item.strip() for item in str(value).split(",") if item.strip()]
+    v6 = [item for item in parts if ":" in item]
+    v4 = [item for item in parts if ":" not in item]
+    return ",".join(v6 + v4)
 
 
 def _fake_ip_networks() -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
     """与 open-websearch 同名的 FAKE_IP_CIDRS：代理的合成 DNS 结果不算私网目标。"""
     networks = []
-    for item in os.environ.get("FAKE_IP_CIDRS", DEFAULT_FAKE_IP_CIDRS).split(","):
-        item = item.strip()
-        if not item:
-            continue
+    raw = os.environ.get("FAKE_IP_CIDRS", DEFAULT_FAKE_IP_CIDRS)
+    for item in order_fake_ip_cidrs(raw).split(","):
         try:
             networks.append(ipaddress.ip_network(item, strict=False))
         except ValueError:
@@ -72,8 +90,10 @@ def assert_public_fetch_url(url: str, label: str = "抓取地址") -> None:
             raise ValueError(f"{label}解析到非公网地址，已拒绝抓取")
 
 
-def normalize_search_engines(value: object, allowed: Sequence[str]) -> tuple[str, ...]:
-    """把单个或一组引擎名规范化；auto 和空值表示使用配置默认。"""
+def normalize_search_engines(
+    value: object, allowed: Sequence[str], limit: int = 0
+) -> tuple[str, ...]:
+    """把单个或一组引擎名规范化；auto 和空值表示使用配置默认；limit=0 表示不限。"""
     if value is None:
         return ()
     if isinstance(value, str):
@@ -82,10 +102,12 @@ def normalize_search_engines(value: object, allowed: Sequence[str]) -> tuple[str
             try:
                 value = json.loads(value)
             except ValueError:
-                raise ValueError("search_engine must be a valid JSON array or engine name") from None
+                raise ValueError(
+                    "search_engine must be a valid JSON array or engine name"
+                ) from None
             if not isinstance(value, list):
                 raise ValueError("search_engine must be a list of strings")
-            return normalize_search_engines(value, allowed)
+            return normalize_search_engines(value, allowed, limit)
         values = [value]
     elif isinstance(value, (list, tuple)):
         if not all(isinstance(item, str) for item in value):
@@ -122,8 +144,43 @@ def normalize_search_engines(value: object, allowed: Sequence[str]) -> tuple[str
             raise ValueError(f"unsupported search engine {name}")
         if name not in selected:
             selected.append(name)
-    if len(selected) > MAX_SEARCH_ENGINES:
-        raise ValueError(f"at most {MAX_SEARCH_ENGINES} search engines")
+    if limit > 0 and len(selected) > limit:
+        raise ValueError(f"at most {limit} search engines")
+    return tuple(selected)
+
+
+def normalize_search_providers(value: object, limit: int = 8) -> tuple[str, ...]:
+    """规范化 LLM 推荐的 Provider 列表：去重、保序、限制长度。
+
+    兼容部分模型把数组序列化成 JSON 字符串的调用方式；空值返回 ()。
+    """
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return ()
+        if text.startswith("["):
+            try:
+                parsed = json.loads(text)
+            except ValueError:
+                raise ValueError("providers must be a valid JSON array or provider name") from None
+            if not isinstance(parsed, list):
+                raise ValueError("providers must be a list of strings")
+            value = parsed
+        else:
+            value = [text]
+    if not isinstance(value, (list, tuple)):
+        raise ValueError("providers must be a list of strings")
+    if not all(isinstance(item, str) for item in value):
+        raise ValueError("providers entries must be strings")
+    selected: list[str] = []
+    for item in value:
+        name = item.strip().lower()
+        if name and name not in selected:
+            selected.append(name)
+    if len(selected) > limit:
+        raise ValueError(f"at most {limit} providers")
     return tuple(selected)
 
 
@@ -141,9 +198,17 @@ class ProviderErrorKind(str, Enum):
     BUDGET_EXHAUSTED = "budget_exhausted"
 
 
-class ProviderError(Exception):
-    def __init__(self, provider: str, kind: ProviderErrorKind | str, detail: str = "",
-                 *, code: str = "", pause_reason: str = "", resume_at: float | None = None):
+class ProviderError(SyvrioError, Exception):
+    def __init__(
+        self,
+        provider: str,
+        kind: ProviderErrorKind | str,
+        detail: str = "",
+        *,
+        code: str = "",
+        pause_reason: str = "",
+        resume_at: float | None = None,
+    ):
         self.code = code
         self.pause_reason = pause_reason
         self.resume_at = resume_at
@@ -170,6 +235,14 @@ class SearchQuery:
     context_terms: tuple[str, ...] = ()
     # 单次请求超时上限（秒）；由 router 按剩余预算下发，None 表示用 provider 默认。
     timeout: float | None = None
+    # LLM 建议优先尝试的 SearchProvider；只是排序提示，失败或质量不足仍回退。
+    # 空值 / "auto" 表示使用配置顺序。保留用于旧调用兼容。
+    preferred_provider: str = ""
+    # LLM 推荐的有序 Provider 列表；空表示使用配置顺序。
+    providers: tuple[str, ...] = ()
+    # auto：逐家尝试并允许回退；compare：尽量完成至少两家交叉验证；
+    # strict：只调用 providers 指定的来源，不自动扩展。
+    strategy: str = "auto"
 
 
 @dataclass(slots=True)
@@ -179,7 +252,7 @@ class SearchResult:
     snippet: str
     published: str | None = None
     provider: str = ""
-    # 结果实际来自哪个上游搜索引擎（bing/baidu/...）；provider 字段始终是 QM 的
+    # 结果实际来自哪个上游搜索引擎（bing/baidu/...）；provider 字段始终是 Syvrio 的
     # SearchProvider 名，二者不能混用。
     engine: str = ""
 
@@ -207,6 +280,74 @@ def truncate_fetch_content(content: str, max_chars: int) -> tuple[str, bool]:
     return content[:max_chars], True
 
 
+def normalize_url(url: str) -> str:
+    """保守 URL 规范化：只合并 www.、utm_* 与普通锚点差异。
+
+    m. 等站点变体与路径参数可能指向不同内容，不做激进合并；SPA 路由型
+    片段（#/...、#!/...）也保留，避免把不同页面误合成一条。
+    """
+    url = url.strip()
+    if not url:
+        return ""
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return url.rstrip("/")
+    if not parts.scheme or not parts.netloc:
+        return url.rstrip("/")
+    host = parts.netloc.lower()
+    if host.startswith("www.") and "@" not in host:
+        host = host[4:]
+    try:
+        query = urlencode(
+            [
+                (key, value)
+                for key, value in parse_qsl(parts.query, keep_blank_values=True)
+                if not key.lower().startswith("utm_")
+            ],
+            doseq=True,
+        )
+    except ValueError:
+        return url.rstrip("/")
+    fragment = parts.fragment
+    if fragment.startswith(("/", "!")):
+        kept_fragment = fragment
+    else:
+        kept_fragment = ""
+    return urlunsplit(
+        (
+            parts.scheme.lower(),
+            host,
+            parts.path.rstrip("/"),
+            query,
+            kept_fragment,
+        )
+    )
+
+
+_DATE_PREFIX = re.compile(r"^\s*(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?:[T\s]|$)")
+
+
+def parse_published_date(value: object) -> str | None:
+    """只保留可信的发布日期，统一为 YYYY-MM-DD。
+
+    非法日期、早于 1990 年或明显晚于今天（允许 1 天时区误差）都返回 None，
+    避免伪造日期参与时效排序。
+    """
+    if not isinstance(value, str):
+        return None
+    match = _DATE_PREFIX.match(value)
+    if not match:
+        return None
+    try:
+        day = date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+    except ValueError:
+        return None
+    if day.year < 1990 or day > date.today() + timedelta(days=1):
+        return None
+    return day.isoformat()
+
+
 @dataclass(slots=True)
 class SearchFailure:
     provider: str
@@ -228,6 +369,11 @@ class SearchOutcome:
     failed: list[SearchFailure] = field(default_factory=list)
     hint: str = ""
     cached: bool = False
+    # 实际尝试过的 Provider 顺序与策略，便于 TUI/调试区分回退与交叉验证。
+    attempted: list[str] = field(default_factory=list)
+    strategy: str = "auto"
+    # compare 的验证状态：complete / incomplete / unknown；其他策略为空。
+    verification: str = ""
 
     def to_payload(self) -> dict:
         payload: dict = {
@@ -243,6 +389,9 @@ class SearchOutcome:
                 for result in self.results
             ],
             "provider": self.provider,
+            "attempted": list(self.attempted),
+            "strategy": self.strategy,
+            "verification": self.verification,
             "failed": [failure.to_dict() for failure in self.failed],
         }
         if self.hint:

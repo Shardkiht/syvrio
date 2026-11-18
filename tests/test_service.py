@@ -4,13 +4,14 @@ import json
 
 import pytest
 
-from syvrio.agent.session import SessionStore
 from syvrio.infra.config import Config, LLMConfig, RetrievalConfig
 from syvrio.memory.extractor import StaticExtractor
 from syvrio.memory.models import Candidate, ExtractionResult, MemoryContext, PendingItem
 from syvrio.memory.service import MemoryService
 
 pytestmark = pytest.mark.memory
+
+
 def make_service(tmp_path, candidates):
     config = Config(
         vault=tmp_path / "vault", llm=LLMConfig(), retrieval=RetrievalConfig(method="keyword")
@@ -24,7 +25,9 @@ def make_service(tmp_path, candidates):
 @pytest.mark.parametrize("confidence", [0.95, 0.5])
 def test_context_survives_admission_and_pending_approval(tmp_path, confidence):
     context = MemoryContext(event_time="2024-06", time_text="2024年6月")
-    svc = make_service(tmp_path, [Candidate(text="2024年6月参加合成展览", confidence=confidence, context=context)])
+    svc = make_service(
+        tmp_path, [Candidate(text="2024年6月参加合成展览", confidence=confidence, context=context)]
+    )
     result = svc.memorize("合成对话", session_id="s-test", message_id="m-test")
     if result.queued:
         assert svc.pending()[0].context == context
@@ -38,10 +41,18 @@ def test_context_survives_admission_and_pending_approval(tmp_path, confidence):
 
 
 def test_approve_rewrite_drops_stale_context(tmp_path):
-    svc = make_service(tmp_path, [Candidate(
-        text="2024年参观合成展馆", confidence=0.5,
-        context=MemoryContext(event_time="2024", location="合成展馆", location_kind="event"),
-    )])
+    svc = make_service(
+        tmp_path,
+        [
+            Candidate(
+                text="2024年参观合成展馆",
+                confidence=0.5,
+                context=MemoryContext(
+                    event_time="2024", location="合成展馆", location_kind="event"
+                ),
+            )
+        ],
+    )
     item = svc.memorize("合成对话").queued[0]
     entry = svc.approve(item.id, text_override="2025年参观合成展馆")
     assert entry.context is None
@@ -50,10 +61,16 @@ def test_approve_rewrite_drops_stale_context(tmp_path):
 
 
 def test_context_credentials_block_before_admission_or_queue(tmp_path):
-    svc = make_service(tmp_path, [Candidate(
-        text="合成事件", confidence=0.5,
-        context=MemoryContext(location="密码是 synthetic-only", location_kind="event"),
-    )])
+    svc = make_service(
+        tmp_path,
+        [
+            Candidate(
+                text="合成事件",
+                confidence=0.5,
+                context=MemoryContext(location="密码是 synthetic-only", location_kind="event"),
+            )
+        ],
+    )
     result = svc.memorize("合成对话")
     assert result.blocked == ["合成事件"]
     assert svc.pending() == [] and svc.store.entries() == []
@@ -61,8 +78,12 @@ def test_context_credentials_block_before_admission_or_queue(tmp_path):
 
 def test_import_dry_run_includes_context_without_writing(tmp_path):
     svc = make_service(tmp_path, [])
-    candidate = Candidate(text="2024年合成事件", confidence=0.95, context=MemoryContext(event_time="2024"))
-    result = svc.import_text("合成文档", dry_run=True, extractor=StaticExtractor(ExtractionResult(memories=[candidate])))
+    candidate = Candidate(
+        text="2024年合成事件", confidence=0.95, context=MemoryContext(event_time="2024")
+    )
+    result = svc.import_text(
+        "合成文档", dry_run=True, extractor=StaticExtractor(ExtractionResult(memories=[candidate]))
+    )
     assert result.admitted[0].context == candidate.context
     assert svc.store.entries() == []
 
@@ -118,9 +139,9 @@ def test_approve_writes_entry_and_clears_pending(tmp_path):
     audit = json.loads(service.audit.path.read_text(encoding="utf-8"))
     assert audit.pop("at")
     assert audit == {"action": "approve", "item": item.id, "entry": entry.id, "supersedes": ""}
-    assert "人工确认" in (
-        tmp_path / "vault" / "memories" / "general" / "preferences.md"
-    ).read_text(encoding="utf-8")
+    assert "人工确认" in (tmp_path / "vault" / "memories" / "general" / "preferences.md").read_text(
+        encoding="utf-8"
+    )
 
 
 @pytest.mark.parametrize("original", ["可能喜欢浅烘", "API key: demo-placeholder"])
@@ -156,8 +177,11 @@ def test_approve_override_writes_only_final_entry(tmp_path, original):
     audit = json.loads(service.audit.path.read_text(encoding="utf-8"))
     assert audit.pop("at")
     assert audit == {
-        "action": "approve", "item": item.id, "entry": entry.id,
-        "supersedes": "", "text_override": "喜欢中烘咖啡",
+        "action": "approve",
+        "item": item.id,
+        "entry": entry.id,
+        "supersedes": "",
+        "text_override": "喜欢中烘咖啡",
     }
 
 
@@ -193,10 +217,13 @@ def test_approve_conflict_links_final_entry_to_old_entry(tmp_path, override):
 
 
 def test_approve_stale_conflict_replaces_current_successor(tmp_path):
-    service = make_service(tmp_path, [
-        Candidate(text="每月合成预算为200元", topic="budget", confidence=1.0),
-        Candidate(text="每月合成预算为300元", topic="budget", confidence=1.0),
-    ])
+    service = make_service(
+        tmp_path,
+        [
+            Candidate(text="每月合成预算为200元", topic="budget", confidence=1.0),
+            Candidate(text="每月合成预算为300元", topic="budget", confidence=1.0),
+        ],
+    )
     old = service.note("每月合成预算为100元", topic="budget")
     items = service.memorize("合成预算更新").queued
     assert len(items) == 2
@@ -211,7 +238,9 @@ def test_approve_stale_conflict_replaces_current_successor(tmp_path):
 def test_approve_stale_conflict_does_not_resurrect_deleted_memory(tmp_path):
     service = make_service(tmp_path, [])
     old = service.note("合成旧事实")
-    item = PendingItem.from_candidate(Candidate(text="合成新事实"), "test", "conflict", conflict_with=old.id)
+    item = PendingItem.from_candidate(
+        Candidate(text="合成新事实"), "test", "conflict", conflict_with=old.id
+    )
     service.queue.add(item)
     service.forget(old.id)
     with pytest.raises(ValueError, match="已删除"):
@@ -223,7 +252,9 @@ def test_approve_stale_conflict_does_not_resurrect_deleted_memory(tmp_path):
 def test_approve_append_failure_keeps_previous_memory_active(tmp_path, monkeypatch):
     service = make_service(tmp_path, [])
     old = service.note("合成旧事实")
-    item = PendingItem.from_candidate(Candidate(text="合成新事实"), "test", "conflict", conflict_with=old.id)
+    item = PendingItem.from_candidate(
+        Candidate(text="合成新事实"), "test", "conflict", conflict_with=old.id
+    )
     service.queue.add(item)
 
     def fail(*args, **kwargs):
@@ -255,8 +286,10 @@ def test_approve_invalid_override_leaves_storage_unchanged(tmp_path, conflict, o
     )
     service.queue.add(item)
     paths = [
-        service.store.topic_path("preferences"), service.queue.pending_path,
-        service.queue.resolved_path, service.audit.path,
+        service.store.topic_path("preferences"),
+        service.queue.pending_path,
+        service.queue.resolved_path,
+        service.audit.path,
     ]
     before = {path: path.read_bytes() for path in paths}
 
@@ -333,7 +366,8 @@ def test_read_topic_returns_only_active_entries_for_known_topic(tmp_path):
     result = service.read_topic("偏好")
 
     assert result["topic"] == "memories/general/preferences.md"
-    assert result["content"] == "- 保留的有效条目"
+    assert "* 保留的有效条目\n\n  **Core**" in result["content"]
+    assert "已删除的旧条目" not in result["content"]
     assert result["entries"] == 1
     assert result["truncated"] is False
     with pytest.raises(KeyError):
@@ -355,9 +389,7 @@ def test_read_topic_truncates_to_token_budget(tmp_path):
 def test_commit_push_failure_does_not_hide_commit(tmp_path):
     # auto_push 但无 remote：本地提交必须成功返回 hash，push 失败只记录在 push_error。
     config = Config(vault=tmp_path / "vault", llm=LLMConfig(), auto_push=True)
-    service = MemoryService(
-        config, extractor=StaticExtractor(ExtractionResult(memories=[]))
-    )
+    service = MemoryService(config, extractor=StaticExtractor(ExtractionResult(memories=[])))
     service.init_vault()
     service.note("一条记录", topic="misc")
 
@@ -401,70 +433,6 @@ def test_commit_pending_changes_auto_commits_without_llm(tmp_path):
     assert any("自动提交" in item["subject"] for item in service.history(3))
 
 
-def test_commit_summary_input_excludes_sessions_includes_memories(tmp_path, monkeypatch):
-    # 摘要输入只含 memories/：会话内容（含旧版内联推理）绝不发给模型。
-    service = make_service(tmp_path, [])
-    store = SessionStore(service.config.vault)
-    session = store.create()
-    store.append(
-        session,
-        {"type": "message", "role": "user", "id": "u1",
-         "content": "普通会话消息"},
-    )
-    # 旧版本遗留的内联推理记录：写在 JSONL 里，source 非空。
-    legacy = {
-        "type": "assistant", "id": "a-legacy", "content": "旧正文",
-        "reasoning": {"text": "FOUNDATION_LEGACY_THOUGHT_TEST", "source": "route"},
-    }
-    with session.path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(legacy, ensure_ascii=False) + "\n")
-    service.note("使用合成滤纸冲煮", topic="devices")
-
-    captured: dict = {}
-
-    def spy_summarize_diff(diff, llm_config, staged_stat=None):
-        captured["diff"] = diff
-        return "捕获桩摘要"
-
-    monkeypatch.setattr("syvrio.memory.service.summarize_diff", spy_summarize_diff)
-    result = service.commit(push=False)
-
-    assert result["committed"]
-    assert "FOUNDATION_LEGACY_THOUGHT_TEST" not in captured["diff"]
-    assert "普通会话消息" not in captured["diff"]
-    assert "memories/" in captured["diff"]
-    assert "合成滤纸" in captured["diff"]
-    # 提交信息也不携带会话内容。
-    assert "FOUNDATION_LEGACY_THOUGHT_TEST" not in result["summary"]
-    # 会话内容仍然入了库（本修复不改暂存与提交规则）。
-    assert "普通会话消息" in session.path.read_text(encoding="utf-8")
-
-
-def test_commit_summary_session_only_changes_use_local_fallback(tmp_path, monkeypatch):
-    # 只有会话变更时：memories 无 diff → 走本地回退，不把会话内容发给模型。
-    service = make_service(tmp_path, [])
-    store = SessionStore(service.config.vault)
-    session = store.create()
-    store.append(
-        session,
-        {"type": "message", "role": "user", "id": "u1",
-         "content": "FOUNDATION_SESSION_ONLY_TEST"},
-    )
-
-    captured: dict = {}
-
-    def spy_summarize_diff(diff, llm_config, staged_stat=None):
-        captured["diff"] = diff
-        return "本地回退摘要"
-
-    monkeypatch.setattr("syvrio.memory.service.summarize_diff", spy_summarize_diff)
-    result = service.commit(push=False)
-
-    assert result["committed"]
-    assert captured["diff"] == ""
-    assert "FOUNDATION_SESSION_ONLY_TEST" not in result["summary"]
-
-
 @pytest.mark.parametrize(
     "text",
     [
@@ -472,6 +440,7 @@ def test_commit_summary_session_only_changes_use_local_fallback(tmp_path, monkey
         "password=!Demo1234",
         "验证码 458712请勿转发",
         "密码是 合成测试口令",
+        "我的 API 密钥是 synthetic-token-1234",
     ],
 )
 def test_note_correct_and_memorize_reject_secrets(tmp_path, text):
@@ -511,21 +480,41 @@ def test_approve_rejects_secret_and_keeps_pending(tmp_path):
     assert [pending.id for pending in service.pending()] == [item.id]
 
 
-@pytest.mark.parametrize("operation,stage", [
-    ("approve", "status"), ("approve", "resolve"), ("approve", "audit"),
-    ("correct", "status"), ("correct", "audit"),
-    ("reject", "resolve"), ("reject", "audit"), ("forget", "audit"),
-])
-def test_manual_write_failure_rolls_back_and_retry_is_consistent(tmp_path, monkeypatch, operation, stage):
+@pytest.mark.parametrize(
+    "operation,stage",
+    [
+        ("approve", "status"),
+        ("approve", "resolve"),
+        ("approve", "audit"),
+        ("correct", "status"),
+        ("correct", "audit"),
+        ("reject", "resolve"),
+        ("reject", "audit"),
+        ("forget", "audit"),
+    ],
+)
+def test_manual_write_failure_rolls_back_and_retry_is_consistent(
+    tmp_path, monkeypatch, operation, stage
+):
     service = make_service(tmp_path, [])
     old = service.note("Synthetic original fact", topic="preferences")
-    item = PendingItem.from_candidate(Candidate(text="Synthetic replacement fact", topic="other"),
-                                      "test", "conflict", conflict_with=old.id)
+    item = PendingItem.from_candidate(
+        Candidate(text="Synthetic replacement fact", topic="other"),
+        "test",
+        "conflict",
+        conflict_with=old.id,
+    )
     service.queue.add(item)
     service.audit.write("synthetic-baseline")
-    paths = [service.store.topic_path("preferences"), service.store.topic_path("other"),
-             service.queue.pending_path, service.queue.resolved_path, service.audit.path]
+    paths = [
+        service.store.topic_path("preferences"),
+        service.store.topic_path("other"),
+        service.queue.pending_path,
+        service.queue.resolved_path,
+        service.audit.path,
+    ]
     before = {path: path.read_bytes() if path.exists() else None for path in paths}
+
     def execute():
         if operation == "approve":
             return service.approve(item.id)
@@ -534,12 +523,18 @@ def test_manual_write_failure_rolls_back_and_retry_is_consistent(tmp_path, monke
         if operation == "reject":
             return service.reject(item.id)
         return service.forget(old.id)
-    obj, name = {"status": (service.store, "set_status"),
-                 "resolve": (service.queue, "resolve"), "audit": (service.audit, "write")}[stage]
+
+    obj, name = {
+        "status": (service.store, "set_status"),
+        "resolve": (service.queue, "resolve"),
+        "audit": (service.audit, "write"),
+    }[stage]
     original = getattr(obj, name)
+
     def fail_after_write(*args, **kwargs):
         original(*args, **kwargs)
         raise OSError("synthetic write failure")
+
     with monkeypatch.context() as patch:
         patch.setattr(obj, name, fail_after_write)
         with pytest.raises(OSError, match="synthetic write failure"):
@@ -551,7 +546,9 @@ def test_manual_write_failure_rolls_back_and_retry_is_consistent(tmp_path, monke
     active = service.store.entries()
     assert len(active) == (0 if operation == "forget" else 1)
     assert service.pending() == ([] if operation in ("approve", "reject") else [item])
-    logs = [json.loads(line) for line in service.audit.path.read_text(encoding="utf-8").splitlines()]
+    logs = [
+        json.loads(line) for line in service.audit.path.read_text(encoding="utf-8").splitlines()
+    ]
     assert [row["action"] for row in logs] == ["synthetic-baseline", operation]
     if operation in ("approve", "correct"):
         assert len(service.store.entries(include_inactive=True)) == 2

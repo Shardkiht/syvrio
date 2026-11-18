@@ -8,6 +8,7 @@ import subprocess
 from contextlib import contextmanager
 from pathlib import Path
 
+from ..errors import SyvrioError
 from ..time import format_local_timestamp, parse_timestamp, serialize_timestamp
 
 LOCAL_TIMEOUT = 15.0
@@ -98,7 +99,7 @@ def classify_git_error(text: str) -> str:
     return "other"
 
 
-class GitError(RuntimeError):
+class GitError(SyvrioError, RuntimeError):
     def __init__(self, message: str, kind: str = "other") -> None:
         super().__init__(redact_git_message(message))
         self.kind = kind
@@ -312,11 +313,8 @@ class GitRepo:
     def staged_stat(self) -> str:
         return self._run(["diff", "--cached", "--stat"]).stdout
 
-    def staged_diff(self, max_chars: int = 24000, paths: list[str] | None = None) -> str:
-        args = ["diff", "--cached", "--unified=1"]
-        if paths:
-            args += ["--", *paths]
-        diff = self._run(args).stdout
+    def staged_diff(self, max_chars: int = 24000) -> str:
+        diff = self._run(["diff", "--cached", "--unified=1"]).stdout
         return diff[:max_chars]
 
     def commit(self, message: str) -> str | None:

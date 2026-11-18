@@ -1,7 +1,7 @@
 /** One place for every Web shortcut and its browser-conflict fallback.
  *
  * Checked against the TUI's real bindings (chat_app.py):
- *   Ctrl+P -> command palette (Textual action_command_palette)
+ *   Ctrl+P -> manage providers in model choices
  *   Ctrl+B -> toggle sidebar
  *   Ctrl+Q -> quit
  *   Escape -> close overlay / cancel generation
@@ -40,9 +40,9 @@ export interface ShortcutHelp {
 /** Keys the Web client intentionally leaves to the browser. */
 export const RESERVED_KEYS: ShortcutHelp[] = [
   {
-    keys: 'Ctrl+P (TUI: command palette)',
+    keys: 'Ctrl+P',
     description: 'Not hijacked: browser Print',
-    note: 'Use Ctrl+Shift+P or Alt+P for the palette.',
+    note: 'Use Alt+P for commands or Alt+S for providers from model choices.',
   },
   {
     keys: 'Ctrl+Q (TUI: quit)',
@@ -54,7 +54,7 @@ export const RESERVED_KEYS: ShortcutHelp[] = [
 export const SHORTCUT_HELP: ShortcutHelp[] = [
   {
     keys: 'Ctrl+Shift+P / Alt+P',
-    description: 'Open the command palette (TUI: Ctrl+P)',
+    description: 'Open the command palette',
     note: 'Firefox reserves Ctrl+Shift+P for a private window; Alt+P works everywhere.',
   },
   { keys: 'Ctrl+B / Alt+B', description: 'Toggle the session sidebar (TUI: Ctrl+B)' },
@@ -66,8 +66,11 @@ export const SHORTCUT_HELP: ShortcutHelp[] = [
   {
     keys: 'Alt+S',
     description: 'Open the settings panel',
-    note: 'Also available via /setup or the Settings button. Providers and keys live here.',
+    note: 'From model choices, opens Providers directly. Also available via /setup or the Settings button.',
   },
+  { keys: 'C / R / E', description: 'Approve or confirm, reject, or edit in memory review' },
+  { keys: 'Ctrl+S / ⌘S', description: 'Save an edit or request Git synchronization in its dialog' },
+  { keys: 'Page Up / Page Down', description: 'Scroll the selected review item' },
   { keys: 'Esc', description: 'Close overlays or stop generation' },
   { keys: '↑ / ↓', description: 'Move through command suggestions' },
   { keys: 'Tab', description: 'Complete the highlighted command' },

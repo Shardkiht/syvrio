@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import os
 import sys
+import tomllib
 from importlib import metadata
 from pathlib import Path
 
@@ -22,15 +22,15 @@ from syvrio.memory.service import MemoryService
 
 
 def test_only_syvrio_console_script():
-    scripts = {
-        entry.name: entry.value
-        for entry in metadata.entry_points(group="console_scripts")
-    }
+    scripts = {entry.name: entry.value for entry in metadata.entry_points(group="console_scripts")}
     assert scripts["syvrio"] == "syvrio.app.cli:main"
 
 
 def test_version_and_assistant_branding():
-    assert syvrio.__version__ == "0.4.0"
+    project = tomllib.loads(
+        (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(encoding="utf-8")
+    )
+    assert syvrio.__version__ == project["project"]["version"]
     assert ASSISTANT_NAME == "Syvrio"
 
 
@@ -52,7 +52,7 @@ def test_default_paths_are_syvrio(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     _isolate_config_dir(monkeypatch, tmp_path)
     monkeypatch.chdir(tmp_path)
-    assert default_config_path() == _expected_config_path(tmp_path)
+    assert default_config_path() == tmp_path / ".syvrio" / "config.toml"
     assert default_vault_path() == tmp_path / ".syvrio" / "vault"
     assert CONFIG_FILENAME == "syvrio.toml"
 
@@ -62,8 +62,9 @@ def test_setup_defaults_to_config_directory(monkeypatch, tmp_path: Path):
 
     monkeypatch.delenv("SYVRIO_CONFIG", raising=False)
     _isolate_config_dir(monkeypatch, tmp_path)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.chdir(tmp_path)
-    assert resolve_config_path(None) == _expected_config_path(tmp_path)
+    assert resolve_config_path(None) == tmp_path / ".syvrio" / "config.toml"
 
 
 def test_keyring_service_name():
@@ -78,8 +79,7 @@ def test_runtime_metadata_uses_syvrio_directory(tmp_path: Path):
     )
     service = MemoryService(config, extractor=StaticExtractor(ExtractionResult(memories=[])))
     service.init_vault()
+    assert service.paths.state_dir.is_dir()
+    assert not (config.vault / ".syvrio").exists()
     service.note("品牌测试条目", topic="misc")
     assert (config.vault / "memories" / "general" / "misc.md").exists()
-    # Runtime 与 Vault 分离：绑定标记在 Runtime 状态目录，Vault 内不再有 .syvrio。
-    assert not (config.vault / ".syvrio").exists()
-    assert (Path(os.environ["SYVRIO_RUNTIME"]) / "state" / "vault-binding.json").is_file()

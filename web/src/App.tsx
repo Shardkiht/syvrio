@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import { CommandPalette, CommandPanelDialog, ConfirmDialog } from './components/CommandUI';
+import { CommandPalette, CommandPanelDialog, CommandResultDialog, ConfirmDialog, SessionCommandDialog } from './components/CommandUI';
 import { Composer } from './components/Composer';
 import { CommandsIcon, PanelIcon, SettingsIcon } from './components/Icons';
 import { MessageList } from './components/MessageList';
+import { PendingReview } from './components/PendingReview';
 import { SettingsPanel } from './components/SettingsPanel';
 import { Sidebar } from './components/Sidebar';
 import { useChat } from './hooks/useChat';
@@ -12,6 +13,8 @@ import { applyTheme, readTheme, watchSystemTheme, type ThemeMode } from './state
 export default function App() {
   const {
     chat,
+    contextUsage,
+    compaction,
     sessions,
     health,
     online,
@@ -19,6 +22,13 @@ export default function App() {
     setSidebarOpen,
     toggleSidebar,
     send,
+    insert,
+    queued,
+    queuePaused,
+    removeQueued,
+    undoDraft,
+    undoing,
+    acknowledgeDraft,
     stop,
     newSession,
     selectSession,
@@ -36,9 +46,9 @@ export default function App() {
     confirmDeleteSession,
     settingsOpen,
     setSettingsOpen,
-    notice,
     refreshHealth,
     runPanelCommand,
+    reviewMemory,
     runCommand,
     handleEscape,
     focusSignal,
@@ -51,6 +61,7 @@ export default function App() {
   const empty = chat.messages.length === 0;
   const title = sessions.find((session) => session.id === chat.sessionId)?.title || 'New chat';
 
+  const [settingsStart, setSettingsStart] = useState<'model' | 'providers'>('model');
   const [theme, setTheme] = useState<ThemeMode>(readTheme);
   const themeBooted = useRef(false);
   useEffect(() => {
@@ -84,14 +95,29 @@ export default function App() {
     };
   }, []);
 
+  const modalOpen = Boolean(paletteOpen || confirm || deleteTarget || settingsOpen || panel);
+
   // One global listener; every binding lives in state/shortcuts.ts.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (isComposing(event)) return;
+      if (event.defaultPrevented || isComposing(event)) return;
       const action = matchShortcut(event);
       if (!action) return;
       if (action === 'escape') {
-        if (handleEscape()) event.preventDefault();
+        if (handleEscape()) {
+          event.preventDefault();
+          if (modalOpen) focusComposer();
+          if (settingsOpen) setSettingsStart('model');
+        }
+        return;
+      }
+      if (modalOpen) {
+        if (action === 'settings' && panel && 'prefix' in panel && panel.prefix === '/model') {
+          event.preventDefault();
+          setPanel(null);
+          setSettingsStart('providers');
+          setSettingsOpen(true);
+        }
         return;
       }
       event.preventDefault();
@@ -110,119 +136,129 @@ export default function App() {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [chat.busy, handleEscape, runCommand, setPaletteOpen, setPanel, setSettingsOpen, stop, toggleSidebar]);
+  }, [chat.busy, focusComposer, handleEscape, modalOpen, panel, runCommand, setPaletteOpen, setPanel, setSettingsOpen, settingsOpen, stop, toggleSidebar]);
 
   const closePalette = () => { setPaletteOpen(false); focusComposer(); };
   const closeConfirm = () => { setConfirm(null); focusComposer(); };
   const closeDelete = () => { setDeleteTarget(null); focusComposer(); };
-  const closeSettings = () => { setSettingsOpen(false); focusComposer(); };
+  const closeSettings = () => { setSettingsOpen(false); setSettingsStart('model'); focusComposer(); };
   const closePanel = () => { setPanel(null); focusComposer(); };
 
   return (
-    <div className={`app${sidebarOpen ? '' : ' sidebar-collapsed'}`}>
-      <Sidebar
-        sessions={sessions}
-        currentId={chat.sessionId}
-        open={sidebarOpen}
-        model={model}
-        online={online}
-        onNew={() => void newSession()}
-        onSelect={(id) => void selectSession(id)}
-        onDelete={requestDeleteSession}
-        onClose={() => setSidebarOpen(false)}
-      />
-      <main className={`main${empty ? ' is-empty' : ''}`}>
-        <header className="topbar">
-          <button
-            type="button"
-            className="icon-button sessions-toggle"
-            onClick={() => setSidebarOpen(true)}
-            aria-label="Open sessions"
-            title="Show sidebar (Ctrl+B)"
-          >
-            <PanelIcon size={20} />
-          </button>
-          <div className="topbar-title" title={title}>{title}</div>
-          <div className="topbar-actions">
+    <>
+      <div ref={(node) => { node?.toggleAttribute('inert', modalOpen); }} className={`app${sidebarOpen ? '' : ' sidebar-collapsed'}`}>
+        <Sidebar
+          sessions={sessions}
+          currentId={chat.sessionId}
+          open={sidebarOpen}
+          onNew={() => void newSession()}
+          onSelect={(id) => void selectSession(id)}
+          onDelete={requestDeleteSession}
+          onClose={() => setSidebarOpen(false)}
+        />
+        <main className={`main${empty ? ' is-empty' : ''}`}>
+          <header className="topbar">
             <button
               type="button"
-              className="model-info"
-              data-testid="model-info"
-              title="Open model choices (/model, Alt+M)"
-              onClick={() => void runCommand('/model')}
+              className="icon-button sessions-toggle"
+              onClick={() => setSidebarOpen(true)}
+              aria-label="Open sessions"
+              title="Show sidebar (Ctrl+B)"
             >
-              {model}
+              <PanelIcon size={20} />
             </button>
-            <button
-              type="button"
-              className="icon-button commands-toggle"
-              onClick={() => setPaletteOpen(true)}
-              aria-label="Open commands"
-              title="Commands (Alt+P)"
-              data-testid="commands-toggle"
-            >
-              <CommandsIcon size={20} />
-            </button>
-            <button
-              type="button"
-              className="icon-button commands-toggle"
-              onClick={() => setSettingsOpen(true)}
-              aria-label="Open settings"
-              title="Settings (Alt+S)"
-              data-testid="settings-toggle"
-            >
-              <SettingsIcon size={20} />
-            </button>
-            <div
-              className={`connection ${online ? 'online' : 'offline'}`}
-              data-testid="connection"
-              title={online ? 'Connected' : 'Offline'}
-            >
-              <span className="dot" />
-              <span className="connection-label">{online ? 'Connected' : 'Offline'}</span>
+            <div className="topbar-title" title={title}>{title}</div>
+            <div className="topbar-actions">
+              <button
+                type="button"
+                className="model-info"
+                data-testid="model-info"
+                title="Open model choices (/model, Alt+M)"
+                onClick={() => void runCommand('/model')}
+              >
+                {model}
+              </button>
+              <button
+                type="button"
+                className="icon-button commands-toggle"
+                onClick={() => setPaletteOpen(true)}
+                aria-label="Open commands"
+                title="Commands (Alt+P)"
+                data-testid="commands-toggle"
+              >
+                <CommandsIcon size={20} />
+              </button>
+              <button
+                type="button"
+                className="icon-button commands-toggle"
+                onClick={() => setSettingsOpen(true)}
+                aria-label="Open settings"
+                title="Settings (Alt+S)"
+                data-testid="settings-toggle"
+              >
+                <SettingsIcon size={20} />
+              </button>
+              <div
+                className={`connection ${online ? 'online' : 'offline'}`}
+                data-testid="connection"
+                title={online ? 'Connected' : 'Offline'}
+              >
+                <span className="dot" />
+                <span className="connection-label">{online ? 'Connected' : 'Offline'}</span>
+              </div>
             </div>
+          </header>
+          {chat.error && (
+            <div className="error-banner" role="alert" data-testid="error-banner">
+              <span>{chat.error}</span>
+              <button type="button" onClick={dismissError}>Dismiss</button>
+            </div>
+          )}
+          <div className="thread">
+            <MessageList messages={chat.messages} sessionId={chat.sessionId} onToggle={toggle} />
+            <Composer
+              busy={chat.busy}
+              progress={chat.progress}
+              contextUsage={contextUsage}
+              compaction={compaction}
+              onSend={(text) => void send(text)}
+              onInsert={insert}
+              queued={queued}
+              queuePaused={queuePaused}
+              onRemoveQueued={removeQueued}
+              undoDraft={undoDraft}
+              onUndo={chat.busy || chat.messages.some((message) => message.role === 'user')
+                ? () => void runCommand('/undo') : undefined}
+              undoing={undoing}
+              onUndoDraftApplied={() => { if (chat.sessionId !== null) acknowledgeDraft(chat.sessionId); }}
+              onStop={() => void stop()}
+              catalog={catalog}
+              focusSignal={focusSignal}
+              hero={empty}
+              onOpenCommands={() => setPaletteOpen(true)}
+            />
           </div>
-        </header>
-        {chat.error && (
-          <div className="error-banner" role="alert" data-testid="error-banner">
-            <span>{chat.error}</span>
-            <button type="button" onClick={dismissError}>Dismiss</button>
-          </div>
-        )}
-        <div className="thread">
-          <MessageList messages={chat.messages} sessionId={chat.sessionId} onToggle={toggle} />
-          <Composer
-            busy={chat.busy}
-            progress={chat.progress}
-            onSend={(text) => void send(text)}
-            onStop={() => void stop()}
-            catalog={catalog}
-            focusSignal={focusSignal}
-            hero={empty}
-            onOpenCommands={() => setPaletteOpen(true)}
-          />
-        </div>
-      </main>
+        </main>
+      </div>
 
-      {paletteOpen && (
+      {paletteOpen && !confirm && !deleteTarget && !settingsOpen && (
         <CommandPalette
           catalog={catalog}
           onRun={(line) => {
             setPaletteOpen(false);
             void runCommand(line);
-            focusComposer();
           }}
           onClose={closePalette}
         />
       )}
-      {confirm && (
+      {confirm && !deleteTarget && !settingsOpen && (
         <ConfirmDialog
           message={confirm.message}
-          onConfirm={() => { void confirmCommand(); focusComposer(); }}
+          onConfirm={() => void confirmCommand()}
           onCancel={closeConfirm}
         />
       )}
-      {deleteTarget && (
+      {deleteTarget && !settingsOpen && (
         <ConfirmDialog
           title="Delete session"
           testId="delete-overlay"
@@ -240,20 +276,26 @@ export default function App() {
       {settingsOpen && (
         <SettingsPanel
           health={health}
+          initialSection={settingsStart}
           theme={theme}
           onTheme={setTheme}
           onClose={closeSettings}
           onChanged={() => { void refreshHealth(); }}
-          onNotice={notice}
         />
       )}
-      {panel && (
-        <CommandPanelDialog
-          panel={panel}
-          onPick={(line) => { void runPanelCommand(line); focusComposer(); }}
-          onClose={closePanel}
-        />
-      )}
-    </div>
+      {panel && !paletteOpen && !confirm && !deleteTarget && !settingsOpen && ('rows' in panel ? (
+        <PendingReview key={panel.kind} panel={panel}
+          onResolve={(action, id, text) => reviewMemory(panel.kind, action, id, text)}
+          onClose={closePanel} />
+      ) : 'options' in panel ? (
+        <CommandPanelDialog panel={panel} onPick={(line) => void runPanelCommand(line)} onClose={closePanel} />
+      ) : 'kind' in panel ? (
+        <SessionCommandDialog sessions={sessions} currentId={chat.sessionId}
+          onSelect={(id) => { closePanel(); void selectSession(id); }} onClose={closePanel} />
+      ) : (
+        <CommandResultDialog key={panel.title} panel={panel} title={title}
+          onRun={(line) => void runPanelCommand(line)} onClose={closePanel} />
+      ))}
+    </>
   );
 }

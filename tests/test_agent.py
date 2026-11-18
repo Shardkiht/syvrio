@@ -3,14 +3,17 @@ from __future__ import annotations
 import pytest
 
 from syvrio.agent.runtime import AgentRuntime
-from syvrio.agent.session import SessionStore, new_message_id
+from syvrio.agent.session import SessionStore, dated_message, new_message_id
 from syvrio.infra.config import ChatConfig, Config, LLMConfig
 from syvrio.llm import AssistantTurn, ChatModelError, ToolCall
 from syvrio.memory.extractor import StaticExtractor
 from syvrio.memory.models import Candidate, ExtractionResult
 from syvrio.memory.service import MemoryService
+from syvrio.memory.turn_undo import TurnUndoError
 
 pytestmark = pytest.mark.agent
+
+
 class FakeChatModel:
     def __init__(self, turns):
         self.turns = list(turns)
@@ -60,10 +63,22 @@ def build_runtime(tmp_path, model, candidates=None, *, extract_on_exit=False, ma
     return runtime, service
 
 
+def test_corrupt_profile_does_not_block_chat_or_fact_recall(tmp_path):
+    model = FakeChatModel([AssistantTurn(content="收到")])
+    runtime, service = build_runtime(tmp_path, model)
+    service.note("合成偏好：喜欢安静阅读", topic="preferences")
+    service.inferences.path.write_text("{broken\n", encoding="utf-8")
+    events = []
+    reply = runtime.ask("我喜欢安静阅读吗", on_event=events.append)
+    assert reply.content == "收到"
+    assert any("画像读取失败" in event for event in events)
+    assert any("画像读取失败" in event for event in reply.events)
+    assert "合成偏好" in str(model.calls[0][0])
+    assert service.inferences.path.read_text(encoding="utf-8") == "{broken\n"
+
+
 def test_start_defers_session_creation(tmp_path):
-    runtime, service = build_runtime(
-        tmp_path, FakeChatModel([AssistantTurn(content="收到")])
-    )
+    runtime, service = build_runtime(tmp_path, FakeChatModel([AssistantTurn(content="收到")]))
 
     assert runtime.session is None
     store = SessionStore(service.config.vault)
@@ -78,11 +93,17 @@ def test_start_defers_session_creation(tmp_path):
 def test_natural_file_request_registers_tools_and_reads_without_memory_write(tmp_path):
     path = tmp_path / "synthetic.txt"
     path.write_text("用户明确表示偏好合成茶饮", encoding="utf-8")
-    model = FakeChatModel([
-        AssistantTurn(tool_calls=[ToolCall(id="file1", name="read_file", arguments={"path": str(path.resolve())})]),
-        AssistantTurn(content="这份笔记描述了茶饮偏好。"),
-        AssistantTurn(content="收到"),
-    ])
+    model = FakeChatModel(
+        [
+            AssistantTurn(
+                tool_calls=[
+                    ToolCall(id="file1", name="read_file", arguments={"path": str(path.resolve())})
+                ]
+            ),
+            AssistantTurn(content="这份笔记描述了茶饮偏好。"),
+            AssistantTurn(content="收到"),
+        ]
+    )
     runtime, service = build_runtime(tmp_path, model)
     runtime.config.auto_recall = 0
     runtime.ask(f'请分析 "{path}"，不要写入记忆')
@@ -128,7 +149,8 @@ def test_close_without_session_is_noop(tmp_path):
 
 def test_failed_switch_preserves_exit_distillation(tmp_path):
     runtime, service = build_runtime(
-        tmp_path, FakeChatModel([AssistantTurn(content="收到")]),
+        tmp_path,
+        FakeChatModel([AssistantTurn(content="收到")]),
         candidates=[Candidate(text="喜欢合成口味甲", topic="preferences", confidence=1.0)],
         extract_on_exit=True,
     )
@@ -186,7 +208,10 @@ def test_memory_tools_are_marked_mutating(tmp_path):
     runtime, service = build_runtime(tmp_path, FakeChatModel([]))
     tools = build_tools(service, runtime.ensure_session())
     assert {name for name, spec in tools._tools.items() if spec.mutating} == {
-        "memorize", "correct", "forget",
+        "memorize",
+        "correct",
+        "forget",
+        "evolve",
     }
 
 
@@ -201,9 +226,7 @@ def test_system_prompt_includes_current_date(tmp_path):
 
 
 def test_resume_restores_prior_messages_for_model(tmp_path):
-    runtime, service = build_runtime(
-        tmp_path, FakeChatModel([AssistantTurn(content="第一次回答")])
-    )
+    runtime, service = build_runtime(tmp_path, FakeChatModel([AssistantTurn(content="第一次回答")]))
     runtime.ask("第一问")
     session_id = runtime.current.id
     runtime.close()
@@ -241,6 +264,137 @@ def test_undo_excludes_original_turn_from_next_model_call(tmp_path):
     assert any(record.get("type") == "undo" for record in runtime.current.records)
 
 
+def test_turn_undo_restores_vault_files_after_resume(tmp_path, monkeypatch):
+    candidates = [
+        Candidate(text="合成：新加入的偏好", topic="new-preference", confidence=0.99),
+        Candidate(text="合成：需要核对的偏好", topic="other", confidence=0.1),
+    ]
+    model = FakeChatModel([])
+    runtime, service = build_runtime(tmp_path, model, candidates)
+    correction = service.note("合成：原来的活动是读书", topic="activities")
+    forgotten = service.note("合成：原来的计划是骑车", topic="activities")
+    evolution = service.note("合成：状态是短期试验", topic="projects")
+    inference = service.propose_inference("合成：可能喜欢读书", [correction.id])
+    watched = [
+        service.store.topic_path(correction.topic),
+        service.store.topic_path(evolution.topic),
+    ]
+    before = [path.read_bytes() for path in watched]
+    source = tmp_path / "synthetic-input.txt"
+    source_before = "合成：导入源文件。".encode()
+    source.write_bytes(source_before)
+    imported = Candidate(text="合成：来自文档的偏好", topic="imported", confidence=0.99)
+    monkeypatch.setattr(
+        "syvrio.memory.service.ImportExtractor",
+        lambda *_args, **_kwargs: StaticExtractor(ExtractionResult(memories=[imported])),
+    )
+    model.turns.extend(
+        [
+            AssistantTurn(
+                tool_calls=[
+                    ToolCall("c1", "memorize", {"text": "合成偏好样例"}),
+                    ToolCall(
+                        "c2",
+                        "correct",
+                        {"entry_id": correction.id, "text": "合成：现在的活动是绘画"},
+                    ),
+                    ToolCall("c3", "forget", {"entry_id": forgotten.id}),
+                    ToolCall(
+                        "c4",
+                        "evolve",
+                        {
+                            "entry_id": evolution.id,
+                            "text": "合成：状态进入长期验证",
+                            "effective_from": "2024-01-01",
+                        },
+                    ),
+                    ToolCall("c5", "import_file", {"path": str(source), "apply": True}),
+                ]
+            ),
+            AssistantTurn(content="已处理"),
+        ]
+    )
+    prompt = f'请处理合成样例并导入 "{source}"'
+    runtime.ask(prompt)
+    assert len(service.pending()) == 1
+    assert service.inferences.all()[0].status == "superseded"
+    assert service.store.topic_path("new-preference").exists()
+    assert service.store.topic_path("imported").exists()
+    unrelated = service.note("合成：之后新增的独立主题", topic="unrelated")
+    audit_before = service.audit.path.read_bytes()
+    assert all(
+        f'"action": "{action}"'.encode() in audit_before
+        for action in ("correct", "forget", "evolve")
+    )
+
+    reopened = AgentRuntime(service, model, SessionStore(service.paths), config=service.config.chat)
+    reopened.resume(runtime.current.id)
+    journals = list((service.paths.runtime_dir / "turn-undo" / reopened.current.id).glob("*.json"))
+    assert len(journals) == 1
+    manifest = journals[0].read_bytes()
+    journals[0].unlink()
+    with pytest.raises(TurnUndoError, match="journal is missing"):
+        reopened.undo()
+    assert reopened.current.user_texts() == [prompt]
+    journals[0].write_bytes(manifest)
+    append = reopened.sessions.append
+
+    def fail_at_undo(session, record):
+        if record["type"] == "undo":
+            raise OSError("synthetic session write failure")
+        return append(session, record)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(reopened.sessions, "append", fail_at_undo)
+        with pytest.raises(OSError, match="session write failure"):
+            reopened.undo()
+    assert service.audit.path.read_bytes() == audit_before
+    assert service.store.topic_path("new-preference").exists()
+    assert len(service.pending()) == 1
+    assert service.inferences.all()[0].status == "superseded"
+    assert reopened.current.user_texts() == [prompt]
+    assert reopened.undo() == prompt
+    assert reopened.current.active_records() == []
+    assert [path.read_bytes() for path in watched] == before
+    assert service.pending() == []
+    assert service.inferences.all() == [inference]
+    assert not service.store.topic_path("new-preference").exists()
+    assert not service.store.topic_path("imported").exists()
+    assert service.store.find(unrelated.id) is not None
+    assert source.read_bytes() == source_before
+    audit_after = service.audit.path.read_bytes()
+    assert audit_after.startswith(audit_before)
+    assert b'"action": "undo_tool_writes"' in audit_after
+    assert reopened.sessions.delete(reopened.current.id)
+    assert not journals[0].exists()
+
+
+def test_turn_undo_leaves_all_files_and_messages_when_a_file_changed(tmp_path):
+    model = FakeChatModel(
+        [
+            AssistantTurn(tool_calls=[ToolCall("c", "memorize", {"text": "合成偏好"})]),
+            AssistantTurn(content="已记录"),
+        ]
+    )
+    runtime, service = build_runtime(
+        tmp_path,
+        model,
+        [
+            Candidate(text="合成：要撤销的记录甲", topic="topic-a", confidence=0.99),
+            Candidate(text="合成：要撤销的记录乙", topic="topic-b", confidence=0.99),
+        ],
+    )
+    runtime.ask("合成请求")
+    later = service.note("合成：之后的独立修改", topic="topic-b")
+    first = service.store.topic_path("topic-a")
+    before = first.read_bytes()
+    with pytest.raises(TurnUndoError, match="changed after"):
+        runtime.undo()
+    assert runtime.current.user_texts() == ["合成请求"]
+    assert first.read_bytes() == before
+    assert service.store.find(later.id) is not None
+
+
 def test_memorize_tool_writes_with_session_provenance(tmp_path):
     model = FakeChatModel(
         [
@@ -272,6 +426,67 @@ def test_memorize_tool_writes_with_session_provenance(tmp_path):
     assert tool_records[0]["name"] == "memorize"
 
 
+@pytest.mark.parametrize("case", ["fragments", "anchored", "duplicate", "barrier"])
+def test_adjacent_memorize_calls_share_extraction_without_losing_provenance(tmp_path, case):
+    import json
+
+    facts = ["我喜欢薄荷茶", "我养了一盆罗勒"]
+    original = "。".join(facts)
+    arguments = {
+        "fragments": facts,
+        "anchored": [original, facts[1]],
+        "duplicate": [original, original],
+        "barrier": facts,
+    }[case]
+    calls = [
+        ToolCall(f"write-{index}", "memorize", {"text": text})
+        for index, text in enumerate(arguments)
+    ]
+    if case == "barrier":
+        calls.insert(1, ToolCall("read", "recall", {"query": "薄荷茶"}))
+
+    class Extractor:
+        def __init__(self):
+            self.inputs = []
+
+        def extract(self, text, context=""):
+            self.inputs.append((text, context))
+            return ExtractionResult(
+                memories=[
+                    Candidate(text=fact, topic="preferences", confidence=0.99)
+                    for fact in facts
+                    if fact in text
+                ]
+            )
+
+    model = FakeChatModel([AssistantTurn(tool_calls=calls), AssistantTurn(content="记下了。")])
+    runtime, service = build_runtime(tmp_path, model)
+    runtime.config.auto_recall = 0
+    service.extractor = extractor = Extractor()
+    reply = runtime.ask(original)
+
+    batched = case in {"fragments", "duplicate"}
+    assert reply.steps == 2
+    assert len(extractor.inputs) == (1 if batched else 2)
+    assert ["原始消息时间锚点" in context for _, context in extractor.inputs] == {
+        "fragments": [False],
+        "anchored": [True, False],
+        "duplicate": [True],
+        "barrier": [False, False],
+    }[case]
+    entries = service.store.entries()
+    assert {entry.text for entry in entries} == set(facts)
+    assert {entry.metadata["session"] for entry in entries} == {runtime.current.id}
+    assert {entry.metadata["message"] for entry in entries} == {
+        runtime.current.last_user_message_id()
+    }
+    records = [record for record in runtime.current.records if record.get("type") == "tool"]
+    assert [record["tool_call_id"] for record in records] == [call.id for call in calls]
+    if batched:
+        assert len(json.loads(records[0]["content"])["admitted"]) == 2
+        assert json.loads(records[-1]["content"]) == {"batched_with": "write-0", "ok": True}
+
+
 def test_recall_tool_result_reaches_model(tmp_path):
     model = FakeChatModel(
         [
@@ -291,6 +506,63 @@ def test_recall_tool_result_reaches_model(tmp_path):
     tool_messages = [message for message in second_call_messages if message["role"] == "tool"]
     assert tool_messages and "清淡" in tool_messages[0]["content"]
     assert any("Recalled" in event for event in reply.events)
+
+
+def test_reopening_session_with_interrupted_tool_results_does_not_reexecute(tmp_path, monkeypatch):
+    calls = [
+        ToolCall("read", "recall", {"query": "合成档案"}),
+        ToolCall("write", "memorize", {"text": "偏好使用合成测试资料。"}),
+    ]
+    candidate = Candidate(text="偏好使用合成测试资料。", topic="preferences", confidence=0.99)
+    model = FakeChatModel(
+        [
+            AssistantTurn(content="Synthetic tool request", tool_calls=calls),
+            AssistantTurn(content="Synthetic resumed reply"),
+        ]
+    )
+    runtime, service = build_runtime(tmp_path, model, [candidate])
+    runtime.config.auto_recall = 0
+    append = runtime.sessions.append
+    memorize = service.memorize
+    writes = []
+
+    def append_until_interrupted(session, record):
+        if record.get("tool_call_id") == "write":
+            raise OSError("Synthetic interruption before recording the tool result")
+        return append(session, record)
+
+    def count_write(*args, **kwargs):
+        writes.append(1)
+        return memorize(*args, **kwargs)
+
+    monkeypatch.setattr(runtime.sessions, "append", append_until_interrupted)
+    monkeypatch.setattr(service, "memorize", count_write)
+    with pytest.raises(OSError, match="Synthetic interruption"):
+        runtime.ask("Synthetic first request")
+    interrupted = runtime.current
+    original = interrupted.path.read_bytes()
+    assert [entry.text for entry in service.store.entries()] == [candidate.text]
+    assert [r["tool_call_id"] for r in interrupted.records if r["type"] == "tool"] == ["read"]
+
+    monkeypatch.setattr(runtime.sessions, "append", append)
+    runtime.start()
+    runtime.resume(interrupted.id)
+    assert runtime.ask("Synthetic next request").content == "Synthetic resumed reply"
+    request = model.calls[-1][0]
+    batch = next(i for i, message in enumerate(request) if message.get("tool_calls"))
+    assert request[batch]["content"] == "Synthetic tool request"
+    assert [message["tool_call_id"] for message in request[batch + 1 : batch + 3]] == [
+        "read",
+        "write",
+    ]
+    assert request[batch + 1]["content"] == next(
+        r["content"] for r in interrupted.records if r["type"] == "tool"
+    )
+    assert "side effects are unknown" in request[batch + 2]["content"]
+    assert request[batch + 3]["role"] == "user"
+    assert writes == [1]
+    assert interrupted.path.read_bytes().startswith(original)
+    assert [r["tool_call_id"] for r in runtime.current.records if r["type"] == "tool"] == ["read"]
 
 
 def test_read_topic_tool_result_reaches_model(tmp_path):
@@ -322,13 +594,19 @@ def test_read_topic_tool_result_reaches_model(tmp_path):
 def test_auto_recall_injects_long_term_memory(tmp_path):
     model = FakeChatModel([AssistantTurn(content="记得。")])
     runtime, service = build_runtime(tmp_path, model)
-    service.note("喜欢清淡风味", topic="preferences")
+    entry = service.note("喜欢清淡风味", topic="preferences")
 
     runtime.ask("我喜欢清淡吗")
 
-    system_message = model.calls[0][0][0]
-    assert "<long_term_memory>" in system_message["content"]
-    assert "清淡" in system_message["content"]
+    messages = model.calls[0][0]
+    assert all(entry.raw_markdown not in m["content"] for m in messages if m["role"] == "system")
+    i = next(
+        i
+        for i, m in enumerate(messages)
+        if "<long_term_memory>" in m["content"] and m["role"] == "user"
+    )
+    assert entry.raw_markdown in messages[i]["content"]
+    assert messages[i + 1]["content"] == "我喜欢清淡吗"
 
 
 def test_auto_recall_uses_recent_context_for_followup(tmp_path, monkeypatch):
@@ -337,9 +615,9 @@ def test_auto_recall_uses_recent_context_for_followup(tmp_path, monkeypatch):
     queries = []
     recall = service.recall
 
-    def capture(query, limit=10):
+    def capture(query, limit=10, **kwargs):
         queries.append(query)
-        return recall(query, limit)
+        return recall(query, limit, **kwargs)
 
     monkeypatch.setattr(service, "recall", capture)
 
@@ -360,16 +638,10 @@ def test_attribute_question_rewrites_with_synonyms(tmp_path, monkeypatch):
 
     def fake_complete(config, messages, **kwargs):
         return SimpleNamespace(
-            choices=[
-                SimpleNamespace(
-                    message=SimpleNamespace(content="姓名 名字 用户称呼")
-                )
-            ]
+            choices=[SimpleNamespace(message=SimpleNamespace(content="姓名 名字 用户称呼"))]
         )
 
-    query = RecallQueryBuilder(LLMConfig(), completer=fake_complete).build(
-        "我叫什么名字", []
-    )
+    query = RecallQueryBuilder(LLMConfig(), completer=fake_complete).build("我叫什么名字", [])
 
     assert query.rewritten is True
     assert "姓名" in query.text
@@ -380,6 +652,107 @@ def test_attribute_question_rewrites_with_synonyms(tmp_path, monkeypatch):
     store.append("devices", "使用便携键盘")
     hits = KeywordRetriever(store).search(query.text)
     assert hits and hits[0].topic == "memories/general/01-identity.md"
+
+
+def test_original_short_field_reaches_model_via_prefetch_and_recall_tool(tmp_path, monkeypatch):
+    from syvrio.agent.recall import RecallQuery
+    from syvrio.retrieval import HybridRetriever, KeywordRetriever, SearchHit
+
+    target = "虚构人物甲"
+
+    class SemanticNoise:
+        def search(self, query, limit):
+            return [SearchHit(id=age.id, text=age.text, topic=age.topic)]
+
+    class Model:
+        def chat(self, messages, tools):
+            if not any(message["role"] == "tool" for message in messages):
+                assert any(
+                    name.raw_markdown in message["content"]
+                    and "<long_term_memory>" in message["content"]
+                    for message in messages
+                    if message["role"] == "user"
+                )
+                return AssistantTurn(
+                    tool_calls=[
+                        ToolCall(
+                            id="check",
+                            name="recall",
+                            arguments={
+                                "query": "姓名 名字 称呼",
+                                "limit": 1,
+                            },
+                        )
+                    ]
+                )
+            result = next(message["content"] for message in messages if message["role"] == "tool")
+            assert name.raw_markdown in result
+            return AssistantTurn(content=result.split("姓名：", 1)[1].splitlines()[0])
+
+    runtime, service = build_runtime(tmp_path, Model())
+    name = service.note(f"姓名：{target}", topic="identity")
+    age = service.note("年龄：41 岁", topic="identity")
+    service.retriever = HybridRetriever(KeywordRetriever(service.store), SemanticNoise())
+    runtime.config.auto_recall = 1
+    monkeypatch.setattr(
+        runtime.recall_queries,
+        "build",
+        lambda text, recent: RecallQuery("年龄", rewritten=True, original=text),
+    )
+    assert runtime.ask("我指的是姓名").content == target
+
+
+@pytest.mark.parametrize(
+    ("question", "scenario", "fast"),
+    [
+        ("我的姓名是什么？只回复姓名。", "unique", True),
+        ("我的测试编号是什么？", "custom", True),
+        ("我的姓名是什么？", "conflict", False),
+        ("我的姓名是什么？", "future", False),
+        ("我的姓名是什么？", "deleted", False),
+        ("我的姓名和职业是什么？", "unique", False),
+        ("那我的姓名是什么？", "unique", False),
+        ("我叫什么名字？", "unique", False),
+    ],
+)
+def test_auto_recall_skips_rewrite_only_for_direct_unique_current_field(
+    tmp_path, monkeypatch, question, scenario, fast
+):
+    from syvrio.agent.recall import RecallQuery
+    from syvrio.memory.models import MemoryContext
+    from syvrio.retrieval import HybridRetriever, KeywordRetriever
+
+    rewritten = []
+    vector_calls = []
+
+    class Vector:
+        def search(self, query, limit):
+            vector_calls.append(query)
+            return []
+
+    model = FakeChatModel([AssistantTurn(content="收到")])
+    runtime, service = build_runtime(tmp_path, model)
+    context = MemoryContext(valid_from="2099-01-01") if scenario == "future" else None
+    label = "测试编号" if scenario == "custom" else "姓名"
+    fact = service.store.append("identity", f"{label}：合成字段甲", context=context)
+    if scenario == "conflict":
+        service.note("姓名：合成字段乙", topic="identity")
+    if scenario == "deleted":
+        service.store.set_status(fact.id, "deleted")
+    service.retriever = HybridRetriever(KeywordRetriever(service.store), Vector())
+
+    def rewrite(text, recent):
+        rewritten.append(text)
+        return RecallQuery("姓名", rewritten=True, original=text)
+
+    monkeypatch.setattr(runtime.recall_queries, "build", rewrite)
+    runtime.ask(question)
+    if fast:
+        assert rewritten == vector_calls == []
+        assert any(fact.raw_markdown in m["content"] for m in model.calls[0][0])
+    else:
+        assert rewritten == [question]
+        assert vector_calls
 
 
 def test_memory_cue_increases_auto_recall_limit(tmp_path, monkeypatch):
@@ -407,9 +780,7 @@ def test_force_conclude_after_max_steps(tmp_path):
             self.tool_rounds.append(bool(tools))
             if tools:
                 return AssistantTurn(
-                    tool_calls=[
-                        ToolCall(id="c1", name="memorize", arguments={"text": "不断调用"})
-                    ]
+                    tool_calls=[ToolCall(id="c1", name="memorize", arguments={"text": "不断调用"})]
                 )
             return AssistantTurn(content="收敛回答")
 
@@ -446,9 +817,7 @@ def test_retries_transient_model_failure(tmp_path):
 def test_close_extracts_memories_once(tmp_path):
     model = FakeChatModel([AssistantTurn(content="好的。")])
     candidate = Candidate(text="退出时沉淀的事实", topic="misc", confidence=0.95)
-    runtime, service = build_runtime(
-        tmp_path, model, [candidate], extract_on_exit=True
-    )
+    runtime, service = build_runtime(tmp_path, model, [candidate], extract_on_exit=True)
 
     runtime.ask("这是一条值得记住的事实")
     stats = runtime.close()
@@ -469,7 +838,7 @@ def test_reload_llm_updates_model_and_extractor(tmp_path, monkeypatch):
         model="deepseek-ai/DeepSeek-V3",
     )
     monkeypatch.setattr(
-        "syvrio.infra.config.load_config",
+        "syvrio.agent.runtime.load_config",
         lambda *args, **kwargs: Config(vault=service.config.vault, llm=new_llm),
     )
 
@@ -495,24 +864,36 @@ def test_apply_model_updates_config_and_runtime(tmp_path, monkeypatch):
     assert "deepseek-v4-pro" in config_path.read_text(encoding="utf-8")
 
 
-def test_model_options_lists_current_first(service):
+def test_model_options_lists_current_first_when_api_returns_it(service):
     from syvrio.app import actions
 
-    options = actions.model_options(service)
-
-    assert options
+    options = actions.model_options(service, ["future-model", "deepseek-flash"])
+    assert [option.model for option in options] == ["deepseek-flash", "future-model"]
     assert options[0].current
-    # 未配置其他供应商的 Key 时只展示当前供应商。
-    assert {option.provider for option in options} == {"deepseek"}
 
 
-def test_model_options_uses_fetched_models(service):
+def test_model_options_do_not_inject_unlisted_current_model(service):
     from syvrio.app import actions
 
     options = actions.model_options(service, ["future-model"])
+    assert [(option.model, option.current) for option in options] == [("future-model", False)]
+
+
+def test_model_options_can_skip_metadata_for_fast_open(service, monkeypatch):
+    from syvrio.application import settings as settings_module
+    from syvrio.application.settings import SettingsUseCases
+
+    monkeypatch.setattr(
+        settings_module, "model_metadata", lambda *_: pytest.fail("快速开屏不应读取模型元数据")
+    )
+    monkeypatch.setattr(
+        settings_module, "supported_params", lambda *_: pytest.fail("快速开屏不应读取模型能力")
+    )
+
+    options = SettingsUseCases(service, None).model_options(["deepseek-flash"], capabilities=False)
 
     assert options[0].current
-    assert "future-model" in {option.model for option in options}
+    assert "(" not in options[0].label
 
 
 def test_provider_options_mark_current_and_unconfigured(service):
@@ -525,7 +906,7 @@ def test_provider_options_mark_current_and_unconfigured(service):
     assert by_key["siliconflow"] == ("SiliconFlow · add provider", False)
 
 
-def test_configure_provider_saves_key_and_switches_model(tmp_path, monkeypatch):
+def test_configure_provider_saves_key_without_guessing_model(tmp_path, monkeypatch):
     import sys
     import types
 
@@ -544,12 +925,9 @@ def test_configure_provider_saves_key_and_switches_model(tmp_path, monkeypatch):
 
     assert "SiliconFlow" in message
     assert keys["SILICONFLOW_API_KEY"] == "sk-test"
-    assert service.config.llm.provider == "siliconflow"
-    assert service.config.llm.model == "deepseek-ai/DeepSeek-V3"
-    assert runtime.model_label == "siliconflow/deepseek-ai/DeepSeek-V3"
-    config_text = config_path.read_text(encoding="utf-8")
-    assert 'provider = "siliconflow"' in config_text
-    assert "sk-test" not in config_text
+    assert service.config.llm.provider == "deepseek"
+    assert service.config.llm.model == "deepseek-flash"
+    assert not config_path.exists()
 
 
 def test_configure_provider_keeps_state_when_keyring_fails(tmp_path, monkeypatch):
@@ -645,7 +1023,9 @@ def test_apply_reasoning_updates_config_hot(tmp_path, monkeypatch, service):
 
     config_path = tmp_path / "syvrio.toml"
     service.config_path = config_path
-    monkeypatch.setattr(actions, "supported_params", lambda model: ("reasoning_effort",))
+    monkeypatch.setattr(
+        "syvrio.application.settings.supported_params", lambda model: ("reasoning_effort",)
+    )
 
     assert actions.reasoning_options(service)
     message = actions.apply_reasoning(service, "high")
@@ -658,7 +1038,7 @@ def test_apply_reasoning_updates_config_hot(tmp_path, monkeypatch, service):
 def test_reasoning_options_empty_when_unsupported(service, monkeypatch):
     from syvrio.app import actions
 
-    monkeypatch.setattr(actions, "supported_params", lambda model: ())
+    monkeypatch.setattr("syvrio.application.settings.supported_params", lambda model: ())
     assert actions.reasoning_options(service) == []
 
 
@@ -669,13 +1049,11 @@ def test_context_options_and_apply(tmp_path, monkeypatch, service):
     service.config_path = config_path
 
     options = actions.context_options(service)
-    assert 16000 in options
+    assert options == [100_000, 200_000, 400_000, 600_000]
     assert "16K" in actions.apply_context(service, 16000)
     assert service.config.chat.context_window == 16000
     assert (tmp_path / "syvrio.toml").exists()
     assert "at least" in actions.apply_context(service, 1000)
-
-
 
 
 def test_ask_streams_events_to_callback(tmp_path):
@@ -702,6 +1080,7 @@ def _config_with_vault(tmp_path_factory=None):
     import tempfile
 
     from syvrio.infra.config import Config, LLMConfig, RetrievalConfig
+
     tmp = pathlib.Path(tempfile.mkdtemp())
     return Config(vault=tmp / "vault", llm=LLMConfig(), retrieval=RetrievalConfig(method="keyword"))
 
@@ -799,7 +1178,10 @@ def test_consolidate_pending_catches_crashed_session(tmp_path):
     store = runtime.sessions
     # 模拟意外退出：会话有用户消息但没有 closed 记录。
     session = store.create()
-    store.append(session, {"type": "message", "id": new_message_id(), "role": "user", "content": "我喜欢清淡风味"})
+    store.append(
+        session,
+        {"type": "message", "id": new_message_id(), "role": "user", "content": "我喜欢清淡风味"},
+    )
 
     result = runtime.consolidate_pending()
 
@@ -816,19 +1198,29 @@ def test_catchup_covers_messages_added_after_resume_then_crash(tmp_path):
     runtime, service = build_runtime(tmp_path, FakeChatModel([]), extract_on_exit=True)
     store = runtime.sessions
     session = store.create()
-    store.append(session, {"type": "message", "id": new_message_id(), "role": "user", "content": "第一轮内容"})
+    store.append(
+        session,
+        {"type": "message", "id": new_message_id(), "role": "user", "content": "第一轮内容"},
+    )
     runtime.resume(session.id)
     runtime.close()  # 正常退出：游标推进并留下 closed
 
     runtime.resume(session.id)
     store.append(
         runtime.current,
-        {"type": "message", "id": new_message_id(), "role": "user", "content": "恢复后补充的新事实"},
+        {
+            "type": "message",
+            "id": new_message_id(),
+            "role": "user",
+            "content": "恢复后补充的新事实",
+        },
     )
     # 模拟再次异常退出：没有 close()，直接以新进程姿态扫描。
     runtime.start()
     service.extractor = StaticExtractor(
-        ExtractionResult(memories=[Candidate(text="恢复后补充的事实", topic="misc", confidence=0.95)])
+        ExtractionResult(
+            memories=[Candidate(text="恢复后补充的事实", topic="misc", confidence=0.95)]
+        )
     )
 
     assert store.load(session.id).needs_consolidation()
@@ -860,7 +1252,7 @@ def test_close_distills_all_chunks_instead_of_truncating(tmp_path):
     runtime.resume(session.id)
     runtime.close()
 
-    joined = "\n---\n".join(contents)
+    joined = "\n---\n".join(dated_message(record) for record in session.messages)
     assert len(extractor.texts) >= 2
     assert "".join(extractor.texts) == joined
     types = [record["type"] for record in runtime.sessions.load(session.id).records]
@@ -884,7 +1276,10 @@ def test_consolidate_pending_skips_current_and_respects_flag(tmp_path):
     runtime, _ = build_runtime(tmp_path, FakeChatModel([]))
     store = runtime.sessions
     session = store.create()
-    store.append(session, {"type": "message", "id": new_message_id(), "role": "user", "content": "当前会话内容"})
+    store.append(
+        session,
+        {"type": "message", "id": new_message_id(), "role": "user", "content": "当前会话内容"},
+    )
 
     # 当前活跃会话不参与（其内容由 close() 沉淀）。
     runtime.resume(session.id)
@@ -905,7 +1300,15 @@ def test_close_failure_marks_extraction_error_and_catchup_recovers(tmp_path):
     )
     store = runtime.sessions
     session = store.create()
-    store.append(session, {"type": "message", "id": new_message_id(), "role": "user", "content": "退出时该被抽取的话"})
+    store.append(
+        session,
+        {
+            "type": "message",
+            "id": new_message_id(),
+            "role": "user",
+            "content": "退出时该被抽取的话",
+        },
+    )
 
     original = service.memorize
 
@@ -1117,7 +1520,9 @@ def test_consolidate_skips_active_session_even_when_scan_includes_it(tmp_path, m
 
 
 @pytest.mark.parametrize("recovery", ["close", "startup"])
-def test_failed_compaction_flush_keeps_budget_and_recovers_all_chunks(tmp_path, monkeypatch, recovery):
+def test_failed_compaction_flush_keeps_budget_and_recovers_all_chunks(
+    tmp_path, monkeypatch, recovery
+):
     from syvrio.agent import runtime as runtime_module
     from syvrio.infra.tokens import estimate_messages_tokens
 
@@ -1141,7 +1546,9 @@ def test_failed_compaction_flush_keeps_budget_and_recovers_all_chunks(tmp_path, 
             return ExtractionResult(memories=[])
 
     runtime, service = build_runtime(
-        tmp_path, BudgetModel([AssistantTurn(content="正常回答")]), extract_on_exit=True,
+        tmp_path,
+        BudgetModel([AssistantTurn(content="正常回答")]),
+        extract_on_exit=True,
     )
     runtime.config.context_window = 4096
     runtime.config.reserve_output_tokens = 512
@@ -1152,12 +1559,23 @@ def test_failed_compaction_flush_keeps_budget_and_recovers_all_chunks(tmp_path, 
     session = runtime.ensure_session()
     contents = [f"synthetic entry {number}: " + "synthetic-entry " * 400 for number in range(8)]
     for number, content in enumerate(contents):
-        runtime.sessions.append(session, {
-            "type": "message", "id": f"old-{number}", "role": "user", "content": content,
-        })
-        runtime.sessions.append(session, {
-            "type": "assistant", "id": f"answer-{number}", "content": "Acknowledged.",
-        })
+        runtime.sessions.append(
+            session,
+            {
+                "type": "message",
+                "id": f"old-{number}",
+                "role": "user",
+                "content": content,
+            },
+        )
+        runtime.sessions.append(
+            session,
+            {
+                "type": "assistant",
+                "id": f"answer-{number}",
+                "content": "Acknowledged.",
+            },
+        )
 
     reply = runtime.ask("继续", on_delta=lambda _: None)
     assert reply.content == "正常回答"
@@ -1176,7 +1594,9 @@ def test_failed_compaction_flush_keeps_budget_and_recovers_all_chunks(tmp_path, 
         runtime.start()
         assert runtime.consolidate_pending()["consolidated"] == 1
 
-    assert "".join(extractor.inputs) == "\n---\n".join(contents + ["继续"])
+    assert "".join(extractor.inputs) == "\n---\n".join(
+        dated_message(record) for record in loaded.messages
+    )
     assert not runtime.sessions.load(session.id).needs_consolidation()
     extractor.inputs.clear()
     runtime.start()
@@ -1191,11 +1611,16 @@ def test_consolidate_does_not_let_short_sessions_hide_eligible_sessions(tmp_path
         session = runtime.sessions.create()
         sessions.append(session)
         for index in range(count):
-            runtime.sessions.append(session, {
-                "type": "message", "id": f"m{number}-{index}", "role": "user",
-                "content": f"合成陈述 {number}-{index}",
-                "at": f"2026-01-0{number + 1}T12:00:00+00:00",
-            })
+            runtime.sessions.append(
+                session,
+                {
+                    "type": "message",
+                    "id": f"m{number}-{index}",
+                    "role": "user",
+                    "content": f"合成陈述 {number}-{index}",
+                    "at": f"2026-01-0{number + 1}T12:00:00+00:00",
+                },
+            )
 
     result = runtime.consolidate_pending(limit=3, min_new_messages=3)
     assert result["consolidated"] == 1
@@ -1226,12 +1651,101 @@ def test_progress_precedes_model_and_tool_execution(tmp_path, monkeypatch):
         return ToolOutcome(ok=True, content="合成结果", display="工具完成")
 
     monkeypatch.setattr(ToolRegistry, "execute", execute)
-    runtime, _ = build_runtime(tmp_path, ProgressModel([
-        AssistantTurn(tool_calls=[ToolCall(id="t1", name="recall", arguments={"query": "合成"})]),
-        AssistantTurn(content="完成"),
-    ]))
+    runtime, _ = build_runtime(
+        tmp_path,
+        ProgressModel(
+            [
+                AssistantTurn(
+                    tool_calls=[ToolCall(id="t1", name="recall", arguments={"query": "合成"})]
+                ),
+                AssistantTurn(content="完成"),
+            ]
+        ),
+    )
     runtime.ask("你好", on_progress=progress.append)
-    assert progress == ["Preparing context", "Waiting for model", "Calling tool: recall", "Waiting for model"]
+    assert progress == [
+        "Preparing context",
+        "Waiting for model",
+        "Calling tool: recall",
+        "Waiting for model",
+    ]
+
+
+def test_network_batch_runs_eight_calls_at_once():
+    from threading import Barrier
+
+    from syvrio.agent.runtime import _tool_results
+    from syvrio.agent.tools import ToolOutcome, ToolRegistry, ToolSpec
+
+    overlap = Barrier(8, timeout=4)
+
+    def search(args):
+        overlap.wait()
+        return ToolOutcome(True, str(args["index"]), "searched")
+
+    registry = ToolRegistry()
+    registry.register(ToolSpec("search", "", {}, search, timeout=5, executor="network"))
+    calls = [ToolCall(id=str(i), name="search", arguments={"index": i}) for i in range(8)]
+    results = list(_tool_results(registry, calls, None, None))
+    assert [(call.id, outcome.content) for call, outcome in results if outcome.ok] == [
+        (str(i), str(i)) for i in range(8)
+    ]
+
+
+def test_network_tools_share_a_batch_but_keep_results_and_writes_ordered(tmp_path, monkeypatch):
+    from threading import Barrier, Event
+
+    from syvrio.agent import runtime as module
+    from syvrio.agent.tools import ToolOutcome, ToolRegistry, ToolSpec
+
+    overlap = Barrier(2, timeout=3)
+    fetch_finished = Event()
+    search_finished = Event()
+    write_finished = Event()
+
+    def search(args):
+        if args.get("after_write"):
+            assert write_finished.is_set()
+        else:
+            overlap.wait()
+            assert fetch_finished.wait(3)
+            search_finished.set()
+        return ToolOutcome(True, "search result", "searched")
+
+    def fetch(args):
+        overlap.wait()
+        fetch_finished.set()
+        return ToolOutcome(True, "fetch result", "fetched")
+
+    def write(args):
+        assert search_finished.is_set() and fetch_finished.is_set()
+        write_finished.set()
+        return ToolOutcome(True, "write result", "wrote")
+
+    registry = ToolRegistry()
+    registry.register(ToolSpec("search", "", {}, search, timeout=4, executor="network"))
+    registry.register(ToolSpec("fetch_web", "", {}, fetch, timeout=4, executor="network"))
+    registry.register(ToolSpec("memorize", "", {}, write, timeout=4, mutating=True))
+    monkeypatch.setattr(module, "build_tools", lambda *args, **kwargs: registry)
+    calls = [
+        ToolCall(id="one", name="search", arguments={}),
+        ToolCall(id="two", name="fetch_web", arguments={}),
+        ToolCall(id="three", name="memorize", arguments={}),
+        ToolCall(id="four", name="search", arguments={"after_write": True}),
+    ]
+    model = FakeChatModel([AssistantTurn(tool_calls=calls), AssistantTurn(content="done")])
+    runtime, _ = build_runtime(tmp_path, model)
+    assert runtime.ask("hello").content == "done"
+    records = [r for r in runtime.current.records if r["type"] == "tool"]
+    assert [r["tool_call_id"] for r in records] == ["one", "two", "three", "four"]
+    assert all(r["ok"] for r in records)
+    messages = model.calls[1][0]
+    assert [m["tool_call_id"] for m in messages if m["role"] == "tool"] == [
+        "one",
+        "two",
+        "three",
+        "four",
+    ]
 
 
 @pytest.mark.parametrize("stop_at", ["context", "stream", "tool"])
@@ -1244,27 +1758,38 @@ def test_cancel_preserves_partial_and_tool_pairs(tmp_path, monkeypatch, stop_at)
 
     cancel = Event()
     calls = []
+
     class Tools:
         def schemas(self):
             return []
+
         def execute(self, name, arguments):
             calls.append(name)
             cancel.set()
             return ToolOutcome(ok=True, content="done", display="done")
+
     monkeypatch.setattr(module, "build_tools", lambda *a, **kw: Tools())
-    turn = AssistantTurn(content="partial text", tool_calls=[
-        ToolCall(id="one", name="first", arguments={}),
-        ToolCall(id="two", name="second", arguments={}),
-    ] if stop_at == "tool" else [])
+    turn = AssistantTurn(
+        content="partial text",
+        tool_calls=[
+            ToolCall(id="one", name="first", arguments={}),
+            ToolCall(id="two", name="second", arguments={}),
+        ]
+        if stop_at == "tool"
+        else [],
+    )
     model = FakeChatModel([turn])
     runtime, _ = build_runtime(tmp_path, model)
     runtime.config.recall_rewrite = False
+
     def progress(phase):
         if stop_at == "context":
             cancel.set()
+
     def delta(text):
         if stop_at == "stream":
             cancel.set()
+
     with pytest.raises(GenerationCancelled):
         runtime.ask("hello", on_delta=delta, on_progress=progress, cancel=cancel)
     loaded = runtime.sessions.load(runtime.current.id)
@@ -1284,10 +1809,16 @@ def test_cancel_preserves_partial_and_tool_pairs(tmp_path, monkeypatch, stop_at)
 
 
 def test_startup_consolidation_isolates_invalid_session(tmp_path, caplog):
-    runtime, service = build_runtime(tmp_path, FakeChatModel([]),
-        [Candidate(text="Synthetic retained fact", confidence=0.95)], extract_on_exit=True)
+    runtime, service = build_runtime(
+        tmp_path,
+        FakeChatModel([]),
+        [Candidate(text="Synthetic retained fact", confidence=0.95)],
+        extract_on_exit=True,
+    )
     healthy = runtime.sessions.create()
-    runtime.sessions.append(healthy, {"type":"message", "id":"m-good", "role":"user", "content":"Synthetic fact"})
+    runtime.sessions.append(
+        healthy, {"type": "message", "id": "m-good", "role": "user", "content": "Synthetic fact"}
+    )
     broken = runtime.sessions.create()
     with broken.path.open("ab") as handle:
         handle.write(b'\xff\n{"type":"closed"}\n')

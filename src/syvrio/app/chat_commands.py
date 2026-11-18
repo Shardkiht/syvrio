@@ -3,21 +3,25 @@ from __future__ import annotations
 from functools import partial
 from pathlib import Path
 
-from rich.markup import escape
-from textual.widgets import Input
+from textual.widgets import Input, Static
 
-from ..infra.documents import SUPPORTED_SUFFIXES, DocumentError, read_document
+from ..infra.diagnostics import record_event
 from ..infra.tokens import format_tokens
-from ..llm import cached_provider_models, fetch_provider_models
-from ..memory.extractor import split_chunks
-from . import actions
-from .chat_widgets import ModelPickerScreen, PickScreen, SessionPickerScreen, TextInputScreen
+from ..memory.models import PendingItem
+from .chat_widgets import (
+    ModelPickerScreen,
+    PickScreen,
+    SessionPickerScreen,
+    TextInputScreen,
+)
 from .command_catalog import SLASH_COMMANDS
+from .inference_screen import InferenceScreen
+from .pending_screen import PendingScreen
 from .session_ui import visible_sessions
 
 
 class ChatCommandsMixin:
-    """斜杠命令、待确认、主题、会话与设置选择器；依赖 ChatApp 的界面方法。"""
+    """斜杠命令、Pending、主题、会话与设置选择器；依赖 ChatApp 的界面方法。"""
 
     # ---------- 斜杠命令 ----------
 
@@ -29,7 +33,10 @@ class ChatCommandsMixin:
         if command in ("/exit", "/quit"):
             self.exit()
         elif command == "/help":
-            self.add_card("\n".join(f"{usage:<24}{description}" for _, usage, description in SLASH_COMMANDS), "Commands")
+            self.add_card(
+                "\n".join(f"{usage:<24}{description}" for _, usage, description in SLASH_COMMANDS),
+                "Commands",
+            )
         elif command == "/model":
             self._open_models(argument.lower() in ("refresh", "--refresh", "-r"))
         elif command == "/think":
@@ -37,7 +44,9 @@ class ChatCommandsMixin:
         elif command == "/context":
             self._pick_context()
         elif command == "/setup":
-            self.add_card("Use Ctrl+P in /model to manage providers. Run syvrio setup in a terminal for full configuration.")
+            self.add_card(
+                "Use Ctrl+P in /model to manage providers. Run syvrio setup in a terminal for full configuration."
+            )
         elif command == "/new":
             self._new_session()
         elif command == "/sessions":
@@ -47,110 +56,207 @@ class ChatCommandsMixin:
         elif command == "/undo":
             self._undo_message()
         elif command == "/summary":
-            if not self.runtime.has_session:
+            if not self.application.conversation.has_session:
                 self.add_card("This new session has no summary yet.")
             else:
-                summary = self.runtime.summary_text()
-                self.add_markdown_card(summary, "Session summary") if summary else self.add_card("This session has no summary yet.")
+                summary = self.application.conversation.summary_text()
+                self.add_markdown_card(summary, "Session summary") if summary else self.add_card(
+                    "This session has no summary yet."
+                )
         elif command == "/status":
             self._show_status()
+        elif command == "/git":
+            self.open_git_screen()
         elif command == "/rename":
-            if not self.runtime.has_session:
+            if not self.application.conversation.has_session:
                 self.add_card("The session is not created yet; send a message first, then rename.")
             elif argument:
-                self.runtime.rename(argument)
+                self.application.conversation.rename_current(argument)
                 self.refresh_sessions()
                 self.add_card(f"Renamed to: {argument}")
             else:
                 self._open_rename_prompt()
         elif command == "/import":
             if not argument:
-                self.push_screen(TextInputScreen("File or directory path (preview by default; add --apply to save)", on_result=lambda value: self._run_import(value) if value else None))
+                self.push_screen(
+                    TextInputScreen(
+                        "File or directory path (preview by default; add --apply to save)",
+                        on_result=lambda value: self._run_import(value) if value else None,
+                    )
+                )
             else:
                 self._run_import(argument)
         elif command == "/pending":
             self._open_pending()
+        elif command == "/inferences":
+            self._run_inference_review()
+        elif command in ("/profile", "/dream"):
+            self._reflection_command(command[1:], argument)
         elif command == "/topics":
             self._show_topics(argument.strip() or None)
         else:
             self.add_card(f"Unknown command: {command}. Type /help for help.")
 
-    # ---------- 待确认交互处理（issue #1） ----------
+    # ---------- Pending交互处理（issue #1） ----------
+
+    def _run_inference_review(
+        self, item_id: str | None = None, action: str | None = None, text: str | None = None
+    ) -> None:
+        self._begin_navigation()
+        self.run_worker(
+            partial(self._inference_work, item_id, action, text),
+            thread=True,
+            group="inference",
+            exit_on_error=False,
+        )
+
+    def _inference_work(self, item_id: str | None, action: str | None, text: str | None) -> None:
+        try:
+            review = (
+                self.application.memory.review_inference(item_id or "", action, text)
+                if action is not None
+                else self.application.memory.load_inference_review()
+            )
+        except Exception as exc:
+            record_event("command.failed", exc)
+            message = (
+                f"Inference action failed: {exc}" if action else f"Could not load inferences: {exc}"
+            )
+            self.call_from_thread(self._inference_failed, message)
+            return
+        self.call_from_thread(
+            self._show_inferences,
+            review.items,
+            review.sources,
+            review.updated_id,
+            review.feedback,
+        )
+
+    def _show_inferences(
+        self,
+        items: list,
+        sources: dict,
+        focus_id: str | None = None,
+        feedback: str | None = None,
+    ) -> None:
+        self._end_navigation()
+        if self._pending_new or self._pending_switch:
+            self._drain_pending_intent()
+            return
+        if isinstance(self.screen, InferenceScreen):
+            # 操作后在原界面内刷新，不再叠加选择器或向聊天区插入详情卡片。
+            self.screen.set_items(items, sources, focus_id, feedback)
+        else:
+            self.push_screen(
+                InferenceScreen(items, sources, self._run_inference_review),
+                lambda _: self.query_one("#input", Input).focus(),
+            )
+        self._drain_pending_intent()
+
+    def _inference_failed(self, message: str) -> None:
+        self._end_navigation()
+        if isinstance(self.screen, InferenceScreen):
+            self.screen.show_error(message)
+        else:
+            self.add_card(message)
+        self._drain_pending_intent()
 
     @staticmethod
     def _truncate(text: str, width: int) -> str:
         return text if len(text) <= width else text[:width] + "…"
 
     def _open_pending(self) -> None:
-        items = self.service.pending()
-        if not items:
-            self.add_card("No pending items.")
-            return
-        options = [
-            (f"{item.id}  [{item.topic}] {self._truncate(item.text, 36)}", item.id)
-            for item in items
-        ]
-        self.push_screen(PickScreen(f"Pending items: {len(items)}", options, self._pending_picked))
+        self._run_pending_review()
 
-    def _pending_picked(self, item_id) -> None:
-        if item_id is None:
-            self.query_one("#input", Input).focus()
+    def _run_pending_review(
+        self, action: str | None = None, item_id: str = "", override: str | None = None
+    ) -> None:
+        if self._pending_review_busy:
+            self.notify("Pending review is already in progress.")
             return
-        item = next((i for i in self.service.pending() if i.id == item_id), None)
-        if item is None:
-            self.notify("That pending item no longer exists.")
-            return
-        options = [
-            ("Approve", ("approve", item_id, None)),
-            ("Edit and approve", ("edit", item_id, None)),
-            ("Reject", ("reject", item_id, None)),
-        ]
-        self.push_screen(PickScreen(escape(f"Pending [{item.topic}]"), options,
-                                    self._pending_action, detail=item.text))
+        self._pending_review_busy = True
+        session_id = self.application.conversation.current_id
+        screen = self.screen if isinstance(self.screen, PendingScreen) else None
+        self.run_worker(
+            partial(self._pending_work, session_id, screen, action, item_id, override),
+            thread=True,
+            group="pending",
+            exit_on_error=False,
+        )
 
-    def _pending_action(self, value) -> None:
-        if value is None:
-            self.query_one("#input", Input).focus()
-            return
-        action, item_id, _ = value
-        if action == "edit":
-            item = next((i for i in self.service.pending() if i.id == item_id), None)
-            default = item.text if item else ""
-            self.push_screen(
-                TextInputScreen("Full revised text", default=default, on_result=lambda v: self._pending_edited(item_id, v))
-            )
-            return
-        self._pending_apply(action, item_id, None)
-
-    def _pending_edited(self, item_id, text) -> None:
-        if not text:
-            self.query_one("#input", Input).focus()
-            return
-        self._pending_apply("approve", item_id, text.strip())
-
-    def _pending_apply(self, action: str, item_id: str, override: str | None) -> None:
+    def _pending_work(
+        self,
+        session_id: str | None,
+        screen: PendingScreen | None,
+        action: str | None,
+        item_id: str,
+        override: str | None,
+    ) -> None:
+        finish = partial(self._finish_pending, session_id, screen)
+        message = None
         try:
             if action == "approve":
-                entry = self.service.approve(item_id, text_override=override)
-                message = f"Saved [{entry.topic}] {entry.text}"
-            else:
-                item = self.service.reject(item_id)
-                message = f"Rejected {item.id} {self._truncate(item.text, 40)}"
-        except (KeyError, ValueError) as exc:
-            self.add_card(str(exc))
+                entry = self.application.memory.approve(item_id, text_override=override)
+                message = f"Saved to [{entry.topic}]."
+            elif action == "reject":
+                self.application.memory.reject(item_id)
+                message = "Rejected candidate."
+        except Exception as exc:
+            record_event("command.failed", exc)
+            self.call_from_thread(finish, None, None, f"Pending decision failed: {exc}")
             return
-        self.add_card(message)
-        self.refresh_pending()
-        self.update_status()
-        if self.service.pending():
-            # 队列里还有：自动进入下一条，ESC 随时退出循环。
-            self.call_after_refresh(self._open_pending)
-        else:
-            self.add_card("Pending queue is empty.")
-            self.query_one("#input", Input).focus()
+        try:
+            items = self.application.memory.pending().items
+        except Exception as exc:
+            record_event("command.failed", exc)
+            error = f"Could not load pending items: {exc}"
+            self.call_from_thread(finish, None, message, error)
+            return
+        self.call_from_thread(finish, items, message)
+
+    def _finish_pending(
+        self,
+        session_id: str | None,
+        screen: PendingScreen | None,
+        items: list[PendingItem] | None,
+        message: str | None,
+        error: str | None = None,
+    ) -> None:
+        self._pending_review_busy = False
+        if items is not None:
+            self.pending_count = len(items)
+            self.update_status()
+        if screen is not None and self.screen is screen:
+            if items:
+                screen.set_items(items, message or "")
+                return
+            if error and message is None:
+                screen.show_error(error)
+                return
+            screen.dismiss()
+        feedback = "\n".join(part for part in (message, error) if part)
+        if (
+            self.screen is not self.default_screen
+            or self.application.conversation.current_id != session_id
+        ):
+            if feedback:
+                self.notify(feedback, markup=False)
+            return
+        if feedback:
+            self.add_card(feedback)
+        if items is None:
+            return
+        widget = self.query_one("#input", Input)
+        if not items:
+            self.add_card("Pending queue is empty." if message else "No pending items.")
+            widget.focus()
+        elif screen is None and not widget.value.strip() and not self._navigation_busy:
+            self.push_screen(
+                PendingScreen(items, self._run_pending_review), lambda _: widget.focus()
+            )
 
     def _show_topics(self, name: str | None = None) -> None:
-        topics = self.service.topics()
+        topics = self.application.memory.topics()
         if not topics:
             self.add_card("The memory vault is empty.")
             return
@@ -163,7 +269,7 @@ class ChatCommandsMixin:
             if matched is None:
                 self.add_card(f"No matching topic: {name}")
                 return
-            entries = self.service.topic_entries(matched["topic"])
+            entries = self.application.memory.topic_entries(matched["topic"])
             lines = [f"{matched['title']} ({matched['topic']}) · {len(entries)} entries", ""]
             for entry in entries:
                 tag = "" if entry.status == "active" else f" ({entry.status})"
@@ -171,31 +277,31 @@ class ChatCommandsMixin:
             self.add_card("\n".join(lines), "Topic entries")
             return
         self.add_card(
-            "\n".join(f"{t['topic']:<24} {t['title']} · {t['entries']} entries · updated {t['updated']}" for t in topics),
+            "\n".join(
+                f"{t['topic']:<24} {t['title']} · {t['entries']} entries · updated {t['updated']}"
+                for t in topics
+            ),
             "Memory topics",
         )
 
     def open_session_picker(self) -> None:
-        rows = visible_sessions(self.sessions.list(100, with_tokens=False))
+        rows = visible_sessions(self.application.conversation.list_sessions(100))
         if not rows:
             self.add_card("No sessions to choose from.")
             return
-        current_id = self.runtime.current.id if self.runtime.has_session else None
-        self.push_screen(
-            SessionPickerScreen(rows, current_id, self._picker_selected)
-        )
+        current_id = self.application.conversation.current_id
+        self.push_screen(SessionPickerScreen(rows, current_id, self._picker_selected))
 
     def _picker_selected(self, session_id) -> None:
         if session_id is None:
             self.query_one("#input", Input).focus()
             return
-        if self.runtime.has_session and session_id == self.runtime.current.id:
+        if self.application.conversation.current_id == session_id:
             self.notify("Already the current session.")
             self.query_one("#input", Input).focus()
             return
         if self._navigation_busy:
-            self._pending_switch = session_id
-            self._pending_new = False
+            self.application.conversation.request_switch(session_id)
             return
         self._switch_session(session_id)
 
@@ -203,14 +309,14 @@ class ChatCommandsMixin:
         self.push_screen(
             TextInputScreen(
                 "Rename session",
-                default=self.runtime.current.title(),
+                default=self.application.conversation.current.title(),
                 on_result=self._rename_current_result,
             )
         )
 
     def _rename_current_result(self, title) -> None:
         if title:
-            self.runtime.rename(title)
+            self.application.conversation.rename_current(title)
             self.refresh_sessions()
             self.notify(f"Renamed to: {title}")
         self.query_one("#input", Input).focus()
@@ -226,18 +332,16 @@ class ChatCommandsMixin:
 
     def _rename_session_result(self, row: dict, title) -> None:
         if title:
-            if not self.sessions.exists(row["id"]):
+            if not self.application.conversation.session_exists(row["id"]):
                 self.notify("Session no longer exists.")
             else:
-                # 当前会话走 runtime，保证内存中的 Session 也立即拿到新标题。
-                if self.runtime.has_session and row["id"] == self.runtime.current.id:
-                    self.runtime.rename(title)
-                else:
-                    self.sessions.rename(self.sessions.load(row["id"]), title)
+                self.application.conversation.rename_session(row["id"], title)
                 self.refresh_sessions()
                 for screen in self.screen_stack:
                     if isinstance(screen, SessionPickerScreen):
-                        screen.set_rows(visible_sessions(self.sessions.list(100, with_tokens=False)))
+                        screen.set_rows(
+                            visible_sessions(self.application.conversation.list_sessions(100))
+                        )
                 self.notify("Session renamed.")
         # 重命名弹窗关闭后，焦点回到选择器而不是主输入框。
         if isinstance(self.screen, SessionPickerScreen):
@@ -246,10 +350,10 @@ class ChatCommandsMixin:
             self.query_one("#input", Input).focus()
 
     def _show_status(self) -> None:
-        if not self.runtime.has_session:
+        if not self.application.conversation.has_session:
             self.add_card("The session is not created yet; it appears after your first message.")
             return
-        info = self.runtime.status()
+        info = self.application.conversation.status()
         percent = info["estimated_tokens"] / max(info["context_window"], 1)
         self.add_card(
             f"Session: {info['session_id']} · {info['title']}\n"
@@ -262,26 +366,25 @@ class ChatCommandsMixin:
         )
 
     def _undo_message(self) -> None:
-        if self._ask_active:
-            # 生成期间：立即取消并精确撤销当前回合；撤销在 Worker 退出后执行。
-            self._request_undo()
-            return
-        if not self.runtime.has_session:
+        if not self.application.conversation.has_session:
             self.add_card("No message to undo.")
             return
-        text = self.runtime.undo()
+        conversation = self.application.conversation
+        try:
+            text = conversation.undo_current()
+        except (ValueError, OSError) as exc:
+            record_event("undo.failed", exc)
+            self.notify(f"Undo failed: {exc}", severity="error")
+            return
         if text is None:
             self.add_card("No message to undo.")
             return
-        self._clear_chat()
-        self.build_transcript()
-        self.refresh_sessions()
-        self.update_status()
-        widget = self.query_one("#input", Input)
-        widget.value = text
-        widget.cursor_position = len(text)
-        widget.focus()
-        self.notify("Message restored for editing.")
+        session_id = conversation.current.id
+        self._pending_undo_restore[session_id] = text
+        if self._apply_undo_view(session_id, text):
+            self._pending_undo_restore.pop(session_id, None)
+            self.notify("Message restored for editing.")
+        conversation.pause_after_undo(True)
 
     def _run_compact(self) -> None:
         self._begin_navigation()
@@ -291,9 +394,10 @@ class ChatCommandsMixin:
 
     def _compact_work(self) -> None:
         try:
-            events = self.runtime.force_compact()
+            events = self.application.conversation.force_compact()
         except Exception as exc:
-            self.call_from_thread(self._finish_error, f"Compaction failed: {exc}")
+            record_event("command.failed", exc)
+            self.call_from_thread(self._finish_navigation_error, f"Compaction failed: {exc}")
             return
         self.call_from_thread(self._after_compact, events)
 
@@ -305,10 +409,9 @@ class ChatCommandsMixin:
         self._drain_pending_intent()
 
     def _after_import(self, message: str) -> None:
+        self._import_running = False
         self.add_card(message)
         self.update_status()
-        self._end_navigation()
-        self._drain_pending_intent()
 
     def _run_import(self, argument: str) -> None:
         # 不用 POSIX shlex 拆路径，避免吃掉 Windows 反斜线。
@@ -320,38 +423,90 @@ class ChatCommandsMixin:
         if not filename:
             self.add_card("Usage: /import <file-or-directory> [--apply]")
             return
-        self._begin_navigation()
-        self.add_card("Starting import: parsing is local; extraction calls the configured model and may incur charges. " + ("Memories will be saved." if apply else "Preview only; memories will not be saved."))
-        self.run_worker(partial(self._import_work, Path(filename).expanduser(), apply),
-                        group="ask", thread=True, exclusive=True, exit_on_error=False)
+        path = Path(filename).expanduser()
+        if apply:
+            self.push_screen(
+                PickScreen(
+                    "Confirm Memory Import",
+                    [("Cancel", False), ("Import and save", True)],
+                    partial(self._import_confirmed, path),
+                    detail=(
+                        f"Source: {path}\n\n"
+                        "This batch will write admitted memories directly to the Vault. "
+                        "The configured model may be called and may incur charges.\n\n"
+                        "If a later file or chunk fails, completed writes are retained. "
+                        "Cancel starts neither document parsing nor model calls."
+                    ),
+                )
+            )
+            return
+        self._start_import(path, False)
+
+    def _import_confirmed(self, path: Path, confirmed) -> None:
+        if confirmed is not True:
+            self.add_card("Import cancelled; no files were analyzed and no memories were written.")
+            self.query_one("#input", Input).focus()
+            return
+        self._start_import(path, True)
+
+    def _start_import(self, path: Path, apply: bool) -> None:
+        if self._import_running:
+            self.notify("An import is already running.")
+            return
+        self._import_running = True
+        self.add_card(
+            "Starting import: parsing is local; extraction calls the configured model and may incur charges. "
+            + ("Memories will be saved." if apply else "Preview only; memories will not be saved.")
+        )
+        self.run_worker(
+            partial(self._import_work, path, apply),
+            group="import",
+            thread=True,
+            exit_on_error=False,
+        )
 
     def _import_work(self, path: Path, apply: bool) -> None:
         try:
-            files = sorted(file for file in path.iterdir() if file.is_file() and file.suffix.lower() in SUPPORTED_SUFFIXES) if path.is_dir() else [path]
-            if not files:
-                raise ValueError("No supported files in this directory (non-recursive).")
-            for file in files:
-                try:
-                    chunks = split_chunks(read_document(file))
-                    for index, chunk in enumerate(chunks, 1):
-                        self.call_from_thread(self.add_card, escape(f"Analyzing {file.name}: chunk {index}/{len(chunks)}"))
-                        result = self.service.import_text(chunk, source=f"import:{file.name}#chunk:{index}", dry_run=not apply)
-                        lines = [f"{'Processed' if apply else 'Preview'}: saved {len(result.admitted)} · pending {len(result.queued)} · duplicates {len(result.duplicates)} · blocked {len(result.blocked)}"]
-                        # 只展示已通过凭据裁决的候选；被拦截原文不回显。
-                        lines += [f"[{entry.topic}] {entry.text}" for entry in result.admitted]
-                        lines += [f"Pending [{item.topic}] {item.text}" for item in result.queued]
-                        self.call_from_thread(self.add_card, escape("\n".join(lines)))
-                except DocumentError as exc:
-                    self.call_from_thread(self.add_card, escape(f"{file.name} import failed: {exc}"))
-                except Exception:
-                    self.call_from_thread(self.add_card, escape(f"{file.name} import failed. Check the format, parser dependencies and model settings; completed changes are retained."))
-            self.call_from_thread(self.refresh_pending)
+            result = self.application.memory.import_path(
+                path,
+                apply,
+                on_progress=lambda item: self.call_from_thread(self._show_import_progress, item),
+            )
         except Exception as exc:
-            self.call_from_thread(self._finish_error, f"Import failed: {exc}")
+            record_event("command.failed", exc)
+            self.call_from_thread(self._after_import, f"Import failed: {exc}")
             return
-        self.call_from_thread(self._after_import, "Import complete." if apply else "Preview complete; use /import <path> --apply to analyze again and save.")
+        self.call_from_thread(self.refresh_pending)
+        message = (
+            "Import complete."
+            if apply
+            else "Preview complete; use /import <path> --apply to analyze again and save."
+        )
+        if result.errors:
+            message += (
+                f" {len(result.errors)} file/chunk(s) failed; completed changes were retained."
+            )
+        self.call_from_thread(self._after_import, message)
 
-    # ---------- 设置类选择器（逻辑在 actions.py） ----------
+    def _show_import_progress(self, progress) -> None:
+        if progress.chunk:
+            self.add_card(
+                f"Analyzing {progress.file}: chunk {progress.chunk}/{progress.total_chunks}"
+            )
+        if progress.error:
+            self.add_card(f"{progress.file} import failed: {progress.error}")
+            return
+        if not progress.chunk:
+            return
+        lines = [
+            f"{'Processed' if progress.apply else 'Preview'}: saved {progress.saved} · "
+            f"pending {progress.queued} · duplicates {progress.duplicates} · blocked {progress.blocked}"
+        ]
+        lines += [f"[{topic}] {text}" for topic, text in progress.admitted]
+        lines += [f"Pending [{topic}] {text}" for topic, text in progress.pending]
+        self.add_card("\n".join(lines))
+
+    # ---------- 设置类选择器（逻辑在 application/settings.py） ----------
 
     def _open_models(self, refresh: bool = False) -> None:
         # keyring/供应商元数据查询可能很慢，不能在 UI 线程先算选项再开选择器。
@@ -363,18 +518,25 @@ class ChatCommandsMixin:
         )
 
     def _open_models_work(self, refresh: bool) -> None:
-        fetched = None if refresh else cached_provider_models(self.service.config.llm)
         try:
-            entries = self._model_entries(fetched)
+            catalog = {} if refresh else self.application.settings.model_catalog(cached_only=True)
+            entries = self._model_entries(catalog, capabilities=False)
         except Exception as exc:
-            self.call_from_thread(self._finish_error, f"Loading models failed: {exc}")
+            record_event("command.failed", exc)
+            self.call_from_thread(self._background_error, f"Loading models failed: {exc}")
             return
         self.call_from_thread(self._show_model_picker, entries, True, refresh)
 
-    def _model_entries(self, fetched: list[str] | None = None) -> list[tuple]:
-        options = actions.model_options(self.service, fetched)
+    def _model_entries(
+        self, fetched: dict[str, list[str]] | list[str] | None = None, *, capabilities: bool = True
+    ) -> list[tuple]:
+        options = self.application.settings.model_options(fetched, capabilities)
         return [
-            (option.label, (option.provider, option.model), option.current)
+            (
+                f"Recent · {option.label}" if option.recent else option.label,
+                (option.provider, option.model),
+                option.current,
+            )
             for option in options
         ]
 
@@ -383,10 +545,11 @@ class ChatCommandsMixin:
         entries: list[tuple],
         background_refresh: bool = False,
         refresh: bool = False,
-    ) -> None:
+    ) -> PickScreen:
         self._drain_pending_intent()
         picker = ModelPickerScreen(
-            f"Current model: {self.runtime.model_label}",
+            f"Current model: {self.application.conversation.model_label}"
+            + (" · Loading API model lists…" if background_refresh else ""),
             entries,
             self._model_picked,
             searchable=True,
@@ -394,6 +557,7 @@ class ChatCommandsMixin:
         self.push_screen(picker)
         if background_refresh:
             self._refresh_models(picker, refresh)
+        return picker
 
     def _refresh_models(self, picker: PickScreen, refresh: bool = False) -> None:
         self.run_worker(
@@ -405,18 +569,31 @@ class ChatCommandsMixin:
 
     def _refresh_models_work(self, picker: PickScreen, refresh: bool = False) -> None:
         try:
-            fetched = fetch_provider_models(self.service.config.llm, refresh=refresh)
-            entries = self._model_entries(fetched) if fetched else None
-        except Exception:
+            catalog = self.application.settings.model_catalog(refresh=refresh)
+            entries = self._model_entries(catalog)
+        except Exception as exc:
+            record_event("command.failed", exc)
+            self.call_from_thread(self._apply_fetched_models, picker, [], "Model discovery failed")
             return
-        if entries is not None:
-            self.call_from_thread(self._apply_fetched_models, picker, entries)
+        unavailable = [provider for provider, models in catalog.items() if not models]
+        status = (
+            "No configured providers"
+            if not catalog
+            else f"No API models: {', '.join(unavailable)}"
+            if unavailable
+            else ""
+        )
+        self.call_from_thread(self._apply_fetched_models, picker, entries, status)
 
-    def _apply_fetched_models(self, picker: PickScreen, entries: list[tuple]) -> None:
+    def _apply_fetched_models(
+        self, picker: PickScreen, entries: list[tuple], status: str = ""
+    ) -> None:
         # 异步刷新完成时用户可能已离开 /model；只更新仍然打开的这一屏。
         if self.screen is not picker:
             return
         picker.update_options(entries)
+        title = f"Current model: {self.application.conversation.model_label}"
+        picker.query_one(".pick-title", Static).update(f"{title} · {status}" if status else title)
 
     def _model_picked(self, value) -> None:
         if value is None:
@@ -424,17 +601,24 @@ class ChatCommandsMixin:
             return
         provider, model = value
         if provider == "__providers__":
-            self.push_screen(PickScreen(
-                "Providers (Esc to return to models)",
-                [("Add provider", "add"), ("Update provider key", "update"), ("Remove provider", "remove")],
-                self._provider_management_picked,
-            ))
+            self.push_screen(
+                PickScreen(
+                    "Providers (Esc to return to models)",
+                    [
+                        ("Add provider", "add"),
+                        ("Update provider key", "update"),
+                        ("Set provider Base URL", "endpoint"),
+                        ("Remove provider", "remove"),
+                    ],
+                    self._provider_management_picked,
+                )
+            )
             return
         if provider == "__refresh__":
             self._open_models(True)
             return
         if provider == "__custom__":
-            current = self.service.config.llm
+            current = self.application.config.llm
             self.push_screen(
                 TextInputScreen("Model name", default=current.model, on_result=self._model_custom)
             )
@@ -447,7 +631,7 @@ class ChatCommandsMixin:
         if provider_action:
             self._manage_providers(provider_action)
             return
-        message = actions.apply_model(self.service, self.runtime, provider, model)
+        message = self.application.settings.apply_model(provider, model).message
         self.add_card(message)
         self.update_status()
         self.query_one("#input", Input).focus()
@@ -459,21 +643,23 @@ class ChatCommandsMixin:
             self._manage_providers(action)
 
     def _manage_providers(self, action: str) -> None:
-        options = actions.provider_options(self.service)
-        current = self.service.config.llm.provider
+        options = self.application.settings.provider_options()
+        current = self.application.config.llm.provider
         if action == "add":
-            candidates = [option for option in options if not option[1][2]]
+            candidates = [option for option in options if not option.configured]
             title = "Add provider"
             empty = "All built-in providers already have API keys."
         elif action == "update":
-            candidates = [option for option in options if option[1][2]]
+            candidates = [option for option in options if option.configured]
             title = "Update provider key"
             empty = "No built-in provider has a saved API key yet."
+        elif action == "endpoint":
+            candidates = options
+            title = "Set provider Base URL"
+            empty = "No built-in providers."
         else:
             candidates = [
-                option
-                for option in options
-                if option[1][2] and option[1][0] != current
+                option for option in options if option.configured and option.key != current
             ]
             title = "Remove provider"
             empty = "Switch to another model before removing the current provider."
@@ -481,20 +667,35 @@ class ChatCommandsMixin:
             self.add_card(empty)
             self.query_one("#input", Input).focus()
             return
-        self.push_screen(
-            PickScreen(title, candidates, partial(self._provider_selected, action))
-        )
+        rows = [
+            (
+                f"{option.label} · {'configured' if option.configured else 'add provider'}",
+                (option.key, option.label, option.configured),
+                option.current,
+            )
+            for option in candidates
+        ]
+        self.push_screen(PickScreen(title, rows, partial(self._provider_selected, action)))
 
     def _provider_selected(self, action: str, value) -> None:
         if value is None:
             self.query_one("#input", Input).focus()
             return
         provider_key, label, _ = value
+        if action == "endpoint":
+            self.push_screen(
+                TextInputScreen(
+                    f"{label} Base URL",
+                    default=self.application.settings.provider_endpoint(provider_key),
+                    on_result=partial(self._provider_endpoint_entered, provider_key),
+                )
+            )
+            return
         if action == "remove":
             self.push_screen(
                 PickScreen(
-                    f"Remove {label} provider?",
-                    [("Remove provider", True), ("Cancel", False)],
+                    f"Remove {label} provider?\nSaved provider credentials and its API key may be removed.",
+                    [("Cancel", False), ("Remove provider", True)],
                     partial(self._remove_provider_result, provider_key),
                 )
             )
@@ -512,20 +713,31 @@ class ChatCommandsMixin:
             self.query_one("#input", Input).focus()
             return
         if action == "add":
-            message = actions.configure_provider(
-                self.service, self.runtime, provider_key, api_key
-            )
+            result = self.application.settings.configure_provider(provider_key, api_key)
         else:
-            message = actions.update_provider_key(self.service, provider_key, api_key)
-        self.add_card(message)
-        self.update_status()
-        self.query_one("#input", Input).focus()
+            result = self.application.settings.update_provider_key(provider_key, api_key)
+        self.add_card(result.message)
+        if result.ok:
+            self._open_models(refresh=True)
+        else:
+            self.query_one("#input", Input).focus()
+
+    def _provider_endpoint_entered(self, provider: str, endpoint: str | None) -> None:
+        if endpoint is None:
+            self.query_one("#input", Input).focus()
+            return
+        result = self.application.settings.set_provider_endpoint(provider, endpoint)
+        self.add_card(result.message)
+        if result.ok:
+            self._open_models(refresh=True)
+        else:
+            self.query_one("#input", Input).focus()
 
     def _remove_provider_result(self, provider_key: str, confirmed) -> None:
         if confirmed is not True:
             self.query_one("#input", Input).focus()
             return
-        message = actions.remove_provider(self.service, provider_key)
+        message = self.application.settings.remove_provider(provider_key).message
         self.add_card(message)
         self.update_status()
         self.query_one("#input", Input).focus()
@@ -534,45 +746,74 @@ class ChatCommandsMixin:
         if not name:
             self.query_one("#input", Input).focus()
             return
-        current = self.service.config.llm
-        message = actions.apply_model(self.service, self.runtime, current.provider, name)
+        current = self.application.config.llm
+        message = self.application.settings.apply_model(current.provider, name).message
         self.add_card(message)
         self.update_status()
         self.query_one("#input", Input).focus()
 
     def _pick_reasoning(self) -> None:
-        options = actions.reasoning_options(self.service)
+        options = self.application.settings.reasoning_options()
         if not options:
-            self.add_card(f"{self.runtime.model_label} does not support reasoning effort; use /model to switch to a reasoning-capable model.")
+            self.add_card(
+                f"{self.application.conversation.model_label} does not support reasoning effort; use /model to switch to a reasoning-capable model."
+            )
             return
-        current = self.service.config.llm.reasoning_effort or ""
+        title, current = self.application.settings.reasoning_selection()
         entries = [(label, value, value == current) for value, label in options]
-        self.push_screen(PickScreen(f"Reasoning effort: {current or 'default'}", entries, self._reasoning_picked))
+        self.push_screen(
+            PickScreen(f"{title}: {current or 'default'}", entries, self._reasoning_picked)
+        )
 
     def _reasoning_picked(self, value) -> None:
         if value is None:
             self.query_one("#input", Input).focus()
             return
-        self.add_card(actions.apply_reasoning(self.service, value))
+        self.add_card(self.application.settings.apply_reasoning(value).message)
         self.query_one("#input", Input).focus()
 
     def _pick_context(self) -> None:
-        current = self.service.config.chat.context_window
-        entries = [(format_tokens(size), size, size == current) for size in actions.context_options(self.service)]
+        if self._context_loading:
+            return
+        self._context_loading = True
+        # 模型元数据首次读取会导入 LiteLLM，必须离开 UI 线程，避免整屏卡住。
+        self.run_worker(self._pick_context_work, group="context", thread=True, exit_on_error=False)
+
+    def _pick_context_work(self) -> None:
+        try:
+            options = self.application.settings.context_options()
+        except Exception as exc:
+            record_event("command.failed", exc)
+            self.call_from_thread(self._context_failed, str(exc))
+            return
+        self.call_from_thread(self._show_context_picker, options)
+
+    def _show_context_picker(self, options: list[int]) -> None:
+        self._context_loading = False
+        current = self.application.settings.context_window
+        entries = [(format_tokens(size), size, size == current) for size in options]
         entries.append(("Custom…", 0, False))
-        self.push_screen(PickScreen(f"Context window: {format_tokens(current)}", entries, self._context_picked))
+        self.push_screen(
+            PickScreen(f"Context window: {format_tokens(current)}", entries, self._context_picked)
+        )
+
+    def _context_failed(self, message: str) -> None:
+        self._context_loading = False
+        self._background_error(f"Loading context options failed: {message}")
 
     def _context_picked(self, value) -> None:
         if value is None:
             self.query_one("#input", Input).focus()
             return
         if value == 0:
-            current = self.service.config.chat.context_window
+            current = self.application.settings.context_window
             self.push_screen(
-                TextInputScreen("Context window (tokens)", default=str(current), on_result=self._context_custom)
+                TextInputScreen(
+                    "Context window (tokens)", default=str(current), on_result=self._context_custom
+                )
             )
             return
-        self.add_card(actions.apply_context(self.service, value))
+        self.add_card(self.application.settings.apply_context(value).message)
         self.update_status()
         self.query_one("#input", Input).focus()
 
@@ -586,6 +827,6 @@ class ChatCommandsMixin:
             self.add_card("Context window must be a positive integer (tokens).")
             self.query_one("#input", Input).focus()
             return
-        self.add_card(actions.apply_context(self.service, size))
+        self.add_card(self.application.settings.apply_context(size).message)
         self.update_status()
         self.query_one("#input", Input).focus()

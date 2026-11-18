@@ -6,12 +6,13 @@ from typing import Protocol
 
 from pydantic import ValidationError
 
+from ..errors import SyvrioError
 from ..infra.config import LLMConfig
 from ..llm.client import complete
 from .models import Candidate, ExtractionResult
 
 
-class ExtractorError(RuntimeError):
+class ExtractorError(SyvrioError, RuntimeError):
     pass
 
 
@@ -26,6 +27,7 @@ CONTEXT_PROMPT = """
   日期只接受 YYYY、YYYY-MM、YYYY-MM-DD，保留原有精度，不能补猜月日。
   time_text 保留时间原话。没有可靠的原始陈述日期时，“去年”“现在”等只写 time_text，
   不填 event_time / valid_from / valid_to；禁止用抽取或写入当天代替原始陈述时间。
+  带时区的“原始消息时间”仅锚定紧随其后的消息。去年保留年精度、上个月保留月精度、昨天按该时区的日历日解析；跨消息不沿用锚点，引用材料仍按其自身时间，无锚点或语义不明确时保持未知。
   日期沿用原始表述的日历日期，不做时区换算；未给结束时间不代表永远有效。
 - location 仅取用户明确提供或可靠上下文中的地点；同时提供 location_kind：
   event（事件地点）或 residence（居住地）。事件地点不能默认成当前住址，不采集设备位置。
@@ -122,7 +124,13 @@ class LLMExtractor:
             message = str(exc).lower()
             if not any(
                 token in message
-                for token in ("response_format", "json_object", "json mode", "unsupported", "invalid parameter")
+                for token in (
+                    "response_format",
+                    "json_object",
+                    "json mode",
+                    "unsupported",
+                    "invalid parameter",
+                )
             ):
                 raise ExtractorError(f"LLM 调用失败：{exc}") from exc
             # 部分 OpenAI 兼容服务不支持 JSON mode，退回普通对话。
@@ -188,7 +196,13 @@ def parse_import(content: str) -> ExtractionResult:
 class ImportExtractor:
     """导入抽取：输出必须通过严格校验，失败带着错误回传重出，连续失败整块放弃。"""
 
-    def __init__(self, config: LLMConfig, completer=complete, max_attempts: int = 3, topics: list[str] | None = None):
+    def __init__(
+        self,
+        config: LLMConfig,
+        completer=complete,
+        max_attempts: int = 3,
+        topics: list[str] | None = None,
+    ):
         self.config = config
         self.completer = completer
         self.max_attempts = max_attempts
@@ -209,7 +223,11 @@ class ImportExtractor:
         user_content = f"待整理内容：\n{text}{topic_hint}"
         feedback = ""
         for _ in range(self.max_attempts):
-            content = user_content if not feedback else f"{user_content}\n\n上一轮输出被拒绝：{feedback}\n请修正后重新输出完整 JSON。"
+            content = (
+                user_content
+                if not feedback
+                else f"{user_content}\n\n上一轮输出被拒绝：{feedback}\n请修正后重新输出完整 JSON。"
+            )
             response = self._complete(content)
             try:
                 return parse_import(response.choices[0].message.content or "")
@@ -233,7 +251,13 @@ class ImportExtractor:
             message = str(exc).lower()
             if not any(
                 token in message
-                for token in ("response_format", "json_object", "json mode", "unsupported", "invalid parameter")
+                for token in (
+                    "response_format",
+                    "json_object",
+                    "json mode",
+                    "unsupported",
+                    "invalid parameter",
+                )
             ):
                 raise ExtractorError(f"LLM 调用失败：{exc}") from exc
             # 部分 OpenAI 兼容服务不支持 JSON mode，退回普通对话。

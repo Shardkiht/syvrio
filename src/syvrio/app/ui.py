@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from typing import NoReturn
+
+import click
 import typer
 from rich import box
 from rich.console import Console
@@ -7,6 +10,7 @@ from rich.padding import Padding
 from rich.table import Table
 from rich.theme import Theme
 
+from ..infra.diagnostics import record_event
 from ..infra.layout import widths
 
 # 主题色：石板蓝（与个人主页 slate-blue 同族）；警告用暖琥珀，区别于灰色与错误红。
@@ -52,7 +56,9 @@ def styled_table(title: str) -> Table:
 
 def print_hits(query: str, hits, center: bool = False) -> None:
     if not hits:
-        console.print(padded("[dim]未找到相关记忆。[/dim]") if center else "[dim]未找到相关记忆。[/dim]")
+        console.print(
+            padded("[dim]未找到相关记忆。[/dim]") if center else "[dim]未找到相关记忆。[/dim]"
+        )
         return
     table = styled_table(f"检索：{query}")
     table.add_column("ID")
@@ -64,6 +70,14 @@ def print_hits(query: str, hits, center: bool = False) -> None:
     console.print(padded(table) if center else table)
 
 
-def fail(message: str, center: bool = False) -> None:
+def fail(message: str, center: bool = False, *, exc: BaseException | None = None) -> NoReturn:
+    # The original exception only survives here: this function converts it into
+    # typer.Exit, and main() deliberately does not record exits, so without this
+    # the diagnostics log would show a bare Exit with no cause (the update
+    # misdiagnosis bug). Callers that already recorded a specific event pass no exc.
+    if exc is not None:
+        context = click.get_current_context(silent=True)
+        command = context.command.name if context is not None and context.command else "unknown"
+        record_event("cli.failed", exc, command=command)
     console.print(padded(f"[red]{message}[/red]") if center else f"[red]{message}[/red]")
     raise typer.Exit(code=1)

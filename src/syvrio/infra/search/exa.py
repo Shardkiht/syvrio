@@ -3,6 +3,7 @@
 响应无顶层 score；摘要只能来自 summary/highlights/text 中实际返回的
 字段，缺什么就不硬造。
 """
+
 from __future__ import annotations
 
 from typing import Any, Callable
@@ -59,9 +60,7 @@ class ExaSearchProvider:
         if results is None:
             return []
         if not isinstance(results, list):
-            raise ProviderError(
-                NAME, ProviderErrorKind.BAD_RESPONSE, "results 字段类型异常"
-            )
+            raise ProviderError(NAME, ProviderErrorKind.BAD_RESPONSE, "results 字段类型异常")
         mapped = [_map_result(item) for item in results]
         return [item for item in mapped if item is not None]
 
@@ -139,6 +138,10 @@ class ExaFetchProvider:
 
 def _api_error(status: int, payload: dict) -> ProviderError | None:
     code = str(payload.get("tag") or "")
-    if status == 402 and code in {"NO_MORE_CREDITS", "API_KEY_BUDGET_EXCEEDED", "TEAM_BUDGET_EXCEEDED"}:
+    if status == 402 and code in {
+        "NO_MORE_CREDITS",
+        "API_KEY_BUDGET_EXCEEDED",
+        "TEAM_BUDGET_EXCEEDED",
+    }:
         return ProviderError(NAME, ProviderErrorKind.QUOTA, code, code=code, pause_reason=code)
     return None

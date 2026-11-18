@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import ipaddress
+import json
 import sys
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Annotated
 
+import click
 import typer
 
 from .. import __version__
 from ..agent.session import SessionStore
+from ..errors import SyvrioError
 from ..infra.config import (
     Config,
     default_config_path,
@@ -16,6 +20,7 @@ from ..infra.config import (
     load_config,
     write_example_config,
 )
+from ..infra.diagnostics import record_event, start_diagnostics, stop_diagnostics
 from ..infra.documents import SUPPORTED_SUFFIXES, DocumentError, read_document
 from ..infra.gitops import GitError
 from ..memory.extractor import ExtractorError, split_chunks
@@ -35,9 +40,19 @@ CONFIG_OPTION = typer.Option(None, "--config", "-c", help="配置文件路径")
 VAULT_OPTION = typer.Option(None, "--vault", help="覆盖配置中的记忆库路径")
 
 
+@dataclass
+class _Invocation:
+    command: str = "unknown"
+
+
 @app.callback()
-def _root(ctx: typer.Context, version: bool = typer.Option(False, "--version", help="Show Syvrio version", is_eager=True)) -> None:
+def _root(
+    ctx: typer.Context,
+    version: bool = typer.Option(False, "--version", help="Show Syvrio version", is_eager=True),
+) -> None:
     """无子命令时直接进入对话；非交互环境回退到帮助。"""
+    if isinstance(ctx.obj, _Invocation):
+        ctx.obj.command = ctx.invoked_subcommand or "chat"
     if version:
         typer.echo(f"Syvrio {__version__}")
         raise typer.Exit()
@@ -53,12 +68,62 @@ def _root(ctx: typer.Context, version: bool = typer.Option(False, "--version", h
     try:
         run_chat(service)
     except Exception as exc:
+        record_event("tui.failed", exc)
         console.print(padded(f"[#b8b8b8]无法启动对话界面：{exc}[/]"))
         console.print(ctx.get_help())
 
 
 def _service(config: Path | None, vault: Path | None) -> MemoryService:
     return get_service(config, vault)
+
+
+@app.command()
+def update() -> None:
+    """从 PyPI 更新受管理的 Syvrio Web 服务。"""
+    import tomllib
+
+    from ..infra.paths import syvrio_home
+    from ..infra.update import update as apply_update
+
+    root = syvrio_home() / "update"
+    config_path = root / "config.toml"
+    try:
+        with config_path.open("rb") as file:
+            config = tomllib.load(file)
+    except FileNotFoundError:
+        fail(f"更新配置缺失（{config_path}），请先按 Web 文档配置受管理的服务。")
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        record_event("update.failed", exc)
+        typer.echo(f"更新失败：{exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    missing = [key for key in ("channel", "service") if not config.get(key)]
+    if missing:
+        fail(f"更新配置缺少 {'、'.join(missing)}，请先按 Web 文档配置受管理的服务。")
+    # Only the config lookup above owns the "missing configuration" wording: a FileNotFoundError
+    # raised while updating means a missing executable (uv, previously the service binary), and
+    # must not be reported as an unconfigured service.
+    try:
+        result = apply_update(
+            root,
+            config["channel"],
+            config["service"],
+            config.get("port", 8765),
+            config.get("python"),
+            config.get("uv"),
+        )
+    except SyvrioError as exc:
+        # Deliberate, staged failure (missing uv, broken venv, failed switch…):
+        # the message already tells the user what to do.
+        record_event("update.failed", exc)
+        typer.echo(f"更新失败：{exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    except Exception as exc:
+        # Defense in depth for anything the updater does not stage itself; the
+        # full traceback lands in the diagnostics log via update.failed.
+        record_event("update.failed", exc)
+        typer.echo(f"更新失败：{exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(result)
 
 
 @app.command()
@@ -116,9 +181,7 @@ def setup(
         f"上下文：{result['context_window']} · 思考强度：{result['reasoning_effort'] or '默认'}"
     )
     if result["key_saved"]:
-        console.print(
-            f"[bold]API Key 已保存到系统凭据[/]（环境变量 {result['api_key_env']} 优先）"
-        )
+        console.print(f"[bold]API Key 已保存到系统凭据[/]（环境变量 {result['api_key_env']} 优先）")
     elif result["keyring_error"]:
         console.print(f"[#b8b8b8]{result['keyring_error']}[/]")
     if result["checked"]:
@@ -162,7 +225,7 @@ def memorize(
     try:
         result = service.memorize(text, source)
     except ExtractorError as exc:
-        fail(str(exc))
+        fail(str(exc), exc=exc)
         return
     for entry in result.admitted:
         console.print(f"[bold]已写入[/] [{entry.topic}] {entry.text}")
@@ -187,7 +250,7 @@ def note(
     try:
         entry = service.note(text, topic=topic, title=title)
     except ValueError as exc:
-        fail(str(exc))
+        fail(str(exc), exc=exc)
         return
     console.print(f"[bold]已记录[/] [{entry.topic}] {entry.text}")
 
@@ -202,10 +265,15 @@ def import_memories(
     vault: Path | None = VAULT_OPTION,
 ) -> None:
     """导入文本或文档：AI 整理成条目，程序裁决写入；默认 dry-run（仍调用模型）。"""
-    files = sorted(
-        file for file in path.iterdir()
-        if file.is_file() and file.suffix.lower() in SUPPORTED_SUFFIXES
-    ) if path.is_dir() else [path]
+    files = (
+        sorted(
+            file
+            for file in path.iterdir()
+            if file.is_file() and file.suffix.lower() in SUPPORTED_SUFFIXES
+        )
+        if path.is_dir()
+        else [path]
+    )
     if not files:
         fail("没有找到支持导入的文件；目录只扫描当前层。")
         return
@@ -250,7 +318,9 @@ def import_memories(
     if apply and totals["queued"]:
         console.print("运行 syvrio pending 查看待确认条目。")
     if failed_files or failed_chunks:
-        console.print(f"部分导入失败：{failed_files} 个文件、{failed_chunks} 个文本块；已处理部分不会回滚。")
+        console.print(
+            f"部分导入失败：{failed_files} 个文件、{failed_chunks} 个文本块；已处理部分不会回滚。"
+        )
         raise typer.Exit(code=1)
 
 
@@ -258,12 +328,121 @@ def import_memories(
 def recall(
     query: str = typer.Argument(..., help="检索关键词"),
     limit: int = typer.Option(10, "--limit", "-n", help="最多返回条数"),
+    date_from: str | None = typer.Option(None, "--from", help="事件起始日期：年、年月或年月日"),
+    date_to: str | None = typer.Option(None, "--to", help="事件截止日期"),
+    location: str | None = typer.Option(None, "--location", help="明确记载的地点"),
+    emotion: str | None = typer.Option(None, "--emotion", help="明确表达的情绪"),
+    as_of: str | None = typer.Option(None, "--as-of", help="历史状态时点 YYYY-MM-DD"),
+    view: str = typer.Option("current", "--view", help="current 当前有效 / history 历史演化"),
     config: Path | None = CONFIG_OPTION,
     vault: Path | None = VAULT_OPTION,
 ) -> None:
     """检索记忆。"""
-    hits = _service(config, vault).recall(query, limit)
+    try:
+        hits = _service(config, vault).recall(
+            query,
+            limit,
+            date_from=date_from,
+            date_to=date_to,
+            location=location,
+            emotion=emotion,
+            as_of=as_of,
+            view=view,
+        )
+    except ValueError as exc:
+        fail(str(exc), exc=exc)
+        return
     print_hits(query, hits)
+
+
+@app.command("evolve")
+def evolve(
+    entry_id: str = typer.Argument(...),
+    text: str = typer.Argument(..., help="变化后的事实"),
+    effective_from: str = typer.Option(..., "--from", help="变化日期 YYYY-MM-DD"),
+    config: Path | None = CONFIG_OPTION,
+    vault: Path | None = VAULT_OPTION,
+) -> None:
+    """记录已发生的状态变化，保留历史；原先记错请使用 correct。"""
+    try:
+        entry = _service(config, vault).evolve(entry_id, text, effective_from)
+        console.print(f"已记录时间变化：{entry.id}")
+    except (ValueError, KeyError) as exc:
+        fail(str(exc), exc=exc)
+
+
+@app.command("profile")
+def profile(
+    refresh: bool = typer.Option(False, "--refresh", help="调用模型增量生成待审查画像推断"),
+    requests: int = typer.Option(1, "--requests", min=0, max=20, help="本次模型请求上限"),
+    config: Path | None = CONFIG_OPTION,
+    vault: Path | None = VAULT_OPTION,
+) -> None:
+    """查看来源可追溯的画像；默认不调用模型。"""
+    service = _service(config, vault)
+    if refresh:
+        _reflect(service, "profile", requests)
+    for item in service.reflection.profile():
+        console.print(item.model_dump_json(), markup=False)
+
+
+def _reflect(service: MemoryService, mode: str, requests: int) -> None:
+
+    try:
+        result = service.reflection.run(mode, requests, refresh_summary=mode == "profile")
+        console.print(json.dumps(asdict(result), ensure_ascii=False), markup=False)
+        if result.error:
+            raise typer.Exit(1)
+    except KeyboardInterrupt:
+        service.reflection.cancel()
+        fail("回顾已取消；已完成进度保留。")
+    except ValueError as exc:
+        fail(str(exc), exc=exc)
+
+
+@app.command("dream")
+def dream(
+    requests: int = typer.Option(1, "--requests", min=0, max=20, help="本次模型请求上限"),
+    config: Path | None = CONFIG_OPTION,
+    vault: Path | None = VAULT_OPTION,
+) -> None:
+    """增量回顾有效事实，生成待审查假设；默认最多一次模型请求。"""
+    _reflect(_service(config, vault), "dream", requests)
+
+
+@app.command("inferences")
+def inferences(
+    inference_id: str | None = typer.Argument(None),
+    action: str | None = typer.Option(None, "--action", help="confirm / reject / correct"),
+    text: str | None = typer.Option(None, "--text", help="更正后的假设内容"),
+    recover_tail: bool = typer.Option(
+        False, "--recover-tail", help="显式恢复损坏尾行，保留原始字节"
+    ),
+    config: Path | None = CONFIG_OPTION,
+    vault: Path | None = VAULT_OPTION,
+) -> None:
+    """查看或审查推断；确认不会自动写入事实记忆。"""
+    service = _service(config, vault)
+    try:
+        if recover_tail:
+            if action or inference_id or text:
+                raise ValueError("恢复尾行不能与审查操作同时使用。")
+            recovered = service.recover_inference_tail()
+            console.print("已追加尾行恢复标记。" if recovered else "无需恢复。")
+        if action:
+            if not inference_id:
+                raise ValueError("操作时必须提供推断 ID。")
+            items = [service.review_inference(inference_id, action, text)]
+        else:
+            items = [
+                item
+                for item in service.list_inferences()
+                if not inference_id or item.id == inference_id
+            ]
+        for item in items:
+            console.print(item.model_dump_json(), markup=False)
+    except (KeyError, ValueError) as exc:
+        fail(str(exc), exc=exc)
 
 
 @app.command()
@@ -297,10 +476,10 @@ def approve(
     try:
         entry = _service(config, vault).approve(item_id)
     except KeyError as exc:
-        fail(str(exc))
+        fail(str(exc), exc=exc)
         return
     except ValueError as exc:
-        fail(str(exc))
+        fail(str(exc), exc=exc)
         return
     console.print(f"[bold]已写入[/] [{entry.topic}] {entry.text}")
 
@@ -315,7 +494,7 @@ def reject(
     try:
         item = _service(config, vault).reject(item_id)
     except KeyError as exc:
-        fail(str(exc))
+        fail(str(exc), exc=exc)
         return
     console.print(f"[dim]已拒绝[/dim] {item.id} {item.text}")
 
@@ -332,10 +511,10 @@ def correct(
     try:
         entry = _service(config, vault).correct(entry_id, text, reason)
     except KeyError as exc:
-        fail(str(exc))
+        fail(str(exc), exc=exc)
         return
     except ValueError as exc:
-        fail(str(exc))
+        fail(str(exc), exc=exc)
         return
     console.print(f"[bold]已更正[/] [{entry.topic}] {entry.text}")
     console.print(f"[dim]旧条目 {entry_id} 已置为 superseded，审计已记录[/dim]")
@@ -352,10 +531,10 @@ def forget(
     try:
         entry = _service(config, vault).forget(entry_id, reason)
     except KeyError as exc:
-        fail(str(exc))
+        fail(str(exc), exc=exc)
         return
     except ValueError as exc:
-        fail(str(exc))
+        fail(str(exc), exc=exc)
         return
     console.print(f"[bold]已删除[/] {entry.id} [{entry.topic}] {entry.text}")
 
@@ -402,7 +581,9 @@ def history(
 
 @app.command()
 def commit(
-    push: bool | None = typer.Option(None, "--push/--no-push", help="是否推送到 remote；默认读取 auto_push"),
+    push: bool | None = typer.Option(
+        None, "--push/--no-push", help="是否推送到 remote；默认读取 auto_push"
+    ),
     config: Path | None = CONFIG_OPTION,
     vault: Path | None = VAULT_OPTION,
 ) -> None:
@@ -411,10 +592,14 @@ def commit(
     try:
         result = service.commit(push=push)
     except GitError as exc:
-        fail(str(exc))
+        fail(str(exc), exc=exc)
         return
     if not result["committed"]:
         console.print(f"[dim]{result['summary']}[/dim]")
+        if result.get("pushed"):
+            console.print("[bold]已推送[/]")
+        elif result.get("push_error"):
+            console.print(f"[#b8b8b8]推送未成功：{result['push_error']}[/]")
         return
     console.print("[bold]本次提交总结[/bold]")
     console.print(result["summary"])
@@ -433,7 +618,9 @@ def status(
     """查看记忆库状态。"""
     info = _service(config, vault).status()
     console.print(f"记忆库：{info['vault']}")
-    console.print(f"主题 {info['topics']} · 条目 {info['entries']} · 待确认 {info['pending']} · 未提交 {info['dirty']}")
+    console.print(
+        f"主题 {info['topics']} · 条目 {info['entries']} · 待确认 {info['pending']} · 未提交 {info['dirty']}"
+    )
     console.print(f"检索 {info['retrieval']}")
 
 
@@ -475,7 +662,7 @@ def web(
             name = normalize_domain(domain)
             ipaddress.ip_address(domain_ip)
         except ValueError as exc:
-            fail(str(exc))
+            fail(str(exc), exc=exc)
             return
         domains.append(name)
         if remove_domain:
@@ -509,7 +696,7 @@ def web(
     try:
         run_server(host, port, config_path=config, vault_path=vault, domains=domains)
     except RuntimeError as exc:
-        fail(str(exc))
+        fail(str(exc), exc=exc)
 
 
 def main() -> None:
@@ -519,7 +706,29 @@ def main() -> None:
         for stream in (sys.stdout, sys.stderr):
             if not stream.isatty() and hasattr(stream, "reconfigure"):
                 stream.reconfigure(encoding="utf-8")
-    app()
+    config_file = None
+    arguments = sys.argv[1:]
+    for index, argument in enumerate(arguments):
+        if argument == "--":
+            break
+        if argument in {"--config", "-c"} and index + 1 < len(arguments):
+            config_file = Path(arguments[index + 1])
+        elif argument.startswith("--config="):
+            config_file = Path(argument.split("=", 1)[1])
+    start_diagnostics(config_file)
+    invocation = _Invocation()
+    try:
+        app(obj=invocation)
+    except (typer.Exit, click.Abort):
+        # Deliberate exits (fail(), --version, Ctrl+C on a prompt) are control
+        # flow, not failures; recording them hides the real cause. fail() with
+        # exc= already recorded cli.failed before raising.
+        raise
+    except Exception as exc:
+        record_event("cli.failed", exc, command=invocation.command)
+        raise
+    finally:
+        stop_diagnostics()
 
 
 if __name__ == "__main__":

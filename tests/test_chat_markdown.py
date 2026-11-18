@@ -15,7 +15,8 @@ from syvrio.app.chat_theme import MARKDOWN_THEME
 from syvrio.app.chat_widgets import ChatReply, _ReplyMarkdown
 
 pytestmark = pytest.mark.ui
-SAMPLE = '''# 一级标题
+
+SAMPLE = """# 一级标题
 这个项目是**"架构轻量但功能完整"**的设计思路，*italic* 和 `inline_code`。
 
 ## 二级标题
@@ -47,23 +48,31 @@ def example():
 [Example](https://example.com)
 
 ---
-'''
+"""
 
 
 def render(source: str, width: int = 80, original: bool = False) -> Text:
     console = Console(width=width)
     with console.use_theme(MARKDOWN_THEME):
-        return Text.assemble(*[(s.text, s.style) for s in console.render(
-            Markdown(source) if original else _ReplyMarkdown(source)) if not s.control])
+        return Text.assemble(
+            *[
+                (s.text, s.style)
+                for s in console.render(Markdown(source) if original else _ReplyMarkdown(source))
+                if not s.control
+            ]
+        )
 
 
-@pytest.mark.parametrize("source,target", [
-    ('这个项目是**"架构轻量但功能完整"**的设计思路', '"架构轻量但功能完整"'),
-    ("中文**“重点”**继续", "“重点”"),
-    ("中文**（重点）**继续", "（重点）"),
-    ("中文**bold**继续", "bold"),
-    ("**普通加粗** and **bold**", "普通加粗"),
-])
+@pytest.mark.parametrize(
+    "source,target",
+    [
+        ('这个项目是**"架构轻量但功能完整"**的设计思路', '"架构轻量但功能完整"'),
+        ("中文**“重点”**继续", "“重点”"),
+        ("中文**（重点）**继续", "（重点）"),
+        ("中文**bold**继续", "bold"),
+        ("**普通加粗** and **bold**", "普通加粗"),
+    ],
+)
 def test_strong_cjk_punctuation(source, target):
     text = render(source)
     assert "**" not in text.plain
@@ -77,19 +86,22 @@ def test_original_commonmark_limit_is_reproduced():
     assert _ReplyMarkdown(source).markup == source
 
 
-@pytest.mark.parametrize("source,literal", [
-    ('`中文**"原样"**继续`', '中文**"原样"**继续'),
-    ('```text\n中文**"原样"**继续\n```', '中文**"原样"**继续'),
-    (r'中文\*\*"原样"\*\*继续', '中文**"原样"**继续'),
-    ('中文**"未闭合', '中文**"未闭合'),
-    ("`not finished", "`not finished"),
-])
+@pytest.mark.parametrize(
+    "source,literal",
+    [
+        ('`中文**"原样"**继续`', '中文**"原样"**继续'),
+        ('```text\n中文**"原样"**继续\n```', '中文**"原样"**继续'),
+        (r'中文\*\*"原样"\*\*继续', '中文**"原样"**继续'),
+        ('中文**"未闭合', '中文**"未闭合'),
+        ("`not finished", "`not finished"),
+    ],
+)
 def test_code_escapes_and_unfinished_emphasis_preserved(source, literal):
     assert literal in render(source).plain
 
 
 def test_inline_styles_and_links_survive_compatibility():
-    text = render('中文**“重点”**继续 *italic* `code` ~~gone~~ [Example](https://example.com)')
+    text = render("中文**“重点”**继续 *italic* `code` ~~gone~~ [Example](https://example.com)")
     assert any(s.style.italic for s in text.spans)
     assert any(s.style.strike for s in text.spans)
     assert any(s.style.link == "https://example.com" for s in text.spans)
@@ -101,10 +113,12 @@ def test_heading_style_and_compact_spacing():
     assert text.plain.splitlines()[0].startswith("Heading")
     start = text.plain.index("Heading")
     styles = [s.style for s in text.spans if s.start <= start < s.end]
-    assert any(s.bold and s.color.get_truecolor() == (143, 166, 197) for s in styles)
+    assert any(s.bold and s.color.get_truecolor() == (108, 182, 255) for s in styles)
     assert not any(s.underline for s in styles)
     assert text.plain.splitlines()[1].startswith("Body")
-    assert len(render(SAMPLE).plain.splitlines()) < len(render(SAMPLE, original=True).plain.splitlines())
+    assert len(render(SAMPLE).plain.splitlines()) < len(
+        render(SAMPLE, original=True).plain.splitlines()
+    )
 
 
 @pytest.mark.parametrize("width", [80, 120, 160])
@@ -112,7 +126,17 @@ def test_all_blocks_and_long_lines_fit(width):
     source = SAMPLE + "\n```python\n" + "variable_name = " + repr("x" * 250) + "\n```"
     text = render(source, width)
     assert all(cell_len(line) <= width for line in text.plain.splitlines())
-    for word in ["一级标题", "二级标题", "三级标题", "嵌套条目", "第三项", "第四项", "引用中文", "列名", "English value"]:
+    for word in [
+        "一级标题",
+        "二级标题",
+        "三级标题",
+        "嵌套条目",
+        "第三项",
+        "第四项",
+        "引用中文",
+        "列名",
+        "English value",
+    ]:
         assert word in text.plain
     assert "3 " in text.plain and "4 " in text.plain
     assert "        return" in text.plain
@@ -122,6 +146,7 @@ def test_all_blocks_and_long_lines_fit(width):
 
 class MarkdownApp(App):
     CSS = "ChatReply { height: auto; width: 1fr; }"
+
     def compose(self) -> ComposeResult:
         with VerticalScroll():
             yield ChatReply(SAMPLE, id="reply")
@@ -180,7 +205,7 @@ async def test_mouse_selection_after_quoted_cjk_emphasis():
 
 
 def test_reference_link_context_is_preserved():
-    text = render('中文**“重点”**继续 [Reference][ref]\n\n[ref]: https://example.com')
+    text = render("中文**“重点”**继续 [Reference][ref]\n\n[ref]: https://example.com")
     assert any(s.style.link == "https://example.com" for s in text.spans)
     assert "[ref]" not in text.plain
 
@@ -210,3 +235,20 @@ async def test_long_reply_keeps_one_widget_and_all_text_on_resize():
             assert text.count("        return") == 4
             assert not reply.query("*")
             assert reply.size.width <= width
+
+
+def test_reply_markdown_has_readable_semantic_colors():
+    text = render(
+        "# Heading\n\nBody **important** and `code`.\n\n> Quoted text\n\n[Link](https://example.com)"
+    )
+    console = Console()
+
+    def color(word):
+        return text.get_style_at_offset(console, text.plain.index(word)).color.get_truecolor()
+
+    assert color("Heading") == (108, 182, 255)
+    assert color("Body") == (213, 213, 213)
+    assert color("important") == (240, 240, 240)
+    assert color("code") == (226, 192, 141)
+    assert color("Quoted") == (154, 175, 196)
+    assert color("Link") == (108, 182, 255)

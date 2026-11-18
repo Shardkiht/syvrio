@@ -39,6 +39,8 @@ from syvrio.infra.search.router import normalize_url
 from syvrio.memory.service import MemoryService
 
 pytestmark = pytest.mark.search
+
+
 def envelope(results: list[dict]) -> dict:
     return {
         "status": "ok",
@@ -172,10 +174,17 @@ def test_router_fetch_allows_default_dual_stack_fake_dns(monkeypatch, final_url)
 
     monkeypatch.delenv("FAKE_IP_CIDRS", raising=False)
     monkeypatch.setattr(
-        search_base.socket, "getaddrinfo",
+        search_base.socket,
+        "getaddrinfo",
         lambda host, port, **kwargs: [
             (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("198.18.0.15", port)),
-            (socket.AF_INET6, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("2001:2::12", port, 0, 0)),
+            (
+                socket.AF_INET6,
+                socket.SOCK_STREAM,
+                socket.IPPROTO_TCP,
+                "",
+                ("2001:2::12", port, 0, 0),
+            ),
         ],
     )
 
@@ -193,7 +202,8 @@ def test_router_fetch_allows_default_dual_stack_fake_dns(monkeypatch, final_url)
 def test_explicit_fake_ip_ranges_replace_defaults(monkeypatch, configured):
     monkeypatch.setenv("FAKE_IP_CIDRS", configured)
     monkeypatch.setattr(
-        socket, "getaddrinfo",
+        socket,
+        "getaddrinfo",
         lambda host, port, **kwargs: [
             (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("198.18.0.15", port))
         ],
@@ -206,7 +216,8 @@ def test_explicit_fake_ip_ranges_replace_defaults(monkeypatch, configured):
 def test_fake_dns_does_not_hide_private_answer(monkeypatch, address):
     monkeypatch.delenv("FAKE_IP_CIDRS", raising=False)
     monkeypatch.setattr(
-        socket, "getaddrinfo",
+        socket,
+        "getaddrinfo",
         lambda host, port, **kwargs: [
             (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", (ip, port))
             for ip in ("198.18.0.15", address)
@@ -326,12 +337,8 @@ def test_fetch_router_falls_back_to_second_provider(public_dns):
 
 
 def test_fetch_router_all_failed_reports_fetch_error(public_dns):
-    first = _FetchOnly(
-        "first", error=ProviderError("first", ProviderErrorKind.TIMEOUT, "slow")
-    )
-    second = _FetchOnly(
-        "second", error=ProviderError("second", ProviderErrorKind.NETWORK, "reset")
-    )
+    first = _FetchOnly("first", error=ProviderError("first", ProviderErrorKind.TIMEOUT, "slow"))
+    second = _FetchOnly("second", error=ProviderError("second", ProviderErrorKind.NETWORK, "reset"))
     router = FetchRouter({"first": first, "second": second}, order=["first", "second"])
 
     with pytest.raises(ProviderError) as caught:
@@ -341,7 +348,7 @@ def test_fetch_router_all_failed_reports_fetch_error(public_dns):
     assert "first" in caught.value.detail and "second" in caught.value.detail
 
 
-def test_fetch_router_without_provider_raises_clear_error():
+def test_fetch_router_without_provider_raises_clear_error(public_dns):
     router = FetchRouter({}, order=[])
     assert not router.supports_fetch
     with pytest.raises(ProviderError, match="没有支持网页抓取"):
@@ -582,6 +589,55 @@ def test_5xx_is_unavailable():
     with pytest.raises(ProviderError) as caught:
         provider.search(SearchQuery("q"))
     assert caught.value.kind is ProviderErrorKind.UNAVAILABLE
+    assert "down" in caught.value.detail
+
+
+def test_fetch_5xx_surfaces_daemon_error_body():
+    def handler(request):
+        assert request.url.path == "/fetch-web"
+        return httpx.Response(
+            502,
+            json={
+                "status": "error",
+                "data": None,
+                "error": {
+                    "code": "fetch_failed",
+                    "message": "timeout of 20000ms exceeded",
+                    "retryable": True,
+                },
+                "hint": "Verify that the target is reachable and retry.",
+            },
+        )
+
+    with pytest.raises(ProviderError) as caught:
+        mock_provider(handler).fetch(FetchQuery("https://example.com/news", 2000))
+
+    detail = caught.value.detail
+    assert caught.value.kind is ProviderErrorKind.UNAVAILABLE
+    assert "502" in detail
+    assert "timeout of 20000ms exceeded" in detail
+    assert "Verify that the target is reachable" in detail
+
+
+def test_4xx_surfaces_plain_text_body():
+    provider = mock_provider(
+        lambda request: httpx.Response(400, text="query must be a non-empty string\n")
+    )
+    with pytest.raises(ProviderError) as caught:
+        provider.search(SearchQuery("q"))
+
+    assert caught.value.kind is ProviderErrorKind.BAD_RESPONSE
+    assert "query must be a non-empty string" in caught.value.detail
+
+
+def test_error_without_body_still_reports_status():
+    provider = mock_provider(lambda request: httpx.Response(502))
+    with pytest.raises(ProviderError) as caught:
+        provider.search(SearchQuery("q"))
+
+    assert caught.value.kind is ProviderErrorKind.UNAVAILABLE
+    assert "502" in caught.value.detail
+    assert "无错误正文" in caught.value.detail
 
 
 def test_connection_error_mentions_daemon_command():
@@ -598,7 +654,12 @@ def test_connection_error_mentions_daemon_command():
 def test_bad_envelope_is_bad_response():
     provider = mock_provider(
         lambda request: httpx.Response(
-            200, json={"status": "error", "data": None, "error": {"code": "engine_error", "message": "boom"}}
+            200,
+            json={
+                "status": "error",
+                "data": None,
+                "error": {"code": "engine_error", "message": "boom"},
+            },
         )
     )
     with pytest.raises(ProviderError) as caught:
@@ -626,7 +687,10 @@ def test_url_normalization_and_dedupe_limit():
 
 def test_router_falls_back_to_next_provider():
     router = SearchRouter(
-        {"bad": FailingProvider(), "fake": FakeProvider([SearchResult("ok", "https://example.com", "")])},
+        {
+            "bad": FailingProvider(),
+            "fake": FakeProvider([SearchResult("ok", "https://example.com", "")]),
+        },
         order=["bad", "fake"],
     )
     outcome = router.search(SearchQuery("q"))
@@ -653,6 +717,101 @@ def test_explicit_unknown_engine_does_not_fall_back():
 
     assert outcome.results == []
     assert outcome.failed[0].provider == "brave"
+
+
+def test_slow_preferred_provider_overlaps_candidates_and_early_stop_releases_caller():
+    from threading import Event
+
+    started = Event()
+    release = Event()
+    finished = Event()
+
+    class SlowProvider:
+        name = "slow"
+        capabilities = {"search"}
+
+        def search(self, query):
+            started.set()
+            try:
+                assert release.wait(4)
+                return []
+            finally:
+                finished.set()
+
+    class FastProvider:
+        name = "fast"
+        capabilities = {"search"}
+
+        def search(self, query):
+            assert started.is_set()
+            assert not finished.is_set()
+            return [
+                SearchResult("Tibo roadmap", "https://example.com/tibo", "details", provider="fast")
+            ]
+
+    router = SearchRouter({"slow": SlowProvider(), "fast": FastProvider()})
+    try:
+        outcome = router.search(SearchQuery("tibo"))
+        assert outcome.provider == "fast"
+        assert outcome.attempted == ["slow", "fast"]
+        assert not finished.is_set()
+    finally:
+        release.set()
+        assert finished.wait(4)
+
+
+def test_query_variants_can_overlap_within_a_single_provider_without_exceeding_budget():
+    from threading import Barrier
+
+    overlap = Barrier(3, timeout=4)
+    calls = []
+
+    class Provider:
+        name = "fake"
+        capabilities = {"search", "engines"}
+
+        def search(self, query):
+            calls.append((query.query, query.engines))
+            overlap.wait()
+            return []
+
+    router = SearchRouter({"fake": Provider()}, engines=["bing"], max_requests=3)
+    outcome = router.search(SearchQuery("tibo", context_terms=("Codex", "OpenAI")))
+    assert len(calls) == 3
+    assert {phrase for phrase, _ in calls} == {"tibo", "tibo Codex", "tibo OpenAI"}
+    assert {engines for _, engines in calls} == {("bing",)}
+    assert "请求次数上限" in outcome.hint
+
+
+def test_parallel_deadline_does_not_wait_for_an_unresponsive_provider(tmp_path):
+    from threading import Event
+
+    release = Event()
+    finished = Event()
+
+    class Provider:
+        name = "fake"
+        capabilities = {"search"}
+
+        def search(self, query):
+            try:
+                assert release.wait(4)
+                return [
+                    SearchResult("Tibo", "https://example.com/tibo", "details", provider="fake")
+                ]
+            finally:
+                finished.set()
+
+    cache = SearchCache(tmp_path / "cache.json", ttl=60)
+    router = SearchRouter({"fake": Provider()}, cache=cache, timeout_budget=0.5)
+    try:
+        outcome = router.search(SearchQuery("tibo"))
+        assert not outcome.results and not outcome.cached
+        assert any(item.kind == "timeout" for item in outcome.failed)
+        assert not finished.is_set()
+    finally:
+        release.set()
+        assert finished.wait(4)
 
 
 def test_cache_avoids_second_provider_call(tmp_path):
@@ -713,6 +872,198 @@ def test_budget_exhausted_core_hits_are_not_cached(tmp_path):
     assert provider.calls == 2
 
 
+def test_global_timeout_truncated_results_are_not_cached(tmp_path, monkeypatch):
+    """总超时截断的候选不能当成完整结果缓存；下次必须重新请求。"""
+    from syvrio.infra.search import attempts as attempts_module
+
+    clock = [0.0]
+
+    class SlowProvider:
+        name = "slow"
+        capabilities = {"search", "engines"}
+
+        def __init__(self):
+            self.calls = 0
+
+        def search(self, query):
+            self.calls += 1
+            clock[0] += 20.0
+            return [SearchResult("Unrelated", "https://example.com/w", "")]
+
+    provider = SlowProvider()
+    monkeypatch.setattr(attempts_module.time, "perf_counter", lambda: clock[0])
+    router = SearchRouter(
+        {"slow": provider},
+        order=["slow"],
+        cache=SearchCache(tmp_path / "cache.json", ttl=60),
+        engines=["bing"],
+        fallback_engines=("baidu",),
+        max_engines=2,
+        timeout_budget=10.0,
+    )
+
+    first = router.search(SearchQuery("tibo"))
+    assert first.results
+    assert "超时预算已用尽" in first.hint
+    assert provider.calls == 1
+
+    second = router.search(SearchQuery("tibo"))
+    assert second.cached is False
+    assert provider.calls == 2
+    assert "超时预算已用尽" in second.hint
+
+
+def test_high_quality_result_returned_after_timeout_is_not_cached(tmp_path, monkeypatch):
+    """Provider 超时返回高质量结果也不能走早停缓存：先判预算，再判质量。"""
+    from syvrio.infra.search import attempts as attempts_module
+
+    clock = [0.0]
+
+    class SlowStrongProvider:
+        name = "slow"
+        capabilities = {"search"}
+
+        def __init__(self):
+            self.calls = 0
+
+        def search(self, query):
+            self.calls += 1
+            clock[0] += 12.0
+            return [
+                SearchResult("Tibo roadmap", "https://example.com/tibo", "details", None, "slow")
+            ]
+
+    provider = SlowStrongProvider()
+    monkeypatch.setattr(attempts_module.time, "perf_counter", lambda: clock[0])
+    router = SearchRouter(
+        {"slow": provider},
+        order=["slow"],
+        cache=SearchCache(tmp_path / "cache.json", ttl=60),
+        timeout_budget=10.0,
+    )
+
+    first = router.search(SearchQuery("tibo"))
+    assert first.results
+    assert "超时预算已用尽" in first.hint
+    assert first.cached is False
+    assert provider.calls == 1
+
+    second = router.search(SearchQuery("tibo"))
+    assert second.cached is False
+    assert provider.calls == 2
+    assert "超时预算已用尽" in second.hint
+
+
+def test_provider_timeout_after_partial_candidates_is_not_cached(tmp_path, monkeypatch):
+    """后一家抛出超时并耗尽预算时，保留已有候选但按截断收尾，不写缓存。"""
+    from syvrio.infra.search import attempts as attempts_module
+
+    clock = [0.0]
+
+    class WeakProvider:
+        name = "weak"
+        capabilities = {"search"}
+
+        def __init__(self):
+            self.calls = 0
+
+        def search(self, query):
+            self.calls += 1
+            return [SearchResult("Unrelated page", "https://example.com/w", "tibo", None, "weak")]
+
+    class TimeoutProvider:
+        name = "slow"
+        capabilities = {"search"}
+
+        def __init__(self):
+            self.calls = 0
+
+        def search(self, query):
+            self.calls += 1
+            clock[0] += 12.0
+            raise ProviderError("slow", ProviderErrorKind.TIMEOUT, "upstream timeout")
+
+    weak = WeakProvider()
+    slow = TimeoutProvider()
+    monkeypatch.setattr(attempts_module.time, "perf_counter", lambda: clock[0])
+    router = SearchRouter(
+        {"weak": weak, "slow": slow},
+        order=["weak", "slow"],
+        cache=SearchCache(tmp_path / "cache.json", ttl=60),
+        timeout_budget=10.0,
+    )
+
+    first = router.search(SearchQuery("tibo codex"))
+    assert first.results
+    assert any(failure.provider == "slow" and failure.kind == "timeout" for failure in first.failed)
+    assert "超时预算已用尽" in first.hint
+    assert first.cached is False
+
+    second = router.search(SearchQuery("tibo codex"))
+    assert second.cached is False
+    assert weak.calls == 2 and slow.calls == 2
+
+
+def test_normal_quality_early_stop_is_cached(tmp_path):
+    """预算内正常早停仍按原规则写缓存，第二次直接命中。"""
+    provider = FakeProvider(
+        [SearchResult("Tibo roadmap", "https://example.com/tibo", "details", None, "fake")]
+    )
+    router = SearchRouter(
+        {"fake": provider},
+        order=["fake"],
+        cache=SearchCache(tmp_path / "cache.json", ttl=60),
+        timeout_budget=10.0,
+    )
+
+    first = router.search(SearchQuery("tibo"))
+    second = router.search(SearchQuery("tibo"))
+
+    assert first.cached is False and "超时" not in first.hint
+    assert second.cached is True
+    assert provider.calls == 1
+
+
+def test_compare_timeout_keeps_actual_verification_and_skips_cache(tmp_path, monkeypatch):
+    """compare 第二家耗尽预算：验证状态按实际贡献来源，截断结果不缓存。"""
+    from syvrio.infra.search import attempts as attempts_module
+
+    clock = [0.0]
+
+    class StrongProvider:
+        capabilities = {"search"}
+
+        def __init__(self, name, url, slow=False):
+            self.name = name
+            self.url = url
+            self.slow = slow
+            self.calls = 0
+
+        def search(self, query):
+            self.calls += 1
+            if self.slow:
+                clock[0] += 12.0
+            return [SearchResult("Tibo roadmap", self.url, "details", None, self.name)]
+
+    first = StrongProvider("first", "https://example.com/1")
+    second = StrongProvider("second", "https://example.com/2", slow=True)
+    monkeypatch.setattr(attempts_module.time, "perf_counter", lambda: clock[0])
+    router = SearchRouter(
+        {"first": first, "second": second},
+        order=["first", "second"],
+        cache=SearchCache(tmp_path / "cache.json", ttl=60),
+        timeout_budget=10.0,
+    )
+
+    outcome = router.search(SearchQuery("tibo", providers=("first", "second"), strategy="compare"))
+    assert outcome.verification == "complete"
+    assert "已合并 2 家" in outcome.hint and "超时预算已用尽" in outcome.hint
+    assert outcome.cached is False
+
+    router.search(SearchQuery("tibo", providers=("first", "second"), strategy="compare"))
+    assert first.calls == 2 and second.calls == 2
+
+
 def test_cache_expires(tmp_path):
     now = [0.0]
     provider = FakeProvider([SearchResult("ok", "https://example.com", "")])
@@ -729,9 +1080,7 @@ def test_cache_expires(tmp_path):
 def test_cache_key_separates_search_engines(tmp_path):
     provider = FakeProvider([SearchResult("ok", "https://example.com", "")])
     cache = SearchCache(tmp_path / "cache.json", ttl=60)
-    router = SearchRouter(
-        {"fake": provider}, order=["fake"], cache=cache, engines=["bing"]
-    )
+    router = SearchRouter({"fake": provider}, order=["fake"], cache=cache, engines=["bing"])
 
     router.search(SearchQuery("q"))
     router.search(SearchQuery("q", engines=("baidu",)))
@@ -759,11 +1108,18 @@ def test_ensure_daemon_prefers_installed_service(monkeypatch, tmp_path, installe
     commands = []
     monkeypatch.setattr(daemon_module.shutil, "which", lambda name: installed)
     monkeypatch.setattr(daemon_module, "npx_command", lambda command, args: [command, *args])
-    monkeypatch.setattr(daemon_module, "_spawn_daemon", lambda command, log: commands.append(command))
-    assert ensure_daemon(
-        "http://127.0.0.1:3000", health_check=lambda: next(checks),
-        sleep=lambda _: None, log_path=tmp_path / "daemon.log",
-    ) == "started"
+    monkeypatch.setattr(
+        daemon_module, "_spawn_daemon", lambda command, log: commands.append(command)
+    )
+    assert (
+        ensure_daemon(
+            "http://127.0.0.1:3000",
+            health_check=lambda: next(checks),
+            sleep=lambda _: None,
+            log_path=tmp_path / "daemon.log",
+        )
+        == "started"
+    )
     expected = [installed] if installed else ["npx", "-y", "open-websearch@latest"]
     assert commands == [expected + ["serve", "--port", "3000"]]
 
@@ -802,6 +1158,39 @@ def test_corrupted_cache_entry_is_treated_as_miss(tmp_path):
     assert cache.get("bad-result") is None
     cache.set("good", [], "fake")
     assert cache.get("good") == ([], "fake")
+
+
+def test_old_cache_without_verification_metadata_is_invalidated(tmp_path):
+    import json
+
+    path = tmp_path / "cache.json"
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "entries": {
+                    "old": {
+                        "expires": 9999999999,
+                        "provider": "fake",
+                        "results": [
+                            {
+                                "title": "old",
+                                "url": "https://example.com/old",
+                                "snippet": "",
+                                "published": None,
+                                "provider": "fake",
+                                "engine": "",
+                            }
+                        ],
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    cache = SearchCache(path, ttl=60)
+    assert cache.get("old") is None
+    assert cache.get_record("old") is None
 
 
 def test_ensure_daemon_spawns_and_waits_for_health():
@@ -847,9 +1236,15 @@ def test_spawn_daemon_hides_console_window(tmp_path, monkeypatch):
     assert captured["startupinfo"].wShowWindow == daemon_module.subprocess.SW_HIDE
 
 
-@pytest.mark.parametrize("configured", [None, "", "203.0.113.0/24"])
+@pytest.mark.parametrize(
+    "configured",
+    [None, "", "203.0.113.0/24", "198.18.0.0/15,2001:2::/48", "2001:2::/48, 198.18.0.0/15"],
+)
 def test_spawn_daemon_shares_fake_dns_policy(tmp_path, monkeypatch, configured):
-    from syvrio.infra.search.base import DEFAULT_FAKE_IP_CIDRS
+    from syvrio.infra.search.base import (
+        DEFAULT_FAKE_IP_CIDRS,
+        order_fake_ip_cidrs,
+    )
 
     captured = {}
     if configured is None:
@@ -857,13 +1252,22 @@ def test_spawn_daemon_shares_fake_dns_policy(tmp_path, monkeypatch, configured):
     else:
         monkeypatch.setenv("FAKE_IP_CIDRS", configured)
     monkeypatch.setattr(
-        daemon_module.subprocess, "Popen",
+        daemon_module.subprocess,
+        "Popen",
         lambda command, **kwargs: captured.update(kwargs),
     )
     daemon_module._spawn_daemon(["unused"], tmp_path / "daemon.log")
-    assert captured["env"]["FAKE_IP_CIDRS"] == (
-        DEFAULT_FAKE_IP_CIDRS if configured is None else configured
-    )
+    expected = order_fake_ip_cidrs(configured) if configured is not None else DEFAULT_FAKE_IP_CIDRS
+    assert captured["env"]["FAKE_IP_CIDRS"] == expected
+
+
+def test_order_fake_ip_cidrs_puts_ipv6_first():
+    """open-websearch 2.2.0 的 some() 遇到 IPv4 段会抛错并吞掉，IPv6 必须先匹配。"""
+    from syvrio.infra.search.base import DEFAULT_FAKE_IP_CIDRS, order_fake_ip_cidrs
+
+    assert order_fake_ip_cidrs("198.18.0.0/15,2001:2::/48") == "2001:2::/48,198.18.0.0/15"
+    assert order_fake_ip_cidrs(" 198.18.0.0/15 , ,2001:2::/48 ") == ("2001:2::/48,198.18.0.0/15")
+    assert DEFAULT_FAKE_IP_CIDRS.startswith("2001:2::/48")
 
 
 def test_disabled_search_does_not_register_tool(tmp_path):
@@ -919,9 +1323,7 @@ def test_agent_search_tool_passes_search_engine(tmp_path):
     session = SessionStore(config.vault).create()
     tools = build_tools(service, session, search_router=router)
 
-    outcome = tools.execute(
-        "search", {"query": "智谱 GLM 最新消息", "search_engine": "baidu"}
-    )
+    outcome = tools.execute("search", {"query": "智谱 GLM 最新消息", "search_engine": "baidu"})
 
     assert outcome.ok is True
     assert provider.queries[-1].engines == ("baidu",)
@@ -952,7 +1354,7 @@ def test_agent_search_tool_accepts_legacy_engine_and_multiple_engines(tmp_path):
     assert provider.queries[-1].engines == ("bing", "baidu")
 
 
-def test_agent_search_tool_rejects_too_many_engines(tmp_path):
+def test_agent_search_tool_accepts_many_engines(tmp_path):
     provider = FakeProvider([SearchResult("标题", "https://example.com", "摘要")])
     router = SearchRouter({"fake": provider}, order=["fake"])
     config = Config(
@@ -971,8 +1373,32 @@ def test_agent_search_tool_rejects_too_many_engines(tmp_path):
         {"query": "查询", "search_engine": ["bing", "baidu", "sogou", "brave"]},
     )
 
+    assert outcome.ok is True
+    assert provider.calls == 1
+    assert provider.queries[0].engines == ("bing", "baidu", "sogou", "brave")
+
+
+def test_agent_search_tool_honors_configured_engine_limit(tmp_path):
+    provider = FakeProvider([SearchResult("标题", "https://example.com", "摘要")])
+    router = SearchRouter({"fake": provider}, order=["fake"])
+    config = Config(
+        vault=tmp_path / "vault",
+        llm=LLMConfig(),
+        chat=ChatConfig(),
+        search=SearchConfig(enabled=True, max_search_engines=2),
+    )
+    service = MemoryService(config)
+    service.init_vault()
+    session = SessionStore(config.vault).create()
+    tools = build_tools(service, session, search_router=router)
+
+    outcome = tools.execute(
+        "search",
+        {"query": "查询", "search_engine": ["bing", "baidu", "sogou"]},
+    )
+
     assert outcome.ok is False
-    assert "at most 3 search engines" in outcome.display
+    assert "at most 2 search engines" in outcome.display
     assert provider.calls == 0
 
 
@@ -1024,7 +1450,6 @@ def test_agent_fetch_tool_returns_page_content(tmp_path):
         def fetch(self, url, max_chars=4000):
             return FetchResult(url, url, "Page", "发布日期 2026-09-21", False, "Example")
 
-
     config = Config(
         vault=tmp_path / "vault",
         llm=LLMConfig(),
@@ -1074,13 +1499,9 @@ async def test_mcp_exposes_search_when_enabled(tmp_path):
         assert "search" in {tool.name for tool in tools}
         result = await client.call_tool("search", {"query": "查询"})
         assert result.data["results"][0]["url"] == "https://example.com"
-        await client.call_tool(
-            "search", {"query": "智谱 GLM", "search_engine": "baidu"}
-        )
+        await client.call_tool("search", {"query": "智谱 GLM", "search_engine": "baidu"})
         assert provider.queries[-1].engines == ("baidu",)
-        await client.call_tool(
-            "search", {"query": "智谱 GLM", "search_engine": ["baidu", "bing"]}
-        )
+        await client.call_tool("search", {"query": "智谱 GLM", "search_engine": ["baidu", "bing"]})
         assert provider.queries[-1].engines == ("baidu", "bing")
 
 
@@ -1097,50 +1518,64 @@ async def test_mcp_omits_search_when_disabled(tmp_path):
         assert "search" not in {tool.name for tool in tools}
 
 
-@pytest.mark.parametrize("value, expected", [
-    ('["bing"]', ("bing",)),
-    ('["baidu", "bing", "baidu"]', ("baidu", "bing")),
-])
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        ('["bing"]', ("bing",)),
+        ('["baidu", "bing", "baidu"]', ("baidu", "bing")),
+    ],
+)
 def test_engine_argument_accepts_json_array_string(value, expected):
     from syvrio.infra.search.base import normalize_search_engines
+
     assert normalize_search_engines(value, ["bing", "baidu"]) == expected
 
 
-@pytest.mark.parametrize("value", ['[1]', '["notreal"]', '["bing"'])
+@pytest.mark.parametrize("value", ["[1]", '["notreal"]', '["bing"'])
 def test_engine_argument_rejects_invalid_json_array_string(value):
     from syvrio.infra.search.base import normalize_search_engines
+
     with pytest.raises(ValueError):
         normalize_search_engines(value, ["bing", "baidu"])
 
 
-@pytest.mark.parametrize("value, expected", [
-    (['["baidu"]'], ("baidu",)),
-    (['["baidu"]', '["bing"]'], ("baidu", "bing")),
-    (['baidu', '["bing", "baidu"]'], ("baidu", "bing")),
-])
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        (['["baidu"]'], ("baidu",)),
+        (['["baidu"]', '["bing"]'], ("baidu", "bing")),
+        (["baidu", '["bing", "baidu"]'], ("baidu", "bing")),
+    ],
+)
 def test_engine_argument_accepts_nested_json_array_items(value, expected):
     # 有的 provider 把数组参数双重序列化成元素级 JSON 字符串。
     from syvrio.infra.search.base import normalize_search_engines
+
     assert normalize_search_engines(value, ["bing", "baidu"]) == expected
 
 
-@pytest.mark.parametrize("value", [['[1]'], ['["notreal"]'], ['["bing"'], ['[1]', 'bing']])
+@pytest.mark.parametrize("value", [["[1]"], ['["notreal"]'], ['["bing"'], ["[1]", "bing"]])
 def test_engine_argument_rejects_invalid_nested_json_array_items(value):
     from syvrio.infra.search.base import normalize_search_engines
+
     with pytest.raises(ValueError):
         normalize_search_engines(value, ["bing", "baidu"])
 
 
 def test_default_engine_failure_falls_back_once():
     requests = []
+
     def handler(request):
         body = json.loads(request.content)
         requests.append(body)
         if body["engines"] == ["bing"]:
             payload = envelope([])
-            payload["data"]["partialFailures"] = [{"engine": "bing", "code": "ECONNRESET", "message": "TLS connection failed"}]
+            payload["data"]["partialFailures"] = [
+                {"engine": "bing", "code": "ECONNRESET", "message": "TLS connection failed"}
+            ]
             return httpx.Response(200, json=payload)
         return httpx.Response(200, json=envelope([raw_result("Synthetic", "https://example.com")]))
+
     provider = mock_provider(handler, engines=["bing"])
     router = SearchRouter({"open_websearch": provider}, order=["open_websearch"], engines=["bing"])
     results = router.search(SearchQuery("synthetic"))
@@ -1216,9 +1651,7 @@ def test_context_terms_generate_variant_queries():
             return httpx.Response(200, json=envelope([]))
         return httpx.Response(
             200,
-            json=envelope(
-                [raw_result("Tibo (Thibault Sottiaux)", "https://example.com/tibo")]
-            ),
+            json=envelope([raw_result("Tibo (Thibault Sottiaux)", "https://example.com/tibo")]),
         )
 
     router = SearchRouter({"open_websearch": mock_provider(handler)}, engines=["bing"])
@@ -1315,9 +1748,7 @@ def test_results_ranked_title_before_snippet():
             200,
             json=envelope(
                 [
-                    raw_result(
-                        "无关标题", "https://example.com/1", "这里提到 tibo codex 的转述"
-                    ),
+                    raw_result("无关标题", "https://example.com/1", "这里提到 tibo codex 的转述"),
                     raw_result("Tibo Codex 指南", "https://example.com/2"),
                 ]
             ),
@@ -1359,9 +1790,7 @@ def test_cache_key_distinguishes_context_strategy_and_fallback(tmp_path):
         )
 
     cache = SearchCache(tmp_path / "cache.json", ttl=3600)
-    router = SearchRouter(
-        {"open_websearch": mock_provider(handler)}, engines=["bing"], cache=cache
-    )
+    router = SearchRouter({"open_websearch": mock_provider(handler)}, engines=["bing"], cache=cache)
     # context 参与键且保留顺序：换序即视为新查询，重新消歧。
     router.search(SearchQuery("tibo", context_terms=("Codex", "OpenAI")))
     assert len(calls) == 2  # 空结果 + 变体
@@ -1391,18 +1820,14 @@ def test_cached_results_match_first_request_order(tmp_path):
             200,
             json=envelope(
                 [
-                    raw_result(
-                        "无关标题A", "https://example.com/1", "这里提到 tibo codex 转述"
-                    ),
+                    raw_result("无关标题A", "https://example.com/1", "这里提到 tibo codex 转述"),
                     raw_result("Tibo Codex 指南", "https://example.com/2"),
                 ]
             ),
         )
 
     cache = SearchCache(tmp_path / "cache.json", ttl=3600)
-    router = SearchRouter(
-        {"open_websearch": mock_provider(handler)}, engines=["bing"], cache=cache
-    )
+    router = SearchRouter({"open_websearch": mock_provider(handler)}, engines=["bing"], cache=cache)
     first = router.search(SearchQuery("tibo codex"))
     second = router.search(SearchQuery("tibo codex"))
     assert second.cached
@@ -1414,13 +1839,21 @@ def test_cached_results_match_first_request_order(tmp_path):
 
 def test_explicit_engine_failure_is_not_cached_as_empty(tmp_path):
     calls = []
+
     def handler(request):
         calls.append(request)
         payload = envelope([])
-        payload["data"]["partialFailures"] = [{"engine": "bing", "code": "ETIMEDOUT", "message": "request timed out"}]
+        payload["data"]["partialFailures"] = [
+            {"engine": "bing", "code": "ETIMEDOUT", "message": "request timed out"}
+        ]
         return httpx.Response(200, json=payload)
+
     provider = mock_provider(handler)
-    router = SearchRouter({"open_websearch": provider}, order=["open_websearch"], cache=SearchCache(tmp_path / "cache.json", ttl=300))
+    router = SearchRouter(
+        {"open_websearch": provider},
+        order=["open_websearch"],
+        cache=SearchCache(tmp_path / "cache.json", ttl=300),
+    )
     for _ in range(2):
         result = router.search(SearchQuery("synthetic", engines=("bing",)))
         assert not result.results
@@ -1431,9 +1864,12 @@ def test_explicit_engine_failure_is_not_cached_as_empty(tmp_path):
 
 def test_legacy_empty_search_cache_is_not_reused(tmp_path):
     import hashlib
+
     provider = FakeProvider([SearchResult("ok", "https://example.com", "")])
     cache = SearchCache(tmp_path / "cache.json", ttl=60)
-    legacy_key = hashlib.sha256("\x1f".join(["q", "5", "auto", "", "", "fake"]).encode()).hexdigest()
+    legacy_key = hashlib.sha256(
+        "\x1f".join(["q", "5", "auto", "", "", "fake"]).encode()
+    ).hexdigest()
     cache.set(legacy_key, [], "fake")
     router = SearchRouter({"fake": provider}, order=["fake"], cache=cache)
     result = router.search(SearchQuery("q"))
@@ -1461,7 +1897,7 @@ def test_empty_results_use_short_ttl(tmp_path):
 
 
 def test_budget_exhaustion_preserves_collected_candidates(monkeypatch):
-    from syvrio.infra.search import router as router_module
+    from syvrio.infra.search import attempts as attempts_module
 
     clock = [0.0]
     calls = []
@@ -1474,7 +1910,7 @@ def test_budget_exhaustion_preserves_collected_candidates(monkeypatch):
             clock[0] = 2.0
             return [SearchResult("Unrelated candidate", "https://example.com/candidate", "")]
 
-    monkeypatch.setattr(router_module.time, "perf_counter", lambda: clock[0])
+    monkeypatch.setattr(attempts_module.time, "perf_counter", lambda: clock[0])
     router = SearchRouter({"fake": SlowProvider()}, engines=["bing"], timeout_budget=1)
     result = router.search(SearchQuery("alpha"))
     assert [item.title for item in result.results] == ["Unrelated candidate"]

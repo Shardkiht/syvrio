@@ -8,6 +8,7 @@ from collections.abc import Callable
 
 import numpy as np
 
+from ..infra.diagnostics import record_event
 from ..memory.models import Entry
 from ..memory.store import MemoryStore, normalize_text
 from .base import SearchHit
@@ -69,7 +70,7 @@ class VectorRetriever:
         self.cache_path = store.paths.index_dir / CACHE_FILENAME
         self._entries: list[Entry] = []
         self._matrix: np.ndarray | None = None
-        self._fingerprint: tuple[tuple[str, int, int], ...] | None = None
+        self._fingerprint: tuple[tuple[str, str], ...] | None = None
         self._degraded = False
         self._clock = clock
         self._retry_at = 0.0
@@ -83,7 +84,7 @@ class VectorRetriever:
         self._degraded = True
         self._retry_at = self._clock() + RETRY_COOLDOWN_SECONDS
 
-    def sync(self) -> None:
+    def sync(self, *, expected_dim: int | None = None) -> None:
         """与记忆条目对齐：复用未变更向量，只为新增/变更条目计算 embedding。"""
         if self._degraded and self._clock() < self._retry_at:
             return
@@ -95,12 +96,14 @@ class VectorRetriever:
             unique.setdefault(entry.id, entry)
         entries = list(unique.values())
         ids, hashes, cached = self._load_cache()
+        if expected_dim is not None and cached is not None and cached.shape[1] != expected_dim:
+            ids, hashes, cached = [], [], None
         known = {entry_id: index for index, entry_id in enumerate(ids)}
         keep: list[int] = []
         fresh: list[Entry] = []
         for entry in entries:
             index = known.get(entry.id)
-            if index is not None and hashes[index] == text_hash(entry.text):
+            if index is not None and hashes[index] == text_hash(entry.embedding_text):
                 keep.append(index)
             else:
                 fresh.append(entry)
@@ -112,12 +115,22 @@ class VectorRetriever:
             for start in range(0, len(fresh), self.batch_size):
                 batch = fresh[start : start + self.batch_size]
                 vectors = np.array(
-                    self.embedder.embed([entry.text for entry in batch]), dtype=np.float32
+                    self.embedder.embed([entry.embedding_text for entry in batch]), dtype=np.float32
                 )
                 if vectors.ndim != 2 or vectors.shape[0] != len(batch):
                     raise ValueError("embedding 返回形状或数量与输入不一致")
                 if vectors.shape[1] == 0 or not np.isfinite(vectors).all():
                     raise ValueError("embedding 返回空维度或非有限数值")
+                if expected_dim is not None and vectors.shape[1] != expected_dim:
+                    record_event(
+                        "retrieval.vector_dimension_failed",
+                        ValueError("Embedding dimensions differ."),
+                    )
+                    self._mark_degraded()
+                    return
+                if keep and expected_dim is None and vectors.shape[1] != cached.shape[1]:
+                    self.sync(expected_dim=vectors.shape[1])
+                    return
                 if rows and vectors.shape[1] != rows[0].shape[1]:
                     raise ValueError("embedding 返回维度与已有向量不一致")
                 rows.append(_unit(vectors))
@@ -147,10 +160,12 @@ class VectorRetriever:
             return []
         try:
             vector = np.array(self.embedder.embed_query(query), dtype=np.float32)
-            if vector.ndim != 1 or vector.shape[0] != self._matrix.shape[1]:
-                raise ValueError("查询 embedding 返回维度与条目向量不一致")
-            if not np.isfinite(vector).all():
-                raise ValueError("查询 embedding 返回非有限数值")
+            if vector.ndim != 1 or not vector.size or not np.isfinite(vector).all():
+                raise ValueError("查询 embedding 返回无效向量")
+            if vector.size != self._matrix.shape[1]:
+                self.sync(expected_dim=vector.size)
+                if self._degraded or self._matrix is None:
+                    return []
             vector = _unit(vector[None, :])[0]
             scores = self._matrix @ vector
         except Exception:
@@ -167,6 +182,11 @@ class VectorRetriever:
                     id=entry.id,
                     file=str(self.store.topic_path(entry.topic)),
                     text=entry.text,
+                    source_path=entry.source_path,
+                    line=entry.line,
+                    end_line=entry.end_line,
+                    raw_markdown=entry.raw_markdown,
+                    index_text=entry.index_text,
                     topic=entry.topic,
                     timestamp=entry.timestamp,
                     score=round(score, 4),
@@ -185,7 +205,11 @@ class VectorRetriever:
                 hashes = data["hashes"].tolist()
                 matrix = np.asarray(data["vectors"], dtype=np.float32)
             if (
-                matrix.ndim != 2
+                not isinstance(ids, list)
+                or not isinstance(hashes, list)
+                or any(not isinstance(value, str) for value in ids + hashes)
+                or len(set(ids)) != len(ids)
+                or matrix.ndim != 2
                 or matrix.shape[1] == 0
                 or len(ids) != len(hashes)
                 or len(ids) != matrix.shape[0]
@@ -207,10 +231,13 @@ class VectorRetriever:
                     handle,
                     model=np.array(self.embedder.model_id),
                     ids=np.array([entry.id for entry in entries]),
-                    hashes=np.array([text_hash(entry.text) for entry in entries]),
+                    hashes=np.array([text_hash(entry.embedding_text) for entry in entries]),
                     vectors=matrix,
                 )
             os.replace(tmp, self.cache_path)
         except OSError:
             # 写盘失败不影响本次检索；下次进程启动会重新计算缺失向量。
-            tmp.unlink(missing_ok=True)
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass

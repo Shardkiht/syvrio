@@ -73,7 +73,7 @@ export function ArrowUpIcon(props: IconProps) {
 export function StopIcon(props: IconProps) {
   return (
     <Svg {...props}>
-      <rect x="8" y="8" width="8" height="8" rx="2" fill="currentColor" stroke="none" />
+      <rect x="3.5" y="3.5" width="17" height="17" rx="2" fill="currentColor" stroke="none" />
     </Svg>
   );
 }

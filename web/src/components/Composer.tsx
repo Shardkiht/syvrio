@@ -1,17 +1,70 @@
-import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react';
 import { isCommandLine, suggestionsFor, type Suggestion } from '../state/commands';
 import { isComposing } from '../state/shortcuts';
-import type { CommandInfo } from '../types';
+import type { CommandInfo, CompactionPhase, ContextUsage } from '../types';
 import { CommandSuggestions } from './CommandUI';
 import { ArrowUpIcon, PlusIcon, StopIcon } from './Icons';
 
 /** Starter commands shown under the home composer, in display order. */
 const STARTER_COMMANDS = ['model', 'status', 'help', 'sessions'];
 
+const COMPACTION_LABEL = {
+  running: 'Compressing context…',
+  done: 'Context compressed',
+  failed: 'Context compression failed',
+};
+
+function ContextMeter({ usage, compaction }: { usage: ContextUsage | null; compaction: CompactionPhase | null }) {
+  const [open, setOpen] = useState(false);
+  const ratio = usage && usage.limit > 0 ? usage.used / usage.limit : 0;
+  const percent = Math.min(100, ratio * 100);
+  const label = usage ? (percent > 0 && percent < 1 ? '<1%' : `${Math.floor(percent)}%`) : '—';
+  const nearLimit = usage !== null && ratio >= usage.compact_threshold;
+  const waveCeiling = compaction === 'running' ? 99 : 85;
+  const detail = usage
+    ? `${usage.used.toLocaleString()} / ${usage.limit.toLocaleString()} tokens`
+    : 'Estimate unavailable';
+  return (
+    <div className={`context-meter${open ? ' expanded' : ''}`} data-compaction={compaction ?? undefined}>
+      <button type="button" className="context-dial" aria-expanded={open}
+        aria-label={`Context estimate: ${detail}`}
+        data-fill={percent === 0 ? 'empty' : percent === 100 ? 'full' : 'partial'}
+        data-wave={percent >= 10 && percent <= waveCeiling ? 'moving' : 'still'}
+        style={{ '--context-fill': `${percent}%` } as CSSProperties}
+        onClick={() => setOpen((value) => !value)}
+        onBlur={() => setOpen(false)}
+        onKeyDown={(event) => {
+          if (!open || event.key !== 'Escape' || isComposing(event)) return;
+          event.preventDefault();
+          event.stopPropagation();
+          setOpen(false);
+        }}>
+        <span className="context-value">{label}</span>
+      </button>
+      <div className="context-detail" aria-hidden="true">
+        <strong>{compaction ? COMPACTION_LABEL[compaction] : 'Context estimate'}</strong>
+        <span>{detail}</span>
+        {nearLimit && <span className="context-warning">Near the compaction threshold</span>}
+      </div>
+      {compaction && <span className="sr-only" role="status">{COMPACTION_LABEL[compaction]}</span>}
+    </div>
+  );
+}
+
 export function Composer({
   busy,
   progress,
+  contextUsage = null,
+  compaction = null,
   onSend,
+  onInsert,
+  queued = [],
+  queuePaused = false,
+  onRemoveQueued,
+  undoDraft,
+  onUndo,
+  undoing = false,
+  onUndoDraftApplied,
   onStop,
   catalog = [],
   focusSignal = 0,
@@ -20,7 +73,17 @@ export function Composer({
 }: {
   busy: boolean;
   progress: string;
+  contextUsage?: ContextUsage | null;
+  compaction?: CompactionPhase | null;
   onSend: (text: string) => void;
+  onInsert?: (text: string) => Promise<boolean>;
+  queued?: string[];
+  queuePaused?: boolean;
+  onRemoveQueued?: (index: number) => void;
+  undoDraft?: string;
+  onUndo?: () => void;
+  undoing?: boolean;
+  onUndoDraftApplied?: () => void;
   onStop: () => void;
   catalog?: CommandInfo[];
   focusSignal?: number;
@@ -29,6 +92,7 @@ export function Composer({
   onOpenCommands?: () => void;
 }) {
   const [value, setValue] = useState('');
+  const [inserting, setInserting] = useState<string | null>(null);
   const [index, setIndex] = useState(0);
   const [dismissed, setDismissed] = useState(false);
   const ref = useRef<HTMLTextAreaElement>(null);
@@ -71,6 +135,12 @@ export function Composer({
     if (focusSignal > 0) ref.current?.focus();
   }, [focusSignal]);
 
+  useEffect(() => {
+    if (undoDraft === undefined || value.trim()) return;
+    setValue(undoDraft);
+    onUndoDraftApplied?.();
+  }, [undoDraft, value, onUndoDraftApplied]);
+
   const suggestions = suggestionsFor(value, catalog);
   const showSuggestions = !dismissed && suggestions.length > 0;
   const active = suggestions[Math.min(index, Math.max(0, suggestions.length - 1))];
@@ -86,18 +156,33 @@ export function Composer({
   const submit = () => {
     const text = value.trim();
     if (!text) return;
-    // Read-only slash commands stay available while a reply streams; the
-    // backend decides which ones are safe instead of freezing the composer.
-    if (busy && !isCommandLine(text)) return;
+    if (text === inserting) return;
     onSend(text);
     setValue('');
     setDismissed(false);
     setIndex(0);
   };
 
+  const insert = async () => {
+    const text = value.trim();
+    if (!text || isCommandLine(text) || inserting !== null || !onInsert) return;
+    setInserting(text);
+    try {
+      if (await onInsert(text)) setValue((draft) => draft.trim() === text ? '' : draft);
+    } finally {
+      setInserting(null);
+    }
+  };
+
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     // A Chinese/Japanese IME composition must never trigger shortcuts.
     if (isComposing(event)) return;
+    if (event.key === 'Enter' && event.ctrlKey && !event.shiftKey && !isCommandLine(value)) {
+      event.preventDefault();
+      if (busy) void insert();
+      else submit();
+      return;
+    }
     if (showSuggestions) {
       if (event.key === 'ArrowDown') {
         event.preventDefault();
@@ -151,61 +236,95 @@ export function Composer({
 
   return (
     <div className={`composer${hero ? ' composer-hero' : ''}`}>
-      <CommandSuggestions
-        suggestions={showSuggestions ? suggestions : []}
-        index={Math.min(index, Math.max(0, suggestions.length - 1))}
-        onHover={setIndex}
-        onPick={applyCompletion}
-      />
       {busy && <div className="progress" data-testid="progress">{progress || 'Working...'}</div>}
-      <div className="composer-card">
-        <textarea
-          ref={ref}
-          value={value}
-          rows={3}
-          aria-label="Message"
-          data-testid="composer-input"
-          placeholder="Message Syvrio"
-          onChange={(event) => {
-            setValue(event.target.value);
-            setDismissed(false);
-            setIndex(0);
-          }}
-          onKeyDown={onKeyDown}
+      {queued.length > 0 && (
+        <section className="web-send-queue" aria-label="Send queue">
+          <div role="status">{queued.length} queued{queuePaused ? ' · paused until you send again' : ''}</div>
+          <ol>
+            {queued.map((text, index) => (
+              <li key={index}>
+                <span title={text}>{text}</span>
+                <button type="button" aria-label={`Remove queued message ${index + 1}`}
+                  onClick={() => onRemoveQueued?.(index)}>×</button>
+              </li>
+            ))}
+          </ol>
+        </section>
+      )}
+      <div className="composer-lane">
+        <CommandSuggestions
+          suggestions={showSuggestions ? suggestions : []}
+          index={Math.min(index, Math.max(0, suggestions.length - 1))}
+          onHover={setIndex}
+          onPick={applyCompletion}
         />
-        <div className="composer-bar">
-          {onOpenCommands && (
-            <button
-              type="button"
-              className="icon-button composer-plus"
-              onClick={onOpenCommands}
-              aria-label="Insert command"
-              title="Commands (Alt+P)"
-            >
-              <PlusIcon size={17} />
-            </button>
-          )}
-          <div className="composer-actions">
-            {busy ? (
-              <>
-                {isCommandLine(value) && (
-                  <button type="button" className="send run-command" onClick={submit}>Run</button>
-                )}
-                <button type="button" className="stop" onClick={onStop} aria-label="Stop">
-                  <StopIcon size={16} />
-                </button>
-              </>
-            ) : (
+        <div className="composer-card">
+          <textarea
+            ref={ref}
+            value={value}
+            rows={3}
+            aria-label="Message"
+            data-testid="composer-input"
+            placeholder="Message Syvrio"
+            onChange={(event) => {
+              setValue(event.target.value);
+              setDismissed(false);
+              setIndex(0);
+            }}
+            onKeyDown={onKeyDown}
+          />
+          <div className="composer-bar">
+            {onOpenCommands && (
               <button
                 type="button"
-                className="send"
-                onClick={submit}
-                disabled={!value.trim()}
-                aria-label="Send"
+                className="icon-button composer-plus"
+                onClick={onOpenCommands}
+                aria-label="Insert command"
+                title="Commands (Alt+P)"
               >
-                <ArrowUpIcon size={18} />
+                <PlusIcon size={17} />
               </button>
             )}
+            <div className="composer-actions">
+              {busy && isCommandLine(value) && (
+                <button type="button" className="send run-command" onClick={submit}>Run</button>
+              )}
+              <ContextMeter usage={contextUsage} compaction={compaction} />
+              {onUndo && (
+                <button type="button" className="send run-command" onClick={onUndo}
+                  disabled={undoing} title="Undo the last turn and restore its input">
+                  {undoing ? 'Undoing…' : 'Undo'}
+                </button>
+              )}
+              {busy ? (
+                <>
+                  {!isCommandLine(value) && (
+                    <>
+                      <button type="button" className="send run-command" onClick={() => void insert()}
+                        title="Insert at the next safe boundary (Ctrl+Enter)"
+                        disabled={!value.trim() || inserting !== null}>{inserting ? 'Waiting…' : 'Insert'}</button>
+                      <button type="button" className="send" onClick={submit}
+                        disabled={!value.trim() || inserting === value.trim()} aria-label="Queue message">
+                        <ArrowUpIcon size={23} />
+                      </button>
+                    </>
+                  )}
+                  <button type="button" className="stop" onClick={onStop} aria-label="Stop">
+                    <StopIcon size={20} />
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  className="send"
+                  onClick={submit}
+                  disabled={!value.trim()}
+                  aria-label="Send"
+                >
+                  <ArrowUpIcon size={23} />
+                </button>
+              )}
+            </div>
           </div>
         </div>
       </div>
@@ -218,7 +337,7 @@ export function Composer({
           ))}
         </div>
       )}
-      <div className="composer-hint">Enter to send · Shift+Enter for a new line · / for commands</div>
+      <div className="composer-hint">Enter to send or queue · Ctrl+Enter to insert · Shift+Enter for a new line</div>
     </div>
   );
 }

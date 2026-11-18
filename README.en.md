@@ -6,10 +6,10 @@
 
 **A local-first memory agent that remembers you.**
 
-Turn everyday conversations into long-term Markdown memories you can inspect, trace, and roll back. Use the terminal chat or connect an MCP client.
+Turn everyday conversations into long-term Markdown memories you can inspect, trace, and roll back. Use the terminal chat, the private web client, or connect an MCP client.
 
 [![test](https://github.com/Shardkiht/syvrio/actions/workflows/test.yml/badge.svg)](https://github.com/Shardkiht/syvrio/actions/workflows/test.yml)
-![PyPI status](https://img.shields.io/pypi/v/syvrio)
+[![PyPI](https://img.shields.io/pypi/v/syvrio)](https://pypi.org/project/syvrio/)
 ![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
@@ -19,29 +19,34 @@ Turn everyday conversations into long-term Markdown memories you can inspect, tr
 
 Stop repeating your preferences and plans every time you start a chat. Tell it “I prefer unsweetened hot drinks,” open another conversation, and it can look that preference up. Open the Markdown files to inspect what it remembers, correct a fact, or ask it to forget one.
 
-![Actual TUI interaction: save a preference, start a new session, and recall it](docs/assets/syvrio-demo.gif)
+![Syvrio Web: save a drink preference and recall it in a new chat](docs/assets/syvrio-demo.gif)
 
-The demo operates the actual Textual UI with synthetic data and scripted model replies. Memory writes and cross-session retrieval run through the real implementation, with no paid model requests. [View the still screenshot](docs/assets/syvrio-demo.png).
-
-The stable source branch is `main`. Ongoing experiments are developed on `feature-memory-evolution`. See the release links below for the currently published stable package.
+Recorded in the actual Web client with an isolated synthetic Vault and local model replay. The app performs the memory write, cross-session retrieval, and streaming. [View the still screenshot](docs/assets/syvrio-demo.png).
 
 ## Quick start
 
-Requires Python 3.12+, uv, and git.
-
-Stable packages are published on [PyPI](https://pypi.org/project/syvrio/) and [GitHub Releases](https://github.com/Shardkiht/syvrio/releases). The package includes the Web client starting with `0.4.0`. Read the upgrade guide below before opening an older Vault.
+Requires Python 3.12+, uv, and Git. PyPI installs select a stable release by default. This guide covers Evo: pick a specific `rcN` release from [PyPI](https://pypi.org/project/syvrio/) and install it with `uv tool install "syvrio==<version>"`, or run this branch from source.
 
 ```bash
 uv tool install syvrio
 syvrio setup
-syvrio
+syvrio web
 ```
 
-`syvrio setup` selects a model provider and configures its API key, and also offers a "search & fetch API" wizard: enter or update keys for Baidu Qianfan, Tavily, Exa, You.com, and Volcengine (stored in the system credential store, never written as plaintext to TOML), enable each vendor's supported Search / Fetch separately (Baidu Qianfan supports Search only), and reorder both provider lists. Official vendors are never enabled automatically just because a key exists — enable them explicitly here; enabling without a valid key is refused. open-websearch is free and remains the default. The standard installation does not download a local embedding model; keyword retrieval is used when the vector backend is not installed. Update later with `uv tool upgrade syvrio`.
+Open `http://127.0.0.1:8765/`. For terminal chat, stop the Web service first, then run `syvrio`. Setup selects the model and stores its API key; it also configures optional [web search and page fetch](#web-search). The standard installation needs no embedding model download. Upgrade a regular tool installation with `uv tool upgrade syvrio`; see the [update guide](docs/web.md#pypi-自动更新) for systemd-managed Web services.
 
-### Upgrade an existing Syvrio Vault
+### Migrating from QuietMemo
 
-If your Vault still uses the legacy (v1) layout, follow [docs/vault-v2.md](docs/vault-v2.md) and migrate explicitly with `scripts/migrate_vault_v2.py` first (the new version refuses legacy layouts at startup and points to that guide).
+If you already have a QuietMemo config or Vault, back it up and run the one-shot migration tool (dry-run by default):
+
+```bash
+uv run python scripts/migrate_to_syvrio.py --dry-run
+uv run python scripts/migrate_to_syvrio.py --apply
+```
+
+It moves Vault `.quiet-memo/` metadata to `.syvrio/`, rewrites old escaped tag prefixes, and migrates the config file plus optional Keyring entries. Locks are not copied and rebuildable caches are not migrated. Re-running is idempotent; existing old and new metadata directories stop the migration with a report. Backups are retained beside the Vault by default. Exit code `0` means success, `1` means the migration failed and files were restored, and `2` means file migration completed but Keyring is incomplete and needs manual review; file changes are not rolled back.
+
+For a Vault still using the v1 layout, follow the separate [v2 migration guide](docs/vault-v2.md#迁移既有-vault) before launching the v2 application.
 
 ## Why Syvrio
 
@@ -54,12 +59,13 @@ If your Vault still uses the legacy (v1) layout, follow [docs/vault-v2.md](docs/
 | Local-first | Markdown is the single source of truth; Git handles versioning and audit |
 | Multiple models | DeepSeek, SiliconFlow, DashScope, iFLYTEK Spark, OpenRouter, OpenAI, and custom compatible endpoints |
 | MCP | Let MCP clients use the same local memory vault |
+| Private web client | Single-process REST + SSE web UI, loopback-only by default; reachable inside a private tailnet via Tailscale Serve |
 | Hybrid retrieval | BM25 with optional vectors; falls back to keyword retrieval if the vector backend is unavailable |
 | Web search | Optional local open-websearch integration; external content is treated as reference material |
 
 ### Run from source
 
-For development or local code changes:
+Building the Web client additionally needs Node.js and Corepack:
 
 ```bash
 git clone https://github.com/Shardkiht/syvrio.git
@@ -73,9 +79,9 @@ uv sync --extra local-embed
 uv run syvrio
 ```
 
-On first use, run `uv run syvrio setup` to configure the model and API key. Use `/model` to search and switch models. Press `Ctrl+P` in that screen to open separate provider management for adding, updating, or removing built-in provider API keys; `Esc` returns to the model list. The model picker also supports `Ctrl+R` to refresh and `Ctrl+N` to enter a custom model name.
+On first use, run `uv run syvrio setup` to configure the model and API key. Use `/model` to search and switch models. Press `Ctrl+P` in that screen to open separate provider management for adding, updating, or removing built-in provider API keys and setting their Base URLs; `Esc` returns to the model list. The model picker also supports `Ctrl+R` to refresh and `Ctrl+N` to enter a custom model name.
 
-`syvrio setup` writes the config file (default: `syvrio.toml`), initializes the vault, and optionally runs a connection test. Keys can also be provided through environment variables, which take precedence over keyring:
+`syvrio setup` writes the config file (default: `~/.syvrio/config.toml`; an existing `syvrio.toml` in the working directory takes precedence, and `SYVRIO_CONFIG` can override both), initializes the vault, and optionally runs a connection test. Keys can also be provided through environment variables, which take precedence over keyring:
 
 ```bash
 export DEEPSEEK_API_KEY=sk-...
@@ -84,9 +90,15 @@ export DEEPSEEK_API_KEY=sk-...
 Manual configuration example:
 
 ```toml
-vault = "C:/Users/you/.syvrio/vault"
+vault = "~/.syvrio/vault"
+runtime = "~/.syvrio/runtime"
 confidence_threshold = 0.8
-auto_push = false
+auto_push = false              # Affects `syvrio commit` only; TUI sync uses [git] below
+
+[git]
+auto_sync = true               # Daily Commit + Push while the TUI is running
+sync_time = "03:00"            # Local time, HH:MM
+retry_interval_minutes = 30    # Retry interval after network/timeout failures
 
 [llm]
 provider = "deepseek"          # provider: deepseek/siliconflow/dashscope/spark/openrouter/openai/custom
@@ -94,15 +106,22 @@ base_url = "https://api.deepseek.com/v1"
 model = "deepseek-flash"
 api_key_env = "DEEPSEEK_API_KEY"
 reasoning_effort = ""         # low / medium / high; only effective when supported by the model
-spark_thinking = ""
-provider_urls = {}
-recent_models = []
+provider_urls = {}             # Base URL overrides by provider, such as a DashScope workspace
+recent_models = []              # Automatically saved model history, as [provider, model ID] pairs
+spark_thinking = ""           # Spark MaaS only. enabled / auto / disabled, or empty for the provider default
 num_retries = 2
 temperature = 0.1
 timeout = 60.0
 
 [chat]
-context_window = 32000
+auto_reflect = true
+reflect_idle_seconds = 60.0       # Idle detection only
+reflect_interval_seconds = 300.0  # Minimum gap between automatic jobs
+profile_auto_interval_hours = 168.0
+profile_min_cooldown_hours = 24.0
+profile_min_changes = 20
+dream_auto_interval_hours = 24.0
+context_window = 100000
 reserve_output_tokens = 1500
 keep_recent_tokens = 6000
 compact_threshold = 0.8
@@ -126,7 +145,9 @@ model = "BAAI/bge-small-zh-v1.5"
 
 [search]
 enabled = true                  # Disabling it removes the search tool
-providers = ["open_websearch"]  # Tried in order with fallback
+# Tried in order; anysearch / parallel_mcp work anonymously without keys, searxng is self-hosted
+providers = ["open_websearch"]  # Falls back on failure or weak quality
+# providers = ["parallel_mcp", "anysearch", "searxng", "open_websearch"]
 base_url = "http://127.0.0.1:3000"
 timeout = 10.0
 max_results = 5
@@ -138,6 +159,10 @@ fallback_engines = ["baidu", "duckduckgo", "sogou"] # Backup engines for empty/o
 max_engines = 3                 # Max engines tried per automatic search (incl. primary)
 timeout_budget = 25.0           # Shared timeout budget for all fallbacks (seconds)
 max_requests = 9                # Max upstream requests shared across all providers per search
+anysearch_zone = "cn"           # AnySearch region
+anysearch_language = "zh-CN"    # AnySearch language
+searxng_base_url = "http://127.0.0.1:8888" # Self-hosted instance address; adjust the port
+searxng_timeout = 10.0          # SearXNG per-request timeout (seconds)
 fetch_timeout = 45.0            # Separate timeout for fetching page text (seconds)
 
 [fetch]
@@ -160,34 +185,28 @@ If Chinese output is garbled in Windows Git Bash, add `export PYTHONUTF8=1`. Int
 
 Web search is enabled by default but requires a local open-websearch daemon; see [Web search](#web-search) for startup and configuration.
 
-## Web client
-
-Source checkouts require Node.js 22+ and Corepack. Build the frontend once, then start Web locally:
-
-```bash
-uv run python scripts/build_web.py
-uv run syvrio web
-```
-
-Open http://127.0.0.1:8765/. A turn continues if the browser goes into the background or closes. Reopen the session to see the saved reply. Use Stop to cancel the active reply. Web and TUI share a lock, allowing one interactive client per Vault.
-
-The Web API has no login. It listens on loopback by default. For remote access, use a trusted network and configure allowed hostnames as needed.
-
 ## Chat agent
 
 After sending, an animated indicator, current phase and elapsed seconds appear beside the model name. Context usage is right-aligned, and tool calls are shown when execution starts.
 
-Run `syvrio` to enter the full-screen chat UI (built on Textual; the whole screen reflows when you resize the window); a session is created when you send the first message. `syvrio chat` is equivalent. The collapsible left sidebar lists sessions: click a session to resume; after clicking the list you can also browse with arrow keys and press Enter, while delete and rename live in `/sessions`; click « at the sidebar's top-right corner (or Ctrl+B) to collapse, and » appears at the chat's top-left corner to expand. The main pane is a wide two-column layout: user messages appear as right-aligned bubbles, assistant replies span the left with speaker headers and times. Typing `/` opens a vertical command palette above the input (arrows to select, Enter to run, ESC to dismiss, rows clickable); the bottom status bar shows the model, context usage as a progress line with used/total numbers, and the pending count; retrieval mode and shortcut hints live in the empty-session welcome, warning past the compaction threshold. Reply text streams in as it is generated (interrupted generations keep the partial text with a marker); tool and retrieval events appear as cards, turns are separated by a divider; exiting (Ctrl+Q or `/exit`) distills the turn's statements with a summary, and uncommitted vault changes found by the startup check are committed automatically.
+Run `syvrio` to enter the full-screen chat UI (built on Textual; the whole screen reflows when you resize the window); a session is created when you send the first message. `syvrio chat` is equivalent. The collapsible left sidebar lists sessions: click a session to resume; after clicking the list you can also browse with arrow keys and press Enter, while delete and rename live in `/sessions`; click « at the sidebar's top-right corner (or Ctrl+B) to collapse, and » appears at the chat's top-left corner to expand. User messages and assistant replies share a left-aligned reading column. Assistant replies show a speaker header and timestamp. Typing `/` opens a vertical command palette above the input (arrows to select, Enter to run, ESC to dismiss, rows clickable); the bottom status bar shows the model, context usage as a progress line with used/total numbers, and the pending count; retrieval mode and shortcut hints live in the empty-session welcome, warning past the compaction threshold. Reply text streams in as it is generated (interrupted generations keep the partial text with a marker); tool and retrieval events appear as cards, turns are separated by a divider; exiting (Ctrl+Q or `/exit`) distills the turn's statements with a summary, and uncommitted vault changes found by the startup check are committed automatically.
 
-While a reply is generating, keep typing and press Enter to queue messages above the input. They are sent in order after the current reply completes or stops. Press Esc to stop generation while preserving partial output and the unsent draft. Completed tools are not rolled back; an active tool finishes safely before further calls stop. Esc dismisses an open command palette or modal first. The queue is in memory only and is not restored after exit.
+Type `/` or a command prefix, use ↑↓ to select a suggestion, then press `Tab` to fill it in. Tab completes commands and subcommands. For example, press `Tab` twice after `/pro` to get `/profile refresh`. Press Enter to run it.
+
+Consecutive web search and fetch calls in one tool batch run up to eight at a time. Results are returned in call order. Within each search, the preferred request has a 250 ms head start before up to four upstream requests can overlap. For direct questions about a single named field, automatic recall can use the sole exact keyword match if the fact is currently valid. Other questions follow the normal rewrite rules. Rewriting waits up to four seconds before falling back to the original question and recent context.
+
+Consecutive `memorize` calls in the same model response can share one extraction. Batching keeps the existing admission checks and session provenance, respects other tool calls as boundaries, and keeps whole-message time anchors separate from fragments.
+
+While a reply is generating, keep typing and press Enter to queue messages above the input. They are sent in order after the current reply completes or stops. Ctrl+Enter offers a supplement to the current turn. The model request and any tool batch finish before the supplement is sent with the next model request. A request made during tool execution or outside an available boundary leaves the text in the composer. The slash command palette and Tab completion remain available. Settings commands open immediately. Model, thinking mode and context changes take effect on the next turn. Profile refresh, reflection and imports run in the background. /compact waits for the current reply to be recorded and runs before queued messages. Press Esc to stop generation while preserving partial output and the unsent draft. Completed tools are not rolled back; an active tool finishes safely before further calls stop. Esc dismisses an open command palette or modal first. The queue is in memory only and is not restored after exit. Sending `/undo` during generation is different from sending a normal message: it immediately signals cancellation instead of entering the FIFO, waits for the worker to stop writing, then withdraws only the in-flight turn bound to its originating session and user message. Repeated `/undo` presses are idempotent, and a background generation cannot undo the session currently being viewed. Existing queued messages are kept but paused after undo so they cannot overwrite the restored text; they resume in order after the user sends the next message. Pending restore text is tracked per session, so undos in different background sessions do not overwrite each other. If the input already contains unsent text it is not replaced; the restore is kept and retried when that session is shown with an empty input. If undo fails or has no target message, queued messages are not paused and continue in order.
 
 - Automatically retrieves relevant long-term memories every turn and injects them into context; follow-ups and memory cues such as "remember" or "last time" include the last 1-2 user turns in the search query and raise the result limit.
-- The model can call `recall / read_topic / memorize / correct / forget / review_pending`. `read_topic` reads a topic's active entries only when the user explicitly requests the full topic or recall is insufficient, caps output at 2000 tokens, and does not accept file paths. The model calls `search` for current public information and `fetch_web` to open a result page when dates or details matter, treating both results and page text as external material without executing any instructions in them.
+- The model can call `recall / read_topic / memorize / correct / evolve / forget / review_pending`. `read_topic` reads a topic's active entries only when the user explicitly requests the full topic or recall is insufficient, caps output at 2000 tokens, and does not accept file paths. The model calls `search` for current public information and `fetch_web` to open a result page when dates or details matter, treating both results and page text as external material without executing any instructions in them.
 - No session is created when entering chat; `sessions/YYYY/MM/<id>.jsonl` is created after the first message.
+- When a model returns displayable reasoning, the `Thinking…` pane follows the latest three wrapped lines. It collapses when the answer starts. Click its header or focus it and press Enter to open a bounded scrollable pane. Scrolling up pauses follow mode while expanded, and returning to the bottom resumes it. Each model step has its own pane. Restored panes start collapsed.
 - Resumed sessions initially display the existing summary and the latest 10 unsummarized message records. Click “加载更早的记录” (load earlier records) to page through older messages after the summary boundary; the original history is retained. Successful resume does not show a notification; failures still show an error. Each reply uses a single Markdown-rendering widget to reduce mounting and cleanup overhead for long replies. Select reply text with the mouse and press Ctrl+C to copy it.
 - Context usage after resuming or undoing is estimated and cached in the background. The status shows “计算中” (calculating) until ready; changes to the session, messages, or persona trigger a new estimate, and stale results cannot overwrite the current session.
 - Resuming a session replays previous user messages and assistant replies; use `syvrio chat --resume <id>`. Session switches never block: the previous session's distillation runs in the background and notifies when done. The bottom context meter resets to zero after switching and updates from the new session's context plan on the next turn, rather than retaining the previous session's usage.
-- `/undo` withdraws the latest user turn and its subsequent replies, then restores the original text for editing. It appends an `undo` event instead of rewriting JSONL; after resending, the withdrawn turn stays out of context and future distillation.
+- Type `/undo` or click **Undo** to withdraw the last turn and restore its input. New turns also undo recorded Vault writes, including memories and pending candidates. Running writes finish safely before rollback. If an affected file changed later, the turn is left intact. It appends an `undo` event instead of rewriting JSONL; after resending, the withdrawn turn stays out of context and future distillation. During generation, `/undo` cancels immediately and withdraws only the active turn.
 - On exit, extracts user statements from the turn that have not yet been persisted.
 - On startup, catches up sessions with missed distillation after abnormal termination or failed extraction during compaction or exit, up to 3 per launch, with a card reporting the result. Post-switch catch-up filters for at least 3 undistilled messages before applying the limit; startup uses a threshold of 1, so short sessions do not crowd eligible sessions out of post-switch catch-up.
 - Memory entries record `session` and `message` sources, so they can be traced back to the original conversation.
@@ -197,22 +216,45 @@ In-session commands:
 | Command | Action |
 | --- | --- |
 | `/new` | End the current session and start a new one (created after the first message) |
-| `/sessions` | Open the centered session picker: type to filter, Enter to resume, Ctrl+R to rename, Del to delete (with confirmation), ESC to cancel |
+| `/sessions` | Open the centered session picker: type to filter, Enter to resume, Ctrl+R to rename, Ctrl+D to permanently delete (confirmation defaults to Cancel), ESC to cancel |
 | `/compact` | Compact the context immediately |
-| `/undo` | Withdraw the latest turn and restore its user message for editing |
+| `/undo` | Withdraw the latest turn and restore its user message for editing; during generation, cancel immediately and withdraw only the active turn |
 | `/summary` | View the current session summary |
 | `/status` | Session, model, retrieval mode, context, and pending status |
-| `/model` | Search and switch models; `Ctrl+P` opens separate provider management, `Ctrl+R` refreshes, and `Ctrl+N` enters a custom model name. Opens from cache or presets, then refreshes in the background; `/model refresh` skips the old cache |
-| `/think` | Switch reasoning effort: default / low / medium / high, only when the model supports it; applies immediately and persists to the config |
+| `/git` | Open Git management: repository, Remote/Upstream, working tree and unpushed commits; `Ctrl+S` opens sync confirmation (defaults to Cancel and runs only after explicitly selecting Synchronize) |
+| `/model` | Search and switch models, with up to five recently used models from the available catalog shown first. Discovers models through each configured provider's `/models` endpoint and may reuse a cache scoped to the endpoint and credential. `Ctrl+P` manages providers, `Ctrl+R` or `/model refresh` refreshes the catalog, and `Ctrl+N` enters a custom model name |
+| `/think` | Set and save the model's thinking preference. Spark MaaS offers enabled / auto / disabled. Other models with reasoning effort support offer default / low / medium / high |
 | `/context` | Switch the context window: presets generated from the current model's limit, custom value allowed; effective on the next turn |
 | `/setup` | Reminds you that the full setup wizard runs `syvrio setup` in a terminal (manage built-in provider keys with `Ctrl+P` in `/model`) |
 | `/rename <title>` | Rename the session |
-| `/import <path> [--apply]` | Import a file or the current directory; preview by default, reanalyze and write with `--apply`. Without a path, opens an input dialog |
-| `/pending` | Work through pending candidates one by one: approve / reject / edit then write; automatically advances to the next until the queue is empty |
+| `/import <path> [--apply]` | Import a file or the current directory; preview by default. `--apply` asks for one batch confirmation before parsing or model calls, then reanalyzes and writes. Without a path, opens an input dialog |
+| `/inferences` | Inspect, confirm, reject or edit separate inferences; C Confirm, R Reject, E Edit, with no extra confirmation for routine review |
+| `/profile [refresh [requests]]` | View the generated profile summary (cached, no model call); refresh builds the summary and proposes inferences |
+| `/dream [requests\|status\|cancel\|resume]` | Start, inspect or cancel background reflection; one request by default |
+| `/pending` | Browse candidates and their full scrollable text in one screen. Approve, reject, or edit in place across multiple lines (Ctrl+S saves and approves) |
 | `/topics [name]` | Browse memory topics and entry counts; with a name, drills into that topic's entries |
 | `/exit` | Exit |
 
 `/help` shows command descriptions; `/quit` is the same as `/exit`.
+
+### Git synchronization
+
+`/git` opens a dedicated Git management screen backed by the real repository: initialization state, Remote and Upstream, current branch, modified files, unpushed commits, the latest commit and latest successful push, auto-sync state, daily time, next run, last result, and the latest failure reason. Missing or unverifiable values are shown as `Not configured` or `Unknown`; a configured Remote is never reported as a verified connection.
+
+`Ctrl+S` only works inside the Git screen and never commits immediately: it opens a confirmation screen describing local commits, remote push and available change counts. Cancel is focused by default; only explicitly selecting Synchronize starts the background Worker, and `Esc` cancels. Stages are reported as Checking working tree / Creating commit / Pushing to remote / Refreshing status. Stages that did not run are marked `Skipped`; no fake percentage is shown. Closing the screen does not cancel a running operation or release its locks early, and repeated `Ctrl+S` during a run is rejected. If the terminal intercepts `Ctrl+S` as XON/XOFF flow control, click the Synchronize row or adjust the terminal yourself; Syvrio does not modify terminal settings.
+
+Sync rules:
+
+- The vault must itself be the Git worktree root. If it sits inside another repository without its own `.git`, initialization, commits, sync and pushes are refused so parent-repository files are never included.
+- First-time initialization and regular sync both inspect the files about to be committed, including already staged entries. `.env`, `keys.env`, key and credential files block the commit; existing files and the index are left untouched.
+- Stage and commit only when the working tree has changes; never create empty commits. Push is checked independently, so existing unpushed commits are pushed even when nothing new was committed.
+- A failed push preserves the local commit. Later manual or scheduled runs push the existing commit without creating another one.
+- Never force-push, pull, merge, rebase, or reset. A diverged remote stops automatic pushing and requires manual handling; missing Remote/Upstream produces setup guidance.
+- Both manual and daily sync use fixed, readable commit messages and never call the LLM. The CLI `syvrio commit` keeps its previous behavior; `auto_push` applies only to that command.
+- The daily job runs once at `03:00` local time by default. Configure the time, retry interval, or disable it under `[git]`. Scheduling lives inside the TUI process; a missed run is compensated on the next launch, and a date that already succeeded is not repeated. Network/timeout failures retry after `retry_interval_minutes`; authentication failures, divergence, and missing Remote/Upstream do not retry repeatedly.
+- Runtime state is stored in `runtime/state/git-sync.json` outside the Vault and records only real local results; a successful push time is never inferred from the commit time.
+
+Concurrency: memory files, session JSONL, inference/audit/pending logs, and reflection job logs share `runtime/locks/vault.lock` with Git snapshot creation; Stage/Commit/Push share `runtime/locks/git.lock`. Both locks are reentrant in-process and mutually exclusive across processes, and the OS releases them after a crash. The fixed order is Git operation lock → Vault write lock; a network push holds only the Git lock, so chatting and new memory writes continue. Advisory locks depend on the local filesystem; sharing one vault over NFS/SMB cannot guarantee cross-host exclusion. External Git operations may change refs, so `/git` reflects the last local read.
 
 ### Data flow
 
@@ -221,12 +263,12 @@ flowchart TD
     U["User message"] --> Q["Query building / follow-ups carry context"]
     Q --> R["Hybrid retrieval / BM25 + vector RRF"]
     R --> C["Agent loop / LLM + tools"]
-    C -->|"recall / read_topic / memorize / correct / forget"| C
+    C -->|"recall / read_topic / memorize / correct / evolve / forget"| C
     C --> A["Reply"]
     C -->|"user says 'remember'"| W["Write adjudication / confidence / conflict / secrets"]
     X["Exit extraction / pre-compaction flush / startup catch-up"] --> W
     W -->|"trusted"| V["vault / memories/*.md"]
-    W -->|"low confidence / conflict / sensitive"| P["Pending queue / records/memory/pending.jsonl"]
+    W -->|"low confidence / conflict / sensitive"| P["Pending queue / pending.jsonl"]
     P -->|"syvrio approve / reject"| V
     V --> G["Git commit / auto Chinese summary"]
 ```
@@ -259,6 +301,8 @@ You are Ache, my old friend. Keep replies concise, occasionally dry-humored, and
 
 ## Command line
 
+Use `syvrio update` to upgrade a managed Web service from PyPI. See [Web auto-update setup](docs/web.md#pypi-自动更新).
+
 ```bash
 # Extract from a conversation and write silently
 uv run syvrio memorize "I'm looking for an apartment downtown, budget under 4000, no shared housing"
@@ -277,6 +321,15 @@ uv run syvrio topics
 
 # Search / review pending / approve or reject
 uv run syvrio recall "downtown"
+uv run syvrio recall "exhibition" --from 2024 --to 2024-06 --location "Synthetic Gallery"
+uv run syvrio profile
+uv run syvrio profile --refresh --requests 1
+uv run syvrio dream --requests 1
+uv run syvrio evolve <id> "New synthetic state" --from 2024-06-01
+uv run syvrio recall "state" --as-of 2024-05-01
+uv run syvrio recall "state" --view history
+uv run syvrio inferences
+uv run syvrio inferences <id> --action confirm
 uv run syvrio pending
 uv run syvrio approve p-20261022-140312-a1b2
 uv run syvrio reject p-20261022-140312-c3d4
@@ -290,6 +343,13 @@ uv run syvrio sessions
 uv run syvrio status
 uv run syvrio commit --no-push
 uv run syvrio history
+
+# Private web client (loopback 127.0.0.1:8765 by default)
+uv run syvrio web
+uv run syvrio web --host 127.0.0.1 --port 9000
+# Map a local domain: writes the hosts entry and allows its Host/Origin,
+# then open http://syvrio.local/ in the browser
+uv run syvrio web --domain syvrio.local --port 80
 ```
 
 You can also paste or drag an absolute file path into a chat and ask to summarize it or import the conversation into long-term memory. Quote paths containing spaces. `read_file` (paged analysis) and `import_file` (chunked preview/write) are available only for paths supplied in the current user message. They do not grant arbitrary directory access. Tool steps are bounded: unfinished reads/imports must be reported; include the path again to continue in a subsequent turn. Drag-and-drop path insertion depends on the terminal.
@@ -323,11 +383,25 @@ MCP client configuration:
 }
 ```
 
-Exposed tools: `memorize`, `note`, `recall`, `read_topic`, `review_pending`, `approve`, `reject`, `list_topics`, `status`; `search` is added when web search is enabled. `read_topic` shares the Agent tool's topic validation, active-entry filtering, and 2000-token limit.
+Exposed tools: `memorize`, `note`, `recall`, `read_topic`, `review_pending`, `approve`, `reject`, `list_topics`, `status`, `evolve`, `profile`; `search` is added when web search is enabled. `read_topic` shares the Agent tool's topic validation, active-entry filtering, and 2000-token limit.
+
+## Web client
+
+`syvrio web` serves a private single-user UI at `http://127.0.0.1:8765/` by default. It shares sessions, memory, and model settings with the TUI. PyPI wheels include the frontend. From source, build it before starting:
+
+```bash
+uv run python scripts/build_web.py
+uv run syvrio web
+```
+
+- **Chats and replies:** A new session is saved with its first message. Replies stream, and thinking and tool details can be expanded. If the page closes or loses its connection, generation and saving continue. Reopen the session to read the result, or use Stop to cancel the active turn. In Web and TUI, Enter queues messages in order and Ctrl+Enter offers a supplement at a safe boundary. The Web queue lives in the current page. Type `/undo` or click **Undo** to stop generation immediately, restore the original input, and pause queued messages until you send again.
+- **Commands and settings:** Type `/` to open suggestions aligned with the input, press `Tab` to complete, or press `Enter` to run. Open Settings or type `/setup` to manage appearance, models, thinking, context, and providers. Command results open in an in-page dialog. Use `/pending` and `/inferences` to browse, edit, and review items in their dialogs. Web commands can also refresh the profile and run reflection. Use the TUI or CLI for local file imports. See the [Web guide](docs/web.md#slash-command-与快捷键) for the command reference.
+- **Phones and remote access:** On phones, the sidebar opens as a drawer and the composer fits above the keyboard. For remote access inside a private tailnet, see [Tailscale Serve setup](docs/web.md).
+- **Process ownership:** When using the same Vault and Runtime, stop the TUI before starting Web, or vice versa. Failed calls follow the current model's retry settings; model switching is explicit.
 
 ## Web search
 
-The `search` tool queries public web pages through a local [open-websearch](https://github.com/Aas-ee/open-webSearch) daemon and needs no API key. Start the daemon in a separate terminal:
+The `search` tool queries public web pages through a local [open-websearch](https://github.com/Aas-ee/open-webSearch) daemon by default and needs no API key. Start the daemon in a separate terminal:
 
 ```bash
 npx -y open-websearch@latest serve
@@ -336,9 +410,78 @@ npx -y open-websearch@latest serve
 
 Search results contain only titles, snippets, and links; `fetch_web` opens one of those links and extracts the page text (readability, up to 8000 characters) to confirm dates, details, or snippets. open-websearch fetching is available over the HTTP transport only; the MCP interface still exposes just `search`. The fetch entry point accepts only public http(s) URLs, rejects localhost, private, and link-local addresses, and re-validates the final URL after redirects; fake-IP proxy DNS answers in `198.18.0.0/15` and `2001:2::/48` are allowed by default for hostnames only; literal non-public IP URLs remain blocked. `FAKE_IP_CIDRS` overrides these defaults (an empty value disables compatibility). Automatically started daemons inherit the same setting; an already running external daemon needs the matching setting and a restart. Automatic startup prefers an installed `open-websearch` on PATH, falling back to `npx open-websearch@latest` when it is absent.
 
-Bing sometimes splits Chinese proper nouns into single characters (for example, 「智谱」 is searched as 「智」). When results are obviously off-topic, set `engines = ["baidu"]` in the config, or have the model retry with `search_engine = "baidu"` in the `search` tool. `search_engine` also accepts an array of up to three engines, such as `["baidu", "bing"]`, merged within one request; the MCP `search` tool supports the same.
+### AnySearch and Parallel MCP
 
-Automatic fallback: search is progressive — each request pulls more candidates from the upstream engine than will be displayed (3x the display count, 10-30), merging them into a unified candidate pool that is deduplicated and reranked by deterministic rules. When the primary engine (the first entry of `engines`) returns nothing, results miss the query's core terms or match them too weakly (the candidate pool falls short of the early-stop bar), or a request fails, the router retries through `fallback_engines`, trying at most `max_engines` engines; all fallbacks share the `timeout_budget`, each single request's timeout is capped by the remaining budget, and all providers together are capped by `max_requests` upstream requests per search — once exceeded, the best candidates so far are returned with an explicit truncation hint (such results are not cached, so the next search issues fresh requests). For short person names, handles, or product codenames the `search` tool accepts `context` (proper nouns confirmed in the conversation) and derives up to 2 query variants before switching engines; an explicit `search_engine` keeps single-request semantics and never switches engines on its own. Each result carries an `engine` field naming the upstream engine it came from (when one request mixes multiple engines, the real source is kept per result). Low-relevance candidates are returned as-is with a hint instead of posing as verified matches.
+AnySearch and Parallel MCP both support Search and Fetch. Enable them independently in `[search].providers` or `[fetch].providers`. Both operations use the same optional API key:
+
+- `anysearch`: calls AnySearch REST search (`https://api.anysearch.com/v1/search`). It sends no `Authorization` header without a key; setting `ANYSEARCH_API_KEY` switches to Bearer authentication. `zone` and `language` come from `anysearch_zone` / `anysearch_language` under `[search]`, defaulting to `cn` / `zh-CN`. The original query is never rewritten.
+- `parallel_mcp`: Search keeps `web_search` on the standalone Search MCP (`https://search.parallel.ai/mcp`), which Parallel still supports for compatibility. Setting `PARALLEL_API_KEY` adds Bearer authentication to both Search and Fetch. Search prefers `structuredContent.results` and also accepts JSON in `content[].text`; duplicate URLs are merged, long excerpts are truncated, and unverifiable publish dates remain empty.
+
+Example (the default order is unchanged; a provider is enabled only when explicitly listed):
+
+```toml
+[search]
+providers = ["parallel_mcp", "anysearch", "open_websearch"]
+
+[fetch]
+providers = ["anysearch", "parallel_mcp", "open_websearch"]
+```
+
+Search uses the existing quality gate, fallback chain, request budget, cache and `UsageLimiter`. Each has a local default protection cap of 20 requests per day, adjustable through `[search.usage_limits.<provider>]`; 0 means unlimited. These values are local request protection, not vendor free-tier entitlements or billing caps, and a configured key may incur vendor-side charges. Authentication failures (401/403) are reported explicitly and fall back to the next provider; the key is never silently dropped to retry anonymously. Search and Fetch share the vendor counter. When the vendor reports exhausted quota, Syvrio pauses it and tries the next configured Fetch provider.
+
+- **AnySearch Fetch** posts the URL to the [Extract API](https://www.anysearch.com/docs/api-endpoints/v1-extract) at `https://api.anysearch.com/v1/extract`, extracts `data.content`, and strips HTML.
+- **Parallel Fetch** calls `web_fetch` through [Parallel MCP 2.0](https://docs.parallel.ai/integrations/mcp/quickstart) at `https://mcp.parallel.ai/mcp`. It requests Markdown for one URL and uses excerpts if full text is unavailable.
+
+The adapters use the redirect destination when the service reports it, otherwise they keep the requested URL without probing for redirects. Fetch validates the input and any reported destination and truncates at `max_chars`. OpenWebSearch (HTTP), Tavily, Exa, You.com, and Volcengine continue to support Fetch; Baidu Qianfan and SearXNG are search-only.
+
+The user previously verified both anonymous endpoints from the current mainland-China network with proxy-free curl, but that only reflects that network at that time. Availability across carriers, times and regions still requires live verification; the code does not require a VPN or extra proxy. `syvrio setup` can enable either anonymous provider without entering a key.
+
+### Self-hosted SearXNG
+
+`searxng` treats the whole self-hosted instance as one provider. Engines such as Baidu, Bing and DuckDuckGo inside the instance are aggregated by SearXNG itself; Syvrio does not add a separate adapter for each internal engine. It is disabled by default and never calls a public instance by default — Syvrio only requests it after `searxng` is added to `search.providers` and a self-hosted address is configured:
+
+```toml
+[search]
+providers = ["searxng", "open_websearch"]
+searxng_base_url = "http://127.0.0.1:8888"
+searxng_timeout = 10.0
+```
+
+SearXNG's JSON API may be disabled out of the box. Minimal local deployment example (Syvrio never installs or starts Docker/WSL/Redis/SearXNG):
+
+```bash
+docker run --rm -d --name searxng -p 8888:8080 \
+  -v "$PWD/searxng:/etc/searxng" searxng/searxng
+```
+
+After the first start, edit `settings.yml` in the mounted directory to enable `json` under `search.formats`, then restart the container:
+
+```yaml
+search:
+  formats:
+    - html
+    - json
+```
+
+When JSON is not enabled, `format=json` may return HTTP 403. Syvrio reports this as a SearXNG configuration error and points at `search.formats`; it is never treated as a normal empty result. A connection failure produces a hint to check whether the instance is running and whether `searxng_base_url` is reachable. 429 and 5xx responses are treated as upstream failures and fall back to the next provider.
+
+Network namespace caveat: `127.0.0.1` in Windows, WSL and Docker does not necessarily point at the same service. With `-p 8888:8080`, Syvrio running on the Docker host can use `http://127.0.0.1:8888`; if Syvrio runs in a different WSL distribution or container, use an address reachable from that environment (such as `host.docker.internal` or the actual gateway IP) instead of assuming `127.0.0.1` works.
+
+The adapter only calls the configured instance address and never treats URLs inside a query as service addresses. It does not follow HTTP redirects, caps the response body at 2 MiB, and bounds each request by both `searxng_timeout` and the global `timeout_budget`. `SearchQuery.lang` maps to `language`, while `freshness` maps to `time_range` only for values SearXNG supports (day/week/month/year); values that cannot be mapped equivalently are omitted. Multiple internal engines still share Syvrio's unified deduplication, quality gate, request budget and result-count cap, and partial engine failures are retained in `failed`. SearXNG provides search only, not `web_fetch`; page fetching still follows the `[fetch]` settings.
+
+Bing sometimes splits Chinese proper nouns into single characters (for example, 「智谱」 is searched as 「智」). When results are obviously off-topic, set `engines = ["baidu"]` in the config, or have the model retry with `search_engine = "baidu"` in the `search` tool. `search_engine` also accepts an array such as `["baidu", "bing", "sogou"]`, merged within one request, with no engine-count limit by default; set `search.max_search_engines` to cap an explicit list (0 means unlimited); the MCP `search` tool supports the same.
+
+Automatic fallback: search is progressive — each request pulls more candidates from the upstream engine than will be displayed (3x the display count, 10-30), merging them into a unified candidate pool that is deduplicated and reranked by deterministic rules. When the primary engine (the first entry of `engines`) returns nothing, results miss the query's core terms or match them too weakly (the candidate pool falls short of the early-stop bar), or a request fails, the router retries through `fallback_engines`, trying at most `max_engines` engines; all fallbacks share the `timeout_budget`, each single request's timeout is capped by the remaining budget, and the router returns the candidates collected by the total deadline and does not cache truncated results, and all providers together are capped by `max_requests` upstream requests per search — once exceeded, the best candidates so far are returned with an explicit truncation hint (such results are not cached, so the next search issues fresh requests). For short person names, handles, or product codenames the `search` tool accepts `context` (proper nouns confirmed in the conversation) and can derive up to two query variants within the same request budget; an explicit `search_engine` keeps single-request semantics and never switches engines on its own.
+
+The LLM may pass `providers` to the `search` call to recommend an ordered list of enabled sources, plus `strategy` to choose how the router schedules them (the same parameters are supported by Agent Function Calling and MCP):
+
+- `auto` (default): search providers in the recommended order and stop once results pass the quality gate; continue to the next provider on failure, timeout, local quota exhaustion, or weak quality. After the list is exhausted, remaining configured providers may still be used as fallback.
+- `compare`: for fresh news or important facts that benefit from cross-checking. When budget allows, it attempts at least two different providers and does not stop merely because the first one passes the gate. Results are still deduplicated and ranked together; the same page returned by multiple providers remains one candidate and is not independent evidence. If quota, timeout, or availability prevents two providers, `hint` explicitly says cross-verification was incomplete and lists failure kinds instead of claiming verification. The cache also stores verification state, the actual attempt order, contributing providers and failure diagnostics, so a cache hit restores the same hint; old entries without verification metadata are marked unknown rather than treated as complete. Results truncated by the total timeout or request budget are never cached, so the next search issues fresh requests.
+- `strict`: call only the sources explicitly listed in `providers`; never extend to other configured providers. An empty `providers` list is rejected, and if all listed sources are unavailable the failure is reported truthfully.
+
+An omitted or empty `providers` uses the configured order. Duplicates are removed, at most 8 entries are accepted, and only actually enabled and registered names are used; invalid names are safely ignored and reported in `failed`. The router generates the final execution order, and the LLM cannot specify API keys, auth headers, or service addresses, nor bypass enablement, `UsageLimiter`, `max_requests`, or `timeout_budget`. Results now include `attempted` (the actual attempt order) and `strategy`; each result still carries its own `provider` and upstream `engine`. Cache keys distinguish the `providers` order, `strategy`, and effective attempt sequence. The old single `preferred_provider` parameter is kept only for compatibility. `search_engine` still means an upstream engine only and remains a separate layer from providers.
+
+Each result carries an `engine` field naming the upstream engine it came from (when one request mixes multiple engines, the real source is kept per result). Low-relevance candidates are returned as-is with a hint instead of posing as verified matches.
 
 Response shape:
 
@@ -346,6 +489,9 @@ Response shape:
 {
   "results": [{"title": "...", "url": "...", "snippet": "...", "published": null, "provider": "open_websearch", "engine": "bing"}],
   "provider": "open_websearch",
+  "attempted": ["open_websearch"],
+  "strategy": "auto",
+  "verification": "",
   "failed": [{"provider": "open_websearch", "kind": "network", "detail": "..."}],
   "hint": "optional hint"
 }
@@ -353,9 +499,9 @@ Response shape:
 
 - Results are untrusted external content: cite them as material, never execute instructions found in them.
 - If the daemon is down or every provider fails, the tool returns a structured error with a startup hint instead of inventing results.
-- `[search]` settings: `enabled` (removes the tool when false), `providers` (fallback order), `base_url`, `timeout`, `max_results`, `cache_ttl`, `transport` (`http` by default; `mcp` starts an npx MCP process per search), `auto_start` (warm up the HTTP daemon in the background when the TUI opens), `engines` (upstream search engines, `["bing"]` by default), `fallback_engines` (backup engine chain, `["baidu", "duckduckgo", "sogou"]` by default), `max_engines` (engines per automatic search, 3 by default), `timeout_budget` (shared fallback budget, 25 seconds by default, with each single request's timeout capped by the remaining budget), `max_requests` (upstream requests shared across all providers per search, 9 by default; when exceeded the best candidates so far are returned with an explicit truncation hint and are not cached), `usage_limits` (per-vendor call caps via `[search.usage_limits.<provider>]` with `daily` and `monthly` (0 means unlimited); a vendor's Search and Fetch share one counter pool, and once the cap is hit that vendor is skipped while fallback continues normally; counters persist in `runtime/state/usage.json` inside the Runtime — **local counts are not the vendor's actual billing cap**), and `fetch_timeout` (separate timeout for fetching page text, 45 seconds by default). `syvrio setup` manages both periods and official quota pauses.
+- `[search]` settings: `enabled` (removes the tool when false), `providers` (fallback order), `base_url`, `timeout`, `max_results`, `cache_ttl`, `transport` (`http` by default; `mcp` starts an npx MCP process per search), `auto_start` (warm up the HTTP daemon in the background when the TUI opens), `engines` (upstream search engines, `["bing"]` by default), `fallback_engines` (backup engine chain, `["baidu", "duckduckgo", "sogou"]` by default), `max_engines` (engines tried per automatic fallback, 3 by default), `max_search_engines` (cap for an explicit `search_engine` list, 0 means unlimited, 0 by default), `timeout_budget` (shared fallback budget, 25 seconds by default, with each single request's timeout capped by the remaining budget), `max_requests` (upstream requests shared across all providers per search, 9 by default; when exceeded the best candidates so far are returned with an explicit truncation hint and are not cached), `anysearch_zone` / `anysearch_language` (AnySearch region and language, `cn` / `zh-CN` by default), `searxng_base_url` / `searxng_timeout` (self-hosted SearXNG instance address and per-request timeout, `http://127.0.0.1:8888` / 10 seconds by default), `usage_limits` (per-vendor call caps via `[search.usage_limits.<provider>]` with `daily` and `monthly` (0 means unlimited); a vendor's Search and Fetch share one counter pool, and once the cap is hit that vendor is skipped while fallback continues normally; counters persist in `runtime/state/usage.json` outside the Vault — **local counts are not the vendor's actual billing cap**), and `fetch_timeout` (separate timeout for fetching page text, 45 seconds by default). `syvrio setup` manages both periods and official quota pauses.
 
-Controlled real-network smoke test: `scripts/smoke_search_apis.py` by default only performs local checks (key readability, whether each vendor would register) and never sends a request; adding `--provider <vendor> --operation search|fetch --live` sends at most `--max-requests` (default 1, cap 10) real requests to a single vendor and prints a desensitized report (success, result count or content length, error kind, duration and unverified fields). Keys are read only from environment variables or the system credential store and never echoed. Page fetching is controlled by a separate `[fetch]` section: `providers` is the fetch provider order (`["open_websearch"]` by default), independent of the search provider order; official vendors with a configured key (tavily / exa / you / volcengine) join fetching only once listed here.
+Controlled real-network smoke test: `scripts/smoke_search_apis.py` by default only performs local checks (key readability, whether each vendor would register; anonymous providers are marked registrable without a key) and never sends a request; adding `--provider <vendor> --operation search|fetch --live` sends at most `--max-requests` (default 1, cap 10) real requests to a single vendor and prints a desensitized report (success, result count or content length, error kind, duration and unverified fields). Keys are read only from environment variables or the system credential store and never echoed. Page fetching is controlled by a separate `[fetch]` section: `providers` is the fetch provider order (`["open_websearch"]` by default), independent of the search provider order; official vendors with a configured key (tavily / exa / you / volcengine) join fetching only once listed here.
 - A daemon started by `auto_start` has no visible console window on Windows and stays resident for reuse after the TUI exits.
 - Search results are cached in `runtime/cache/search/search-cache.json` as derived data that can be deleted. Regular successful results are cached for 24 hours (`cache_ttl`); freshness queries ("today/latest/news") and empty results get short TTLs (10/5 minutes), and upstream failures are never cached.
 
@@ -373,25 +519,15 @@ Fetching independently follows `[fetch].providers`. Official fetch adapters and 
 | Passwords, verification codes, API keys | Blocked outright, never written |
 | Exact duplicate text | Skipped |
 
-Memories use [Schema v2 and Vault Layout v2](docs/vault-v2.md): stored per topic as `memories/<category>/<topic>.md`, where each top-level Markdown list item is one record containing the body, a required **Core** section (stable ID, status, source, confidence), and optional **Context** and **Extensions** sections; recorded times are UTC. On recall, the selected raw Markdown is handed to the model as untrusted references. Legacy Vaults must be migrated explicitly with `scripts/migrate_vault_v2.py` per the guide.
+Memories use [Schema and Vault Layout v2](docs/vault-v2.md). Each top-level Markdown list item contains the body, a required Core, and optional Context and Extensions. Recall sends the selected original Markdown to the model as untrusted reference data. Legacy Vaults require the explicit migration described in the guide.
 
-```markdown
-# Apartment hunting
+Save manually edited Vault memory Markdown as UTF-8. Encoding errors report the path relative to the Vault.
 
-* Looking for an apartment downtown.
+Reasoning text and protocol fields live locally in `runtime/session-reasoning/<session-id>/<message-id>.json`. The session JSONL holds only a reference flag. Reasoning stays out of facts, summaries, and Vault Git history. Complete reasoning is sent back only to the same model when the endpoint's replay policy permits it. On another device, a copied Vault restores the answers and tool history. Displaying reasoning also requires the local Runtime attachments.
 
-  **Core**
-  * `id`: `mem-20261022-194250-8f1e`
-  * `status`: `active`
-  * `source`: `session`
-  * `confidence`: `0.95`
-```
+Corrections create a new entry linked by `syvrio.supersedes` and mark the original as superseded; deletion uses the `deleted` status. Audit events go to `records/memory/audit.jsonl`.
 
-Corrections use a "new entry + `syvrio.supersedes`" pattern, and the old entry's status becomes `superseded`; deletion is a soft delete with status `deleted`. Operations are written to `records/memory/audit.jsonl`, and Git can roll them back.
-
-Field values containing backticks or line breaks are stored with a `~syvrio-escaped~` prefix and percent encoding, then decoded on read. Entry IDs remain stable.
-
-Extraction and import support optional `context` fields (written to the record's `**Context**` section). Unsupported fields remain absent:
+Optional context includes:
 
 | Field | Meaning |
 | --- | --- |
@@ -401,13 +537,13 @@ Extraction and import support optional `context` fields (written to the record's
 | `location` / `location_kind` | Location and its type: `event` or `residence`; both must be supplied together |
 | `emotion` / `emotion_source` / `emotion_at` | Explicit emotional wording, with source `explicit`; `event` means the feeling at the time, `expression` means the feeling when discussing it now and is the default |
 
-Fact dates accept only `YYYY`, `YYYY-MM`, or `YYYY-MM-DD`, preserving precision without inventing month/day values or converting time zones. Device location is never collected; tone-based guesses, sarcasm, and ambiguous emotions are not stored as emotional facts. Entry text retains these qualifications. Context does not yet filter or rerank retrieval. Credential checks cover context as well as text. Ordinary approval preserves context; edited approval and manual correction discard potentially stale context, while the original pending candidate remains auditable.
+Fact dates accept only `YYYY`, `YYYY-MM`, or `YYYY-MM-DD`, preserving precision without inventing month/day values or converting time zones. Device location is never collected; tone-based guesses, sarcasm, and ambiguous emotions are not stored as emotional facts. Entry text retains these qualifications. Event dates, locations and explicit emotions can filter recall; default retrieval uses currently valid facts. Credential checks cover context as well as text. Ordinary approval preserves context; edited approval and manual correction discard potentially stale context, while the original pending candidate remains auditable.
 
-The backend `MemoryService.propose_inference(text, source_ids, kind)` appends hypotheses separately to `records/memory/inferences.jsonl`, using kind `profile` or `emotion` and initial status `hypothesis`. Evidence must reference active fact entries and is deduplicated. Repeating the same kind, normalized text, and evidence set returns the existing record without increasing confidence or appending another record. Inference IDs and deleted or superseded facts cannot support new hypotheses.
+The backend `MemoryService.propose_inference(text, source_ids, kind)` appends hypotheses separately to `records/memory/inferences.jsonl`, using kind `profile`, `emotion` or `reflection` and initial status `hypothesis`. Evidence must reference active fact entries and is deduplicated. Repeating the same kind, normalized text, evidence set and unchanged source fingerprints returns the existing record without increasing confidence or appending another record. Inference IDs and deleted or superseded facts cannot support new hypotheses.
 
-This is a backend foundation with no CLI/TUI/MCP inference entry points or automatic generation, confirmation, or chat injection. The model reserves `confirmed / rejected / superseded` states; user review, invalidation of existing hypotheses after source changes, and damaged-log recovery remain planned. Hypotheses are excluded from fact retrieval.
+`syvrio inferences` and TUI `/inferences` support listing, confirmation, rejection and correction. Confirmed inferences remain separate from facts. Source changes invalidate dependent hypotheses, and review rechecks evidence. State changes append to the log; corruption stops writes and preserves original bytes. `syvrio inferences --recover-tail` explicitly recovers a truncated final line by appending a recovery marker; middle corruption remains an error. Inferences never enter fact retrieval. Only confirmed profile inferences with evidence related to the current recall enter chat context, capped at 300 tokens.
 
-Editing a candidate in `/pending` validates the final text and writes one memory directly, without first admitting and then correcting the original. Conflicting candidates still replace the old entry through `supersedes`. The original candidate remains in `records/memory/resolved.jsonl`, while the audit record stores the edited text as `text_override`. Rejected blank or detected credential input leaves the candidate and old entry unchanged.
+Editing a candidate in `/pending` validates the final text and writes one memory directly, without first admitting and then correcting the original. Conflicting candidates still replace the old entry through `supersedes`. The original candidate remains in `resolved.jsonl`, while the audit record stores the edited text as `text_override`. Rejected blank or detected credential input leaves the candidate and old entry unchanged.
 
 Approving a stale conflicting candidate follows the replacement chain to the current active entry. If the original entry was deleted, is missing, or has an ambiguous replacement chain, approval is rejected and the candidate is retained. User messages, assistant replies, summaries, titles, and tool arguments have detected credentials hidden before appending to session files; new user messages are also sanitized before reaching the model. Existing sessions and Git history are not rewritten automatically.
 
@@ -421,29 +557,62 @@ Credential detection considers assignment syntax and separators. It permits Chin
 src/syvrio/
 ├── app/          cli.py, server.py, tui.py, chat_app.py, chat_commands.py, chat_flow.py,
 │                 chat_widgets.py, chat_input.py, chat_theme.py, command_catalog.py,
-│                 actions.py, ui.py, session_ui.py, web/
-│                                                   # CLI / Textual TUI / Web / FastMCP entry points
-├── application/  Shared use cases
+│                 ui.py, session_ui.py, chat_reflection.py, chat_git.py, git_screen.py,
+│                 inference_screen.py, pending_screen.py, thinking_panel.py, actions.py
+│                 └── web/  server.py, backend.py, models.py, static/
+│                                                    # CLI / Textual TUI / FastMCP / FastAPI Web adapters
+├── application/  service.py, conversation.py, memory.py, settings.py,
+│                 reflection.py, git.py, commands.py, contracts.py # frontend-neutral use cases and data contracts
 ├── agent/        runtime.py, prompts.py, context.py, tools.py,
 │                 session.py, recall.py, file_tools.py # Agent loop, tools, sessions, file analysis
 ├── memory/       service.py, store.py, models.py, queue.py,
-│                 policy.py, detect.py, extractor.py, audit.py, inference.py
+│                 policy.py, detect.py, extractor.py, audit.py, inference.py, temporal.py,
+│                 reflection.py, reflection_schedule.py
 │                                                   # Memory domain and write decisions
 ├── retrieval/    base.py, keyword.py, vector.py, hybrid.py
 │                                                   # Retriever interface + BM25/vector/hybrid
 ├── llm/          client.py, summarizer.py, commit_summary.py
 │                                                   # LiteLLM adapter, session/commit summaries
-└── infra/        config.py, providers.py, gitops.py, tokens.py,
-                  layout.py, dialogs.py, documents.py, search/ # Config, document conversion, web search
+└── infra/        config.py, providers.py, gitops.py, gitsync.py, locking.py, tokens.py,
+                  layout.py, dialogs.py, documents.py, diagnostics.py, latency.py, update.py, search/ # Config, Git sync and locks, diagnostics, document conversion, web search
+
+web/
+├── index.html
+├── vite.config.ts
+├── tsconfig.json
+├── package.json
+├── pnpm-workspace.yaml
+├── src/
+│   ├── main.tsx
+│   ├── App.tsx
+│   ├── types.ts
+│   ├── styles.css
+│   ├── api/client.ts
+│   ├── state/chat.ts
+│   ├── hooks/useChat.ts
+│   └── components/
+│       ├── Markdown.tsx
+│       ├── Thinking.tsx
+│       ├── MessageList.tsx
+│       ├── Sidebar.tsx
+│       └── Composer.tsx
+└── dist/
 ```
 
-Dependency direction: `app → application → agent → memory → retrieval → infra`, `memory/agent → llm → infra`.
+The `web/` frontend uses React + TypeScript + Vite, plain CSS, and pnpm: `api/client.ts` handles REST and Fetch-based SSE, `state/chat.ts` owns the ordered-segment reducer and batched stream deltas, `components/` holds the UI, and `dist/` is the uncommitted build output. `docs/syvrio-web.service` is the WSL/systemd unit template; `scripts/build_web.py` builds, stages, and verifies the static assets.
+
+Dependency direction: `app → application → agent → memory → retrieval → infra`, `application → llm/infra`, `memory/agent → llm → infra`. The `application/` package does not depend on Textual, Rich, Typer, or `app/`; core modules never import back into the application layer. The `app/web/` adapter only calls `application/` use cases/contracts and reads `infra/` config; it reimplements no Agent, Memory, or Session logic. The `web/` frontend consumes structured SSE events only.
 `retrieval` reads only `memory`'s `models`, `store`, and `detect` helpers (entries, normalization, and literal coverage); this is the known `memory ↔ retrieval` back-reference. Writes and decisions stay in `memory`.
 Development conventions (code style, storage invariants, testing, and docs sync) are in [AGENTS.md](AGENTS.md).
 
 README demo media lives in `docs/assets/` and contains no personal memory vault data.
 
-- Retrieval defaults to hybrid: jieba + rank-bm25 and vector cosine runs are fused with RRF. Vectors come from local fastembed inference (optional extra) or an embedding API, cached as derived data in `runtime/indexes/vectors.npz` (outside Git; delete it to force a rebuild; switching the embedding model invalidates it automatically). When the embedding backend is unavailable it falls back to plain BM25; `/status` and `syvrio status` show the active retrieval mode.
+`syvrio` enables local diagnostics at startup in `logs/syvrio.log` in Runtime. JSON lines include timestamps, version, process, OS, exception reasons and tracebacks, generation start/end, reading-follow/selection state and scroll positions. A background thread writes the file, capped at 2 MiB with three rotating backups; an unavailable log file produces a warning without blocking use. Logs stay local, do not copy entire chats or memories or capture local variables, and redact recognized credentials. Exception text can still contain local paths or application content, so inspect logs before sharing. Logs are separate from Vault and session history and can be deleted after exiting without affecting memories.
+
+Chat latency goes into `logs/latency.log` with the same rotation limits. Group entries by process, turn and model step to see recall, context preparation, SDK request start, first stream chunk, first reasoning and answer text, tools and their internal model calls, and turn completion. The latency log records timings, counts and status flags. It excludes chat content, memories, tool arguments, reasoning text and exception messages.
+
+- Retrieval defaults to hybrid and fuses jieba + rank-bm25 with vector cosine results using RRF. Standalone short fields match complete labels, with longer labels taking precedence at overlapping spans. Query context ranks records sharing a label. Other BM25 candidates still need adequate coverage. Automatic recall searches the original and rewritten queries independently and combines their candidates. Stored topic headings give short fields context for embeddings, while citations retain the original Markdown.
+- Vectors come from local fastembed inference (optional extra) or an embedding API. The derived cache at `runtime/indexes/vectors.npz` recomputes affected entries when the model or embedding input changes. Retrieval falls back to BM25 when the vector backend is unavailable. Use `/status` or `syvrio status` to check the active mode.
 - Token budgets are estimated with tiktoken, falling back to character estimation when offline.
 - Session compaction, memory decisions, and source chains are custom-built; model adapters are delegated to LiteLLM, provider selection and password input use questionary, and keys use keyring.
 
@@ -453,12 +622,13 @@ Install locked dependencies into the project's own virtual environment, then run
 
 ```bash
 uv sync --frozen
+uv run ruff check src tests scripts evals
 uv run pytest
 ```
 
 `uv.toml` keeps dependency caches under the ignored `.cache/uv`; once populated, use `uv sync --frozen --offline`. In VS Code, select `.venv` to use the pytest test panel and the current-file/full-suite debugger configurations. Fixtures isolate configuration, vaults, and credentials; real API keys are unnecessary.
 
-GitHub Actions runs the Python tests, frontend tests and package build on Debian 13.
+Restricted Windows environments that block loopback TCP may hang while asyncio creates its `socketpair`. With the locked pytest-asyncio version, set `$env:SYVRIO_TEST_PIPE_LOOP = "1"` in PowerShell before running tests to wake the Proactor through a local pipe. This affects tests only, grants no network access, and does not modify application runtime behavior. Ordinary Windows and Ubuntu runs retain the default event loop.
 
 Run focused categories for local changes and the full suite before committing:
 
@@ -467,12 +637,24 @@ uv run pytest -m ui
 uv run pytest -m agent
 uv run pytest -m memory
 uv run pytest -m retrieval
+uv run pytest -m web
 uv run pytest -m "cli or config"
 uv run pytest -m "mcp or search"
 uv run pytest
 ```
 
-Categories are `ui` (TUI), `agent` (runtime/sessions/context), `memory` (store/extraction/policy/queue), `retrieval` (local retrieval), `cli`, `config`, `mcp`, and `search` (web search). LLM paths use a fixed extractor and fake models; without real API keys, no online verification is claimed.
+The Web frontend is tested separately with pnpm inside `web/`:
+
+```bash
+cd web
+corepack pnpm install --frozen-lockfile
+corepack pnpm test          # Vitest: reducer, SSE client, component interactions
+corepack pnpm build         # tsc --noEmit + Vite production build
+cd ..
+uv run python scripts/build_web.py --check   # verify the staged static assets
+```
+
+Categories are `ui` (TUI), `agent` (runtime/sessions/context), `memory` (store/extraction/policy/queue), `retrieval` (local retrieval), `web` (Web Adapter API/SSE/concurrency/security), `cli`, `config`, `mcp`, and `search` (web search). LLM paths use a fixed extractor and fake models; without real API keys, no online verification is claimed.
 
 The offline synthetic parsing and write-decision regression also runs through pytest:
 
@@ -495,27 +677,44 @@ Hits are matched by target entry ID, comparing keyword / vector / hybrid. See [e
 
 ## Roadmap
 
-The full backlog lives in [GitHub Issues](https://github.com/Shardkiht/syvrio/issues). The directions below are ordered by **approximate implementation difficulty**, not a fixed shipping sequence. All features serve **personal, everyday conversational memory**, not a general-purpose work agent.
+Near-term work covers mobile browser acceptance, Evo release builds, and update recovery. Later work continues temporal memory, inference review, reflection, and profiles. See the [product requirements and roadmap](docs/product.md) for acceptance criteria and [GitHub Issues](https://github.com/Shardkiht/syvrio/issues) for individual work items.
 
-| Difficulty | Direction | Scope |
-| --- | --- | --- |
-| Low–medium-low | [Memory context: time, place, emotion](https://github.com/Shardkiht/syvrio/issues/10) | Basic fields and storage are implemented; original time anchors, relative-date resolution, and inferred emotion remain planned |
-| Low–medium | [Separate inference records and user review](https://github.com/Shardkiht/syvrio/issues/11) | Separate storage and evidence deduplication are implemented; confirmation, rejection, correction, and source invalidation remain planned |
-| Medium–medium-high | [Temporal evolution and contextual recall](https://github.com/Shardkiht/syvrio/issues/12) | Distinguish historical change from contradiction; use time, location, and emotion to supplement hybrid retrieval |
-| High | [Dream memory / Dreaming](https://github.com/Shardkiht/syvrio/issues/8) | Incremental background reflection, reviewable hypotheses, and recoverable background jobs |
-| High | [Dynamic user profiles](https://github.com/Shardkiht/syvrio/issues/9) | Evidence-linked, evolving personal preferences and recent states with user corrections |
-| Very high / long-term | [Proactive recall across AI clients](https://github.com/Shardkiht/syvrio/issues/13) | Surface relevant memories without explicit prompts where client integrations permit |
-| Ongoing | [Memory quality and regression evaluation](https://github.com/Shardkiht/syvrio/issues/14) | Synthetic tests for extraction/conflicts, temporal change, emotional inference, and implicit recall |
+## Inference review and contextual retrieval
 
-Other backlog items:
+Use `syvrio inferences` to inspect inferences, `syvrio inferences <id> --action confirm` to confirm them or `--action reject` to reject them, or `--action correct --text "revised hypothesis"` to create a replacement hypothesis. Confirmation keeps an inference separate from facts. Correcting or deleting source facts invalidates dependent inferences; reads also check sources. State snapshots append to `records/memory/inferences.jsonl`; a correction records both states in one event. Corrupt logs fail explicitly and preserve original bytes. Use `syvrio inferences --recover-tail` to append a recovery marker for a damaged final line; middle corruption cannot be skipped.
 
-- Real-model dogfooding and cost tracking
-- Daily scheduled commit daemon
-- A `syvrio consolidate` subcommand for manual or scheduled vault-wide catch-up (startup catch-up and auto-commit already exist)
+New messages record timezone offsets. Exit, catch-up and pre-compaction extraction retain per-message time anchors. Legacy timestamps without offsets remain unknown; extraction time never substitutes for the original date. Relative dates use the source calendar and retain year/month precision. Imports rely only on reliable timestamps in the material.
 
-The table distinguishes implemented foundations from remaining plans; refer to the other README sections for supported behavior and limitations.
+Use `syvrio recall "exhibition" --from 2024 --to 2024-06 --location "Synthetic Gallery"`; `--emotion` filters explicitly expressed emotions. Agent and MCP recall accept date_from/date_to/location/emotion. Date ranges overlap at the stored precision; missing metadata does not match explicit filters. Write timestamps are never used as event dates. Default retrieval uses currently valid facts; filtered results retain relevance ordering.
+
+MCP `memorize` accepts optional `observed_at`, an original message timestamp with a timezone offset. Missing anchors never default to the invocation date for historical material.
+
+
+### Temporal evolution, profiles and background reflection
+
+`syvrio evolve <id> "New state" --from YYYY-MM-DD` records an actual state transition; the Agent and MCP also expose `evolve(entry_id, text, effective_from)`. Unlike correcting an error with `correct`, it writes a successor with `supersedes` and `change_kind=evolution`, preserving the predecessor as superseded. The date must be explicit, later than the old start date and not in the future; ask for clarification when unknown.
+
+Normal recall and topic reads exclude expired and future facts while retaining active undated legacy entries. `recall --as-of YYYY-MM-DD` queries a specific date; `--view history` shows traceable evolution. Agent/MCP parameters are `as_of` and `view`. Historical queries use keyword retrieval without replacing vector caches. Facts without a known start cannot be asserted at a historical date. Corrections, deletions and ambiguous successor chains never resurrect old content as facts; original records and audit history remain. Explicitly disjoint validity periods no longer conflict; unknown or overlapping periods retain existing adjudication.
+
+`syvrio profile` and MCP `profile` keep the source-traceable fact/inference detail view without model requests. The TUI `/profile` now opens the generated profile summary: it reads `runtime/cache/profile/profile-summary.json` without scanning all memories or calling a model. With no summary it points to `/profile refresh`; after source changes it explicitly marks the summary Outdated so old content is never presented as current. The summary is rebuilt from currently valid facts, adapts its length to deduplicated information density, and synthesizes long-term traits, stable preferences, thinking and behavior patterns, current state and evidence-backed changes across topics. Source references stay internal rather than showing many source IDs by default, and the summary is never written back as facts or a second database.
+
+`/profile refresh [n]` or `syvrio profile --refresh` builds or updates the summary and continues proposing profile inferences. When the summary is missing or stale, refresh allocates at most one request to it and the remaining n-1 requests to inference batches; n=0 sends no request and n=1 sends at most one, with no implicitly added manual request. Unchanged facts skip summary generation. A failed or cancelled summary keeps the previous text marked stale and never publishes an incomplete result. `syvrio dream --requests 1` or `/dream 1` still reflects across facts, finding reviewable connections and hypotheses. Reflection runs in the background while chat and session switching remain available. `/dream status` checks the shared task and schedule; `/dream cancel` requests cancellation of either mode. Already sent requests may still be billed; publication stops after they return. Previously saved candidates and all sessions remain intact.
+
+A run defaults to one model request, configurable from 0 to 20, with retries disabled for this task. Each request times out within 60 seconds and requires a configured context window of at least 2048 tokens. Only new or changed facts are processed, with limited previously processed evidence as context. Idle scheduling resumes after TUI restart; run the same command for immediate continuation; budget 0 can publish validated cached results without requests. Dreaming uses distilled facts, not raw session scans, and does not enumerate every possible cross-fact relationship.
+
+Progress appends to `runtime/jobs/dreaming/jobs.jsonl`, recording batch hashes, validated candidates and completion. A truncated final line is preserved with an appended recovery marker; middle corruption stops processing. The summary and schedule use `runtime/cache/profile/profile-summary.json`, `runtime/state/reflection.json` and `runtime/state/fingerprints.json`; all are rebuildable derived state and never enter Git history. Candidates enter only the inference log, never overwrite Markdown facts. New inferences carry evidence fingerprints and become invalid after source expiry, correction, deletion or manual edits. Legacy inferences without fingerprints can only check source IDs and validity, not reconstruct prior text edits. Task exclusion is scoped to one service instance; do not start reflection against one vault from multiple processes simultaneously.
+
+Implementation boundaries: the memory service owns temporal writes; temporal helpers compute dates and views. Reflection uses public service APIs. Pending resolution logs before removing a candidate, preserving it on write failure; retries after partial failures may leave duplicate resolution records. Malformed vector caches rebuild, and reflection responses missing proposals fail without advancing progress.
+
+Reflection failures distinguish request timeouts, output validation and local storage errors. The journal stores only the error category, never raw provider exception text. A timed-out batch remains pending and can resume on a subsequent run.
+
+After startup catch-up, the TUI waits for 60 seconds of idle time before checking automatic jobs, but no longer rotates on a fixed 300-second cycle. Dreaming runs at most once per day with at most one request per batch. Profile refreshes at most once every 7 days and only when valid facts changed. Minor additions are recorded as pending changes rather than triggering an immediate rebuild; reaching `profile_min_changes` (20 by default) or an important change to goals, preferences or career direction can allow an early update after a 24-hour cooldown. Without changes, only file fingerprints are checked: no full memory scan and no model request. Cadence, cooldown and failure backoff persist in derived vault state and survive TUI restarts; failures back off 1/2/4… hours up to a cap instead of retrying frequently. Draft input, modal screens, busy chat or a running reflection job defer new jobs. Manual `/profile refresh` and `/dream` bypass the automatic cadence while still respecting their command budget. `/dream cancel` pauses automatic scheduling and cancels the current job; `/dream resume` resumes; `/dream status` shows the next schedule and pending changes. Set `[chat] auto_reflect=false` to disable persistently. No scheduler runs after TUI exit.
 
 Use `/sessions` to browse, search and resume sessions. Ask naturally to recall or remember information; the Agent uses recall / memorize tools. These memory actions have no TUI slash commands; CLI management commands remain available.
+
+The profile summary is regenerated from currently valid facts every time, never treating an older summary as new evidence, so repeated summarization cannot drift. Before generation it deduplicates by topic and covers as many topics as the input token cap allows; it expands for dense, multi-topic data and stays short for sparse data. Deleting, correcting, superseding or manually editing a fact immediately marks the summary outdated without immediately triggering a model request; the next eligible background refresh rebuilds it, and manual refresh remains available.
+
+Updated retrieval measurements and their evaluation limits are documented in [evals/README.md](evals/README.md); generated private queries are distinct from the fixed synthetic benchmark.
 
 Automatic memory recall is gated by personal context and follow-up questions. General questions skip prefetch; the model can still call recall when needed. auto_recall=0 disables prefetch.
 
@@ -538,9 +737,12 @@ These runtime request-count protection defaults also apply when providers are en
 | exa | 0 | 1000 |
 | you | 0 | 1500 |
 | volcengine | 0 | 450 |
+| anysearch | 20 | 0 |
+| parallel_mcp | 20 | 0 |
+| searxng | 0 | 0 |
 | open_websearch | 0 | 0 |
 
-Use `daily` / `monthly` under `[search.usage_limits.<provider>]` to override defaults. Explicit zero disables that period's cap. Either exhausted period blocks dispatch. Search and Fetch share counts; cache hits are free of local charges; dispatched failures count conservatively. Local calendar days/months use the runtime machine's timezone. State persists in `runtime/state/usage.json`; check-and-count is synchronized within one process, without a strict cross-process guarantee.
+Use `daily` / `monthly` under `[search.usage_limits.<provider>]` to override defaults. Explicit zero disables that period's cap. Either exhausted period blocks dispatch. Search and Fetch share counts; cache hits are free of local charges; dispatched search failures count conservatively, while a failed fetch (no page content returned) releases its pre-charged count. Local calendar days/months use the runtime machine's timezone. State persists in `runtime/state/usage.json`; check-and-count is synchronized within one process, without a strict cross-process guarantee.
 
 ```toml
 [search.usage_limits.tavily]
@@ -559,6 +761,23 @@ Only documented official quota/balance/spending-limit errors persist a pause. Or
 
 Session lists and startup consolidation isolate invalid files with a diagnostic; direct loading still fails, and source bytes remain untouched. Torn trailing records retain append-only recovery. Manual approve/correct/reject/forget operations compensate ordinary write exceptions across the affected topic and decision logs; a successful rollback makes a retry safe. Failed rollback is reported explicitly. This is not an atomic transaction across process termination, power loss or concurrent processes; single-writer use and Vault Git checkpoints remain important.
 
-Search/Fetch limits share counters within one process, but simultaneous Syvrio/MCP processes do not have atomic quota accounting. Local caps are conservative safeguards, not provider billing guarantees. The optional `npx open-websearch@latest` fallback is not frozen by Python's lockfile: for repeatable deployments, install and retain a tested upstream version; the installed command remains preferred. This freeze does not verify a clean upstream package or dynamic websites through live APIs.
+Search/Fetch limits share counters within one process, but simultaneous Syvrio/MCP processes do not have atomic quota accounting. Local caps are conservative safeguards, not provider billing guarantees. The optional `npx open-websearch@latest` fallback is not frozen by Python's lockfile: for repeatable deployments, install and retain a tested upstream version; the installed command remains preferred.
 
 On Windows, redirected CLI stdout/stderr use UTF-8; native terminal handling and persistent system settings are unchanged.
+
+CI tests, package builds and the `syvrio --help` check run inside Debian 13 with Python 3.12; publishing also uses Debian 13. The GitHub-hosted Ubuntu runner only hosts the container. There is no Windows/Ubuntu test matrix; Windows behavior requires separate validation when relevant.
+
+The evolution TUI uses neutral gray surfaces with a sky-blue accent (`#6CB6FF`). A centered welcome block gives way to a left-aligned conversation after the first message. User messages occupy full-width gray panels, while assistant text uses open spacing. A flat composer indicates focus with a left marker; model, context and shortcuts sit together below. The empty-input hint stays on its top edge to avoid overlapping IME composition.
+
+The sidebar starts collapsed. Press `Ctrl+B` or click the top-left expand control to show conversations.
+
+
+The minimal home screen uses a large, uniformly soft-gray Syvrio outline terminal wordmark (taller uppercase Q/M with smaller lowercase letters) and one short prompt, with no overview data or conversation cards. Use `/sessions` or expand the sidebar to access conversations.
+
+The wordmark uses thin strokes and open counters. Narrow terminals fall back to the full plain Syvrio title rather than cropping the lettering.
+
+AI output follows only while you are at the bottom. Scrolling up or selecting conversation text preserves your reading position; returning to the bottom resumes following. The input caret pauses during conversation selection and returns when you click the composer or type. User messages use a blue left marker.
+
+AI replies use semantic Markdown colors: soft-white body text, blue heading levels, brighter bold emphasis, pale-gold inline code, gray-blue quotes and underlined blue links. Fenced code keeps syntax highlighting on a gray surface. The theme is scoped to replies.
+
+While scrolling up, selecting text or dragging the scrollbar, the displayed reply stops reflowing and later text is buffered; generation and session persistence continue. Returning to the bottom reveals the latest text. Clicking the composer clears selection and flushes buffered text if already at the bottom. Wheel reading hides the input caret until typing or clicking the composer; background completion does not reactivate it.

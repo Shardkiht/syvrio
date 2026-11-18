@@ -10,6 +10,8 @@ from syvrio.memory.models import Candidate, ExtractionResult
 from syvrio.memory.service import MemoryService
 
 pytestmark = pytest.mark.mcp
+
+
 def make_server(tmp_path, candidates):
     config = Config(vault=tmp_path / "vault", llm=LLMConfig())
     service = MemoryService(
@@ -48,7 +50,9 @@ async def test_mcp_memorize_recall_pending(tmp_path):
 
 
 async def test_mcp_topics_and_status(tmp_path):
-    server = make_server(tmp_path, [Candidate(text="用 手冲滤纸", topic="devices", confidence=0.95)])
+    server = make_server(
+        tmp_path, [Candidate(text="用 手冲滤纸", topic="devices", confidence=0.95)]
+    )
 
     async with Client(server) as client:
         await client.call_tool("memorize", {"text": "对话"})
@@ -56,8 +60,8 @@ async def test_mcp_topics_and_status(tmp_path):
         topics = await client.call_tool("list_topics", {})
         assert topics.data[0]["topic"] == "memories/general/devices.md"
 
-        topic = await client.call_tool("read_topic", {"topic": "memories/general/devices.md"})
-        assert topic.data["content"] == "- 用 手冲滤纸"
+        topic = await client.call_tool("read_topic", {"topic": "devices"})
+        assert "* 用 手冲滤纸\n\n  **Core**" in topic.data["content"]
         assert topic.data["entries"] == 1
 
         status = await client.call_tool("status", {})
