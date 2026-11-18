@@ -104,7 +104,7 @@ class MemoryEntry(MemoryDraft):
 - 不把 LLM 猜测出的情绪当作用户事实；时间精度、区间校验应保持明确。
 - **来源（`source`）由程序管理，不由 LLM 填写。**此前曾讨论在 Context 中保留来源字段，但它与 Extensions 的溯源职责存在重叠；**最终落在哪层仍待确认**，不在此处强行定稿。
 
-### 2.5 最终简化后的模型关系
+### 2.5 事实与待确认模型关系
 
 ```text
 MemoryDraft
@@ -125,6 +125,29 @@ MemoryDraft
 
 > 这是**目标领域模型**，不是当前仓库已落地的实现。GitHub `main` 在归档时仍使用旧 `Candidate`、`Entry`、`Core` 等结构。
 
+### 2.6 Inference：可追溯的推断 [已确定]
+
+Inference 与 MemoryDraft/Pending 分离：它是 LLM 基于既有事实得出的**推断**，即使经用户确认，也不自动变成正式 Memory。
+
+```python
+InferenceStatus = Literal["hypothesis", "confirmed", "deprecated"]
+
+class Inference(BaseModel):
+    id: str
+    text: str
+    kind: str
+    source_ids: list[str]
+    status: InferenceStatus = "hypothesis"
+    created_at: datetime
+    updated_at: datetime
+```
+
+- `kind` 表示**对用户哪一方面的推断**，与 `MemoryDraft.topic` 的动态分类原则一致：LLM 可复用已有类型，也可创建新类型；不采用固定枚举。生成方式 `reflection`/`dream` 和用途 `profile` 不应被强制当作推断分类。
+- `source_ids` 必须指向真实 Memory，保留可追溯证据；不使用其他 Inference 作为推断证据，防止假设层层自证。
+- `hypothesis` 为未确认假设；`confirmed` 为用户确认、但仍属于推断；`deprecated` 为已弃用。用户否定、改写旧推断、来源失效等情形都可弃用；**具体原因进 Audit**，不单独保留 `rejected/superseded` 状态。
+- 来源指纹等确定性证据校验信息继续保留机制，但由存储层维护，不放入给 LLM 的核心业务字段；来源变化可以由程序检测，推断是否在语义上仍然成立不由程序猜测。
+- 推断的编辑与审核应沿用已有交互体验；用户确认不会自动写入事实 Markdown。
+
 ## 3. Markdown 与数据分层 [已确定方向]
 
 **保留 Vault Markdown 作为长期记忆的事实来源（source of truth）**，保留已有的 `Content / Core / Context / Extensions` 整体框架，但精简职责：
@@ -136,6 +159,18 @@ MemoryDraft
 | **Context** | 可选的事实语义（时间、地点、情绪等） | 保留；具体字段见 2.4 |
 | **Extensions** | `recorded_at`、session/message 引用等程序维护的来源信息；其他扩展字段按需 | 保留；逐字段细节尚未全部定稿 |
 | **Audit** | 纠错、事实变化、弃用、用户审核等操作过程 | 与事实正文分离 |
+
+**长期数据组织方案**：
+
+| 数据 | 目标存储与用途 | 决策状态 |
+|---|---|---|
+| Memory | `vault/memories/**/*.md`，按 topic 存事实 | 已确定保持 Markdown |
+| Inference | 倾向 `vault/inferences/**/*.md`，按 kind 分类管理推断 | **架构构想**：尚需落实 Schema、状态/证据审计与 JSONL 迁移 |
+| Profile | **唯一的** `vault/profile.md`，整体用户画像，允许人工编辑 | **已确定** |
+| Sessions / Pending / Audit | 继续用 JSONL 表达对话、审核和操作事件 | 方向保持 |
+| Dream 调度与任务进度 | Runtime 的状态/事件数据，不是知识正文 | 架构构想 |
+
+`profile.md` 与 `SOUL.md` 都可作为 LLM 的参考材料，但语义不同：前者描述用户，后者约束助手自身。Profile **不是新的事实来源**，不反向覆盖 Memory/Inference；允许用户直接编辑且下次 Dream 自动重建时覆盖这些编辑，不额外维护保护、合并或锁定区域。
 
 - `topic` 映射主题文件或分类，不必在每条 Markdown Core 中重复存储。
 - 原始对话已有 sessions JSONL；记忆只需指向必要的 `session_id/message_id`，**不再复制一遍完整对话作为 evidence**。
@@ -291,16 +326,54 @@ Application / MemoryService（确定性用例、参数、并发、状态）
 
 检索命中后按操作场景提供“精简事实视图”或“溯源详情视图”；不要为减少上下文而丢掉持久化元数据本身。
 
-## 8. 历史数据与实现约束 [已确定原则 / 待细化]
+## 8. 统一 Dream：先 Profile，后 Inference [已确定方向，执行细节待定]
+
+### 8.1 一个 Dream 入口与调度器
+
+**Dream 是后台长期记忆整理任务**，不再将 `profile` 和 `dream` 设计成两套独立的定时/手动流程。自动按周期及数据变化触发，也保留一次手动启动完整 Dream 的入口；具体触发条件、频率和请求预算待实现审查。
+
+```mermaid
+flowchart TD
+    A["定期或手动启动 Dream"] --> B["读取有效 Memory + confirmed Inference"]
+    B --> C["阶段一：一次 LLM 调用生成整体 Profile"]
+    C --> D["原子写入 vault/profile.md"]
+    D --> E["用户即可查看新 Profile"]
+    E --> F["阶段二：增量分批分析有效 Memory"]
+    F --> G["生成可追溯的 Inference（hypothesis）"]
+    G --> H["用户在推断界面审核"]
+```
+
+### 8.2 Profile 阶段：优先快速完成 [已确定]
+
+- 每次更新**原则上只调用一次 LLM**，输入为有效 Memory 与已确认 Inference；使用更紧凑的输入和输出 Token 预算，优先得到可用画像，具体超长内容选择策略待定。
+- 输出为一份完整的 `vault/profile.md`，生成成功即原子替换；用户无需等 Inference 阶段结束，就可以看到更新。
+- Profile 可被用户直接编辑；下一次 Dream 可以重建并覆盖人工修改，不实现人工片段的合并/锁定。Profile 只作上下文参考（按 Token 预算注入），不作为 Memory/Inference 的事实证据。
+- **前端 Profile 只读展示**现有 `profile.md`；不设独立的 Profile 手动刷新或生成按钮，打开页面不触发 LLM。原 `profile-summary.json` 不再作为目标最终产物，可由 Profile Markdown 取代。
+
+### 8.3 Inference 阶段：后台增量生成 [已确定方向]
+
+- Profile 写入完成后，再对有效 Memory **按批次**进行推断；可能多次调用 LLM，输出带 `kind/source_ids` 的 `Inference(status=hypothesis)`，不自动转为事实。
+- 用户仍能在推断审核界面确认、修改或弃用推断；手动 Dream 触发可整合在该入口，无需单独复杂的 Dream 页面。
+- 本轮新生成的假设不立即纳入刚生成的 Profile；仅已确认推断在**下一次 Dream** 被纳入画像，避免为了追新结果重复调用 Profile LLM。
+- Profile 已成功但推断阶段失败/取消时，**保留已生成的 Profile**；阶段进度分别保存，下次从未完成的增量批次继续，不无谓重复生成 Profile。
+
+### 8.4 计划中的架构收敛 [架构构想]
+
+- 当前 `ReflectionEngine` 的 `profile/dream` 双模式（画像推断与反思推断）收敛成单一 Dream 流程：先画像后推断。
+- 统一 Dream Scheduler，去掉 Profile 独立调度；保留增量变化检测、取消、冷却、预算、失败退避和恢复，但不要求沿用现有具体实现。
+- 原 ProfileItem/画像推断列表、运行时画像摘要缓存与相关前端入口应随新方案重新审查，避免产生第二份长期画像或重复审核路径。
+- LLM 输出的推断分类改为动态 `kind`，不再用 `kind=profile/reflection` 表示生成模式。
+
+## 9. 历史数据与实现约束 [已确定原则 / 待细化]
 
 - 现有仓库仍使用 `Candidate`、旧 `Entry`、`Core.source/confidence`、`active/superseded/deleted`、基于阈值的 `policy` 和旧 Pending 审批逻辑；**本文描述的是目标设计，并不声称已实现**。
-- 旧 Vault 数据无需通过永久兼容层长期维护，但**改动持久化 Schema 前必须备份、显式迁移、验证**，包括 Pending JSONL、正式 Markdown、历史状态与索引重建。
+- 旧 Vault 数据无需通过永久兼容层长期维护，但**改动持久化 Schema 前必须备份、显式迁移、验证**，包括 Pending JSONL、正式 Markdown、Inference 旧 JSONL（如实施 MD 迁移）、历史状态与索引重建。
 - 不得使用、上传或提交真实私有 Vault 资料；实现与自动化验证应以隔离的合成 Vault 为主。
-- 检索索引、缓存视作可重建派生数据；Markdown 正文和人工编辑不能因迁移或后台任务被覆盖。
+- 检索索引、缓存视作可重建派生数据；**Memory 与 Inference 的原文/人工编辑**不得因迁移或无关后台任务被覆盖。**例外：Profile 已明确允许 Dream 定期整体重建并覆盖人工修改。**
 - Draft 字段删减必须同步调整所有 Service 参数验证、导入器、工具 Schema、Pending 审核、存储、前端 UI 与测试，不能只修改 Pydantic 类。
 - 在设计讨论结束、明确授权以前，**不提交或推送实现代码、不发版，也不编辑 Issue #30**；本文档的归档提交不代表实施授权。
 
-## 9. 尚未定稿的问题清单 [待讨论]
+## 10. 尚未定稿的问题清单 [待讨论]
 
 | 优先级 | 问题 | 已知边界 |
 |---|---|---|
@@ -311,19 +384,22 @@ Application / MemoryService（确定性用例、参数、并发、状态）
 | 中 | **修改 Pending.text 后的 Context 处理** | 不能盲目沿用可能失效的旧 Context；是清除全部还是只清除受影响字段，未定 |
 | 中 | **`source` 的字段位置与溯源形态** | 必须由程序提供；Context / Extensions 如何避免重复，未定 |
 | 中 | **`forget` 与 `deprecated` 的边界** | 逻辑弃用和真正删除、隐私要求及 Git/审计留痕的关系，未定 |
-| 中 | **Inference 的生命周期与事实证据失效** | 不应机械套用事实 Entry 的新状态枚举；旧 `superseded` 的多义性需另审 |
+| 中 | **Inference 证据失效及审计的实现** | 三态已定为 `hypothesis/confirmed/deprecated`；来源变更触发弃用及原因记录、指纹机制细节待定 |
 | 中 | **导入、后台沉淀等非实时 Agent 入口** | 不能继续走旧二次抽取 + 阈值裁决；是否使用单独 Agent/提取流程及如何共享校验，未定 |
+| 中 | **Inference Markdown 存储与迁移** | 当前依赖 JSONL 追加式状态快照；如改 MD，须确保状态审计、证据校验、原始数据迁移不丢失 |
+| 中 | **Dream 增量调度和阶段恢复** | 先 Profile 后 Inference、统一入口已定；更新时间、批次边界、失败续跑及预算未定 |
+| 中 | **Profile 单次调用的上下文预算** | 有效 Memory + confirmed Inference 为输入；规模超出窗口时如何挑选、压缩仍待设计 |
 | 中 | **扩展字段与检索允许名单** | 原始字段应能保留；哪些 Context 进入索引、是否按检索类型不同配置，未定 |
 | 低 | **Python 继承与队列持久化包装细节** | 目标模型语义已确定，具体文件组织/序列化结构可实现时决定 |
 | 低 | **迁移发布顺序与旧 JSONL 状态映射** | 必须有备份与验证，不默认旧状态可一一等价映射 |
 
-## 10. 后续设计审查顺序 [建议]
+## 11. 后续设计审查顺序 [建议]
 
 1. **MemoryService 用例与工具接口**：统一确定性校验、写入事务和错误返回。
 2. **Pending 确认的操作语义**：保持三种 UI 操作，同时保证不会误覆盖旧事实。
 3. **transition / correct / forget 的状态边界与时间语义**。
 4. **Recall 的最小输出与检索文本生成**。
-5. **非 Agent 入口、Inference 和迁移/验收方案**。
+5. **非 Agent 入口、Dream 调度、Inference Markdown 与迁移/验收方案**。
 
 ---
 
@@ -331,4 +407,6 @@ Application / MemoryService（确定性用例、参数、并发、状态）
 
 **已确定**：`MemoryDraft(text, topic, context?)`；`PendingItem = Draft + question + related_ids`（队列元数据另存）；`MemoryEntry = Draft + id + status + recorded_at`；`status = active/deprecated`；Core `id/status`；Markdown Content/Core/Context/Extensions 分层；Agent 主导语义判断；Service 只做确定性校验；Recall 是有记忆意图时的前置步骤；Pending 仅用于 Agent 无法判断的情况；用户确认/仅编辑 text 后确认/否定；普通审批不再额外调用 LLM；程序只阻止凭据写入长期记忆。
 
-**构想但未定稿**：具体工具参数与服务流程、Pending 审批的操作目标、安全的 Recall 追踪机制、Extensions 来源字段落点、编辑正文后的 Context 处理、真实数据迁移策略及检索视图细节。
+**本轮新增已确定**：Inference 独立于事实，`kind` 对应用户推断领域、动态复用/新建，`status=hypothesis/confirmed/deprecated`；单个 `vault/profile.md` 定期由有效 Memory + confirmed Inference 重建，允许编辑并被下一次更新覆盖；Profile 作为 LLM 上下文参考，不反向写回事实；Dream 统一调度，**先一次调用生成 Profile，再分批生成 Inference**；Profile 前端只读展示，无独立刷新；Dream 支持自动与手动触发，阶段成功独立保留。
+
+**构想但未定稿**：Inference 改为 Markdown 的具体存储/审计实现，Dream 阶段续跑与调度参数、Profile 输入预算、具体工具参数与服务流程、Pending 审批的操作目标、安全的 Recall 追踪机制、Extensions 来源字段落点、编辑正文后的 Context 处理、真实数据迁移策略及检索视图细节。
