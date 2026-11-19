@@ -25,10 +25,10 @@
 5. **消除二次 LLM 抽取**：Agent 已理解并组织好事实时，`memorize` 不应再接收整段对话并另调 LLM 做一遍抽取。
 6. **存储、运行时模型、检索结果分层**：需要持久化的审计与追溯信息可以保留，但不应全部暴露给 LLM 或参与向量/关键词索引。
 7. **沿用原有人工审核体验**：用户可确认、只编辑正文后确认或否定 Pending；普通审核不额外调用 LLM。
-8. **允许 Agent 主动澄清**：当影响事实内容或操作选择的关键信息不明确时，LLM 可以在当前对话中向用户追问，经过多轮补充后再判断和记录；不为补齐非必要 Context 强制追问，也不把具体场景硬编码成 Service 规则。
+8. **System Prompt 统一引导主动澄清**：当信息不足以可靠判断事实、关系或记忆操作时，Agent 优先在当前对话中向用户反问，必要时多轮澄清；不凭空补充未知信息。仅缺少日期、地点等非关键 Context 时不强制追问，可按已知精度记录或留空；具体工具约束仍放在各工具 Description 中。
 9. **Pending 创建前检查**：强制 Memory Recall + Pending List 检查；Confirmed Inference 仅作可选参考，不自动拒写。
 10. **Memory 不物理删除**：即使错误记忆也有历史价值；只标记为 `deprecated`，不设计硬删除能力。
-11. **历史保留区分对象**：Memory 保留旧事实，Inference 不维护完整编辑版本史；Pending 审核历史范围尚需讨论。
+11. **不物理删除，按业务角色迁移**：Memory 保留被弃用的旧事实；Inference 不维护完整编辑版本史；Pending 确认后写入正式 Memory 再从待审文件移除，拒绝后保留原内容到 `archived/pending.md`，不单独建立 Pending 审核日志。
 
 > **已废弃的旧方向**：让 MemoryService 在写入前自行按自然语言相似度/冲突阈值复核语义，再用 `confidence`、`kind`、`sensitive` 决定自动入库或 Pending。该方案不再作为目标架构。
 
@@ -91,7 +91,7 @@ class MemoryEntry(MemoryDraft):
 - 删除正式事实模型中的 `confidence`；不将 `supersedes`、`change_kind` 等操作历史塞回 Entry 业务模型。
 - `raw_markdown`、文件路径、行号、字段偏移等属于 **Markdown 解析/存储结构**，不是正式记忆的业务内容；具体拆分由实现阶段处理。
 
-### 2.4 MemoryContext：事实上下文 [已确定方向，细节仍需校对]
+### 2.4 MemoryContext：事实上下文 [时间精度已确定，其他字段按原方向]
 
 目标字段：
 
@@ -105,7 +105,8 @@ class MemoryEntry(MemoryDraft):
 | `emotion_at` | 情绪关联的时间语义；此前讨论倾向只标注确实属于事件当时的情绪 |
 
 - 从旧模型中移除 `time_text`、`location_kind`、`emotion_source` 等冗余字段。
-- 不把 LLM 猜测出的情绪当作用户事实；时间精度、区间校验应保持明确。
+- 不把 LLM 猜测出的情绪当作用户事实。`event_time`、`valid_from`、`valid_to` 允许三种**自然精度**：`YYYY`（年）、`YYYY-MM`（年月）、`YYYY-MM-DD`（年月日）；不确定时可为 `None`，不伪造月份或日期。
+- `transition` 可在明确事实发生变化、但变化时间未知时执行；不要求一定提供精确生效日期。时间筛选需要按所存精度处理，例如 `2026-08` 表示八月内某个尚不精确的日期，**不能当作确切的 8 月 1 日**；边界计算细节在实现测试中验证。
 - **Context 只保留记忆形成时的事实语义上下文**；来源分类 `source` 不属于 Context，目标设计中删除该字段，不要求 LLM 或程序为每条 Memory 维护来源类型。
 
 ### 2.5 事实与待确认模型关系
@@ -163,19 +164,20 @@ class Inference(BaseModel):
 | **Core** | ID、当前状态等 | Memory Core 仅含 `id/status`；其他类型按自身语义 |
 | **Context** | 时间、地点、情绪等可选事实语义 | Memory 与 Pending 的 Draft 复用 |
 | **Extensions** | `recorded_at`、真实来源关联等程序元数据 | 会话衍生 Memory 必存 `session_id/message_id`；不保存独立 `source` |
-| **Audit** | 追加式操作/审计事件 | 可继续 JSONL；不同对象的必要历史粒度另行决定 |
+| **Audit** | 需要审计的正式 Memory 等操作事件 | JSONL 可保留；**Pending 审核不额外记录 Audit** |
 
 | 数据 | 目标位置/用途 | 结论 |
 |---|---|---|
 | Memory | `vault/memories/**/*.md`；按 topic 分类 | 已确定 |
 | Inference | `vault/inferences/**/*.md`；按 kind 分类 | Markdown 已确定，文件粒度实现时决定 |
-| Pending | `vault/pending/**/*.md`；可编辑正文与审核状态 | Markdown 已确定，处理完成后的保留方式待定 |
+| Pending | **单文件** `vault/memories/pending.md`，仅存未确认 Draft | 已确定；正式 Memory 扫描须排除该文件 |
+| Pending 归档 | **单文件** `vault/archived/pending.md`，保留被拒绝的原始条目 | 已确定；仅未来质量维护可按需只读参考，不视为正式事实 |
 | Profile | 唯一 `vault/profile.md`；下次 Dream 可覆盖人工修改 | 已确定 |
 | Sessions | 原始消息与 `distilled/up_to` 等事件 | JSONL |
 | Audit | 操作事件与必要审计 | JSONL；不强制存完整推断版本快照 |
 | Dream 调度与进度 | Runtime 状态/事件数据，不是知识正文 | 实现细节待定 |
 
-**类型识别 [暂定方案，已接受]**：目录区分三类 Markdown；文件**一级标题显式标记类型**，例如 `# Memory · Career`、`# Inference · Preferences`、`# Pending · Review`。具体标题格式不强制；程序以路径/Schema 判断类型，不依赖可编辑标题。同一文件可容纳多条记录，不要求一条一文件。
+**类型识别 [已确定方向]**：Memory 按 Topic、Inference 按 Kind 分类为 Markdown；Pending 固定为 `memories/pending.md`（拒绝项集中在 `archived/pending.md`），可在一级标题明确标注类型，例如 `# Pending`。程序以**具体路径和 Schema** 判断类型，不能依靠可编辑标题，也不能把 `memories/pending.md` 当作正式 Memory 索引。主题文件和 Pending 文件都可含多条独立 ID 的记录。
 
 **来源与数据边界 [已确定]**：
 
@@ -183,7 +185,7 @@ class Inference(BaseModel):
 - `distilled/up_to` 是后台处理进度游标，**不能代替每条 Memory 的原始消息 ID**；由 Runtime 负责将批量沉淀结果逐条关联到原始消息，再把可信来源交给 Service。具体关联与传递机制属于实现阶段的验证重点。
 - 原始对话保存在 Sessions JSONL，不复制全文进 Memory；可据来源 ID 回查。Extensions **不参与 BM25、向量索引、正常 Recall 或 `read_topic` 的 LLM 返回**。
 - 不设置独立 `source` 类型字段，不把写入来源和纠错/审核操作混为一个字段。
-- Memory 历史变化与错误记录继续保留；Inference 可维护当前正文/状态而不保留完整版本史；Pending 拒绝后正文是否留存尚待定。
+- Memory 历史变化与错误记录继续保留；Inference 可维护当前正文/状态而不保留完整版本史。Pending 确认后正文晋升到正式 Memory，**确保 Memory 成功持久化后才从活动 Pending 中移除**；拒绝的原始 Pending 进入 `archived/pending.md`。不另存已确认 Pending 的重复副本，也不保留单独的 Pending 审核操作日志。
 - `topic` 负责主题文件定位，不必在每条 Markdown Core 中重复存储；Schema/Store 仍需无损保留手工编辑与未知扩展字段。
 - `profile.md` 与 `SOUL.md` 分别是用户画像和助手约束；Profile 不反向覆盖 Memory/Inference。纠错、变更和弃用不能凭 `related_ids` 自动覆盖旧 Memory。
 
@@ -193,7 +195,7 @@ class Inference(BaseModel):
 
 Agent 认为某项信息值得记忆，但经过 Recall 和当前对话澄清仍无法确定事实内容或处理方式，且有延后人工确认价值时，才创建 Pending。Pending **不是低置信度候选池**，也不是 Service 校验失败的兜底队列。
 
-- Agent 可在正常对话中先向用户多轮追问，不为补齐非关键 Context 强制提问。
+- Agent 可在正常对话中先向用户多轮追问，不为补齐非关键 Context 强制提问；此**通用原则写入 System Prompt**，具体创建条件仍放在 Pending 工具 Description 中。
 - 相关旧 Memory 的 `related_ids` 只表示关联，**不是自动纠错或弃用指令**。
 - 行为引导优先写在 Pending 工具自身 description 中，不为具体情况硬编码复杂规则。
 
@@ -210,24 +212,28 @@ Agent 认为某项信息值得记忆，但经过 Recall 和当前对话澄清仍
 - Pending **不参与普通 Memory Recall** 的事实集合；因此必须额外检查待审核 Pending List。
 - 当前实际问题包括无关紧要内容被写入、重复内容进入 Pending；先优化工具描述与上述检查，不建复杂拒绝历史库或语义阈值裁决。
 
-### 4.3 保持人工审核方式
+### 4.3 人工审核与单文件迁移 [已确定，编辑 Context 影响待定]
+
+Pending 只存尚未审核的 `MemoryDraft + question + related_ids`，集中于 `vault/memories/pending.md`；保留独立 Pending ID 和必要来源/时间元数据，不需要完整状态机或单独审核历史。
 
 | 用户操作 | 处理 | 默认额外调用 LLM |
 |---|---|---|
-| 确认 | 接受当前 Draft，进入合法的 Service 写入通道 | 否 |
-| 编辑正文后确认 | 仅允许编辑 `text`；修改后再做确定性校验 | 否 |
-| 否定 | 关闭该待确认项；必要状态/审计信息按持久化方案保存 | 否 |
+| 确认 | 将 Draft 转为正式 MemoryEntry，写入对应 Topic Markdown；**成功后才从 `memories/pending.md` 移除条目** | 否 |
+| 编辑正文后确认 | 使用用户修改的 `text` 创建正式 Memory；成功写入后再移除 Pending | 否 |
+| 拒绝 | 将**原 Pending** 转移至 `vault/archived/pending.md`，不再进入活动 Pending List | 否 |
 
-- UI 展示 `question`，暂不提供 Context 编辑入口；**修改 `text` 后原 Context 如何处理未定**，不得默认全部清空，也不能未经确认一律沿用。
-- `PendingItem(MemoryDraft)` 仍以 `question` 和 `related_ids` 为额外业务字段，队列 ID、审核状态、来源和时间由持久化层管理；**当前队列正文采用 Markdown**。
-- 用户提供新的语义信息时可由 Agent 重新判断；普通审核不额外调用 LLM。
-- Service 确定性校验失败直接返回错误，**不自动转 Pending**。
+- 确认 Pending 属于**事实晋升**：正文及合法 Context 进入 Memory，不另行长期保存包含 `question/related_ids` 的已确认 Pending 副本；不视为删除已保留的事实数据。
+- 拒绝后的 Pending 保留原始正文和必要来源；不物理删除、不增加 `rejected/confirmed` 生命周期状态或编辑版本快照、**不额外记录审核 Audit**。
+- `archived/pending.md` 不参与常规 Recall、Dream、创建 Pending 前的 List 检查或自动恢复；未来定期质量维护 Agent 可以按需**只读参考被拒绝记录**，不能把它们当成事实；目前**不实现**这项维护功能。
+- 确认写入正式 Topic + 活动 Pending 移除、拒绝归档 + 活动 Pending 移除，都必须具备失败回滚/一致性与幂等保证；不能因为中途失败丢失 Draft，也不能重复确认产生多条 Memory。
+- UI 展示 `question`，仅开放 `text` 编辑；**编辑正文后原 Context 如何处理仍未定**，不得默认一律清空或未经验证全部沿用。
+- 用户提供新的语义信息时可由 Agent 重新判断；普通审核不额外调用 LLM。Service 确定性校验失败直接报错，不自动转 Pending。
 
 ### 4.4 与旧记忆及长期维护的边界
 
 - **确认 Pending 不等于自动修改或弃用相关旧 Memory**；不得凭 `related_ids` 猜测 `correct/transition` 的操作及目标。
 - 对 Memory、Pending、Inference 之间的重复、语义不一致与旧错误，沿用**未来定时 LLM 质量维护**构想：程序发现确定性异常，LLM 判断语义，经既定操作及必要用户确认处理。**后台维护尚未实现，也不纳入当前重构。**
-- Pending 是待审核工作区，被拒绝正文不一定值得长期保留；**具体保留方式及最小 Audit 粒度待定**，不默认建立完整版本系统。
+- Pending 是待审核工作区：确认后晋升 Memory；用户明确拒绝的原条目保留在 `archived/pending.md`，无需额外 Audit、历史版本或归档状态机。归档仅供人工查看，未来质量维护可只读参考，**不能成为事实证据**。
 
 ## 5. Agent / Recall / MemoryService 职责 [已确定]
 
@@ -239,8 +245,8 @@ Agent 认为某项信息值得记忆，但经过 Recall 和当前对话澄清仍
 | **Recall** | 提供统一的记忆检索应用接口，返回结构化事实及必要 ID/Context | 判断事实之间的语义关系 |
 | **MemoryService** | 直接实现 `memorize/transition/correct/deprecate` 等记忆工具；承担其业务参数校验、状态/凭据/并发校验、确定性编排及结果返回；在内部复用 `add()/apply()` 完成一致性写入，并负责 Pending 审核业务 | 注册/调度通用工具、获取或推断 Session/Message ID、管理 LLM 循环、用阈值作语义裁决或重复调用 LLM 抽取 |
 | **MemoryStore / Schema** | Markdown 无损解析、路径校验和持久化；执行 Service 下发的底层记录操作 | 记忆价值判断、工具注册或业务流程编排 |
-| **Pending Store** | 读写 Markdown Pending、维护当前审核状态；必要操作事件与知识正文分离 | 对自然语言进行二次理解 |
-| **Audit** | 记录操作历史以便追溯 | 替代事实正文或承担 Recall 语义检索 |
+| **Pending Store** | 管理 `memories/pending.md` 与 `archived/pending.md` 中的条目读写、转移、原子性；不维护单独审核历史 | 对自然语言进行二次理解或将归档记录当作事实 |
+| **Audit** | 保留有必要的正式事实操作事件；Pending 审核不额外记 Audit | 替代事实正文或承担 Recall 语义检索 |
 
 **确定性校验举例**：
 
@@ -280,12 +286,13 @@ flowchart TD
     J -- 否 --> D
     J -- 是 --> R[ToolRegistry 分发记忆工具]
     R --> K{MemoryService 业务校验与确定性编排}
-    K -- 通过 --> L[MemoryStore 写入 + Audit]
+    K -- 通过 --> L[MemoryStore 可靠写入；必要时 Audit]
     K -- 失败 --> M[将校验结果返回 Agent]
     H --> Q[检查当前 Pending List]
     Q --> P[必要时创建 Pending: Draft + question + related_ids]
-    P --> U[用户查看 question，确认 / 编辑 text 后确认 / 否定]
-    U --> V[已明确操作走相同 Service 校验与写入通道]
+    P --> U[用户审核：确认 / 编辑正文后确认 / 拒绝]
+    U --> V[确认：先写正式 Topic 再移除待审条目]
+    U --> W[拒绝：移入 archived/pending.md]
 ```
 
 - 这是**逻辑职责流**，不是规定所有入口都必须生成完全相同的执行栈。
@@ -317,14 +324,14 @@ MemoryStore + Markdown Schema：文件解析、持久化及底层原子操作
 - 工具注册表里的 `handler` 只表示一个可调用目标，**不要求存在单独的记忆业务 Handler 层**。记忆工具可以注册到 MemoryService 的对应方法；Registry 保留必要的通用参数绑定和结果转换。
 - **记忆业务参数校验及服务编排放在工具实现中**（MemoryService），不放在 Registry 或 `tools.py` 中的专用包装函数。Schema 的声明与通用协议转换仍由工具注册/执行机制负责。
 - **Runtime 提供来源，不由 Service 查找 Session**：Runtime 负责提供准确的 `session_id/message_id` 等可信调用上下文；Service 负责接收并持久化到 Extensions。来源上下文的具体传递方式（如内部绑定/参数）交给实现阶段，不暴露为 LLM 工具参数；后台批次必须逐条关联真实消息，不能以游标代替。
-- Pending 人工审核前端仍展示只读 `question` 与可编辑 `text`（Context 编辑暂缓）；审核业务由 Service 处理，Pending Store 管理其 Markdown 数据。
+- Pending 人工审核前端仍展示只读 `question` 与可编辑 `text`（Context 编辑暂缓）；审核业务由 Service 处理，Pending Store 管理 `memories/pending.md` 和 `archived/pending.md`，确认/拒绝转移不另外写审核 Audit。
 
 建议的边界调整（均未进入实施）：
 
 - **`extract_candidates()`**：从正常 `memorize()` 链路移出；非对话的导入/后台沉淀另行决定如何利用同一套 Draft 语义。
 - **`_adjudicate()` / `policy.decide()`**：移除基于 `kind` / `confidence` / `sensitive` 的旧裁决；能复用的确定性安全检查下沉到共用写入通道。
 - **`find_conflicts()`**：不再作为阻断新增的通用语义阈值裁决；真正的关系判断由 Agent 基于 Recall 完成。
-- **`manual_add()`、`approve()` 和其他入口**：不再绕过统一的确定性验证、状态约束与审计。
+- **`manual_add()`、`approve()` 和其他入口**：不再绕过统一确定性验证和状态约束；正式 Memory 的必要审计继续保留，Pending 审核不额外生成 Audit 事件。
 - 对同一 Vault 的写入保持可恢复性，避免事实文件、状态及审计只完成一部分。
 - `read_topic` 与正常 Recall 采用一致的 LLM 数据边界：不直接返回带 Extensions 的原始 Markdown，只返回筛选后的正文、Context 与必要 ID。
 
@@ -362,7 +369,7 @@ def apply(
 - `apply()` 的 `add` 是可选的新 Draft；`updates` 是按旧记忆 ID 指定的修改列表。
 - `MemoryUpdate.context` 只允许补充旧记录中原本为空的 Context 字段，不覆盖已有非空值；`status` 可以按允许的状态值变更。
 - 旧记忆的 `text`、`topic` 和已有非空 Context 不允许原地覆盖；纠错通过新增正确事实并弃用旧记录完成。
-- `deprecate` 只改变状态，不提供物理删除入口。**来源职责已定**：Runtime 提供可信 `session_id/message_id`，Service 校验并写入 Extensions；LLM 不负责这些 ID。具体内部传参/上下文绑定属于实现细节。
+- `deprecate` 只改变状态，不提供物理删除入口。`transition` 的事实变化时间允许 `YYYY`、`YYYY-MM`、`YYYY-MM-DD` 或空，不要求填写伪造的精确日期。**来源职责已定**：Runtime 提供可信 `session_id/message_id`，Service 校验并写入 Extensions；LLM 不负责这些 ID。具体内部传参/上下文绑定属于实现细节。
 
 事实变化和纠错**不是同一件事**：
 
@@ -403,7 +410,7 @@ Recall 请求参数：
 - 时间筛选只接收一个 **time_range**，不再把多个时间字段暴露成独立请求参数。
 - **time_range** 命中规则：**event_time** 落在查询区间内，或记忆的 **valid_from/valid_to** 有效区间与查询区间重叠。
 - **recorded_at** 表示记录写入时间，不参与 **time_range** 过滤；它不代表事实发生或有效时间。
-- 时间区间的具体序列化形式及边界精度在实现阶段确定，不在本次设计中额外扩展参数。
+- 时间数据精度已确定为 `YYYY`、`YYYY-MM`、`YYYY-MM-DD` 或空；部分精度需要在时间范围检索中按对应**可能日期区间**理解，不得将未知月/日补为确定的一天。边界计算和性能在实现阶段测试，不增加额外 Recall 参数。
 
 ### 7.2 结构化结果与 MemoryDraft 复用
 
@@ -547,14 +554,14 @@ flowchart TD
 
 ## 10. 尚未定稿的问题清单 [待讨论]
 
-这里仅列真实未定的**语义与接口边界**，不再重复列出已经确定的软弃用、Markdown 类型、Pending 双重检查和 Recall 预算方案。
+这里仅列真实未定的**语义与接口边界**，不再重复列出已经确定的软弃用、Pending 单文件存储及拒绝归档、时间精度、工具分层和 Recall 预算方案。
 
 | 优先级 | 问题 | 已知边界 |
 |---|---|---|
 | 低（实施） | **来源 ID 的内部传递与批量逐条关联** | 职责已定：Runtime 提供可信 `session_id/message_id`，Service 落盘，LLM 不参与；具体参数/上下文绑定及后台逐条准确性需实现测试 |
 | 中（暂缓） | **Pending 编辑正文后的 Context 处理** | 仅允许编辑 `text` 已确定；是否验证、清空或重算 Context 尚未定，不得擅自猜测 |
-| 中 | **`transition` 的时间精度与历史查询边界** | 不编造具体日期；仅有年月/年份等部分精度时的存储和有效期边界尚未确定 |
-| 中 | **Pending 审核后保留范围与审计粒度** | Pending 使用 Markdown、Inference 不做完整版本史已定；拒绝后的 Pending 正文是否保留及最小事件字段仍可细化 |
+| 低（实施） | **部分精度时间的筛选与边界测试** | 允许年份、年月、年月日及空值已定；范围查询须尊重不确定精度，具体比较算法在实现时验收 |
+| 低（实施） | **Pending 单文件转移与幂等性** | `memories/pending.md` 确认后晋升对应 Topic、拒绝后进入 `archived/pending.md`；不另留审核 Audit；写入原子性和幂等性须验证 |
 | 中（后续） | **Inference 来源变化后的复核细节** | 三态、`source_ids` 及证据可追溯已定；来源变化不等于自动弃用，未来维护规则另议 |
 | 低（实施） | **Dream 调度/续跑、Profile 大输入处理** | 单一 Dream 先 Profile 后分批 Inference 已定；触发间隔、批次、失败续跑、Token 输入选取留待实现 |
 | 低（验收） | **检索策略评测** | BM25=正文+地点+情绪；向量=正文；用 Hit@3、Hit@5、MRR 验证效果 |
@@ -562,20 +569,20 @@ flowchart TD
 
 ## 11. 后续设计审查顺序 [建议]
 
-1. `transition` 的时间精度、Pending 编辑正文后的 Context 一致性（后者暂缓）。
-2. Pending 审核历史保留范围仍可细化。
-3. Runtime 来源传递、后台逐条消息关联、通用工具协议适配及其余迁移/评测由实施和验收推进；不再反复讨论已定职责划分。
+1. **Pending 编辑正文后的 Context 一致性**（此前决定暂缓，仍需明确最小规则）。
+2. Inference 来源变化的复核策略属于未来质量维护构想，可暂不展开。
+3. Runtime 来源传递、Pending 单文件迁移一致性、Dream 调度及其余检索/迁移评测由实施和验收推进；不再反复讨论已定职责划分。
 
 ---
 
 ### 决策摘要
 
-**领域模型与工具**：`MemoryDraft(text,topic,context?)`；`PendingItem = Draft + question + related_ids`；`MemoryEntry = Draft + id + status + recorded_at`；Inference 独立为 `id/text/kind/source_ids/status/created_at/updated_at`。Memory 仅 `active/deprecated`，不物理删除；Inference 为 `hypothesis/confirmed/deprecated`，确认推断不自动转 Memory。Agent 负责语义判断，Runtime 负责对话与工具调度、强制 Recall、Pending 检查及可信来源注入；ToolRegistry 保留所有工具注册、Schema、超时/取消和分发；MemoryService **直接实现** `memorize/transition/correct/deprecate` 等记忆业务方法及其参数校验/确定性编排，并在内部使用 `add(draft)` 与 `apply(add?, updates?)` 完成写入；无独立的记忆专用 Handler 业务层，也不额外进行 LLM 候选抽取或阈值语义裁决。
+**领域模型与工具**：`MemoryDraft(text,topic,context?)`；`PendingItem = Draft + question + related_ids`；`MemoryEntry = Draft + id + status + recorded_at`；Inference 独立为 `id/text/kind/source_ids/status/created_at/updated_at`。Memory 仅 `active/deprecated`，不物理删除；Inference 为 `hypothesis/confirmed/deprecated`，确认推断不自动转 Memory。时间字段支持 `YYYY`、`YYYY-MM`、`YYYY-MM-DD` 或空，`transition` 不强制补精确生效日期。System Prompt 增加主动澄清通用原则：事实或操作关键语义不明确时反问用户，非关键 Context 缺失不强制追问。Agent 负责语义判断，Runtime 负责对话与工具调度、强制 Recall、Pending 检查及可信来源注入；ToolRegistry 保留所有工具注册、Schema、超时/取消和分发；MemoryService **直接实现** `memorize/transition/correct/deprecate` 等记忆业务方法及其参数校验/确定性编排，并在内部使用 `add(draft)` 与 `apply(add?, updates?)` 完成写入；无独立的记忆专用 Handler 业务层，也不额外进行 LLM 候选抽取或阈值语义裁决。
 
-**Markdown 与来源**：Memory、Inference、Pending 均采用 Markdown；按目录与一级标题区分类型；Profile 为唯一 `profile.md`；Session、Audit 使用 JSONL。会话衍生 Memory 在 Extensions 必存真实 `session_id/message_id`，外部导入可无；Extensions 不用于 Recall、`read_topic`、BM25 或 Embedding。记录保留历史错误与变更；Inference 不需要完整正文版本史；Pending 审核历史粒度未完全定稿。
+**Markdown 与来源**：Memory、Inference、Pending 均采用 Markdown；按目录与一级标题区分类型；Profile 为唯一 `profile.md`；Session、Audit 使用 JSONL。会话衍生 Memory 在 Extensions 必存真实 `session_id/message_id`，外部导入可无；Extensions 不用于 Recall、`read_topic`、BM25 或 Embedding。记录保留历史错误与变更；Inference 不需要完整正文版本史。Pending 集中存 `memories/pending.md`，确认后先成功写入对应 Topic 再从待审文件移除；拒绝则保留原内容至 `archived/pending.md`，不单独写审核 Audit、不维护完整版本史，归档仅供未来后台质量维护按需只读参考。
 
 **Recall 与 Pending**：统一 Recall 接口，`query` 必填，`limit=7` 默认，另可按事实时间范围、地点、情绪过滤；不按记录时间做语义时间过滤。Runtime 拦截 Memory 变更和 Pending 创建，保证前置 Memory Recall；**创建 Pending 前强制再检查当前 Pending List**。Confirmed Inference 仅可选参考；高度相似时 Agent 可考虑是否仍有 Pending 价值，但不因为推断存在就禁止用户事实入库。Recall 返回 `RecallEntry(MemoryDraft)` 加 `id/status`，不含 Extensions 和底层文件信息；不设单独 Recall Token 预算或重排序器。Pending 审核可确认、仅编辑正文后确认或拒绝；Context 编辑及编辑正文后的影响待定。
 
 **后台入口与 Dream**：前台 Agent 直接生成 Draft；后台 Session 沉淀保留增量游标，并复用 Recall + 语义决策 + Service，游标不得冒充消息来源；外部导入有独立提取入口。Dream 合一，先一次调用生成/覆写 Profile，再增量批量生成 Inference；仅 confirmed Inference 进入后续 Profile。定期 LLM 质量维护仅为**未来构想**，本次不实施。
 
-**迁移与未决**：旧 Vault 数据规模小，使用强模型辅助、脚本与人工核验迁移；旧文件和状态必须先备份、逐项验证。来源职责和工具分层已定，内部来源传递方式及后台逐条关联属于实施细节；主要语义未决为 Pending 正文修改后的 Context（暂缓）、部分时间精度与 Pending 审核记录范围。本文档更新不代表授权修改代码、真实 Vault、Issue #30 或发布版本。
+**迁移与未决**：旧 Vault 数据规模小，使用强模型辅助、脚本与人工核验迁移；旧文件和状态必须先备份、逐项验证。来源职责和工具分层已定，内部来源传递方式及后台逐条关联属于实施细节；主要语义未决仅有 Pending 正文修改后的 Context 处理（此前暂缓）；部分精度时间检索、Pending 转移原子性及幂等性属于实施验收。本文档更新不代表授权修改代码、真实 Vault、Issue #30 或发布版本。
