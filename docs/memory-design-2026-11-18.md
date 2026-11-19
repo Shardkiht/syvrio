@@ -32,7 +32,7 @@
 12. **Change Tracking 是独立机制 [已确定]**：统一记录 Memory、Inference 等知识内容的变化，为后台任务提供可靠增量；只追踪变化，不执行维护、语义复核或任务调度。
 13. **Dream 仅负责知识衍生 [已确定]**：生成完整 Profile 和新的 Inference；不复核、修订、弃用已有 Inference，也不检测 Profile 过期或决定刷新时机。
 14. **Vault Maintenance 仅负责既有知识维护 [已确定]**：检查 Memory、Inference、Pending、Profile 及其引用和索引的正确性、一致性与有效性；必要时调用 LLM 复核，经既定业务通道处理；不自行追踪变化、调度 Dream 或发现新的推断。
-15. **后台调度是应用 Runtime 的职责 [已确定]**：调度、并发、取消、重试和任务续跑由应用层 Runtime 统一管理；Scheduler 不是与 Runtime 平级的领域模块，后台调度也不放入专门负责对话的 AgentRuntime。
+15. **Application 是统一任务协调层 [已确定]**：沿用现有应用层，负责用例入口、任务调度与跨模块编排，以及队列、并发、取消、重试、恢复、进度和结果传递；不实现任务内部的语义决策或具体业务算法。Dream、Vault Maintenance 等后台任务由 Application 调度，调度器是其内部能力，不另设平级 Runtime/Scheduler 顶层模块。AgentRuntime 只管理对话运行，不负责全局后台任务。
 
 > **已废弃的旧方向**：让 MemoryService 在写入前自行按自然语言相似度/冲突阈值复核语义，再用 `confidence`、`kind`、`sensitive` 决定自动入库或 Pending。该方案不再作为目标架构。
 
@@ -180,7 +180,7 @@ class Inference(BaseModel):
 | Audit | 操作事件与必要审计 | JSONL；不强制存完整推断版本快照 |
 | Memory 变更事件 | 独立 Change Tracking 记录 Memory 的新增、有效内容变化及弃用 | 可采用 `vault/records/memory-changes.jsonl`；最终路径、事件 Schema 及与 Audit 的关系在实现阶段确定 |
 | Inference 变更事件 | **`vault/records/inference-changes.jsonl`**；由 Change Tracking 写入 | 追加式事件，不是第二份 Inference 内容库，不保存正文历史快照 |
-| Dream / Maintenance 调度及消费进度 | 由应用 Runtime 管理执行与已处理游标 | Runtime 状态/任务数据，和知识正文、变化事件区分；具体文件名待实现设计 |
+| Dream / Maintenance 调度及消费进度 | 由 Application 管理执行与已处理游标 | 后台任务状态数据，与知识正文、变化事件区分；具体存储位置待实现设计 |
 
 **类型识别 [已确定方向]**：Memory 按 Topic、Inference 按 Kind 分类为 Markdown；Pending 固定为 `memories/pending.md`（拒绝项集中在 `archived/pending.md`），可在一级标题明确标注类型，例如 `# Pending`。程序以**具体路径和 Schema** 判断类型，不能依靠可编辑标题，也不能把 `memories/pending.md` 当作正式 Memory 索引。主题文件和 Pending 文件都可含多条独立 ID 的记录。
 
@@ -273,6 +273,8 @@ Pending 只存尚未审核的 `MemoryDraft + question + related_ids`，集中于
 
 | 组件 | 应负责 | 不应负责 |
 |---|---|---|
+| **App（TUI / Web / CLI / MCP）** | 接收用户请求、交互和展示结果；将任务交由 Application 或明确的外部适配入口 | 自行维护 Dream/Maintenance 定时器或复制业务处理流程 |
+| **Application** | 统一用例入口与任务协调；复用现有 `ApplicationService`、Conversation/Memory/Git/Settings 用例，管理聊天队列、会话流程和后台任务调度、取消、状态、重试、恢复及结果交付；调用具体执行模块 | 领域语义判断、推断/画像生成、知识质量维护、事件追踪、Markdown/模型/Git 的内部实现 |
 | **Agent LLM** | 判断记忆价值、事实提炼、语义重复/冲突、变化/纠错、是否需要用户确认；选择工具 | 直接修改 Vault；自评置信度作为写入依据 |
 | **AgentRuntime** | 统筹会话、LLM 与工具调用；对写入/创建 Pending 执行强制 Recall 与 Pending List 检查；关联可信 `session_id/message_id` 并交给记忆业务执行；协调后台 Session 沉淀 | 实现记忆业务校验、解析或写入 Markdown；替 Agent 判断自然语言语义关系 |
 | **ToolRegistry** | **保留全部工具的注册**（含记忆、搜索、网页与文件工具），维护工具 Schema、可调用目标、超时/取消和通用执行机制；将工具调用分发给对应实现 | 记忆专属参数/状态校验、纠错/变化编排；引入独立的记忆业务 Handler 层 |
@@ -281,7 +283,6 @@ Pending 只存尚未审核的 `MemoryDraft + question + related_ids`，集中于
 | **MemoryStore / Schema** | Markdown 无损解析、路径校验和持久化；执行 Service 下发的底层记录操作 | 记忆价值判断、工具注册或业务流程编排 |
 | **Pending Store** | 管理 `memories/pending.md` 与 `archived/pending.md` 中的条目读写、转移、原子性；不维护单独审核历史；未来维护任务直接全量扫描活动 Pending | 对自然语言进行二次理解或将归档记录当作事实 |
 | **Change Tracking** | 独立追踪 Memory、Inference 等数据变更，提供事件/关联 ID 的增量读取；写入事件与正式操作保持一致性 | 知识维护、LLM 复核、后台调度、替消费者管理复核结论 |
-| **应用 Runtime（后台任务能力）** | 统一管理 Dream/Maintenance 的调度、资源预算、取消、重试与恢复；维护各消费者进度 | AgentRuntime 的单轮对话职责；知识衍生与语义维护 |
 | **Dream** | 仅生成完整 Profile 和新的 Inference，发布时核对输入是否仍有效 | 已有推断的审核/修订/弃用、内容质量维护、变化追踪、调度 |
 | **Vault Maintenance** | 消费变化增量，对已有 Memory/Inference/Pending/Profile/Session/索引执行有效性与质量检查、必要 LLM 复核和安全修正 | 变化事件生产、Dream 新推断生成、后台任务调度 |
 | **Audit** | 保留有必要的正式事实操作事件；Pending 审核不额外记 Audit | 替代事实正文或承担 Recall 语义检索 |
@@ -313,7 +314,7 @@ flowchart TD
     A[Agent 处理对话] --> B{内容值得长期记忆?}
     B -- 否 --> Z[正常回复，不进入记忆流程]
     B -- 是 --> C[Agent 判断并准备记忆操作]
-    C --> D[Runtime 拦截记忆变更工具调用]
+    C --> D[AgentRuntime 拦截记忆变更工具调用]
     D --> E{RecallContext 是否仍有效?}
     E -- 否 --> F[调用统一 Recall 接口]
     F --> G[结构化结果加入对话上下文并返回 Agent]
@@ -334,7 +335,7 @@ flowchart TD
 ```
 
 - 这是**逻辑职责流**，不是规定所有入口都必须生成完全相同的执行栈。
-- **所有 Memory 写入/变更与 Pending 创建**都必须经过 Runtime 的前置 Memory Recall 检查；Pending 创建还必须检查当前 Pending List。不能依赖提示词保证 Agent 一定主动 Recall。
+- **Agent 工具链中的所有 Memory 写入/变更与 Pending 创建**都必须经过 AgentRuntime 的前置 Memory Recall 检查；Pending 创建还必须检查当前 Pending List。独立的用户审核、导入和维护入口沿用各自明确的业务契约，不依赖提示词保证 Agent 一定主动 Recall。
 - 如果没有可复用的有效 RecallContext，Runtime 在执行变更工具前拦截调用，直接调用统一 Recall 接口，并把结果交回 Agent；Agent 结合结果重新判断后再提交操作。
 - 如果操作类型、目标或内容发生变化，必须重新 Recall；操作与目标内容未变、证据未变化且上下文未压缩时，复用已有 Recall，一次即可。
 - LLM 主动调用 Recall 与 Runtime 自动 Recall 共用同一个接口和结果格式；两者不需要额外的触发来源参数或独立 Recall Tool Handler。
@@ -540,23 +541,24 @@ def read_memory_source(memory_id: str) -> ToolResult:
 
 ### 8.1 总体架构与 Runtime 边界 [已确定]
 
-应用 Runtime 统一编排后台任务；**Scheduler 是应用 Runtime 的内部能力，不额外成为平级业务模块**。AgentRuntime 只处理对话循环、工具调用、前置 Recall 与可信来源上下文，不承担整个应用的后台任务调度。
+**Application 是唯一的应用层任务协调入口，不额外拆出与其平级的 Runtime 或 Scheduler 模块**。它既协调用户主动发起的聊天、审核、导入、设置、Git 等用例，也统一调度 Dream、Vault Maintenance 等后台任务，负责任务状态、队列/并发、取消、重试、恢复、资源预算与结果传递。Application 了解任务的执行结果和进度，但不接管各模块的内部算法与业务规则。AgentRuntime 只处理 LLM 对话循环、工具调用、前置 Recall 与可信来源上下文。
 
 ```text
 App (TUI / Web / CLI / MCP)
-  └── Application / Runtime
-        ├── AgentRuntime → ToolRegistry → MemoryService → Stores / Vault
-        ├── 后台任务编排（调度、取消、重试、续跑、资源预算）
+  └── Application（统一入口与任务协调）
+        ├── 对话/用户用例 → AgentRuntime / MemoryService / Git / Settings
+        ├── 后台任务协调（调度、取消、重试、续跑、资源预算）
         │     ├── Dream（只生成完整 Profile 和新的 Inference）
         │     └── Vault Maintenance（只维护已有知识）
-        └── Recall / Retrieval
+        └── 结果与状态 → App
 
-MemoryService / Inference 写入 → Change Tracking（独立机制）
-Change Tracking → Runtime（触发输入）及 Maintenance（变更证据）
-Dream / Maintenance 的合法写入 → Stores / Service → Change Tracking
+AgentRuntime → ToolRegistry → MemoryService → Stores / Vault
+Memory / Inference 的合法写入 → Change Tracking（独立机制）
+Change Tracking → Application（调度输入）及 Vault Maintenance（复核证据）
+Dream / Vault Maintenance → 既定业务写入通道 → Change Tracking
 ```
 
-- **Change Tracking** 只回答「发生了什么变化」；**Runtime** 只决定「什么时候、执行什么任务」；**Dream** 只负责「衍生什么新内容」；**Maintenance** 只负责「已有内容是否仍然正确、如何维护」。
+- **Change Tracking** 只回答「发生了什么变化」；**Application** 管理「何时、如何组织并跟踪任务执行」；**Dream** 只负责「衍生什么新内容」；**Maintenance** 只负责「已有内容是否仍然正确、如何维护」。
 - Dream 和 Maintenance 可共享数据读取、LLM 适配以及既定持久化能力，但不能互相吞并业务职责。
 - Dream 产生新的 Inference 也必须记录变化，但不能把该事件再当作自动 Dream 的新增 Memory 触发，防止自激循环。
 
@@ -565,7 +567,7 @@ Dream / Maintenance 的合法写入 → Stores / Service → Change Tracking
 - 通过统一写入路径记录 Memory 的新增、Context/状态变化、弃用，以及 Inference 的新增、正文/引用/审核状态变化。事件只包含必要实体 ID、操作类型、时间及用于判断版本的标识，不另存一套知识正文。
 - Inference 自身变更沿用已确定的 `vault/records/inference-changes.jsonl`；Memory 可采用 `vault/records/memory-changes.jsonl`，具体路径和是否复用已有 Audit 仍需实施阶段验证，避免双写重复的权威事件日志。
 - 来源 Memory 的变化由 Change Tracking 记录；Maintenance 根据 Inference 的 `source_ids` 查找受影响对象。**不要求每次 Memory 变化再复制一条 Inference 事件**，避免变化语义重复。
-- 事件持久化必须与原业务写入保持可恢复的一致性；不同消费者按自身进度读取，同一实体的连续变化允许合并处理。消费游标、失败重试和任务状态归 Runtime，不与事件内容混存。
+- 事件持久化必须与原业务写入保持可恢复的一致性；不同消费者按自身进度读取，同一实体的连续变化允许合并处理。消费游标、失败重试和任务状态归 Application 管理，不与事件内容混存。
 - 手工编辑 Vault Markdown 等绕开 Service 的变更可由轻量文件版本/指纹校验补充发现，但外部编辑不能直接驱动 LLM 自动裁决。
 
 ### 8.3 Dream：只负责新的知识衍生 [已确定]
@@ -576,9 +578,9 @@ Dream 只有两个输出：
 2. **新的 Inference**：Profile 成功后，分批分析有效 Memory，发现带 `kind/source_ids` 的新 `hypothesis`；不把它们直接提升为事实。新生成的假设不会反向进入本轮 Profile。
 
 - Dream **不负责**已有 Inference 的语义复核、修订、弃用，也不负责 Profile 过期检测、变化追踪、刷新策略或后台任务调度。
-- 不应因「重新生成完整 Profile」这一覆盖写入行为，就把维护现有知识的职责归给 Dream；是否需要重新生成由 Runtime 根据任务触发信息协调。
+- 不应因「重新生成完整 Profile」这一覆盖写入行为，就把维护现有知识的职责归给 Dream；是否需要重新生成由 Application 根据任务触发信息协调。
 - 生成/发布时仍需核验输入证据版本；这是防止发布过期产物的**写入一致性约束**，不是后台质量维护。
-- Profile 完成后立即可用，不等待 Inference 批次；后续推断失败或取消时保留 Profile 与已完成进度，由 Runtime 负责续跑。
+- Profile 完成后立即可用，不等待 Inference 批次；后续推断失败或取消时保留 Profile 与已完成进度，由 Application 负责续跑。
 - 前端 Profile 只读展示现有 `profile.md`；手动完整 Dream 可从推断审核入口触发，不新增独立的 Profile 生成按钮。
 
 ### 8.4 Vault Maintenance：只负责已有知识维护 [已确定边界，策略待实现]
@@ -588,7 +590,7 @@ Vault Maintenance 是一个统一的维护业务模块，不按 Memory/Inference
 - **Memory**：已保存事实的冗余、过时、矛盾、缺失 Context 等质量检查；无法确定的语义问题交由 LLM/用户确认，实际修正复用 MemoryService。
 - **Inference**：来源变化、来源证据不足、推断重复或语义失效的复核；由 Change Tracking 触发候选，按当前有效证据复查，不能仅依据指纹改变就直接弃用。
 - **Pending**：活动 Pending 规模小，直接全量检查 `memories/pending.md` 的积压、重复与一致性；拒绝归档仅供只读参考，不作为事实证据，不另建 Pending 变更日志。
-- **Profile**：检查现有画像是否因事实或 confirmed Inference 变化而过期，向 Runtime 提交需要再次运行 Dream 的信号；**Maintenance 不亲自生成 Profile**。
+- **Profile**：检查现有画像是否因事实或 confirmed Inference 变化而过期，向 Application 提交需要再次运行 Dream 的信号；**Maintenance 不亲自生成 Profile**。
 - **Session/索引**：核查来源引用、数据一致性和可重建派生索引，必要时协调既有修复能力。
 
 维护过程按变更证据选择受影响的对象；LLM 负责语义复核，程序负责确定性检查及并发约束。复核后必须经已有业务写入/Store 通道落盘，不能绕过 Service 直接修改正式事实。
@@ -597,11 +599,13 @@ Vault Maintenance 是一个统一的维护业务模块，不按 Memory/Inference
 
 ### 8.5 与现有实施的差异及分阶段落地
 
-- 旧 `ReflectionEngine` 的 `profile/dream` 双模式收敛成单一 Dream：先 Profile 后批量生成新 Inference；原独立 Profile 调度归应用 Runtime，Profile 摘要缓存不再作为最终画像。
+- **Application 保留现有合理职责**：`ApplicationService` 继续装配用例，`ConversationUseCases` 继续管理聊天 FIFO/取消/Undo/会话，`MemoryUseCases` 继续提供审核/导入等用例入口，`GitUseCases` 与 `SettingsUseCases` 继续组织各自任务；无需为重构另造新的顶层 Runtime。
+- **抽离 Application 中越界的内部实现**：复杂文件解析与分块逻辑应由可复用的导入/文档组件承担，供应商配置细节由对应基础设施能力承担，旧 Reflection 的 Profile/Dream 模式与知识质量逻辑交给各自领域模块。Application 保留轻量参数适配、数据契约与进度封装，不为了形式上的纯粹过度拆文件。
+- 旧 `ReflectionEngine` 的 `profile/dream` 双模式收敛成单一 Dream：先 Profile 后批量生成新 Inference；**旧 TUI 定时触发与独立 Profile 调度由 Application 统一接管**，Profile 摘要缓存不再作为最终画像。
 - 原来源指纹检查可以作为 Change Tracking/并发校验的底层能力，但不能继续作为 Inference 的自动语义失效裁决。
 - 前台 Agent 与后台 Session 沉淀仍复用新 MemoryService/Recall 契约；Memory、Pending、Inference 的 Markdown 迁移与来源引用验证属于核心重构。
-- **架构已经足够明确，可以启动分阶段实施**：先落实领域模型、Store、Service、Recall/Pending 及数据迁移；再实现独立 Change Tracking 与 Runtime 的后台任务接线；随后实现 Dream；最后分阶段落实 Vault Maintenance 的实际复核策略。各阶段应采用合成 Vault 验证，不能把此设计文档的更新等同于已完成实现。
-- 变化事件 Schema、Memory 事件具体存储、跨文件提交恢复、Maintenance 的 LLM 评估策略、调度阈值与预算仍是**实施级问题**；它们不阻止核心重构开始，但相关功能上线前必须分别完成设计和验收。此阶段不因归档文件变更而自动修改代码、真实 Vault 或发布版本。
+- **架构已经足够明确，可以启动分阶段实施**：先落实领域模型、Store、Service、Recall/Pending 及数据迁移；再实现独立 Change Tracking 与 Application 的后台任务接线；随后实现 Dream；最后分阶段落实 Vault Maintenance 的实际复核策略。各阶段应采用合成 Vault 验证，不能把此设计文档的更新等同于已完成实现。
+- 变化事件 Schema、Memory 事件具体存储、跨文件提交恢复、Maintenance 的 LLM 评估策略、调度阈值与预算仍是**实施级问题**；它们不阻止核心重构开始，但相关功能上线前必须分别完成设计和验收。**需要在阶段切分时明确：若 Maintenance 晚于 Dream 上线，来源变化导致的 confirmed Inference 待复核状态如何解除、是否有人工复核路径，不能让有效推断无限期不可用。**此阶段不因归档文件变更而自动修改代码、真实 Vault 或发布版本。
 
 ## 9. 历史数据与实现约束 [已确定原则 / 待细化]
 
@@ -623,7 +627,8 @@ Vault Maintenance 是一个统一的维护业务模块，不按 Memory/Inference
 | 低（实施） | **部分精度时间的筛选与边界测试** | 允许年份、年月、年月日及空值已定；范围查询须尊重不确定精度，具体比较算法在实现时验收 |
 | 低（实施） | **Pending 单文件转移与幂等性** | `memories/pending.md` 确认后晋升对应 Topic、拒绝后进入 `archived/pending.md`；不另留审核 Audit；写入原子性和幂等性须验证 |
 | 中（后续） | **Vault Maintenance 复核策略与执行机制** | 维护与追踪、调度已分离；来源变化只触发待复核。LLM 审核策略、增量复核阈值及任务恢复在后续阶段完成 |
-| 低（实施） | **应用 Runtime 调度与 Dream 续跑、Profile 大输入处理** | 调度属应用 Runtime；Dream 先 Profile 后分批新 Inference；批次、失败续跑、Token 输入选取留待实现 |
+| 低（实施） | **Application 调度与 Dream 续跑、Profile 大输入处理** | 统一调度属 Application；Dream 先 Profile 后分批新 Inference；批次、失败续跑、Token 输入选取留待实现 |
+| 中（实施前确认上线边界） | **Maintenance 延后实现时的 Inference 复核入口** | 已确定来源变化使 confirmed Inference 暂停参与 Profile/上下文；需确保 Maintenance 未上线期间存在可恢复的审核路径，具体采用人工复核还是阶段性上线最小复核能力待确认 |
 | 中（实施） | **Change Tracking 事件契约与一致性** | 已确定独立模块；Memory 事件文件位置、与 Audit 的关系、事件 ID/游标、崩溃恢复和外部编辑补偿需实现设计与测试 |
 | 低（验收） | **检索策略评测** | BM25=正文+地点+情绪；向量=正文；用 Hit@3、Hit@5、MRR 验证效果 |
 | 低（实施） | **Markdown 文件组织、并发原子性及迁移核验** | 方向与类型标题已定，细节交由重构阶段设计和测试 |
@@ -631,7 +636,7 @@ Vault Maintenance 是一个统一的维护业务模块，不按 Memory/Inference
 ## 11. 后续设计审查顺序 [建议]
 
 1. **当前记忆重构剩余的实现/验收边界**：来源 ID 传递、Pending 文件迁移、后台 Context 填充的一致性，以及索引/迁移评测；具体实现审查时处理。
-2. **独立变化追踪与应用 Runtime**：制定事件 Schema、可靠提交/游标、后台调度/取消/恢复，然后接线 Dream 的 Profile 与新 Inference 生成。
+2. **独立变化追踪与 Application 后台协调**：制定事件 Schema、可靠提交/游标、后台调度/取消/恢复，然后接线 Dream 的 Profile 与新 Inference 生成；确认 Maintenance 未上线时待复核推断的处理路径。
 3. **Vault Maintenance**：职责已定为已有知识维护，不承担变化追踪或任务调度；核心重构稳定后单独细化复核策略并实施。
 
 ---
@@ -644,6 +649,6 @@ Vault Maintenance 是一个统一的维护业务模块，不按 Memory/Inference
 
 **Recall 与 Pending**：统一 Recall 接口，`query` 必填，`limit=7` 默认，另可按事实时间范围、地点、情绪过滤；不按记录时间做语义时间过滤。Runtime 拦截 Memory 变更和 Pending 创建，保证前置 Memory Recall；**创建 Pending 前强制再检查当前 Pending List**。Confirmed Inference 仅可选参考；高度相似时 Agent 可考虑是否仍有 Pending 价值，但不因为推断存在就禁止用户事实入库。Recall 返回 `RecallEntry(MemoryDraft)` 加 `id/status`，不含 Extensions 和底层文件信息；不设单独 Recall Token 预算或重排序器。Pending 审核可确认、仅编辑正文后确认或拒绝；正文实际未改则保留 Context，实际改写后先以空 Context 正式入库，后台独立调用一次 LLM 提取 Context，经 Service 补充空字段，不阻塞用户或修改确认的正文。
 
-**后台 Runtime、变化追踪、Dream 与维护**：前台 Agent 直接生成 Draft，后台 Session 沉淀保留增量游标，均复用 Recall + 语义决策 + Service。Change Tracking 独立记录 Memory/Inference 变化；应用 Runtime 内部管理 Scheduler、取消和恢复，AgentRuntime 不承担全局调度。Dream 仅生成完整 Profile 与新的 Inference，先 Profile 后分批推断，不复核或修改已有推断。Vault Maintenance 独立检查并维护已有 Memory/Inference/Pending/Profile/Session/索引；来源变化仅触发复核，不能直接弃用推断，受影响 confirmed 推断在复核前不参与 Profile/正常注入。维护可以提出 Profile 重建需求，由 Runtime 触发 Dream 执行，不在 Maintenance 内自行生成。
+**Application、变化追踪、Dream 与维护**：保留现有 Application 作为统一用例和任务协调层（聊天队列、会话、审核/导入、设置、Git、后台调度、取消、重试与结果传递），抽离复杂文件/供应商内部实现及 Reflection 内部业务逻辑；不另设顶层 Runtime/Scheduler，AgentRuntime 仅管理对话与强制 Recall。前台 Agent 直接生成 Draft，后台 Session 沉淀保留增量游标，均复用 Recall + 语义决策 + Service。Change Tracking 独立记录 Memory/Inference 变化；Dream 仅生成完整 Profile 与新的 Inference，先 Profile 后分批推断，不复核或修改已有推断。Vault Maintenance 独立检查并维护已有 Memory/Inference/Pending/Profile/Session/索引；来源变化仅触发复核，不能直接弃用推断，受影响 confirmed 推断在复核前不参与 Profile/正常注入。维护可以提出 Profile 重建需求，由 Application 触发 Dream 执行，不在 Maintenance 内自行生成。
 
-**实施准备与未决**：核心领域与分层职责已明确，具备分阶段实施基础；旧 Vault 先备份，以强模型辅助、显式脚本和人工核验完成一次性迁移，禁止处理或提交真实私有数据。来源传递、Pending 后台 Context 补全、部分精度时间检索、原子性/幂等性需实施验收。Change Tracking 的事件 Schema、独立 Memory 事件存储、与 Audit 的关系、Runtime 消费游标和 Maintenance 复核策略可按阶段设计、测试后上线。本文档更新不代表授权直接修改实现代码、真实 Vault、Issue #30 或发布版本。
+**实施准备与未决**：核心领域与分层职责已明确，具备分阶段实施基础；旧 Vault 先备份，以强模型辅助、显式脚本和人工核验完成一次性迁移，禁止处理或提交真实私有数据。来源传递、Pending 后台 Context 补全、部分精度时间检索、原子性/幂等性需实施验收。Change Tracking 的事件 Schema、独立 Memory 事件存储、与 Audit 的关系、Application 消费游标和 Maintenance 复核策略可按阶段设计、测试后上线；如 Maintenance 延后，须确保受来源变化影响的 confirmed Inference 有可执行的复核恢复路径。本文档更新不代表授权直接修改实现代码、真实 Vault、Issue #30 或发布版本。
