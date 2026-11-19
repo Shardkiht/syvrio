@@ -19,7 +19,7 @@
 ## 1. 设计目标与基本原则 [已确定]
 
 1. **Agent LLM 负责语义理解与业务决策**：识别值得记录的长期事实，结合 Recall 判断语义重复、冲突、事实变化与纠错，决定调用哪种记忆工具。
-2. **MemoryService 只做确定性校验和可靠执行**：仅拦截能明确证明不合法的操作，不通过相似度阈值等启发式规则猜测两个事实是否矛盾。
+2. **MemoryService 集中实现记忆工具业务**：负责 `memorize/transition/correct/deprecate` 等具体工具方法的业务参数校验、确定性操作编排与可靠执行；只拒绝能够确定不合法的操作，不通过相似度阈值猜测自然语言事实之间是否冲突。
 3. **Pending 只用于 LLM 无法判断、需要用户确认的情形**：它不是低置信度候选池，也不是 Service 校验失败的兜底队列。
 4. **一旦 Agent 决定需要记录某条事实，先 Recall，再决策写入操作**；不要求对每一轮无记忆价值的聊天都检索。
 5. **消除二次 LLM 抽取**：Agent 已理解并组织好事实时，`memorize` 不应再接收整段对话并另调 LLM 做一遍抽取。
@@ -180,7 +180,7 @@ class Inference(BaseModel):
 **来源与数据边界 [已确定]**：
 
 - 前台 Agent 对话和后台 Session 沉淀生成的 Memory，**必须在 Extensions 中关联真实 `session_id`、`message_id`**；外部导入不强制要求这两个 ID。它们不由 LLM 自行编造。
-- `distilled/up_to` 是后台处理进度游标，**不能代替每条 Memory 的原始消息 ID**；Runtime/后台如何通过 `MemoryService.add/apply` 注入来源 ID 仍未定，按用户要求暂缓。
+- `distilled/up_to` 是后台处理进度游标，**不能代替每条 Memory 的原始消息 ID**；由 Runtime 负责将批量沉淀结果逐条关联到原始消息，再把可信来源交给 Service。具体关联与传递机制属于实现阶段的验证重点。
 - 原始对话保存在 Sessions JSONL，不复制全文进 Memory；可据来源 ID 回查。Extensions **不参与 BM25、向量索引、正常 Recall 或 `read_topic` 的 LLM 返回**。
 - 不设置独立 `source` 类型字段，不把写入来源和纠错/审核操作混为一个字段。
 - Memory 历史变化与错误记录继续保留；Inference 可维护当前正文/状态而不保留完整版本史；Pending 拒绝后正文是否留存尚待定。
@@ -234,10 +234,11 @@ Agent 认为某项信息值得记忆，但经过 Recall 和当前对话澄清仍
 | 组件 | 应负责 | 不应负责 |
 |---|---|---|
 | **Agent LLM** | 判断记忆价值、事实提炼、语义重复/冲突、变化/纠错、是否需要用户确认；选择工具 | 直接修改 Vault；自评置信度作为写入依据 |
-| **Agent Runtime** | 拦截 Memory 写入/变更和 Pending 创建；强制前置 Memory Recall，创建 Pending 还要检查 Pending List；维护 RecallContext | 替 Agent 判断语义关系 |
-| **Recall** | 提供唯一的记忆检索接口，返回结构化事实及必要 ID/Context | 决定事实之间的业务关系 |
-| **MemoryService** | 提供 `add()` 与 `apply()` 两个写入入口；负责确定性参数/状态/凭据/并发校验及可靠执行 | 自己推断语义冲突、根据阈值决定 Pending、重复调用 LLM 提取 |
-| **MemoryStore / Schema** | Markdown 无损解析、路径校验、持久化、身份和状态修改 | 记忆价值判断或语义裁决 |
+| **AgentRuntime** | 统筹会话、LLM 与工具调用；对写入/创建 Pending 执行强制 Recall 与 Pending List 检查；关联可信 `session_id/message_id` 并交给记忆业务执行；协调后台 Session 沉淀 | 实现记忆业务校验、解析或写入 Markdown；替 Agent 判断自然语言语义关系 |
+| **ToolRegistry** | **保留全部工具的注册**（含记忆、搜索、网页与文件工具），维护工具 Schema、可调用目标、超时/取消和通用执行机制；将工具调用分发给对应实现 | 记忆专属参数/状态校验、纠错/变化编排；引入独立的记忆业务 Handler 层 |
+| **Recall** | 提供统一的记忆检索应用接口，返回结构化事实及必要 ID/Context | 判断事实之间的语义关系 |
+| **MemoryService** | 直接实现 `memorize/transition/correct/deprecate` 等记忆工具；承担其业务参数校验、状态/凭据/并发校验、确定性编排及结果返回；在内部复用 `add()/apply()` 完成一致性写入，并负责 Pending 审核业务 | 注册/调度通用工具、获取或推断 Session/Message ID、管理 LLM 循环、用阈值作语义裁决或重复调用 LLM 抽取 |
+| **MemoryStore / Schema** | Markdown 无损解析、路径校验和持久化；执行 Service 下发的底层记录操作 | 记忆价值判断、工具注册或业务流程编排 |
 | **Pending Store** | 读写 Markdown Pending、维护当前审核状态；必要操作事件与知识正文分离 | 对自然语言进行二次理解 |
 | **Audit** | 记录操作历史以便追溯 | 替代事实正文或承担 Recall 语义检索 |
 
@@ -277,7 +278,8 @@ flowchart TD
     E -- 是 --> I
     I --> J{操作/目标/内容是否与 Recall 时一致?}
     J -- 否 --> D
-    J -- 是 --> K{MemoryService 确定性校验}
+    J -- 是 --> R[ToolRegistry 分发记忆工具]
+    R --> K{MemoryService 业务校验与确定性编排}
     K -- 通过 --> L[MemoryStore 写入 + Audit]
     K -- 失败 --> M[将校验结果返回 Agent]
     H --> Q[检查当前 Pending List]
@@ -293,24 +295,29 @@ flowchart TD
 - LLM 主动调用 Recall 与 Runtime 自动 Recall 共用同一个接口和结果格式；两者不需要额外的触发来源参数或独立 Recall Tool Handler。
 - 确认/编辑等普通 Pending 操作默认不再调用 LLM；用户新回答语义问题时可由 Agent 重新解释。Confirmed Inference 只是可选参考，不纳入强制前置检查。
 - Recall 未命中不代表 Vault 中绝对不存在相关记忆；用检索质量评测优化，而不是让 Service 再开发一套自然语言理解规则。
-### 6.2 各层的拟议边界
+### 6.2 各层的职责边界 [已确定]
 
 ```text
-App / Agent / Tools / CLI / TUI / Web / MCP
-  ├─ Agent：提取事实、判断语义、选择记忆操作
-  └─ Pending 审核 UI：question 只读展示，text 可编辑（Context 编辑暂缓）
-          ↓
-Agent Runtime
-  ├─ Tool-call interception：拦截每个记忆变更操作
-  ├─ RecallContext：保存本轮 Recall 的有效性元数据
-  └─ Recall：显式工具调用或 Runtime 直接调用同一个接口
-          ↓
-Application / MemoryService（确定性用例、参数、并发、状态）
-  ├─ MemoryStore + Markdown Schema（原文无损读写）
-  ├─ Retrieval（关键词 / 向量 / 混合）
-  ├─ Pending Store（Markdown 待审核内容及当前状态）
-  └─ Audit / Sessions（JSONL 操作事件与原始会话）
+LLM：事实提炼、语义判断、选择工具
+  │ Tool Call（只包含业务参数，不包含 session_id/message_id）
+  ▼
+AgentRuntime：对话/工具调度、强制 Recall、Pending List 检查
+  │ 关联当前 Session/Message 的可信来源信息；控制工具执行时机
+  ▼
+ToolRegistry：注册全部工具（包括记忆工具）、Schema、超时/取消、分发
+  │ 通过通用适配把工具调用映射到已注册的业务方法
+  ▼
+MemoryService：直接实现记忆工具方法、业务校验、确定性编排、返回结果
+  │ memorize → add；transition / correct / deprecate → apply
+  ▼
+MemoryStore + Markdown Schema：文件解析、持久化及底层原子操作
 ```
+
+- **并非所有工具都经过 MemoryService**：搜索、网页、文件等非记忆工具仍由 ToolRegistry 分发给各自实现。
+- 工具注册表里的 `handler` 只表示一个可调用目标，**不要求存在单独的记忆业务 Handler 层**。记忆工具可以注册到 MemoryService 的对应方法；Registry 保留必要的通用参数绑定和结果转换。
+- **记忆业务参数校验及服务编排放在工具实现中**（MemoryService），不放在 Registry 或 `tools.py` 中的专用包装函数。Schema 的声明与通用协议转换仍由工具注册/执行机制负责。
+- **Runtime 提供来源，不由 Service 查找 Session**：Runtime 负责提供准确的 `session_id/message_id` 等可信调用上下文；Service 负责接收并持久化到 Extensions。来源上下文的具体传递方式（如内部绑定/参数）交给实现阶段，不暴露为 LLM 工具参数；后台批次必须逐条关联真实消息，不能以游标代替。
+- Pending 人工审核前端仍展示只读 `question` 与可编辑 `text`（Context 编辑暂缓）；审核业务由 Service 处理，Pending Store 管理其 Markdown 数据。
 
 建议的边界调整（均未进入实施）：
 
@@ -333,7 +340,7 @@ Application / MemoryService（确定性用例、参数、并发、状态）
 | `correct` | 原事实错误；新增正确事实并弃用错误旧记录 | `apply(add=..., updates=...)` | 已确定保留 |
 | `deprecate` | 将不再使用的旧记忆标记为弃用 | `apply(updates=...)` | 已确定命名，替代 `forget` |
 
-MemoryService 只提供两个写入入口：
+MemoryService 直接实现已注册的记忆工具方法，**在内部统一复用两个底层写入入口** `add()` 与 `apply()`；它们不是额外暴露给 LLM 的工具：
 
 ```python
 class MemoryUpdate(BaseModel):
@@ -350,11 +357,12 @@ def apply(
 ) -> ToolResult: ...
 ```
 
-- `memorize` 单独调用 `add()`；其他三个变更工具统一调用 `apply()`。
+- `memorize` 工具方法校验 Draft 后调用 `add()`；`transition/correct/deprecate` 在各自业务方法内校验参数、编排操作，再调用 `apply()`。Pending 确认/拒绝等审核业务也由 Service 处理。
+- ToolRegistry 仍注册上述所有记忆工具，但**不另写记忆专用 Handler 来重复校验、拼接业务结果或编排 Service 调用**；保留必要的通用协议适配。
 - `apply()` 的 `add` 是可选的新 Draft；`updates` 是按旧记忆 ID 指定的修改列表。
 - `MemoryUpdate.context` 只允许补充旧记录中原本为空的 Context 字段，不覆盖已有非空值；`status` 可以按允许的状态值变更。
 - 旧记忆的 `text`、`topic` 和已有非空 Context 不允许原地覆盖；纠错通过新增正确事实并弃用旧记录完成。
-- `deprecate` 只改变状态，不提供物理删除入口；会话来源 ID 注入 `add/apply` 的具体接口尚未决定，不能由 LLM 编造或在重构中省略。
+- `deprecate` 只改变状态，不提供物理删除入口。**来源职责已定**：Runtime 提供可信 `session_id/message_id`，Service 校验并写入 Extensions；LLM 不负责这些 ID。具体内部传参/上下文绑定属于实现细节。
 
 事实变化和纠错**不是同一件事**：
 
@@ -366,7 +374,7 @@ def apply(
 
 - **前台 Agent**：对话中直接形成 `MemoryDraft`，不再为同一事实调用第二次 LLM 候选抽取。
 - **后台 Session 沉淀**：保留按 `distilled/up_to` 游标增量处理未沉淀消息的能力；可继续利用后台 LLM 提取，但应复用新的 Recall、语义决策及 `MemoryService.add/apply` 写入通道，而不是旧 `_adjudicate` 阈值裁决。通过 Recall 避免重复保存前台已写入的事实。
-- **精确来源**：游标不等于单条 Memory 的来源消息；每条会话衍生 Memory 必须关联真实 `message_id`。来源 ID 传递及映射接口仍待确定。
+- **精确来源**：游标不等于单条 Memory 的来源消息；每条会话衍生 Memory 必须关联真实 `message_id`，由 Runtime 负责提供，由 Service 落盘。批次内逐条映射及传递方式在实现阶段落实并验证。
 - **外部导入**：可保留独立 ImportExtractor 组织 Draft，后续复用校验与写入层；外部导入无须 Session/Message ID。
 - 以上为职责与数据约束，不预设新的通用抽取框架。
 
@@ -433,7 +441,7 @@ def read_memory_source(memory_id: str) -> ToolResult:
 - LLM 只传入 Recall 已返回的 `memory_id`；不需要知道或传入 `session_id`、`message_id`。
 - 对会话衍生的 Memory，程序从 Extensions 获取真实 `session_id/message_id`，**直接读取对应 Session/Message**，无需靠正文相似度或时间猜测。
 - 外部导入的 Memory 可以没有这些 ID；没有会话来源时明确返回无对应会话，不虚构关联。
-- 这一工具仍是**未来构想，本次不新增**。真实 ID 如何经 Runtime 注入 Service 仍待讨论。
+- 这一工具仍是**未来构想，本次不新增**。Runtime 提供来源、Service 写入 Extensions 的职责已确定；具体技术传递方式留待实现。
 
 ### 7.4 RecallContext 与强制前置 Recall
 
@@ -543,7 +551,7 @@ flowchart TD
 
 | 优先级 | 问题 | 已知边界 |
 |---|---|---|
-| 高（暂缓） | **会话来源 ID 如何注入 `MemoryService.add/apply`** | 会话衍生 Memory 必存真实 `session_id/message_id`，外部导入不强制；单条 Memory 如何从 Runtime/后台批次关联准确消息仍待确定，按用户要求暂缓 |
+| 低（实施） | **来源 ID 的内部传递与批量逐条关联** | 职责已定：Runtime 提供可信 `session_id/message_id`，Service 落盘，LLM 不参与；具体参数/上下文绑定及后台逐条准确性需实现测试 |
 | 中（暂缓） | **Pending 编辑正文后的 Context 处理** | 仅允许编辑 `text` 已确定；是否验证、清空或重算 Context 尚未定，不得擅自猜测 |
 | 中 | **`transition` 的时间精度与历史查询边界** | 不编造具体日期；仅有年月/年份等部分精度时的存储和有效期边界尚未确定 |
 | 中 | **Pending 审核后保留范围与审计粒度** | Pending 使用 Markdown、Inference 不做完整版本史已定；拒绝后的 Pending 正文是否保留及最小事件字段仍可细化 |
@@ -554,15 +562,15 @@ flowchart TD
 
 ## 11. 后续设计审查顺序 [建议]
 
-1. 会话来源 ID 的内部传递与逐条消息关联（当前按用户要求暂缓）。
-2. `transition` 的时间精度、Pending 编辑正文后的 Context 一致性（后者暂缓）。
-3. 其余具体存储、调度、迁移和评测事项由实施与验收推进；不反复讨论已定架构。
+1. `transition` 的时间精度、Pending 编辑正文后的 Context 一致性（后者暂缓）。
+2. Pending 审核历史保留范围仍可细化。
+3. Runtime 来源传递、后台逐条消息关联、通用工具协议适配及其余迁移/评测由实施和验收推进；不再反复讨论已定职责划分。
 
 ---
 
 ### 决策摘要
 
-**领域模型与工具**：`MemoryDraft(text,topic,context?)`；`PendingItem = Draft + question + related_ids`；`MemoryEntry = Draft + id + status + recorded_at`；Inference 独立为 `id/text/kind/source_ids/status/created_at/updated_at`。Memory 仅 `active/deprecated`，不物理删除；Inference 为 `hypothesis/confirmed/deprecated`，确认推断不自动转 Memory。Agent 负责语义判断，MemoryService 仅负责确定性校验和可靠写入，服务入口为 `add(draft)` 与 `apply(add?, updates?)`（来源参数另议），Agent 工具为 `memorize/transition/correct/deprecate`，不另做二次候选抽取或阈值语义裁决。
+**领域模型与工具**：`MemoryDraft(text,topic,context?)`；`PendingItem = Draft + question + related_ids`；`MemoryEntry = Draft + id + status + recorded_at`；Inference 独立为 `id/text/kind/source_ids/status/created_at/updated_at`。Memory 仅 `active/deprecated`，不物理删除；Inference 为 `hypothesis/confirmed/deprecated`，确认推断不自动转 Memory。Agent 负责语义判断，Runtime 负责对话与工具调度、强制 Recall、Pending 检查及可信来源注入；ToolRegistry 保留所有工具注册、Schema、超时/取消和分发；MemoryService **直接实现** `memorize/transition/correct/deprecate` 等记忆业务方法及其参数校验/确定性编排，并在内部使用 `add(draft)` 与 `apply(add?, updates?)` 完成写入；无独立的记忆专用 Handler 业务层，也不额外进行 LLM 候选抽取或阈值语义裁决。
 
 **Markdown 与来源**：Memory、Inference、Pending 均采用 Markdown；按目录与一级标题区分类型；Profile 为唯一 `profile.md`；Session、Audit 使用 JSONL。会话衍生 Memory 在 Extensions 必存真实 `session_id/message_id`，外部导入可无；Extensions 不用于 Recall、`read_topic`、BM25 或 Embedding。记录保留历史错误与变更；Inference 不需要完整正文版本史；Pending 审核历史粒度未完全定稿。
 
@@ -570,4 +578,4 @@ flowchart TD
 
 **后台入口与 Dream**：前台 Agent 直接生成 Draft；后台 Session 沉淀保留增量游标，并复用 Recall + 语义决策 + Service，游标不得冒充消息来源；外部导入有独立提取入口。Dream 合一，先一次调用生成/覆写 Profile，再增量批量生成 Inference；仅 confirmed Inference 进入后续 Profile。定期 LLM 质量维护仅为**未来构想**，本次不实施。
 
-**迁移与未决**：旧 Vault 数据规模小，使用强模型辅助、脚本与人工核验迁移；旧文件和状态必须先备份、逐项验证。主要未决为来源 ID 内部传递（暂缓）、Pending 正文修改后的 Context（暂缓）、部分时间精度与 Pending 审核记录范围。本文档更新不代表授权修改代码、真实 Vault、Issue #30 或发布版本。
+**迁移与未决**：旧 Vault 数据规模小，使用强模型辅助、脚本与人工核验迁移；旧文件和状态必须先备份、逐项验证。来源职责和工具分层已定，内部来源传递方式及后台逐条关联属于实施细节；主要语义未决为 Pending 正文修改后的 Context（暂缓）、部分时间精度与 Pending 审核记录范围。本文档更新不代表授权修改代码、真实 Vault、Issue #30 或发布版本。
