@@ -610,6 +610,16 @@ Vault Maintenance 是一个统一的维护业务模块，不按 Memory/Inference
 
 **Inference 状态约束不变**：`hypothesis/confirmed/deprecated`。即使 `confirmed` 也只是可能失效的推断，并非事实。**第一阶段以及 Vault Maintenance 尚未上线时，Memory 来源变化只写入 Change Tracking，不自动暂停 Inference 参与 Profile/上下文、不改状态，也不执行复核。** 维护任务上线后再统一读取变化的 Memory 和关联 `source_ids`，复核已有推断并决定保留、弃用或以新推断替换；对复核期间是否临时排除等策略留待 Maintenance 设计，不提前上线。
 
+**保留的 Vault Maintenance 后续设计参考（原先设想，非第一阶段要求）**：
+
+1. Memory 新增、补充 Context 或变更状态时，只由 Change Tracking 记录 Memory 的最小变化；MemoryService 写入流程不等待 LLM 复核。
+2. Application 可依据未消费的 Memory 变化，**自动触发或批量调度** Vault Maintenance 增量任务；不意味着每次 Memory 写入都立即同步运行一次 LLM。
+3. Maintenance 读取变化的 Memory 和当前 Vault：通过旧 Inference 的 `source_ids` 找到依赖已变化 Memory 的推断；对于新建 Memory，则检索可能与新事实存在关联或矛盾的旧推断和事实；由 LLM 做语义复核。
+4. **原先考虑的可选保护策略**：在复核完成前，将确实受影响的 `confirmed` Inference 暂时排除出 Profile 生成及正常上下文注入，**但不自动弃用、不改为新状态**。此策略只有在 Maintenance 已具备可靠的复核、恢复使用和失败重试机制后才能考虑启用；否则可能造成推断长期无法恢复。是否采用及具体粒度须后续权衡误排除和继续使用过时推断的成本。
+5. 复核后，仍成立的推断继续保留；需要修订的按已确定的**旧记录 `deprecated` + 新建推断**规则保留历史；真正失效的可弃用。Maintenance 发现 Profile 过期则向 Application 提交 Dream 重建需求，不自行生成 Profile。
+
+**此参考方案必须保留在架构文档中供后续讨论**；它不改变目前已确定的阶段边界：在 Vault Maintenance 尚未上线前，Memory 变化只记录事件，**不自动复核、不暂停任何 confirmed Inference**。
+
 ### 8.5 与现有实施的差异及分阶段落地
 
 - **Application 保留现有合理职责**：`ApplicationService` 继续装配用例，`ConversationUseCases` 继续管理聊天 FIFO/取消/Undo/会话，`MemoryUseCases` 继续提供审核/导入等用例入口，`GitUseCases` 与 `SettingsUseCases` 继续组织各自任务；无需为重构另造新的顶层 Runtime。
