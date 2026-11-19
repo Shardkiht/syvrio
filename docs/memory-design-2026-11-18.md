@@ -158,7 +158,7 @@ class Inference(BaseModel):
 - `hypothesis` 是未确认假设；`confirmed` 是用户曾确认的推断，**不是事实，仍可能随证据变化而失效**；`deprecated` 为弃用。来源 Memory 变化不自动改变 Inference 状态，也不在第一阶段触发复核或暂停使用；统一留给后续 Vault Maintenance 处理。不单独设置 `rejected/superseded` 状态。
 - 来源指纹可用于程序一致性校验，但不能直接裁定推断的语义有效性。未来 Maintenance 将读取变化的 Memory、关联的 `source_ids` 和当前事实后判断；不凭指纹或某条来源弃用就自动弃用推断。
 - 推断确认不会自动转换成事实 Memory。人工编辑 Inference 时，**旧记录保留正文并标记 `deprecated`，编辑后的内容以新 ID 生成一条新的 Inference，默认 `confirmed`**；新条目保留相应 `source_ids`，不原地覆盖旧推断正文。审核/编辑仍沿用现有交互。
-- **Inference 的历史由独立旧记录保留**，无需另建完整编辑版本库，也不使用 `inference-changes.jsonl`。Inference 自身的新增、人工编辑、确认、弃用不进入 Change Tracking；未来 Maintenance 仅消费 Memory 变化线索并检查当前推断，执行进度由 Application 管理。
+- **Inference 的历史由独立旧记录保留**，无需另建完整编辑版本库，也不使用 `inference-changes.jsonl`。Inference 自身的新增、人工编辑、确认、弃用不进入 Change Tracking；未来 Maintenance 仅消费 Memory 变化线索并检查当前推断，执行进度由常驻后端 Background Memory 管理。
 
 ## 3. Markdown 与数据分层 [已确定方向]
 
@@ -724,24 +724,3 @@ Infra 继续作为共享基础能力层：**优先复用已存在的锁、Paths�
 - **数据**：Memory/Inference/Pending Markdown 及 Core/Context/Extensions 和 Change Tracking 的最小事件契约保留；旧数据可验证迁移、可备份回滚，不读取、提交、上传任何真实私有 Vault 内容；不得泄露个人凭据。
 - **体验**：保留 Textual 交互和 React Web/手机界面、命令和快捷键、流式输出、Thinking 展示及失败/取消反馈；前端重构不成为 UI 重新设计。
 - **测试与文档**：覆盖跨进程重启恢复、并发状态、数据/证据版本、Session 损坏恢复、Git 与后台任务协调；按需运行全量测试。实现时同步更新 AGENTS、HANDOFF、README / README.en.md；设计文档不能将未落地架构写成已完成。
-
-
-
-
-1. **当前记忆重构剩余的实现/验收边界**：来源 ID 传递、Pending 文件迁移、后台 Context 填充的一致性，以及索引/迁移评测；具体实现审查时处理。
-2. **Memory-only Change Tracking 与 Application 后台协调**：按已定的 `id + change` 内容契约实现可靠写入、增量游标、任务协调；再接线 Dream。Maintenance 未上线时不处理因来源变化而需要复核的 confirmed Inference。
-3. **Vault Maintenance**：职责已定为已有知识维护，不承担变化追踪或任务调度；核心重构稳定后单独细化复核策略并实施。
-
----
-
-### 决策摘要
-
-**领域模型与工具**：`MemoryDraft(text,topic,context?)`；`PendingItem = Draft + question + related_ids`；`MemoryEntry = Draft + id + status + recorded_at`；Inference 独立为 `id/text/kind/source_ids/status/created_at/updated_at`。Memory 仅 `active/deprecated`，不物理删除；Inference 为 `hypothesis/confirmed/deprecated`，确认推断不自动转 Memory。时间字段支持 `YYYY`、`YYYY-MM`、`YYYY-MM-DD` 或空，`transition` 不强制补精确生效日期。System Prompt 增加主动澄清通用原则：事实或操作关键语义不明确时反问用户，非关键 Context 缺失不强制追问。Agent 负责语义判断，Runtime 负责对话与工具调度、强制 Recall、Pending 检查及可信来源注入；ToolRegistry 保留所有工具注册、Schema、超时/取消和分发；MemoryService **直接实现** `memorize/transition/correct/deprecate` 等记忆业务方法及其参数校验/确定性编排，并在内部使用 `add(draft)` 与 `apply(add?, updates?)` 完成写入；无独立的记忆专用 Handler 业务层，也不额外进行 LLM 候选抽取或阈值语义裁决。
-
-**Markdown 与来源**：Memory、Inference、Pending 均采用 Markdown，**取消独立 Content 区域，正文写入 `Core.text`**；Memory Core 固定 `id/status/text`，Topic 从路径获取，Pending/Inference 使用各自 Schema；按路径与一级标题区分类型；Profile 为唯一 `profile.md`；Session、Audit 使用 JSONL。会话衍生 Memory 在 Extensions 必存真实 `session_id/message_id`，外部导入可无；Extensions 不用于 Recall、`read_topic`、BM25 或 Embedding。Memory 保留错误与历史事实；Inference 编辑后旧记录弃用、新建默认 `confirmed` 的记录，历史保存在旧 Markdown 中，不设编辑快照。**Change Tracking 仅记录 Memory 的 `id + change`**（created 无正文，更新只存变化字段及新值），不设 Inference 变化日志，Maintenance 未来消费 Memory 增量复核。Pending 集中存 `memories/pending.md`，确认后先成功写入对应 Topic 再从待审文件移除；拒绝则保留原内容至 `archived/pending.md`，不单独写审核 Audit、不维护完整版本史，归档仅供未来后台质量维护按需只读参考。
-
-**Recall 与 Pending**：统一 Recall 接口，`query` 必填，`limit=7` 默认，另可按事实时间范围、地点、情绪过滤；不按记录时间做语义时间过滤。Runtime 拦截 Memory 变更和 Pending 创建，保证前置 Memory Recall；**创建 Pending 前强制再检查当前 Pending List**。Confirmed Inference 仅可选参考；高度相似时 Agent 可考虑是否仍有 Pending 价值，但不因为推断存在就禁止用户事实入库。Recall 返回 `RecallEntry(MemoryDraft)` 加 `id/status`，不含 Extensions 和底层文件信息；不设单独 Recall Token 预算或重排序器。Pending 审核可确认、仅编辑正文后确认或拒绝；正文实际未改则保留 Context，实际改写后先以空 Context 正式入库，后台独立调用一次 LLM 提取 Context，经 Service 补充空字段，不阻塞用户或修改确认的正文。
-
-**Application、变化追踪、Dream 与维护**：保留现有 Application 作为统一用例和任务协调层（聊天队列、会话、审核/导入、设置、Git、后台调度、取消、重试与结果传递），抽离复杂文件/供应商内部实现及 Reflection 内部业务逻辑；不另设顶层 Runtime/Scheduler，AgentRuntime 仅管理对话与强制 Recall。前台 Agent 直接生成 Draft，后台 Session 沉淀保留增量游标，均复用 Recall + 语义决策 + Service。Change Tracking 仅记录 Memory 实际变化；Dream 只生成完整 Profile 和新 Inference，先 Profile 后分批推断，不维护旧推断。Inference 即使 confirmed 也可能失效，人工编辑保留弃用的旧记录、新建默认 confirmed 推断。Vault Maintenance 后续统一复核与维护既有 Memory/Inference/Pending/Profile/Session/索引；**它上线前，Memory 来源变化不自动修改、弃用或暂停 confirmed Inference。**维护可以提出 Profile 重建需求，由 Application 触发 Dream 执行，不在 Maintenance 内自行生成。
-
-**实施准备与未决**：核心领域与分层职责已明确，具备分阶段实施基础；旧 Vault 先备份，以强模型辅助、显式脚本和人工核验完成一次性迁移，禁止处理或提交真实私有数据。来源传递、Pending 后台 Context 补全、部分精度时间检索、原子性/幂等性需实施验收。Change Tracking 的内容契约已确定（仅 Memory、`id + change`、`created` 不存正文、更新只保存实际变化字段与新值）；事件存储、与 Audit 的关系、Application 消费游标和 Maintenance 复核策略留待对应阶段设计与验收；Maintenance 未上线时不启用 Inference 来源变化复核或自动暂停。本文档更新不代表授权直接修改实现代码、真实 Vault、Issue #30 或发布版本。
