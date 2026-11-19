@@ -1,6 +1,6 @@
 # Syvrio 记忆系统重构：设计决策与架构构想归档
 
-> **日期**：2026-11-18  
+> **日期**：2026-11-18；**最近同步**：2026-11-19  
 > **阶段**：设计讨论；**未实施、未授权修改代码**  
 > **仓库**：[Shardkiht/Syvrio](https://github.com/Shardkiht/Syvrio)  
 > **关联讨论**：[Issue #30 — 统一记忆字段语义与 Agent 写入决策流程](https://github.com/Shardkiht/Syvrio/issues/30)  
@@ -26,6 +26,9 @@
 6. **存储、运行时模型、检索结果分层**：需要持久化的审计与追溯信息可以保留，但不应全部暴露给 LLM 或参与向量/关键词索引。
 7. **沿用原有人工审核体验**：用户可确认、只编辑正文后确认或否定 Pending；普通审核不额外调用 LLM。
 8. **允许 Agent 主动澄清**：当影响事实内容或操作选择的关键信息不明确时，LLM 可以在当前对话中向用户追问，经过多轮补充后再判断和记录；不为补齐非必要 Context 强制追问，也不把具体场景硬编码成 Service 规则。
+9. **Pending 创建前检查**：强制 Memory Recall + Pending List 检查；Confirmed Inference 仅作可选参考，不自动拒写。
+10. **Memory 不物理删除**：即使错误记忆也有历史价值；只标记为 `deprecated`，不设计硬删除能力。
+11. **历史保留区分对象**：Memory 保留旧事实，Inference 不维护完整编辑版本史；Pending 审核历史范围尚需讨论。
 
 > **已废弃的旧方向**：让 MemoryService 在写入前自行按自然语言相似度/冲突阈值复核语义，再用 `confidence`、`kind`、`sensitive` 决定自动入库或 Pending。该方案不再作为目标架构。
 
@@ -84,7 +87,7 @@ class MemoryEntry(MemoryDraft):
 - 直接继承 Draft 的三个内容字段，**不重复声明** `text/topic/context`。
 - 新增 `id`、`status`、`recorded_at`；它们由程序管理。
 - `recorded_at` 表示**何时记录事实**，与 `event_time` / `valid_from` / `valid_to` 的事实时间语义不同。
-- `active` 表示记录仍可作为事实使用（可能是历史事实，需结合 Context 判断）；`deprecated` 表示记录已弃用，不再用于正常事实检索，但保留原文与操作审计。
+- `active` 表示记录仍可作为事实使用（可能是历史事实，需结合 Context 判断）；`deprecated` 表示记录已弃用，不再用于正常事实检索，但保留原文与必要审计。**不提供物理删除**，错误记忆仍可用于追溯纠错。
 - 删除正式事实模型中的 `confidence`；不将 `supersedes`、`change_kind` 等操作历史塞回 Entry 业务模型。
 - `raw_markdown`、文件路径、行号、字段偏移等属于 **Markdown 解析/存储结构**，不是正式记忆的业务内容；具体拆分由实现阶段处理。
 
@@ -148,35 +151,41 @@ class Inference(BaseModel):
 - `hypothesis` 为未确认假设；`confirmed` 为用户确认、但仍属于推断；`deprecated` 为已弃用。用户否定、改写旧推断、来源失效等情形都可弃用；**具体原因进 Audit**，不单独保留 `rejected/superseded` 状态。
 - 来源指纹等确定性证据校验信息继续保留机制，但由存储层维护，不放入给 LLM 的核心业务字段；来源变化可以由程序检测，推断是否在语义上仍然成立不由程序猜测。
 - 推断的编辑与审核应沿用已有交互体验；用户确认不会自动写入事实 Markdown。
+- **Inference 不保留每次编辑的完整历史正文版本**：Markdown 保存最新正文与状态；弃用时保留最后内容。必要操作可审计，但不要求 before/after 全文快照。
 
 ## 3. Markdown 与数据分层 [已确定方向]
 
-**保留 Vault Markdown 作为长期记忆的事实来源（source of truth）**，保留已有的 `Content / Core / Context / Extensions` 整体框架，但精简职责：
+**Memory、Pending、Inference 全部使用 Markdown**，复用 Content / Core / Context / Extensions 的组织思路，但三者 Schema 不必完全相同；原始 Session 与 Audit 属于追加式事件，继续使用 JSONL。
 
-| 存储区域 | 目标职责 | 结论 |
+| 存储区域 | 职责 | 约束 |
 |---|---|---|
-| **Content** | 可被理解和检索的事实正文 | 保留 |
-| **Core** | 记录身份与生命周期：`id`、`status` | 已确定精简目标 |
-| **Context** | 可选的事实语义（时间、地点、情绪等） | 保留；具体字段见 2.4 |
-| **Extensions** | `recorded_at` 等必要的程序维护元数据；不保存独立的 `source` 字段，也不要求 Memory 固定保存 `session_id/message_id` | 保留；按实际需要使用，不为来源分类预留字段 |
-| **Audit** | 纠错、事实变化、弃用、用户审核等操作过程 | 与事实正文分离 |
+| **Content** | 正文 | Memory 是事实，Pending 是待确认 Draft，Inference 是推断 |
+| **Core** | ID、当前状态等 | Memory Core 仅含 \`id/status\`；其他类型按自身语义 |
+| **Context** | 时间、地点、情绪等可选事实语义 | Memory 与 Pending 的 Draft 复用 |
+| **Extensions** | \`recorded_at\`、真实来源关联等程序元数据 | 会话衍生 Memory 必存 \`session_id/message_id\`；不保存独立 \`source\` |
+| **Audit** | 追加式操作/审计事件 | 可继续 JSONL；不同对象的必要历史粒度另行决定 |
 
-**长期数据组织方案**：
-
-| 数据 | 目标存储与用途 | 决策状态 |
+| 数据 | 目标位置/用途 | 结论 |
 |---|---|---|
-| Memory | `vault/memories/**/*.md`，按 topic 存事实 | 已确定保持 Markdown |
-| Inference | 倾向 `vault/inferences/**/*.md`，按 kind 分类管理推断 | **架构构想**：尚需落实 Schema、状态/证据审计与 JSONL 迁移 |
-| Profile | **唯一的** `vault/profile.md`，整体用户画像，允许人工编辑 | **已确定** |
-| Sessions / Pending / Audit | 继续用 JSONL 表达对话、审核和操作事件 | 方向保持 |
-| Dream 调度与任务进度 | Runtime 的状态/事件数据，不是知识正文 | 架构构想 |
+| Memory | \`vault/memories/**/*.md\`；按 topic 分类 | 已确定 |
+| Inference | \`vault/inferences/**/*.md\`；按 kind 分类 | Markdown 已确定，文件粒度实现时决定 |
+| Pending | \`vault/pending/**/*.md\`；可编辑正文与审核状态 | Markdown 已确定，处理完成后的保留方式待定 |
+| Profile | 唯一 \`vault/profile.md\`；下次 Dream 可覆盖人工修改 | 已确定 |
+| Sessions | 原始消息与 \`distilled/up_to\` 等事件 | JSONL |
+| Audit | 操作事件与必要审计 | JSONL；不强制存完整推断版本快照 |
+| Dream 调度与进度 | Runtime 状态/事件数据，不是知识正文 | 实现细节待定 |
 
-`profile.md` 与 `SOUL.md` 都可作为 LLM 的参考材料，但语义不同：前者描述用户，后者约束助手自身。Profile **不是新的事实来源**，不反向覆盖 Memory/Inference；允许用户直接编辑且下次 Dream 自动重建时覆盖这些编辑，不额外维护保护、合并或锁定区域。
+**类型识别 [暂定方案，已接受]**：目录区分三类 Markdown；文件**一级标题显式标记类型**，例如 \`# Memory · Career\`、\`# Inference · Preferences\`、\`# Pending · Review\`。具体标题格式不强制；程序以路径/Schema 判断类型，不依赖可编辑标题。同一文件可容纳多条记录，不要求一条一文件。
 
-- `topic` 映射主题文件或分类，不必在每条 Markdown Core 中重复存储。
-- 原始对话已有 Sessions JSONL；目标 Memory 模型不要求保存 `session_id/message_id` 引用，也不复制完整对话作为 evidence。未来如需回查原始对话，可由程序根据 Memory ID 定位，不要求 LLM 直接处理底层会话/消息 ID。
-- 纠错或状态变化由历史记录和事实有效期表达，不能凭 `related_ids` 自动设置任何旧记忆为弃用。
-- 不为了精简业务模型而丢弃 Markdown 无损解析能力：源码位置、未知扩展字段、手工编辑内容仍由 Schema/Store 处理。
+**来源与数据边界 [已确定]**：
+
+- 前台 Agent 对话和后台 Session 沉淀生成的 Memory，**必须在 Extensions 中关联真实 \`session_id\`、\`message_id\`**；外部导入不强制要求这两个 ID。它们不由 LLM 自行编造。
+- \`distilled/up_to\` 是后台处理进度游标，**不能代替每条 Memory 的原始消息 ID**；Runtime/后台如何通过 \`MemoryService.add/apply\` 注入来源 ID 仍未定，按用户要求暂缓。
+- 原始对话保存在 Sessions JSONL，不复制全文进 Memory；可据来源 ID 回查。Extensions **不参与 BM25、向量索引、正常 Recall 或 \`read_topic\` 的 LLM 返回**。
+- 不设置独立 \`source\` 类型字段，不把写入来源和纠错/审核操作混为一个字段。
+- Memory 历史变化与错误记录继续保留；Inference 可维护当前正文/状态而不保留完整版本史；Pending 拒绝后正文是否留存尚待定。
+- \`topic\` 负责主题文件定位，不必在每条 Markdown Core 中重复存储；Schema/Store 仍需无损保留手工编辑与未知扩展字段。
+- \`profile.md\` 与 \`SOUL.md\` 分别是用户画像和助手约束；Profile 不反向覆盖 Memory/Inference。纠错、变更和弃用不能凭 \`related_ids\` 自动覆盖旧 Memory。
 
 ## 4. Pending 产生条件和用户体验 [已确定]
 
