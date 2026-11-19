@@ -234,11 +234,11 @@ Agent 认为某项信息值得记忆，但经过 Recall 和当前对话澄清仍
 | 组件 | 应负责 | 不应负责 |
 |---|---|---|
 | **Agent LLM** | 判断记忆价值、事实提炼、语义重复/冲突、变化/纠错、是否需要用户确认；选择工具 | 直接修改 Vault；自评置信度作为写入依据 |
-| **Agent Runtime** | 拦截所有记忆变更工具调用，确保执行前已有有效 Recall；维护 RecallContext；必要时直接调用统一 Recall 接口并把结果交回 Agent | 替 Agent 判断事实之间的语义关系 |
+| **Agent Runtime** | 拦截 Memory 写入/变更和 Pending 创建；强制前置 Memory Recall，创建 Pending 还要检查 Pending List；维护 RecallContext | 替 Agent 判断语义关系 |
 | **Recall** | 提供唯一的记忆检索接口，返回结构化事实及必要 ID/Context | 决定事实之间的业务关系 |
 | **MemoryService** | 提供 `add()` 与 `apply()` 两个写入入口；负责确定性参数/状态/凭据/并发校验及可靠执行 | 自己推断语义冲突、根据阈值决定 Pending、重复调用 LLM 提取 |
 | **MemoryStore / Schema** | Markdown 无损解析、路径校验、持久化、身份和状态修改 | 记忆价值判断或语义裁决 |
-| **PendingQueue** | Pending 的创建、取回、确认/拒绝及处理记录 | 对自然语言进行二次理解 |
+| **Pending Store** | 读写 Markdown Pending、维护当前审核状态；必要操作事件与知识正文分离 | 对自然语言进行二次理解 |
 | **Audit** | 记录操作历史以便追溯 | 替代事实正文或承担 Recall 语义检索 |
 
 **确定性校验举例**：
@@ -246,7 +246,7 @@ Agent 认为某项信息值得记忆，但经过 Recall 和当前对话澄清仍
 - ID 不存在、目标记录状态不允许操作；
 - `topic` 路径不合法、字段格式或事实有效时间区间不合法；
 - 内容包含 API Key、密码、Token、私钥等凭据；
-- 完全相同的写入请求在幂等规则下已执行（此处不是**语义**去重）；
+- 完全相同的写入请求或已存在的相同 Pending 可按幂等规则拒绝重复（此处不是**语义**去重）；
 - Recall 后目标记录已被其他写入修改，导致操作基于过期状态；
 - 存储和审计不能保证一组写入原子完成。
 
@@ -280,24 +280,25 @@ flowchart TD
     J -- 是 --> K{MemoryService 确定性校验}
     K -- 通过 --> L[MemoryStore 写入 + Audit]
     K -- 失败 --> M[将校验结果返回 Agent]
-    H --> P[必要时创建 Pending: Draft + question + related_ids]
+    H --> Q[检查当前 Pending List]
+    Q --> P[必要时创建 Pending: Draft + question + related_ids]
     P --> U[用户查看 question，确认 / 编辑 text 后确认 / 否定]
     U --> V[已明确操作走相同 Service 校验与写入通道]
 ```
 
 - 这是**逻辑职责流**，不是规定所有入口都必须生成完全相同的执行栈。
-- **所有记忆变更操作**都必须经过 Runtime 的前置 Recall 检查；不能依赖系统提示词保证 Agent 一定主动调用 Recall。
+- **所有 Memory 写入/变更与 Pending 创建**都必须经过 Runtime 的前置 Memory Recall 检查；Pending 创建还必须检查当前 Pending List。不能依赖提示词保证 Agent 一定主动 Recall。
 - 如果没有可复用的有效 RecallContext，Runtime 在执行变更工具前拦截调用，直接调用统一 Recall 接口，并把结果交回 Agent；Agent 结合结果重新判断后再提交操作。
 - 如果操作类型、目标或内容发生变化，必须重新 Recall；操作与目标内容未变、证据未变化且上下文未压缩时，复用已有 Recall，一次即可。
 - LLM 主动调用 Recall 与 Runtime 自动 Recall 共用同一个接口和结果格式；两者不需要额外的触发来源参数或独立 Recall Tool Handler。
-- 确认/编辑等普通 Pending 操作默认不再调用 LLM；用户新回答一个语义问题可能触发一次新的 Agent 解释。
+- 确认/编辑等普通 Pending 操作默认不再调用 LLM；用户新回答语义问题时可由 Agent 重新解释。Confirmed Inference 只是可选参考，不纳入强制前置检查。
 - Recall 未命中不代表 Vault 中绝对不存在相关记忆；用检索质量评测优化，而不是让 Service 再开发一套自然语言理解规则。
 ### 6.2 各层的拟议边界
 
 ```text
 App / Agent / Tools / CLI / TUI / Web / MCP
   ├─ Agent：提取事实、判断语义、选择记忆操作
-  └─ Pending 审核 UI：question 只读展示，text 可编辑
+  └─ Pending 审核 UI：question 只读展示，text 可编辑（Context 编辑暂缓）
           ↓
 Agent Runtime
   ├─ Tool-call interception：拦截每个记忆变更操作
@@ -307,8 +308,8 @@ Agent Runtime
 Application / MemoryService（确定性用例、参数、并发、状态）
   ├─ MemoryStore + Markdown Schema（原文无损读写）
   ├─ Retrieval（关键词 / 向量 / 混合）
-  ├─ PendingQueue（持久化待确认项）
-  └─ Audit / Sessions（操作历史与来源回溯）
+  ├─ Pending Store（Markdown 待审核内容及当前状态）
+  └─ Audit / Sessions（JSONL 操作事件与原始会话）
 ```
 
 建议的边界调整（均未进入实施）：
@@ -318,6 +319,7 @@ Application / MemoryService（确定性用例、参数、并发、状态）
 - **`find_conflicts()`**：不再作为阻断新增的通用语义阈值裁决；真正的关系判断由 Agent 基于 Recall 完成。
 - **`manual_add()`、`approve()` 和其他入口**：不再绕过统一的确定性验证、状态约束与审计。
 - 对同一 Vault 的写入保持可恢复性，避免事实文件、状态及审计只完成一部分。
+- `read_topic` 与正常 Recall 采用一致的 LLM 数据边界：不直接返回带 Extensions 的原始 Markdown，只返回筛选后的正文、Context 与必要 ID。
 
 ### 6.3 工具词汇与事实生命周期
 
@@ -352,12 +354,21 @@ def apply(
 - `apply()` 的 `add` 是可选的新 Draft；`updates` 是按旧记忆 ID 指定的修改列表。
 - `MemoryUpdate.context` 只允许补充旧记录中原本为空的 Context 字段，不覆盖已有非空值；`status` 可以按允许的状态值变更。
 - 旧记忆的 `text`、`topic` 和已有非空 Context 不允许原地覆盖；纠错通过新增正确事实并弃用旧记录完成。
+- `deprecate` 只改变状态，不提供物理删除入口；会话来源 ID 注入 `add/apply` 的具体接口尚未决定，不能由 LLM 编造或在重构中省略。
 
 事实变化和纠错**不是同一件事**：
 
 - **事实变化**：旧事实以前成立，新事实后来成立；可通过 `valid_from/valid_to` 表述，两者在历史意义上都可能 `active`。
 - **纠错**：旧事实本来就不正确；将错误记录设为 `deprecated`，新事实独立保存，保留审计。
 - **冲突**：是 Agent 对证据关系的判断或未确定的状态，不预设要额外开发一个 `conflict` 工具。
+
+### 6.4 非实时入口与后台 Session 沉淀 [方向已确定，接口待落实]
+
+- **前台 Agent**：对话中直接形成 `MemoryDraft`，不再为同一事实调用第二次 LLM 候选抽取。
+- **后台 Session 沉淀**：保留按 `distilled/up_to` 游标增量处理未沉淀消息的能力；可继续利用后台 LLM 提取，但应复用新的 Recall、语义决策及 `MemoryService.add/apply` 写入通道，而不是旧 `_adjudicate` 阈值裁决。通过 Recall 避免重复保存前台已写入的事实。
+- **精确来源**：游标不等于单条 Memory 的来源消息；每条会话衍生 Memory 必须关联真实 `message_id`。来源 ID 传递及映射接口仍待确定。
+- **外部导入**：可保留独立 ImportExtractor 组织 Draft，后续复用校验与写入层；外部导入无须 Session/Message ID。
+- 以上为职责与数据约束，不预设新的通用抽取框架。
 
 ## 7. Recall 接口、结果与上下文管理 [已确定]
 
