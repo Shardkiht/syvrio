@@ -157,13 +157,12 @@ class Inference(BaseModel):
 
 ## 3. Markdown 与数据分层 [已确定方向]
 
-**Memory、Pending、Inference 全部使用 Markdown**，复用 Content / Core / Context / Extensions 的组织思路，但三者 Schema 不必完全相同；原始 Session 与 Audit 属于追加式事件，继续使用 JSONL。
+**Memory、Pending、Inference 全部使用 Markdown**，统一按 **Core / Context / Extensions** 组织，**不单独设置 Content 区域，正文直接放在 `Core.text`**；三者 Schema 不必完全相同。原始 Session 与 Audit 属于追加式事件，继续使用 JSONL。
 
 | 存储区域 | 职责 | 约束 |
 |---|---|---|
-| **Content** | 正文 | Memory 是事实，Pending 是待确认 Draft，Inference 是推断 |
-| **Core** | ID、当前状态等 | Memory Core 仅含 `id/status`；其他类型按自身语义 |
-| **Context** | 时间、地点、情绪等可选事实语义 | Memory 与 Pending 的 Draft 复用 |
+| **Core** | ID、状态、正文等业务字段 | **Memory Core 仅含 `id/status/text`**，`topic` 由文件路径确定；Pending/Inference 也将正文存入 `Core.text`，另按自身语义保留必要业务字段 |
+| **Context** | 时间、地点、情绪等可选事实语义 | Memory 与 Pending 的 Draft 复用；允许没有 Context 的记录 |
 | **Extensions** | `recorded_at`、真实来源关联等程序元数据 | 会话衍生 Memory 必存 `session_id/message_id`；不保存独立 `source` |
 | **Audit** | 需要审计的正式 Memory 等操作事件 | JSONL 可保留；**Pending 审核不额外记录 Audit** |
 
@@ -181,6 +180,32 @@ class Inference(BaseModel):
 | Dream 调度与进度 | Runtime 状态/事件数据，不是知识正文 | 实现细节待定 |
 
 **类型识别 [已确定方向]**：Memory 按 Topic、Inference 按 Kind 分类为 Markdown；Pending 固定为 `memories/pending.md`（拒绝项集中在 `archived/pending.md`），可在一级标题明确标注类型，例如 `# Pending`。程序以**具体路径和 Schema** 判断类型，不能依靠可编辑标题，也不能把 `memories/pending.md` 当作正式 Memory 索引。主题文件和 Pending 文件都可含多条独立 ID 的记录。
+
+**单条 Memory 的示例结构 [Core.text 位置已确定；排版细节为示例]**：
+
+```markdown
+# Memory · Career
+
+## mem-001
+
+### Core
+- id: mem-001
+- status: active
+- text: 用户于2026年8月入职A公司。
+
+### Context
+- valid_from: 2026-08
+
+### Extensions
+- recorded_at: 2026-08-20T09:00:00+08:00
+- session_id: session-001
+- message_id: msg-001
+```
+
+- 每条 Memory 的正文直接归属于 `Core.text`，**取消独立 Content 区域**；完整内容在领域模型中仍对应 `MemoryDraft.text`，不是另建一份数据。
+- `Core` 以 `id/status/text` 为最小固定字段，`topic` 不必在每条记录重复，因为文件路径已确定分类；`recorded_at` 和来源关联属于 Extensions。
+- `text` 一般是简短、原子化事实，但 Markdown Schema **须支持多行正文**；具体转义、续行及无损解析规则在实施阶段确定，不把多行正文强制转换为标题。
+- Pending、Inference 同样将正文存为 `Core.text`，但它们仍采用各自业务字段和状态约束，不能把三者强行合成完全相同的 Schema。
 
 **来源与数据边界 [已确定]**：
 
@@ -435,8 +460,8 @@ class RecallEntry(MemoryDraft):
 
 **返回范围：Core + Context 全部返回，Extensions 不返回。**
 
-- Core：返回全部核心字段，包括 **id**、**status**。
-- 内容字段：复用 Draft 的 **text**、**topic**。
+- Core：返回全部核心字段，包括 **id**、**status**、**text**。
+- 分类字段：**topic** 复用 Draft 的属性，由 Markdown 的主题路径恢复，不必在 Core 中重复存储。
 - Context：当前定义的 Context 字段全部返回，包括 **event_time**、**valid_from**、**valid_to**、**location**、**emotion**、**emotion_at**；字段不存在时按可选字段处理。
 - Extensions：**全部不返回**，包括 `recorded_at`、会话衍生 Memory 必存的 `session_id/message_id` 及其他程序维护信息；这些 ID 不向 LLM 暴露。
 - 检索分数、Markdown 原文、文件路径、行号、Audit 和 Pending 队列信息也不属于 RecallEntry，不放入正常 Recall 结果。
@@ -592,7 +617,7 @@ flowchart TD
 
 **领域模型与工具**：`MemoryDraft(text,topic,context?)`；`PendingItem = Draft + question + related_ids`；`MemoryEntry = Draft + id + status + recorded_at`；Inference 独立为 `id/text/kind/source_ids/status/created_at/updated_at`。Memory 仅 `active/deprecated`，不物理删除；Inference 为 `hypothesis/confirmed/deprecated`，确认推断不自动转 Memory。时间字段支持 `YYYY`、`YYYY-MM`、`YYYY-MM-DD` 或空，`transition` 不强制补精确生效日期。System Prompt 增加主动澄清通用原则：事实或操作关键语义不明确时反问用户，非关键 Context 缺失不强制追问。Agent 负责语义判断，Runtime 负责对话与工具调度、强制 Recall、Pending 检查及可信来源注入；ToolRegistry 保留所有工具注册、Schema、超时/取消和分发；MemoryService **直接实现** `memorize/transition/correct/deprecate` 等记忆业务方法及其参数校验/确定性编排，并在内部使用 `add(draft)` 与 `apply(add?, updates?)` 完成写入；无独立的记忆专用 Handler 业务层，也不额外进行 LLM 候选抽取或阈值语义裁决。
 
-**Markdown 与来源**：Memory、Inference、Pending 均采用 Markdown；按目录与一级标题区分类型；Profile 为唯一 `profile.md`；Session、Audit 使用 JSONL。会话衍生 Memory 在 Extensions 必存真实 `session_id/message_id`，外部导入可无；Extensions 不用于 Recall、`read_topic`、BM25 或 Embedding。记录保留历史错误与变更；Inference 不需要完整正文版本史；其变更与待复核事件追加到 `records/inference-changes.jsonl`，由未来统一 Vault Maintenance 增量处理。Pending 集中存 `memories/pending.md`，确认后先成功写入对应 Topic 再从待审文件移除；拒绝则保留原内容至 `archived/pending.md`，不单独写审核 Audit、不维护完整版本史，归档仅供未来后台质量维护按需只读参考。
+**Markdown 与来源**：Memory、Inference、Pending 均采用 Markdown，**取消独立 Content 区域，正文写入 `Core.text`**；Memory Core 固定 `id/status/text`，Topic 从路径获取，Pending/Inference 使用各自 Schema；按路径与一级标题区分类型；Profile 为唯一 `profile.md`；Session、Audit 使用 JSONL。会话衍生 Memory 在 Extensions 必存真实 `session_id/message_id`，外部导入可无；Extensions 不用于 Recall、`read_topic`、BM25 或 Embedding。记录保留历史错误与变更；Inference 不需要完整正文版本史；其变更与待复核事件追加到 `records/inference-changes.jsonl`，由未来统一 Vault Maintenance 增量处理。Pending 集中存 `memories/pending.md`，确认后先成功写入对应 Topic 再从待审文件移除；拒绝则保留原内容至 `archived/pending.md`，不单独写审核 Audit、不维护完整版本史，归档仅供未来后台质量维护按需只读参考。
 
 **Recall 与 Pending**：统一 Recall 接口，`query` 必填，`limit=7` 默认，另可按事实时间范围、地点、情绪过滤；不按记录时间做语义时间过滤。Runtime 拦截 Memory 变更和 Pending 创建，保证前置 Memory Recall；**创建 Pending 前强制再检查当前 Pending List**。Confirmed Inference 仅可选参考；高度相似时 Agent 可考虑是否仍有 Pending 价值，但不因为推断存在就禁止用户事实入库。Recall 返回 `RecallEntry(MemoryDraft)` 加 `id/status`，不含 Extensions 和底层文件信息；不设单独 Recall Token 预算或重排序器。Pending 审核可确认、仅编辑正文后确认或拒绝；正文实际未改则保留 Context，实际改写后先以空 Context 正式入库，后台独立调用一次 LLM 提取 Context，经 Service 补充空字段，不阻塞用户或修改确认的正文。
 
