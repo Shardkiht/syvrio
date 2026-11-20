@@ -6,9 +6,7 @@ from pathlib import Path
 import pytest
 
 from syvrio.agent.session import SessionStore
-from syvrio.memory.inference import InferenceStore, source_fingerprint
-from syvrio.memory.schema import Core, parse_document, render_record
-from syvrio.memory.store import MemoryStore
+from syvrio.memory.legacy_schema import Core, parse_document, render_record, source_fingerprint
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "migrate_timestamps_to_utc.py"
 
@@ -95,7 +93,10 @@ def test_migration_preview_apply_backup_and_idempotence(tmp_path):
         b"`syvrio.recorded_at`: `2026-11-11T09:00:00`",
         b"`syvrio.recorded_at`: `2026-11-11T01:00:00+00:00`",
     )
-    entries = MemoryStore(vault).entries()
+    entries = [
+        r.entry
+        for r in parse_document(memory.read_text(encoding="utf-8"), str(memory), "one").records
+    ]
     assert [entry.timestamp for entry in entries] == ["2026-11-11T01:00:00+00:00", "2026-11-11"]
     assert json.loads(audit.read_bytes())["at"] == "2026-11-11T02:00:00+00:00"
     info = json.loads(state.read_bytes())
@@ -144,7 +145,11 @@ def test_inference_revisions_keep_only_matching_evidence_current(tmp_path):
             extensions=[("syvrio.recorded_at", "2026-11-11T09:00:00")],
         ),
     )
-    old_entry = parse_document(memory.read_text(), "synthetic.md", "synthetic").records[0].entry
+    old_entry = (
+        parse_document(memory.read_text(encoding="utf-8"), "synthetic.md", "synthetic")
+        .records[0]
+        .entry
+    )
     old_digest = source_fingerprint(old_entry)
     record = {
         "id": "i-1",
@@ -172,12 +177,18 @@ def test_inference_revisions_keep_only_matching_evidence_current(tmp_path):
         tmp_path / "backup",
     )
     assert run.returncode == 0, run.stderr
-    entry = MemoryStore(vault).find("mem-1")
+    entry = (
+        parse_document(memory.read_text(encoding="utf-8"), str(memory), "synthetic")
+        .records[0]
+        .entry
+    )
     assert entry.timestamp == "2026-11-11T01:00:00+00:00"
-    updated, outdated = InferenceStore(vault).all()
-    assert updated.created_at == updated.updated_at == "2026-11-11T09:00:00+00:00"
-    assert updated.source_fingerprints == {"mem-1": source_fingerprint(entry)}
-    assert outdated.source_fingerprints == {"mem-1": "0" * 64}
+    updated, outdated = json.loads((vault / "records/memory/inferences.jsonl").read_bytes())[
+        "records"
+    ]
+    assert updated["created_at"] == updated["updated_at"] == "2026-11-11T09:00:00+00:00"
+    assert updated["source_fingerprints"] == {"mem-1": source_fingerprint(entry)}
+    assert outdated["source_fingerprints"] == {"mem-1": "0" * 64}
 
 
 @pytest.mark.parametrize("recovered", [True, False])

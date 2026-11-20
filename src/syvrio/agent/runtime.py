@@ -1,18 +1,19 @@
 from __future__ import annotations
 
-import json
 import time
 from collections.abc import Callable, Iterator
 from copy import copy
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import date
 from itertools import groupby, islice
-from threading import Event, Lock
+from threading import Event
 
+from ..infra.attachments import AttachmentBatch
 from ..infra.config import ChatConfig, Config, load_config
 from ..infra.documents import document_paths
 from ..infra.latency import TurnLatency, elapsed_ms, track_turn
 from ..infra.tokens import estimate_messages_tokens, truncate_to_tokens
+from ..infra.transaction import vault_transaction
 from ..llm import (
     AssistantTurn,
     ChatModel,
@@ -26,12 +27,12 @@ from ..llm import (
     Usage,
 )
 from ..memory.detect import redact_secrets
-from ..memory.extractor import LLMExtractor, split_chunks
-from ..memory.queue import rollback_files
+from ..memory.extractor import LLMExtractor
 from ..memory.service import MemoryService, load_persona
-from ..memory.store import atomic_write
 from ..memory.turn_undo import TurnFileJournal, TurnUndoError
+from ..session import Session, SessionStore, new_message_id
 from .context import CompactionPhase, ContextManager, record_to_message
+from .evidence import RecallContext
 from .insertion import TurnInsertion
 from .prompts import build_system_prompt
 from .recall import (
@@ -40,7 +41,6 @@ from .recall import (
     memory_references,
     should_auto_recall,
 )
-from .session import Session, SessionStore, new_message_id
 from .tools import (
     PARALLEL_NETWORK_LIMIT,
     PARALLEL_TOOLS,
@@ -51,29 +51,12 @@ from .tools import (
     compact_tool_outputs,
 )
 
-DISTILL_MAX_CHARS = 12000
-MEMORIZE_BATCH_LIMIT = 8
-
 
 @dataclass(frozen=True)
 class ThinkingUpdate:
     text: str
     record_id: str | None = None
     seconds: float | None = None
-
-
-def _merged_memorize_text(calls: list[ToolCall], user_text: str) -> str | None:
-    texts = [str(call.arguments.get("text", "")).strip() for call in calls]
-    if len(texts) < 2 or not all(texts):
-        return None
-    distinct = list(dict.fromkeys(texts))
-    if len(distinct) == 1:
-        return distinct[0]
-    # A whole-message write carries a timestamp anchor. Never share it with fragments.
-    if user_text in distinct:
-        return None
-    merged = "\n\n".join(f"独立片段 {index}：\n{text}" for index, text in enumerate(distinct, 1))
-    return merged if merged != user_text else None
 
 
 def _tool_results(
@@ -92,43 +75,9 @@ def _tool_results(
     def kind(call: ToolCall) -> str:
         if call.name in PARALLEL_TOOLS:
             return "network"
-        return "memorize" if call.name == "memorize" and user_text is not None else "serial"
+        return "serial"
 
     for batch_kind, group in groupby(calls, key=kind):
-        if batch_kind == "memorize":
-            while batch := list(islice(group, MEMORIZE_BATCH_LIMIT)):
-                merged = _merged_memorize_text(batch, user_text)
-                if merged is None:
-                    for call in batch:
-                        yield (
-                            call,
-                            tools.execute(call.name, call.arguments)
-                            if ready(call)
-                            else cancelled_tool(),
-                        )
-                    continue
-                first, *rest = batch
-                if not ready(first):
-                    for call in batch:
-                        yield call, cancelled_tool()
-                    continue
-                outcome = tools.execute(first.name, {"text": merged})
-                yield (
-                    first,
-                    replace(outcome, display=f"{outcome.display} ({len(batch)} calls batched)"),
-                )
-                for call in rest:
-                    payload = {"batched_with": first.id, "ok": outcome.ok}
-                    yield (
-                        call,
-                        ToolOutcome(
-                            outcome.ok,
-                            json.dumps(payload),
-                            "See the shared memory write result",
-                            data=payload,
-                        ),
-                    )
-            continue
         if batch_kind == "serial":
             for call in group:
                 yield (
@@ -171,18 +120,20 @@ class AgentRuntime:
         self.service = service
         self.model = model
         self.sessions = sessions
+        self.sessions.recover_deletions()
         self.config = config or service.config.chat
         self.recall_queries = RecallQueryBuilder(
             service.config.llm,
             rewrite=self.config.recall_rewrite,
             context_turns=self.config.recall_context_turns,
         )
+        self.on_distillation: Callable[[str, str | None], None] | None = None
         self.summarizer = summarizer or OpenAISummarizer(service.config.llm)
         self.context = ContextManager(
             self.config,
             self.summarizer,
             sessions,
-            flush=self._flush_memories,
+            request_distillation=self._request_distillation,
         )
         self.session: Session | None = None
         self.last_plan = None
@@ -191,9 +142,7 @@ class AgentRuntime:
         # 请求进行中的会话与被延迟打关闭标记的会话（切换不阻塞生成）。
         self._active_ask: Session | None = None
         self._deferred_close: Session | None = None
-        self._catchup_lock = Lock()
-        self._catchup_stopped = Event()
-        self._catchup_session: str | None = None
+        self.allow_local_paths = True
 
     def start(self) -> None:
         """进入新对话。会话文件在第一条消息发送时才创建。"""
@@ -270,6 +219,7 @@ class AgentRuntime:
         text: str,
         *,
         session: Session | None = None,
+        attachments: AttachmentBatch | None = None,
         on_session: Callable[[Session], None] | None = None,
         on_user_message: Callable[[str], None] | None = None,
         on_event: Callable[[str], None] | None = None,
@@ -312,6 +262,7 @@ class AgentRuntime:
                     on_compaction,
                     insertion,
                     on_inserted,
+                    attachments,
                 )
         except GenerationCancelled as exc:
             partial = getattr(exc, "partial_content", "")
@@ -331,10 +282,7 @@ class AgentRuntime:
                 deferred = self._deferred_close
                 self._deferred_close = None
                 if deferred is session:
-                    # 切走/新建时该会话仍在生成：关闭标记延迟到此刻补打，
-                    # 保证排在最后的 assistant 记录之后；沉淀由启动补记兜底。
-                    if session.user_texts_after_distilled():
-                        self.sessions.append(session, {"type": "distill_deferred"})
+                    self._request_distillation(session.id, session.last_user_message_id())
                     self.sessions.append(session, {"type": "closed"})
 
     def _run_ask(
@@ -352,6 +300,7 @@ class AgentRuntime:
         on_compaction: Callable[[CompactionPhase], None] | None = None,
         insertion: TurnInsertion | None = None,
         on_inserted: Callable[[str, str], None] | None = None,
+        attachments: AttachmentBatch | None = None,
     ) -> AgentReply:
         # Settings can change while this turn waits on a model or tool.
         model = self.model
@@ -368,11 +317,17 @@ class AgentRuntime:
                 raise GenerationCancelled("Stopped by user")
 
         message_id = new_message_id()
-        journal = TurnFileJournal(self.service.paths, session.id, message_id)
-        self.sessions.append(
-            session,
-            {"type": "message", "id": message_id, "role": "user", "content": text},
-        )
+        journal = TurnFileJournal(self.service.paths, session.id, message_id, self.service.memory_references)
+        record = {"type": "message", "id": message_id, "role": "user", "content": text}
+        if attachments:
+            attachments.bind(session.id, message_id)
+            record["attachments"] = [asdict(item) for item in attachments.files]
+        try:
+            self.sessions.append(session, record)
+        except BaseException:
+            if attachments:
+                attachments.discard()
+            raise
         if on_user_message is not None:
             # 立即上报本条用户消息 ID；生成期间 /undo 用它精确撤销当前回合。
             on_user_message(message_id)
@@ -415,20 +370,13 @@ class AgentRuntime:
 
         for event in recall_events + plan.events:
             emit(event)
-        if plan.flushed:
-            flushed = plan.flushed
-            if flushed.get("error"):
-                emit(f"Memory distillation failed: {flushed['error']}")
-            elif flushed.get("admitted") or flushed.get("queued"):
-                emit(
-                    f"Distilled before compaction: {flushed.get('admitted', 0)} written, "
-                    f"{flushed.get('queued', 0)} pending"
-                )
-
-        tools = build_tools(
-            self.service, session, timeout=config.tool_timeout, file_paths=document_paths(text)
-        )
+        paths = attachments.documents() if attachments else document_paths(text) if self.allow_local_paths else []
+        evidence = RecallContext(self.service)
+        tools = build_tools(self.service, session, timeout=config.tool_timeout,
+                            file_paths=paths, evidence=evidence)
         messages = plan.messages
+        if attachments:
+            messages = [*messages[:-1], {**messages[-1], "content": attachments.model_content(messages[-1]["content"])}]
         usage = Usage()
         steps = 0
         final = ""
@@ -436,6 +384,7 @@ class AgentRuntime:
         needs_wrap_up = True
 
         def request_model(schemas: list[dict]) -> AssistantTurn:
+            evidence.begin_model_request()
             with latency.model_step() as started:
                 try:
                     turn = self._chat_with_retry(
@@ -490,9 +439,11 @@ class AgentRuntime:
             insertion.settle(applied=True)
             if on_inserted is not None:
                 on_inserted(message["id"], text)
+            evidence.invalidate()
             # A new user message authorizes only the file paths it explicitly supplies.
             tools = build_tools(
-                self.service, session, timeout=config.tool_timeout, file_paths=document_paths(text)
+                self.service, session, timeout=config.tool_timeout,
+                file_paths=document_paths(text) if self.allow_local_paths else [], evidence=evidence,
             )
             return True
 
@@ -524,7 +475,10 @@ class AgentRuntime:
                 latency.event(
                     "tool.finished", tool_index=index, ok=outcome.ok, elapsed_ms=outcome.duration_ms
                 )
-                content = truncate_to_tokens(outcome.content, 2000)
+                complete_evidence = call.name in {"recall", "read_topic", "read_memory_source"} or (
+                    outcome.data and outcome.data.get("status") == "review_required"
+                )
+                content = outcome.content if complete_evidence else truncate_to_tokens(outcome.content, 2000)
                 self.sessions.append(
                     session,
                     {
@@ -537,7 +491,7 @@ class AgentRuntime:
                         "content": content,
                         **(
                             {"turn_undo_recorded": True}
-                            if journal.files or journal.inferences
+                            if journal.has_effects()
                             else {}
                         ),
                     },
@@ -549,7 +503,8 @@ class AgentRuntime:
                     on_tool(outcome.ok)
                 emit(outcome.display)
             # 工具结果预算随上下文窗口走；200K 窗口下 8K 会过早丢证据。
-            compact_tool_outputs(messages, max_tokens=max(8000, config.context_window // 4))
+            if compact_tool_outputs(messages, max_tokens=max(8000, config.context_window // 4)):
+                evidence.invalidate()
             latency.event("tools.finished", elapsed_ms=elapsed_ms(started))
             apply_insertion()
 
@@ -598,149 +553,33 @@ class AgentRuntime:
             on_compaction=on_compaction,
         )
         events = list(plan.events)
-        if plan.flushed and plan.flushed.get("admitted") is not None:
-            events.append(
-                f"Distilled before compaction: {plan.flushed.get('admitted', 0)} written, "
-                f"{plan.flushed.get('queued', 0)} pending"
-            )
         if not events:
             events.append("No earlier records to compact.")
         return events
 
-    def close(self, distill: bool = True) -> dict:
-        empty = {"admitted": 0, "queued": 0, "duplicates": 0, "blocked": 0, "error": None}
-        if self.session is None or self._closed:
-            return empty
-        session = self.session
-        stats = dict(empty)
-        if self._active_ask is not None and session.id == self._active_ask.id:
-            # 该会话仍有请求在写：不在此处落标记/抽取，延迟到请求结束（ask finally）
-            # 补打，保证 closed 排在最后的 assistant 记录之后；沉淀由启动补记兜底。
-            self._deferred_close = self._active_ask
-            self._closed = True
-            return stats
-        # 游标感知：只抽取上次成功沉淀之后的新内容，反复切换不重复抽取。
-        user_texts = session.distillation_texts()
-        if not distill:
-            # 切换会话走快速路径：只做记账，沉淀延后（标记供补沉淀拾取）。
-            if user_texts:
-                self.sessions.append(session, {"type": "distill_deferred"})
-            self.sessions.append(session, {"type": "closed"})
-            self._closed = True
-            return stats
-        if self.config.extract_on_exit and user_texts and self._catchup_session == session.id:
-            self.sessions.append(session, {"type": "distill_deferred"})
-        elif self.config.extract_on_exit and user_texts:
-            joined = "\n---\n".join(user_texts)
+    def _request_distillation(self, session_id: str, through: str | None) -> None:
+        if self.on_distillation is not None and through is not None:
             try:
-                # 分块抽完再推进游标；直接截断会把最旧的内容永久跳过。
-                for chunk in split_chunks(joined, max_chars=DISTILL_MAX_CHARS):
-                    result = self.service.memorize(
-                        chunk,
-                        source=f"session:{session.id}:exit",
-                        session_id=session.id,
-                        message_id=session.last_user_message_id(),
-                    )
-                    stats["admitted"] += len(result.admitted)
-                    stats["queued"] += len(result.queued)
-                    stats["duplicates"] += len(result.duplicates)
-                    stats["blocked"] += len(result.blocked)
-                self.sessions.append(
-                    session,
-                    {"type": "distilled", "up_to": session.last_user_message_id()},
-                )
+                self.on_distillation(session_id, through)
             except Exception as exc:
-                stats["error"] = str(exc)
-                # 留下失败标记：启动补沉淀据此识别"有 closed 但没沉淀成"的会话。
-                self.sessions.append(session, {"type": "extraction_error", "error": str(exc)[:200]})
-        self.sessions.append(session, {"type": "closed"})
-        self._closed = True
-        return stats
+                from ..infra.diagnostics import record_event
 
-    def stop_catchup(self) -> None:
-        self._catchup_stopped.set()
-        with self._catchup_lock:
-            pass
+                record_event("catchup.failed", exc)
 
-    def consolidate_pending(
-        self, limit: int = 3, min_new_messages: int = 1, stop: Event | None = None
-    ) -> dict:
-        """Extract inactive sessions without holding the Vault lock during model calls."""
-        result = {"scanned": 0, "consolidated": 0, "admitted": 0, "queued": 0, "errors": []}
-        stop = stop if stop is not None else self._catchup_stopped
-        if not self.config.extract_on_exit or not self._catchup_lock.acquire(blocking=False):
+    def close(self, distill: bool = True) -> dict:
+        """Enqueue outstanding work; a switch/exit never waits for memory extraction."""
+        result = {"admitted": 0, "queued": 0, "duplicates": 0, "blocked": 0, "error": None}
+        if self.session is None or self._closed:
             return result
-        try:
-            if stop.is_set():
-                return result
-            current = self.session
-            for session in self.sessions.unconsolidated(
-                limit, exclude=current.id if current else None, min_new_messages=min_new_messages
-            ):
-                if stop.is_set():
-                    break
-                self._consolidate_session(session.id, min_new_messages, stop, result)
-        finally:
-            self._catchup_lock.release()
+        session = self.session
+        if self._active_ask is not None and session.id == self._active_ask.id:
+            self._deferred_close = self._active_ask
+        else:
+            self.sessions.append(session, {"type": "closed"})
+            if not distill or self.config.extract_on_exit:
+                self._request_distillation(session.id, session.last_user_message_id())
+        self._closed = True
         return result
-
-    def _session_in_use(self, session_id: str) -> bool:
-        return any(
-            session is not None and session.id == session_id
-            for session in (self.session, self._active_ask)
-        )
-
-    def _consolidate_session(
-        self, session_id: str, minimum: int, stop: Event, result: dict
-    ) -> None:
-        with self.service.write_lock:
-            if self._session_in_use(session_id) or not self.sessions.exists(session_id):
-                return
-            session = self.sessions.load(session_id, include_reasoning=False)
-            texts = session.distillation_texts()
-            if len(texts) < max(1, minimum):
-                return
-            cursor = session.last_user_message_id()
-            signature = self.sessions.revision(session.path)
-            self._catchup_session = session_id
-        result["scanned"] += 1
-        try:
-            candidates = []
-            for chunk in split_chunks("\n---\n".join(texts), max_chars=DISTILL_MAX_CHARS):
-                if stop.is_set():
-                    return
-                candidates.extend(self.service.extract_candidates(chunk))
-            with self.service.write_lock:
-                if stop.is_set() or self._session_in_use(session_id):
-                    return
-                if not session.path.exists() or self.sessions.revision(session.path) != signature:
-                    return
-                extracted = self.service.adjudicate_extracted(
-                    candidates,
-                    source=f"session:{session_id}:catchup",
-                    session_id=session_id,
-                    message_id=cursor,
-                )
-                self.sessions.append(session, {"type": "distilled", "up_to": cursor})
-                self.sessions.append(session, {"type": "consolidated"})
-                result["admitted"] += len(extracted.admitted)
-                result["queued"] += len(extracted.queued)
-                result["consolidated"] += 1
-        except Exception as exc:
-            result["errors"].append(f"{session_id}: {exc}")
-            with self.service.write_lock:
-                if (
-                    not stop.is_set()
-                    and not self._session_in_use(session_id)
-                    and session.path.exists()
-                ):
-                    if self.sessions.revision(session.path) == signature:
-                        self.sessions.append(
-                            session, {"type": "extraction_error", "error": str(exc)[:200]}
-                        )
-        finally:
-            with self.service.write_lock:
-                self._catchup_session = None
 
     def status(self) -> dict:
         session = self.current
@@ -777,12 +616,24 @@ class AgentRuntime:
         self,
         session: Session | None = None,
         message_id: str | None = None,
+        *,
+        expected_latest: str | None = None,
     ) -> str | None:
         """撤销指定会话的一轮用户消息；默认当前会话最后一条用户消息。
 
         传入 message_id 时只撤销该条，避免生成期间切换会话后误伤其他回合。
         """
-        target_session = session or self.current
+        with self.service.write_lock:
+            target_session = session or self.current
+            # Recheck the persisted tail while holding the same lock as append and rollback.
+            live = self.sessions.load(target_session.id)
+            if expected_latest is not None and live.last_user_message_id() != expected_latest:
+                raise TurnUndoError("This message is no longer the latest. Refresh the conversation.")
+            target_session.records = live.records
+            target_session.damaged_tail_line = live.damaged_tail_line
+            return self._undo_locked(target_session, message_id)
+
+    def _undo_locked(self, target_session: Session, message_id: str | None) -> str | None:
         records = target_session.active_records()
         if message_id:
             target = next(
@@ -806,52 +657,35 @@ class AgentRuntime:
             )
         if target is None:
             return None
-        root_id = target.get("turn_root") or target["id"]
-        inputs = [record for record in records if record.get("role") == "user"]
-        start = next(
-            (index for index, record in enumerate(inputs) if record.get("id") == root_id), None
-        )
-        if start is None or any(
-            record.get("turn_root") != root_id for record in inputs[start + 1 :]
-        ):
+        inputs = target_session.latest_turn_inputs()
+        if not any(record.get("id") == target["id"] for record in inputs):
             raise TurnUndoError("Only the latest turn can be undone.")
+        root_id = inputs[0]["id"]
         event = {"type": "undo", "id": new_message_id(), "message_id": root_id}
-        journal = TurnFileJournal(self.service.paths, target_session.id, root_id)
+        journal = TurnFileJournal(self.service.paths, target_session.id, root_id, self.service.memory_references)
         with self.service.write_lock:
-            first = records.index(inputs[start])
+            first = records.index(inputs[0])
             if not journal.path.is_file() and any(
                 record.get("turn_undo_recorded") is True for record in records[first:]
             ):
                 raise TurnUndoError(
                     "This turn's local undo journal is missing. Restore the matching Runtime to undo it."
                 )
-            files, inferences = journal.plan(self.service.inferences.all)
-            if files or inferences:
-                paths = [*files, self.service.audit.path, target_session.path]
-                if inferences:
-                    paths.append(self.service.inferences.path)
-                with rollback_files(paths):
-                    for path, original in files.items():
-                        if original is None:
-                            path.unlink()
-                        else:
-                            atomic_write(path, original)
-                    if inferences:
-                        self.service.inferences.record(*inferences)
-                    self.service.audit.write(
-                        "undo_tool_writes",
-                        session=target_session.id,
-                        message=root_id,
-                        paths=len(files),
-                        inferences=len(inferences),
-                    )
-                    self.sessions.append(target_session, event)
-            else:
-                self.sessions.append(target_session, event)
+            files = journal.plan()
+            with vault_transaction(self.service.paths) as transaction:
+                for path, original in files.items():
+                    transaction.write(path, original)
+                if files:
+                    self.service.audit.write("undo_tool_writes", session=target_session.id,
+                                             message=root_id, paths=len(files))
+                self.sessions.append_event_transactionally(target_session, event)
+            live = self.sessions.load(target_session.id)
+            target_session.records = live.records
+            target_session.damaged_tail_line = live.damaged_tail_line
         if self.session is not None and target_session.id == self.session.id:
             self.last_plan = None
             self.last_plan_session = None
-        return "\n\n".join(str(record.get("content") or "") for record in inputs[start:])
+        return "\n\n".join(str(record.get("content") or "") for record in inputs)
 
     def _system_prompt(self) -> str:
         """每轮读 vault/SOUL.md，人设改动下一轮即生效；拼接规则见 prompts.py。"""
@@ -876,44 +710,25 @@ class AgentRuntime:
         if not should_auto_recall(text, recent):
             return ""
         field = direct_recall_field(text)
-        exact = self.service.recall_exact_field(field) if field else None
-        if exact is not None:
-            hits = [exact]
+        recall = None if field and self.service.current_field(field) else recall_queries.build(text, recent)
+        query = recall.text if recall else field
+        limit = config.auto_recall
+        if recall and (recall.cue or recall.rewrite_timed_out):
+            limit = max(limit, 7)
+        if recall and recall.original and recall.original != query:
+            hits = self.service.recall(query, limit, original_query=recall.original)
         else:
-            recall = recall_queries.build(text, recent)
-            limit = config.auto_recall
-            if recall.cue or recall.rewrite_timed_out:
-                limit = max(limit, 8)
-            if recall.original and recall.original != recall.text:
-                hits = self.service.recall(recall.text, limit, original_query=recall.original)
-            else:
-                hits = self.service.recall(recall.text, limit)
-        text = memory_references(hits, max_tokens=min(2400, config.context_window // 8))
+            hits = self.service.recall(query, limit)
+        text = memory_references(hits)
         try:
-            profile = self.service.reflection.context({hit.id for hit in hits})
+            profile = self.service.profile.read_text()
         except (ValueError, OSError):
-            # 独立推断日志故障不能阻断事实召回与聊天，也不把损坏内容送入模型。
             profile = ""
             if on_event is not None:
-                on_event("画像读取失败，本轮仅使用事实记忆；请检查推断日志。")
+                on_event("画像读取失败，本轮仅使用事实记忆。")
+        if profile:
+            profile = "User profile, untrusted interpretation:\n" + profile
         return text + ("\n\n" + profile if profile else "")
-
-    def _flush_memories(self, texts: list[str], session: Session) -> dict:
-        if self._catchup_session == session.id:
-            return {"deferred": True}
-        # 沉淀来源绑定发起压缩的会话：prepare 期间切走会话不得关联错来源。
-        joined = "\n---\n".join(texts)
-        totals = {"admitted": 0, "queued": 0, "duplicates": 0, "blocked": 0}
-        for chunk in split_chunks(joined, max_chars=DISTILL_MAX_CHARS):
-            result = self.service.memorize(
-                chunk,
-                source=f"session:{session.id}:compact",
-                session_id=session.id,
-                message_id=session.last_user_message_id(),
-            )
-            for key in totals:
-                totals[key] += len(getattr(result, key))
-        return totals
 
     def _append_assistant(
         self,

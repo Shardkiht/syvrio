@@ -1,0 +1,18 @@
+"""Run the private resident on an available local port."""
+
+import argparse
+from pathlib import Path
+
+from ..app.web.server import serve_resident
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", type=Path, required=True)
+    parser.add_argument("--vault", type=Path, required=True)
+    args = parser.parse_args()
+    serve_resident(args.config, args.vault)
+
+
+if __name__ == "__main__":
+    main()

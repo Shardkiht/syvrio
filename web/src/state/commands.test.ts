@@ -86,6 +86,13 @@ describe('command palette', () => {
 });
 
 describe('option panels', () => {
+  it('puts auto first and orders the Spark switch from disabled to enabled', () => {
+    const panel = panelFor(result({ intent: 'think', data: { options: ['enabled', 'auto', 'disabled'] } }));
+    expect(panel).toMatchObject({ options: [
+      { value: 'auto' }, { value: 'disabled' }, { value: 'enabled' },
+    ] });
+  });
+
   it('turns model / reasoning / context options into clickable choices', () => {
     const models = panelFor(result({
       intent: 'model',

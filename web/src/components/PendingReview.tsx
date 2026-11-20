@@ -4,7 +4,7 @@ import { CommandDialog, moveOption } from './CommandUI';
 
 const INFERENCE_FILTERS = [
   ['all', 'All'], ['hypothesis', 'Pending'], ['confirmed', 'Confirmed'],
-  ['rejected', 'Rejected'], ['superseded', 'Invalidated'],
+  ['deprecated', 'Deprecated'],
 ] as const;
 
 export function PendingReview({
@@ -27,9 +27,9 @@ export function PendingReview({
   const confirm = useRef<HTMLButtonElement>(null);
   const pending = panel.kind === 'pending';
   const editing = draft !== null;
-  const rows = filter === 0 ? panel.rows : panel.rows.filter((row) => row.reason === INFERENCE_FILTERS[filter][0]);
+  const rows = filter === 0 ? panel.rows : panel.rows.filter((row) => row.status === INFERENCE_FILTERS[filter][0]);
   const selected = rows.find((row) => row.id === selectedId);
-  const reviewable = selected && (pending || selected.reason === 'hypothesis' || selected.reason === 'confirmed');
+  const reviewable = selected && (pending || selected.status === 'hypothesis' || selected.status === 'confirmed');
 
   const chooseFilter = (index: number) => {
     setFilter(index);
@@ -144,7 +144,8 @@ export function PendingReview({
               {selected ? (
                 <>
                   <div className="pending-meta">{selected.topic}</div>
-                  {selected.reason && <p className="pending-meta">{selected.reason}</p>}
+                  {selected.question && <p className="pending-meta">{selected.question}</p>}
+                  {!!selected.related_ids?.length && <p className="pending-meta">{selected.related_ids.join(', ')}</p>}
                   {draft === null ? (
                     <p className="pending-text">{selected.text}</p>
                   ) : (
@@ -163,7 +164,7 @@ export function PendingReview({
             {action && (
               <div role="status">
                 {action === 'reject' ? 'Reject this item?' : pending ? 'Save this candidate to memory?'
-                  : action === 'edit' ? 'Save the correction as a new hypothesis?' : 'Confirm this inference?'}
+                  : action === 'edit' ? 'Save the correction as a confirmed inference?' : 'Confirm this inference?'}
               </div>
             )}
             <div className="confirm-actions">

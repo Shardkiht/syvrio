@@ -36,7 +36,7 @@ const CATALOG: CommandInfo[] = [
     subcommands: [{ name: 'refresh', description: 'Refresh model list' }],
   }),
   command('undo'),
-  command('import', { support: 'unsupported', note: 'Use the TUI.' }),
+  command('import', { support: 'client', intent: 'pick_attachments' }),
   command('help', { shortcut: 'Ctrl+Shift+P / Alt+P' }),
   command('status'),
   command('pending'),
@@ -84,14 +84,63 @@ function sse(...chunks: string[]): Response {
 
 function installFetch(overrides: Record<string, (init?: RequestInit) => Response> = {}) {
   const calls: string[] = [];
+  type Receipt = { turn_id: number; session_id: string; text: string };
+  type Job = { receipt: Receipt; start: () => Response; stream?: Response };
+  const jobs = new Map<number, Job>();
+  const waiting: Job[] = [];
+  let active: Job | undefined;
+  let paused = false;
+  let session: string | null = null;
+  let revision = 0;
+  const advance = () => {
+    active = paused ? undefined : waiting.shift();
+    if (active) active.stream = active.start();
+  };
   vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
     const method = init?.method ?? 'GET';
     calls.push(`${method} ${url}`);
     const key = url.split('?')[0];
+    if (key === '/api/chat' && url.endsWith('receipt=1') && overrides[key]) {
+      const body = JSON.parse(String(init?.body));
+      session = body.session_id ?? 's-1';
+      const receipt = { turn_id: jobs.size + 1, session_id: session as string, text: body.message };
+      const job: Job = { receipt, start: () => overrides[key](init) };
+      jobs.set(receipt.turn_id, job);
+      if (!active) {
+        paused = false;
+        job.stream = job.start();
+        if (!job.stream.ok) return job.stream;
+        active = job;
+      } else {
+        waiting.push(job);
+      }
+      return json(receipt, 202);
+    }
+    if (key === '/api/chat/queue') {
+      return json({ active: active?.receipt ?? null, waiting: waiting.map(j => j.receipt), paused, revision, session_id: session });
+    }
+    if (key.startsWith('/api/chat/turns/')) {
+      const job = jobs.get(Number(key.split('/').pop()));
+      if (!job?.stream?.body) return json({}, 404);
+      const raw = job.stream.body.getReader();
+      return { ok: true, body: { getReader: () => ({
+        read: async () => {
+          const chunk = await raw.read();
+          if (chunk.done && active === job) { revision++; advance(); }
+          return chunk;
+        },
+        releaseLock: () => raw.releaseLock(),
+      }) } } as Response;
+    }
+    if (key === '/api/commands' && method === 'POST' && JSON.parse(String(init?.body)).line === '/undo') {
+      paused = waiting.length > 0;
+    }
     if (overrides[`${method} ${key}`]) return overrides[`${method} ${key}`](init);
     if (overrides[key]) return overrides[key](init);
     if (key === '/api/health') return json(HEALTH);
     if (key === '/api/sessions') return json({ items: SESSIONS });
+    if (key === '/api/settings/models') return json({ items: [], unavailable_providers: [] });
+    if (key.endsWith('/deletion-preview')) return json({ pending: [], revision: '' });
     if (key === '/api/commands') {
       if (method === 'POST') return json(commandResult());
       return json({ items: CATALOG });
@@ -440,7 +489,7 @@ describe('Web client interactions', () => {
       fireEvent.keyDown(input, { key: 'Enter' });
     }
     expect(sent).toEqual(['original']);
-    expect(screen.getByRole('region', { name: 'Send queue' }).textContent).toContain('2 queued');
+    await waitFor(() => expect(screen.getByRole('region', { name: 'Send queue' }).textContent).toContain('2 queued'));
 
     fireEvent.change(input, { target: { value: 'new instruction' } });
     fireEvent.keyDown(input, { key: 'Enter', ctrlKey: true });
@@ -467,7 +516,10 @@ describe('Web client interactions', () => {
       body: { getReader: () => ({
         read: async () => {
           if (++readCount === 1) return {
-            done: false, value: encoder.encode(frame({ seq: 1, type: 'start', turn_id: 72, session_id: 's-1' })),
+            done: false, value: encoder.encode(
+              frame({ seq: 1, type: 'start', turn_id: 72, session_id: 's-1' })
+              + frame({ seq: 2, type: 'message_saved', session_id: 's-1', message_id: 'm-original' }),
+            ),
           };
           if (readCount === 2) return { done: false, value: encoder.encode(await streamTail) };
           return { done: true };
@@ -481,7 +533,7 @@ describe('Web client interactions', () => {
         return sent.length === 1 ? first : sse(frame({ seq: 1, type: 'done', text: 'Reply' }));
       },
       'POST /api/commands': () => {
-        finish(frame({ seq: 2, type: 'cancelled', session_id: 's-1' }));
+        finish(frame({ seq: 3, type: 'cancelled', session_id: 's-1' }));
         return json(commandResult({
           command: 'undo', intent: 'undo', session_id: 's-1',
           data: { restored: 'original question' }, refresh_history: true,
@@ -498,7 +550,9 @@ describe('Web client interactions', () => {
     const input = screen.getByTestId('composer-input') as HTMLTextAreaElement;
     fireEvent.change(input, { target: { value: 'queued question' } });
     fireEvent.keyDown(input, { key: 'Enter' });
-    fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
+    expect(within(input.closest('.composer') as HTMLElement).queryByRole('button', { name: /undo/i })).toBeNull();
+    await waitFor(() => expect(screen.getByRole('region', { name: 'Send queue' }).textContent).toContain('queued question'));
+    fireEvent.click(screen.getByRole('button', { name: 'Undo last turn' }));
     expect(screen.queryByRole('alertdialog')).toBeNull();
     await waitFor(() => expect(input.value).toBe('original question'));
     expect(screen.getByRole('region', { name: 'Send queue' }).textContent).toContain('paused');
@@ -506,6 +560,54 @@ describe('Web client interactions', () => {
     fireEvent.change(input, { target: { value: 'edited question' } });
     fireEvent.keyDown(input, { key: 'Enter' });
     await waitFor(() => expect(sent).toEqual(['original question', 'edited question', 'queued question']));
+  });
+
+  it('targets only the saved latest message, keeps cancelled edits, and resends after Undo', async () => {
+    let sends = 0;
+    let undos = 0;
+    const history = {
+      session_id: 's-1', title: 'Repeated messages', current: true, has_earlier: false, summary: null,
+      items: ['m-first', 'm-latest'].map((id) => ({ id, role: 'user', content: 'old', at: '' })),
+    };
+    installFetch({
+      '/api/sessions/s-1/switch': () => json({ session_id: 's-1', title: 'Repeated messages' }),
+      '/api/sessions/s-1': () => json({ ...history, items: sends ? [history.items[0], { ...history.items[1], id: 'm-new', content: 'revised' },
+        { ...history.items[1], id: 'a-new', role: 'assistant', content: 'answer' }] : history.items.slice(0, undos ? 1 : 2) }),
+      '/api/sessions/s-1/messages/m-latest/draft': () => json({ text: 'old', attachments: [] }),
+      'POST /api/commands': (init) => {
+        expect(JSON.parse(String(init?.body))).toMatchObject({
+          line: '/undo', session_id: 's-1', expected_message_id: 'm-latest',
+        });
+        undos++;
+        return json(commandResult({ command: 'undo', intent: 'undo', session_id: 's-1',
+          refresh_history: true, data: { restored: 'old' } }));
+      },
+      '/api/chat': (init) => {
+        expect(JSON.parse(String(init?.body)).message).toBe('revised');
+        sends++;
+        return sse(frame({ seq: 1, type: 'message_saved', message_id: 'm-new', session_id: 's-1' })
+          + frame({ seq: 2, type: 'done', text: 'answer' }));
+      },
+    });
+    render(<App />);
+    await ready();
+    fireEvent.click(screen.getByTestId('session-s-1'));
+    const edit = await screen.findByRole('button', { name: 'Edit and resend last message' });
+    const rows = screen.getAllByTestId('user-message');
+    expect(rows[0].contains(edit)).toBe(false);
+    expect(rows[1].contains(edit)).toBe(true);
+    fireEvent.click(edit);
+    const editor = await screen.findByRole('textbox', { name: 'Edit last message' });
+    fireEvent.change(editor, { target: { value: 'cancelled' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(undos).toBe(0);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit and resend last message' }));
+    fireEvent.change(await screen.findByRole('textbox', { name: 'Edit last message' }), { target: { value: 'revised' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Resend' }));
+    await waitFor(() => expect(sends).toBe(1));
+    expect(undos).toBe(1);
+    await screen.findByText('answer');
+    expect(screen.getAllByText('old')).toHaveLength(1);
   });
 
   it('restores an existing session from the sidebar', async () => {
@@ -560,7 +662,11 @@ describe('Web client interactions', () => {
     expect(screen.getByTestId('sidebar').className).not.toContain('open');
     fireEvent.click(screen.getByRole('button', { name: 'Open sessions' }));
     expect(screen.getByTestId('sidebar').className).toContain('open');
-    expect(screen.getByTestId('sidebar-scrim')).toBeTruthy();
+    const scrim = screen.getByTestId('sidebar-scrim');
+    expect(scrim.dataset.open).toBe('true');
+    fireEvent.click(scrim);
+    expect(scrim.dataset.open).toBe('false');
+    expect(screen.getByTestId('sidebar').hasAttribute('inert')).toBe(true);
   });
 
   it('collapses and reopens the desktop sidebar with the visible controls', async () => {
@@ -587,7 +693,7 @@ describe('Web client interactions', () => {
     Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 375 });
     fireEvent(window, new Event('resize'));
     await waitFor(() => expect(screen.getByTestId('sidebar').className).not.toContain('open'));
-    expect(screen.queryByTestId('sidebar-scrim')).toBeNull();
+    expect(screen.getByTestId('sidebar-scrim').dataset.open).toBe('false');
 
     Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 1024 });
     fireEvent(window, new Event('resize'));
@@ -597,8 +703,8 @@ describe('Web client interactions', () => {
 
 describe('Slash commands and shortcuts', () => {
   it('selects a pending candidate once, edits it, and refreshes after confirmed writes', async () => {
-    const first = { id: 'p-1', text: 'First candidate\nSecond line', topic: 'food', reason: 'Check the wording' };
-    const second = { id: 'p-2', text: 'Another candidate', topic: 'food', reason: '' };
+    const first = { id: 'p-1', text: 'First candidate\nSecond line', topic: 'food', question: 'Check the wording' };
+    const second = { id: 'p-2', text: 'Another candidate', topic: 'food', question: '' };
     const requests: { line: string; confirmed: boolean; pending_text?: string }[] = [];
     let fail = true;
     installFetch({
@@ -654,7 +760,7 @@ describe('Slash commands and shortcuts', () => {
         const body = JSON.parse(String(init?.body)) as (typeof requests)[number];
         requests.push(body);
         const rows = body.inference_text ? [] : [{
-          id: 'inf-example', topic: 'profile', reason: 'hypothesis', text,
+          id: 'inf-example', topic: 'profile', status: 'hypothesis', text,
         }];
         return json(commandResult({
           command: 'inferences', intent: 'inferences',
@@ -815,9 +921,24 @@ describe('Slash commands and shortcuts', () => {
     expect(calls.some((entry) => entry.includes('/api/chat'))).toBe(false);
   });
 
-  it('shows a clear unsupported message for browser-unsafe commands', async () => {
+  it('opens the native multiple-file picker directly from the import command', async () => {
+    const calls = installFetch();
+    render(<App />);
+    await ready();
+    const picker = screen.getByLabelText('Select attachments') as HTMLInputElement;
+    const click = vi.spyOn(picker, 'click');
+    send('/import');
+    expect(click).toHaveBeenCalledTimes(1);
+    expect(picker.multiple).toBe(true);
+    fireEvent.change(picker, { target: { files: [new File(['text'], 'notes.txt'), new File(['image'], 'photo.png')] } });
+    expect(screen.getByLabelText('Remove notes.txt')).toBeTruthy();
+    expect(screen.getByLabelText('Remove photo.png')).toBeTruthy();
+    expect(calls.some((url) => url.startsWith('POST /api/chat'))).toBe(false);
+  });
+
+  it('rejects old typed server paths', async () => {
     const spy = spyCommands(() => commandResult({
-      status: 'unsupported', command: 'import', intent: '', message: 'Use the TUI.',
+      status: 'error', command: 'import', intent: '', message: 'Choose files on this device.',
     }));
     installFetch(spy.overrides);
     render(<App />);
@@ -825,7 +946,7 @@ describe('Slash commands and shortcuts', () => {
     const input = screen.getByTestId('composer-input') as HTMLTextAreaElement;
     fireEvent.change(input, { target: { value: '/import /tmp/private.txt' } });
     fireEvent.keyDown(input, { key: 'Enter' });
-    expect(await screen.findByRole('dialog', { name: '/import is not available on the Web' })).toBeTruthy();
+    expect(await screen.findByText('Choose files on this device.')).toBeTruthy();
   });
 
   it('does not send or trigger shortcuts during IME composition', async () => {
@@ -887,7 +1008,7 @@ describe('Slash commands and shortcuts', () => {
 
   it('opens the settings panel from the header and with Alt+S', async () => {
     const spy = spyCommands(() => commandResult());
-    installFetch(spy.overrides);
+    const calls = installFetch(spy.overrides);
     render(<App />);
     await ready();
 
@@ -898,8 +1019,7 @@ describe('Slash commands and shortcuts', () => {
 
     fireEvent.keyDown(window, { key: 's', altKey: true });
     await waitFor(() => expect(screen.getByTestId('settings-overlay')).toBeTruthy());
-    // The panel reads settings through the same command API as the TUI.
-    await waitFor(() => expect(spy.lines).toContain('/model'));
+    await waitFor(() => expect(calls).toContain('GET /api/settings/models?q='));
     expect(spy.lines).toContain('/think');
     expect(spy.lines).toContain('/context');
   });
@@ -1000,6 +1120,7 @@ describe('Session deletion', () => {
     expect(screen.getByTestId('delete-overlay')).toBeTruthy();
     expect(screen.getByTestId('confirm-message').textContent).toContain('This cannot be undone');
 
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Delete permanently' }) as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     expect(screen.queryByTestId('delete-overlay')).toBeNull();
     expect(calls.some((call) => call.startsWith('DELETE '))).toBe(false);
@@ -1019,6 +1140,7 @@ describe('Session deletion', () => {
     await ready();
 
     fireEvent.click(screen.getByTestId('delete-s-1'));
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Delete permanently' }) as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(screen.getByRole('button', { name: 'Delete permanently' }));
     await waitFor(() =>
       expect(calls).toContain('DELETE /api/sessions/s-1?confirmed=true'));
@@ -1057,6 +1179,7 @@ describe('Session deletion', () => {
 
     fireEvent.click(screen.getByTestId('delete-s-cur'));
     expect(screen.getByTestId('confirm-message').textContent).toContain('new empty chat');
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Delete permanently' }) as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(screen.getByRole('button', { name: 'Delete permanently' }));
     await waitFor(() => expect(calls).toContain('DELETE /api/sessions/s-cur?confirmed=true'));
     expect(calls.indexOf('POST /api/sessions')).toBeGreaterThan(-1);
@@ -1075,11 +1198,36 @@ describe('Session deletion', () => {
     await ready();
 
     fireEvent.click(screen.getByTestId('delete-s-1'));
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Delete permanently' }) as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(screen.getByRole('button', { name: 'Delete permanently' }));
     await waitFor(() =>
       expect(screen.getByTestId('message-list').textContent).toContain('Cannot delete the current session'));
     expect(screen.queryByTestId('delete-overlay')).toBeNull();
     expect(screen.getByTestId('composer-input')).toBeTruthy();
+  });
+
+  it('lists related pending text and asks again when another client changes it', async () => {
+    let previews = 0;
+    let deletions = 0;
+    const calls = installFetch({
+      '/api/sessions/s-1/deletion-preview': () => {
+        previews++;
+        return json({ pending: [{ id: 'p1', text: previews === 1 ? 'First draft' : 'Updated draft' }], revision: 'r' + previews });
+      },
+      'DELETE /api/sessions/s-1': () => ++deletions === 1
+        ? json({ error: { code: 'pending_changed', message: 'Review the updated list.' } }, 409)
+        : json({ session_id: 's-1', deleted: true }),
+    });
+    render(<App />);
+    await ready();
+    fireEvent.click(screen.getByTestId('delete-s-1'));
+    await screen.findByText('First draft');
+    fireEvent.click(screen.getByRole('button', { name: 'Delete permanently' }));
+    await screen.findByText('Updated draft');
+    expect(deletions).toBe(1);
+    expect(screen.getByText('Review the updated list.')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Delete permanently' }));
+    await waitFor(() => expect(calls).toContain('DELETE /api/sessions/s-1?confirmed=true&pending_revision=r2'));
   });
 });
 

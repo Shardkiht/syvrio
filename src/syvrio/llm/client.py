@@ -4,12 +4,13 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import time
 from collections.abc import Callable, Sequence
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from functools import lru_cache
-from threading import Event
+from threading import Event, Lock
 from typing import Protocol
 from urllib.parse import urlsplit
 
@@ -26,7 +27,10 @@ class GenerationCancelled(ChatModelError):
     """The user stopped the current generation; never retry it."""
 
 
-_MODEL_CACHE: dict[tuple[str, str, bytes], tuple[float, list[str]]] = {}
+ModelCatalog = dict[str, tuple[str, ...] | None]
+_MODEL_CACHE: dict[tuple[str, str, bytes], tuple[float, ModelCatalog]] = {}
+_MODEL_FETCH_LOCKS: dict[tuple[str, str, bytes], Lock] = {}
+_MODEL_LOCK = Lock()
 
 
 @dataclass
@@ -282,18 +286,31 @@ def fetch_provider_models(
     api_key: str | None = None,
 ) -> list[str]:
     """向 OpenAI 兼容端点请求真实模型列表；带进程内 12 小时 TTL 缓存。"""
+    return list(_provider_catalog(config, timeout, ttl, refresh, api_key))
+
+
+def provider_reasoning_levels(config: LLMConfig) -> tuple[str, ...] | None:
+    """Return the active model's advertised choices, or None for an unspecified list."""
+    return _provider_catalog(config, timeout=3.0).get(config.model)
+
+
+def _provider_catalog(
+    config: LLMConfig, timeout: float, ttl: float = 12 * 3600,
+    refresh: bool = False, api_key: str | None = None,
+) -> ModelCatalog:
     api_key = api_key or config.api_key()
     key = _model_cache_key(config, api_key)
-    now = time.monotonic()
-    cached = _MODEL_CACHE.get(key)
-    if cached and not refresh:
-        max_age = ttl if cached[1] else 30.0
-        if now - cached[0] < max_age:
-            return list(cached[1])
-
-    models = _fetch_provider_models_uncached(config, timeout, api_key)
-    _MODEL_CACHE[key] = (now, models)
-    return list(models)
+    with _MODEL_LOCK:
+        if key not in _MODEL_FETCH_LOCKS:
+            _MODEL_FETCH_LOCKS[key] = Lock()
+        fetch_lock = _MODEL_FETCH_LOCKS[key]
+    with fetch_lock:
+        cached = _MODEL_CACHE.get(key)
+        if cached and not refresh and time.monotonic() - cached[0] < (ttl if cached[1] else 30):
+            return cached[1]
+        catalog = _fetch_provider_models_uncached(config, timeout, api_key)
+        _MODEL_CACHE[key] = (time.monotonic(), catalog)
+        return catalog
 
 
 def _model_cache_key(config: LLMConfig, api_key: str | None) -> tuple[str, str, bytes]:
@@ -310,24 +327,40 @@ def clear_model_cache() -> None:
     _MODEL_CACHE.clear()
 
 
+def _advertised_levels(model, *, spark: bool) -> tuple[str, ...] | None:
+    if spark:
+        # Spark requests use thinking.type, a different control from reasoning_effort.
+        declared = _field(_field(model, "thinking"), "supported_types")
+    else:
+        declared = _field(_field(model, "effort"), "supported_levels")
+        if declared is None:
+            declared = _field(_field(model, "reasoning"), "supported_efforts")
+    if not isinstance(declared, list) or not declared or any(
+        not isinstance(level, str) or not re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", level)
+        for level in declared
+    ):
+        return None
+    return tuple(dict.fromkeys(declared))
+
+
 def _fetch_provider_models_uncached(
     config: LLMConfig, timeout: float, api_key: str | None
-) -> list[str]:
+) -> ModelCatalog:
     if not config.base_url or (not api_key and config.requires_api_key()):
-        return []
+        return {}
     try:
         from openai import OpenAI
 
         with OpenAI(
             api_key=api_key or "local", base_url=config.base_url, timeout=timeout, max_retries=0
         ) as client:
-            return list(
-                dict.fromkeys(
-                    model.id for model in client.models.list().data if model.id and model.id.strip()
-                )
-            )
+            return {
+                model.id: _advertised_levels(model, spark=config.is_spark)
+                for model in client.models.list().data
+                if isinstance(model.id, str) and model.id.strip()
+            }
     except Exception:
-        return []
+        return {}
 
 
 def _usage(response, litellm) -> Usage:
@@ -395,6 +428,10 @@ class LiteLLMChatModel:
             )
         litellm = _litellm()
         primary, source = _chat_history(self.config, messages)
+        if any(isinstance(msg.get("content"), list) for msg in primary):
+            info = model_metadata(self.config.litellm_model())
+            if info.get("supports_vision") is False:
+                raise ChatModelError("This model cannot read images. Select a vision-capable model.")
         source = source if tools else ""
         if on_delta is None and on_reasoning is None:
             response = complete(self.config, primary, tools=tools or None)

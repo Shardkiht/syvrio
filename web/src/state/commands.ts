@@ -57,6 +57,16 @@ export function isCommandLine(value: string): boolean {
   return value.trimStart().startsWith('/');
 }
 
+const THINKING_ORDER = ['auto', '', 'none', 'disabled', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'enabled'];
+
+export function thinkingOptions(values: unknown[]): string[] {
+  const available = values.filter((value): value is string => typeof value === 'string');
+  return [
+    ...THINKING_ORDER.filter((value) => available.includes(value)),
+    ...available.filter((value) => !THINKING_ORDER.includes(value)),
+  ];
+}
+
 export interface OptionPanel {
   title: string;
   options: { label: string; value: string }[];
@@ -68,7 +78,9 @@ export interface PendingCandidate {
   id: string;
   text: string;
   topic: string;
-  reason: string;
+  question?: string;
+  related_ids?: string[];
+  status?: string;
 }
 
 export interface ReviewPanel {
@@ -125,7 +137,7 @@ export function panelFor(result: CommandResponse): CommandPanel | null {
     return options.length ? { title: 'Models', options, prefix: '/model' } : null;
   }
   if (result.intent === 'think') {
-    const options = (data.options as string[]).map((value) => ({
+    const options = thinkingOptions(data.options).map((value) => ({
       label: value || 'default',
       // The backend accepts "default" as the alias for the empty option;
       // sending "/think " would trim back to list mode and reopen the panel.
@@ -173,7 +185,7 @@ export function resultPanelFor(result: CommandResponse): ResultPanel {
   if (result.status === 'ok' && result.intent === 'git_status') {
     panel.action = { label: 'Synchronize', line: '/git sync', saveShortcut: true };
   } else if (result.status === 'ok' && result.intent === 'profile') {
-    panel.action = { label: 'Refresh profile', line: '/profile refresh' };
+    panel.action = { label: 'Run Dream', line: '/dream 20' };
   }
   return panel;
 }

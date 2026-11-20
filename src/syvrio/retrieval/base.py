@@ -19,7 +19,7 @@ class SearchHit(BaseModel):
     timestamp: str = ""
     score: float = 0.0
     status: str = "active"
-    context: dict[str, str] | None = None
+    context: dict[str, str | dict[str, str]] | None = None
     matched_field: str = Field(default="", exclude=True)
 
 

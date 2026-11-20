@@ -63,10 +63,10 @@ def print_hits(query: str, hits, center: bool = False) -> None:
     table = styled_table(f"检索：{query}")
     table.add_column("ID")
     table.add_column("主题")
-    table.add_column("分数")
+    table.add_column("状态")
     table.add_column("内容", overflow="fold")
     for hit in hits:
-        table.add_row(hit.id, hit.topic, f"{hit.score:.2f}", hit.text)
+        table.add_row(hit.id, hit.topic, hit.status, hit.text)
     console.print(padded(table) if center else table)
 
 

@@ -8,13 +8,20 @@ from ..infra.documents import read_document
 from ..infra.tokens import estimate_tokens
 from ..memory.detect import redact_secrets
 from ..memory.extractor import split_chunks
+from ..memory.models import Candidate
 from ..memory.service import MemoryService
+from ..session.model import Session
+from .evidence import RecallContext
 
 
-def file_handlers(service: MemoryService, paths: list[Path]) -> dict[str, Callable[[dict], dict]]:
+def file_handlers(
+    service: MemoryService, paths: list[Path] | dict[str, Path], *,
+    evidence: RecallContext | None = None, session: Session | None = None,
+) -> dict[str, Callable[[dict], dict]]:
     """本轮工具只可访问本轮用户明确给出的文件，不开放目录和任意路径读取。"""
-    allowed = {str(path): path for path in paths}
+    allowed = paths if isinstance(paths, dict) else {str(path): path for path in paths}
     cache: dict[str, str] = {}
+    plans: dict[tuple[str, int], tuple[tuple, list[Candidate]]] = {}
 
     def content(arguments: dict) -> tuple[str, str]:
         name = str(arguments.get("path", ""))
@@ -54,21 +61,40 @@ def file_handlers(service: MemoryService, paths: list[Path]) -> dict[str, Callab
         apply = arguments.get("apply", False)
         if not isinstance(apply, bool):
             raise ValueError("apply 须为布尔值。")
-        result = service.import_text(
-            chunks[index - 1], source=f"import:{Path(name).name}#chunk:{index}", dry_run=not apply
-        )
-        return outcome(
-            {
-                "mode": "applied" if apply else "dry-run",
-                "chunk_index": index,
-                "total_chunks": len(chunks),
-                "next_chunk": index + 1 if index < len(chunks) else None,
-                "admitted": len(result.admitted),
-                "queued": len(result.queued),
-                "duplicates": len(result.duplicates),
-                "blocked": len(result.blocked),
-            },
-            f"文件{'导入' if apply else '预览'} {Path(name).name}：{index}/{len(chunks)} 块",
-        )
+        key = (name, index)
+        version = service.evidence_version(include_pending=True)
+        if key not in plans or plans[key][0] != version:
+            plans[key] = service.prepare_import(chunks[index - 1])
+        version, candidates = plans[key]
+        drafts = [item.model_dump(exclude_none=True) for item in candidates]
+        progress = {"chunk_index": index, "total_chunks": len(chunks),
+                    "next_chunk": index + 1 if index < len(chunks) else None}
+
+        def process(dry_run: bool) -> dict:
+            source = {}
+            if not dry_run:
+                if session is None or not session.last_user_message_id():
+                    raise ValueError("File admission requires the original chat message.")
+                source = {"session_id": session.id, "message_id": session.last_user_message_id()}
+            result = service.apply_import(candidates, version, dry_run=dry_run, **source)
+            return {**progress, "mode": "dry-run" if dry_run else "applied",
+                    "admitted": len(result.admitted), "queued": len(result.queued),
+                    "duplicates": len(result.duplicates), "blocked": len(result.blocked)}
+
+        if apply:
+            if evidence is None:
+                raise ValueError("File admission requires reviewed memory evidence.")
+            queries = tuple(item.text for item in candidates)
+            result = evidence.run(
+                "import_file", {"path": name, "chunk_index": index, "drafts": drafts},
+                queries[0] if queries else chunks[index - 1], lambda: process(False),
+                include_pending=True, additional_queries=queries[1:],
+                related_ids=tuple(ref for item in candidates for ref in item.related_ids),
+            )
+            if result.get("status") == "review_required":
+                result.update(progress, drafts=drafts)
+        else:
+            result = {**process(True), "drafts": drafts}
+        return outcome(result, f"文件 {Path(name).name} · {index}/{len(chunks)}")
 
     return {"read_file": read_file, "import_file": import_file}

@@ -1,32 +1,30 @@
-"""Single-flight Web adapter over the existing Application layer.
-
-One process owns one ApplicationService / AgentRuntime. Only one turn may run at
-a time: a second chat request gets an explicit ``busy`` error instead of two
-streams writing the same session. Callbacks from the worker thread are converted
-into ordered structured events and posted onto the SSE connection's asyncio
-queue. Nothing here re-implements the agent loop, memory, sessions or LLM calls.
-"""
+"""Session channel owned by the resident backend and shared across clients."""
 
 from __future__ import annotations
 
 import asyncio
 import threading
+from collections import deque
 from contextlib import contextmanager
-from dataclasses import dataclass, field, replace
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 from ... import __version__
 from ...agent.runtime import AgentRuntime, ThinkingUpdate
-from ...agent.session import SESSION_ID_RE, SessionStore
 from ...application.commands import CommandUseCases, parse_command
-from ...application.contracts import TurnCallbacks, UndoOutcome
+from ...application.contracts import TurnCallbacks
+from ...application.conversation import next_turn_id
 from ...application.service import ApplicationService
-from ...errors import SyvrioError
+from ...backend.ownership import BackendLease
+from ...background_memory import BackgroundMemory
+from ...errors import SessionDeletionChanged, SessionProtectedError, SyvrioError
+from ...infra.attachments import AttachmentBatch
 from ...infra.diagnostics import record_event
-from ...infra.locking import LockTimeout, VaultLock, client_instance_lock
+from ...infra.locking import LockTimeout
 from ...llm import LiteLLMChatModel
 from ...memory.service import MemoryService, get_service
+from ...session import SESSION_ID_RE, SessionStore
 from .models import (
     ActionResponse,
     CommandCatalogResponse,
@@ -35,20 +33,26 @@ from .models import (
     ContextUsageResponse,
     CreateSessionResponse,
     DeleteSessionResponse,
+    DraftAttachment,
     HealthResponse,
     HistoryItem,
     HistoryResponse,
+    MessageDraft,
+    ModelSearchResponse,
+    PendingDeletionItem,
     ProviderActionRequest,
     ProviderInfo,
     ProviderListResponse,
     ReasoningBlock,
+    SessionDeletionPreview,
     SessionInfo,
     SessionListResponse,
     StreamEvent,
     SwitchSessionResponse,
     ToolCallInfo,
-    sse_frame,
 )
+from .scheduler import GitScheduler
+from .turns import ActiveTurn, TurnRegistry
 
 HEARTBEAT_SECONDS = 15.0
 TOOL_PREFIX = "Calling tool: "
@@ -65,18 +69,6 @@ class WebError(SyvrioError, Exception):
         self.code = code
         self.message = message
         self.status = status
-
-
-@dataclass
-class ActiveTurn:
-    turn_id: int
-    session_id: str | None
-    queue: asyncio.Queue[StreamEvent | None]
-    loop: asyncio.AbstractEventLoop
-    finished: threading.Event = field(default_factory=threading.Event)
-    stream_detached: bool = False
-    undone: UndoOutcome | None = None
-    undo_claimed: bool = False
 
 
 class EventPump:
@@ -120,8 +112,8 @@ class EventPump:
         # The first message creates the session; later frames carry its real ID.
         self._session_id = session_id
 
-    def on_user_message(self, _message_id: str) -> None:
-        self.send("message_saved")
+    def on_user_message(self, message_id: str) -> None:
+        self.send("message_saved", message_id=message_id)
 
     def on_progress(self, text: str) -> None:
         if text.startswith(TOOL_PREFIX):
@@ -180,65 +172,94 @@ class WebBackend:
         config_path: Path | None = None,
         vault_path: Path | None = None,
         service: MemoryService | None = None,
+        *,
+        parent: WebBackend | None = None,
     ) -> None:
-        self._service = service or get_service(config_path, vault_path)
-        if not (self._service.config.vault / ".git").exists():
-            self._service.init_vault()
-        self._sessions = SessionStore(self._service.paths)
+        self._parent = parent
+        self._service = parent._service if parent else service or get_service(config_path, vault_path)
+        self._sessions = parent._sessions if parent else SessionStore(self._service.paths)
         self._runtime = AgentRuntime(
-            self._service, LiteLLMChatModel(self._service.config.llm), self._sessions
+            self._service, LiteLLMChatModel(self._service.config.llm) if parent is None else parent._runtime.model,
+            self._sessions
         )
         self._runtime.start()
-        self._app_service = ApplicationService(self._runtime, self._service)
+        self._runtime.allow_local_paths = False
+        self.session_busy = lambda session_id: self._conversation.ask_in_flight == session_id
+        self._background = parent._background if parent else BackgroundMemory(
+            self._service, session_busy=lambda session_id: self.session_busy(session_id)
+        )
+        self._runtime.on_distillation = self._background.request_distillation
+        self._app_service = ApplicationService(self._runtime, self._service, self._background)
+        self._turns = parent._turns if parent else TurnRegistry()
+        self._git_scheduler = parent._git_scheduler if parent else GitScheduler(self._app_service.git)
         self._conversation = self._app_service.conversation
         self._commands = CommandUseCases(self._app_service)
+        self._model_config = self._service.config.llm
         self._lock = threading.RLock()
         # Serializes mutating commands/session ops; held across slow LLM/Git work
         # so ``_lock`` itself stays free for health/cancel/turn bookkeeping.
         self._command_lock = threading.Lock()
         self._navigation_lock = threading.Lock()
-        self._distill_stop = threading.Event()
-        self._distill_worker: threading.Thread | None = None
-        self._distill_requested = False
         self._operation: str | None = None
         self._active: ActiveTurn | None = None
-        self._client_lock: VaultLock = client_instance_lock(self._service.paths)
+        self._waiting: deque[tuple[ActiveTurn, str]] = deque()
+        self._queue_paused = False
+        self._revision = 0
+        self._client_lock = BackendLease(self._service.paths)
         self._started = False
         self._closed = False
+        self.on_idle = None
 
     # ---------- lifecycle ----------
 
-    def startup(self) -> None:
+    def startup(self, ownership: BackendLease | None = None) -> None:
         try:
-            self._client_lock.acquire(timeout=0)
+            if ownership is None:
+                self._client_lock.acquire(timeout=0)
+            else:
+                self._client_lock = ownership
         except (LockTimeout, OSError) as exc:
             raise WebError(
                 "client_busy",
-                "Another Syvrio client (TUI or Web) is already using this Vault. "
-                "Close it before starting the Web server.",
+                "A resident Syvrio backend already owns this Vault.",
                 503,
             ) from exc
-        self._started = True
-        # Reuse the Application layer's own startup/shutdown hooks; failures
-        # must not prevent the server from starting.
-        for hook in (self._app_service.startup_catchup, self._app_service.warm_search):
+        try:
+            from ...infra.transaction import recover_vault_transaction
+
+            recover_vault_transaction(self._service.paths)
+            if not (self._service.config.vault / ".git").exists():
+                self._service.init_vault()
+            self._background.start()
+            self._git_scheduler.start()
+            self._started = True
+        except BaseException:
+            self._background.stop()
+            if ownership is None:
+                self._client_lock.release()
+            raise
+        for hook in (self._service.commit_pending_changes, self._app_service.warm_search):
             try:
                 hook()
             except Exception as exc:
-                record_event("web.startup_hook_failed", exc)
+                record_event("backend.startup_hook_failed", exc)
 
     def shutdown(self) -> None:
         with self._lock:
             if self._closed:
                 return
             self._closed = True
+            while self._waiting:
+                turn, _ = self._waiting.popleft()
+                if turn.attachments:
+                    turn.attachments.discard()
+                pump = EventPump(turn, self._post)
+                pump.finish("cancelled")
+                pump.close()
+                turn.finished.set()
             active = self._active
             if active is not None:
                 self._conversation.request_cancel()
-        self._distill_stop.set()
-        worker = self._distill_worker
-        if worker is not None:
-            worker.join()
         if active is not None:
             active.finished.wait()
         # Keep the client lock until every writer has stopped. Shutdown records
@@ -250,44 +271,17 @@ class WebBackend:
                 record_event("web.shutdown_distill_failed", exc)
             finally:
                 if self._started:
+                    self._git_scheduler.stop()
+                    self._background.stop()
                     self._client_lock.release()
                     self._started = False
-
-    def _schedule_distill(self) -> None:
-        with self._lock:
-            if self._closed or not self._runtime.config.extract_on_exit:
-                return
-            self._distill_requested = True
-            if self._distill_worker is None:
-                self._distill_worker = threading.Thread(
-                    target=self._run_distill, name="syvrio-web-distill", daemon=True
-                )
-                try:
-                    self._distill_worker.start()
-                except RuntimeError as exc:
-                    self._distill_worker = None
-                    record_event("catchup.failed", exc)
-
-    def _run_distill(self) -> None:
-        while True:
-            with self._lock:
-                if self._closed or not self._distill_requested:
-                    self._distill_worker = None
-                    return
-                self._distill_requested = False
-            try:
-                result = self._conversation.consolidate_deferred(self._distill_stop)
-                for error in result["errors"]:
-                    record_event("catchup.failed", error)
-            except Exception as exc:
-                record_event("catchup.failed", exc)
 
     # ---------- queries ----------
 
     def health(self, static_ready: bool = True) -> HealthResponse:
         with self._lock:
             active = self._active
-            operating = self._operation is not None
+            operating = self._operation is not None or bool(self._waiting)
         llm = self._service.config.llm
         return HealthResponse(
             version=__version__,
@@ -343,11 +337,14 @@ class WebBackend:
         )
 
     def execute_command(
-        self, line: str, session_id: str | None, confirmed: bool
+        self, line: str, session_id: str | None, confirmed: bool, expected_message_id: str | None = None
     ) -> CommandResponse:
         if session_id is not None:
             self._validate_session_id(session_id)
         name, argument = parse_command(line)
+        if expected_message_id is not None and (name != "undo" or not session_id):
+            raise WebError("invalid_request", "A message target requires /undo and a session.", 422)
+        target = {"expected_message_id": expected_message_id} if expected_message_id is not None else {}
         # Read-only and interrupt forms (e.g. /dream cancel) must stay reachable
         # while a slow command runs, so they never take the command mutex.
         if not self._commands.is_mutating(name, argument):
@@ -359,6 +356,8 @@ class WebBackend:
         with self._lock:
             self._require_open()
             self._check_session_match(session_id)
+            if name == "new" and self._waiting:
+                raise WebError("busy", "This session still has queued messages.", 409)
             active = self._active
             interrupt = name == "undo" and active is not None
             if interrupt:
@@ -369,7 +368,7 @@ class WebBackend:
                         intent="undo",
                         message="Undo already in progress.",
                     )
-                result = self._commands.execute(line, busy=True, confirmed=confirmed)
+                result = self._commands.execute(line, busy=True, confirmed=confirmed, **target)
                 active.undo_claimed = bool((result.data or {}).get("undo_pending"))
             else:
                 if not self._command_lock.acquire(blocking=False):
@@ -380,9 +379,7 @@ class WebBackend:
         if interrupt:
             return self._finish_active_undo(active, result)
         try:
-            result = self._commands.execute(line, busy=active is not None, confirmed=confirmed)
-            if result.status == "ok" and result.intent == "new_session":
-                self._schedule_distill()
+            result = self._commands.execute(line, busy=active is not None, confirmed=confirmed, **target)
             return self._command_response(result)
         finally:
             with self._lock:
@@ -427,6 +424,8 @@ class WebBackend:
 
     def _command_response(self, result) -> CommandResponse:
         with self._lock:
+            if result.refresh_history:
+                self._revision += 1
             current = result.session_id or self._conversation.current_id
         return CommandResponse(
             status=result.status,
@@ -446,6 +445,7 @@ class WebBackend:
         Slow work runs outside ``_lock`` so health/cancel never block; the command
         mutex keeps two mutating ops from overlapping.
         """
+        self._require_open()
         if not self._command_lock.acquire(blocking=False):
             raise WebError(
                 "busy", "Another operation is still running. Wait for it to finish.", 409
@@ -461,6 +461,23 @@ class WebBackend:
                     self._operation = None
         finally:
             self._command_lock.release()
+
+    def edit_draft(self, session_id: str, message_id: str) -> MessageDraft:
+        self._validate_session_id(session_id)
+        with self._lock:
+            self._check_session_match(session_id, exact=True)
+        with self._service.write_lock:
+            session = self._sessions.load(session_id, include_reasoning=False)
+            inputs = session.latest_turn_inputs()
+        if not inputs or inputs[-1]["id"] != message_id:
+            raise WebError("stale_message", "Only the latest user message can be edited.", 409)
+        return MessageDraft(
+            text="\n\n".join(item["content"] for item in inputs),
+            attachments=[
+                DraftAttachment(message_id=item["id"], **file)
+                for item in inputs for file in item.get("attachments", [])
+            ],
+        )
 
     def list_sessions(self, limit: int = 100) -> SessionListResponse:
         rows = self._conversation.list_sessions(max(1, min(limit, 500)))
@@ -502,7 +519,8 @@ class WebBackend:
             }
             if role == "message" and record.get("role") == "user":
                 items.append(
-                    HistoryItem(role="user", content=str(record.get("content") or ""), **base)
+                    HistoryItem(role="user", content=str(record.get("content") or ""),
+                                attachments=record.get("attachments", []), **base)
                 )
             elif role == "assistant":
                 reasoning = record.get("reasoning")
@@ -562,7 +580,6 @@ class WebBackend:
         """
         with self._navigation_lock, self._operation_scope("new"):
             self._conversation.switch(None)
-            self._schedule_distill()
         return CreateSessionResponse(session_id=None, title="")
 
     def switch_session(self, session_id: str) -> SwitchSessionResponse:
@@ -575,11 +592,26 @@ class WebBackend:
             except (KeyError, ValueError, OSError) as exc:
                 record_event("web.switch_failed", exc)
                 raise WebError("session_unreadable", "Session could not be restored.", 500) from exc
-            self._schedule_distill()
         session = result.session
         return SwitchSessionResponse(session_id=session.id, title=session.title())
 
-    def delete_session(self, session_id: str, confirmed: bool) -> DeleteSessionResponse:
+    def deletion_preview(self, session_id: str) -> SessionDeletionPreview:
+        self._validate_session_id(session_id)
+        try:
+            items, revision = self._conversation.deletion_preview(session_id)
+        except KeyError as exc:
+            raise WebError("session_not_found", "Session not found.", 404) from exc
+        except SessionProtectedError as exc:
+            raise WebError("session_protected", str(exc), 409) from exc
+        except (ValueError, OSError) as exc:
+            record_event("session.delete_failed", exc)
+            raise WebError("delete_failed", "The related pending items could not be read.", 500) from exc
+        return SessionDeletionPreview(
+            pending=[PendingDeletionItem(id=item.id, text=item.text) for item in items],
+            revision=revision,
+        )
+
+    def delete_session(self, session_id: str, confirmed: bool, pending_revision: str = "") -> DeleteSessionResponse:
         """Delete a non-live session. Mirrors the TUI guard plus server-side confirmation.
 
         A browser dialog is not an authorization boundary: the server validates
@@ -596,17 +628,14 @@ class WebBackend:
                     "Deleting a session is permanent; confirm the action first.",
                     409,
                 )
-            allowed, reason = self._conversation.delete_guard(session_id)
-            if not allowed:
-                raise WebError(
-                    "session_protected",
-                    reason or "Session cannot be deleted.",
-                    409,
-                )
             try:
-                if not self._conversation.delete_session(session_id):
+                if not self._conversation.delete_session(session_id, pending_revision):
                     raise WebError("session_not_found", "Session not found.", 404)
-            except OSError as exc:
+            except SessionProtectedError as exc:
+                raise WebError("session_protected", str(exc), 409) from exc
+            except SessionDeletionChanged as exc:
+                raise WebError("pending_changed", str(exc), 409) from exc
+            except (OSError, ValueError) as exc:
                 record_event("session.delete_failed", exc)
                 raise WebError(
                     "delete_failed",
@@ -616,6 +645,10 @@ class WebBackend:
         return DeleteSessionResponse(session_id=session_id)
 
     # ---------- settings / providers (TUI Ctrl+P equivalent) ----------
+
+    def search_models(self, query: str, refresh: bool = False) -> ModelSearchResponse:
+        items, unavailable = self._app_service.settings.search_models(query, refresh=refresh)
+        return ModelSearchResponse(items=items, unavailable_providers=unavailable)
 
     def providers(self) -> ProviderListResponse:
         settings = self._app_service.settings
@@ -663,7 +696,8 @@ class WebBackend:
     # ---------- chat streaming ----------
 
     def start_turn(
-        self, message: str, session_id: str | None, loop: asyncio.AbstractEventLoop
+        self, message: str, session_id: str | None, loop: asyncio.AbstractEventLoop,
+        attachments: AttachmentBatch | None = None,
     ) -> ActiveTurn:
         text = message.strip()
         if not text:
@@ -681,17 +715,28 @@ class WebBackend:
             self._validate_session_id(session_id)
             if not self._conversation.session_exists(session_id):
                 raise WebError("session_not_found", "Session not found.", 404)
-        queue: asyncio.Queue[StreamEvent | None] = asyncio.Queue()
         with self._lock:
-            self._require_idle()
+            self._require_open()
+            if self._operation or (self._active and session_id is None):
+                raise WebError("busy", "Another operation is still running.", 409)
             self._check_session_match(session_id, exact=True)
-            token = self._conversation.begin_turn(session_id)
-            turn_id = self._conversation.active_turn_id
-            if turn_id is None:
-                raise WebError("turn_unavailable", "Could not start a request.", 503)
-            turn = ActiveTurn(turn_id, session_id, queue, loop)
-            self._active = turn
+            if session_id is None:
+                session_id = self._runtime.ensure_session().id
+            turn = ActiveTurn(next_turn_id(), session_id, text, attachments=attachments)
+            self._turns.remember(turn)
+            if self._active is not None or (self._waiting and not self._queue_paused):
+                self._waiting.append((turn, text))
+            else:
+                self._queue_paused = False
+                self._launch(turn, text)
+        return turn
 
+    def _launch(self, turn: ActiveTurn, text: str) -> None:
+        if self._model_config is not self._service.config.llm:
+            self._runtime.reload_llm(self._service.config)
+            self._model_config = self._service.config.llm
+        token = self._conversation.begin_turn(turn.session_id, turn_id=turn.turn_id)
+        self._active = turn
         pump = EventPump(turn, self._post)
         pump.start()
         try:
@@ -699,15 +744,16 @@ class WebBackend:
                 target=self._worker,
                 args=(turn, text, token, pump),
                 daemon=True,
-                name=f"syvrio-web-turn-{turn_id}",
+                name=f"syvrio-web-turn-{turn.turn_id}",
             )
             worker.start()
         except Exception as exc:
-            self.release(turn_id)
+            self.release(turn.turn_id)
+            pump.finish("failed", message="Could not start a request.")
             pump.close()
+            turn.finished.set()
             record_event("web.worker_failed", exc)
             raise WebError("turn_unavailable", "Could not start a request.", 503) from exc
-        return turn
 
     def _worker(self, turn: ActiveTurn, text: str, token, pump: EventPump) -> None:
         callbacks = TurnCallbacks(
@@ -719,10 +765,12 @@ class WebBackend:
             on_compaction=lambda phase: pump.send("compaction", text=phase),
             on_session=lambda session: pump.on_session(session.id),
             on_user_message=pump.on_user_message,
-            on_inserted=lambda content: pump.send("message_inserted", text=content),
+            on_inserted=lambda mid, content: pump.send("message_inserted", message_id=mid, text=content),
         )
         try:
-            result = self._conversation.run_turn(text, callbacks, token, turn.session_id)
+            result = self._conversation.run_turn(text, callbacks, token, turn.session_id, **(
+                {"attachments": turn.attachments} if turn.attachments else {}
+            ))
         except Exception as exc:  # run_turn normally funnels errors into a TurnResult
             record_event("web.turn_failed", exc)
             pump.finish("failed", message="Request failed unexpectedly.")
@@ -736,6 +784,7 @@ class WebBackend:
                         result.session_id, result.user_message_id, result.error
                     )
                 if turn.undone is not None and turn.undone.restored is not None:
+                    self._queue_paused = bool(self._waiting)
                     target = turn.undone.target_session_id
                     if target is not None:
                         try:
@@ -763,26 +812,47 @@ class WebBackend:
                     message=result.error or "Request failed",
                 )
         finally:
-            self.release(turn.turn_id)
-            turn.finished.set()
-            pump.close()
+            with self._lock:
+                self.release(turn.turn_id)
+                self._revision += 1
+                turn.finished.set()
+                pump.close()
+                while self._active is None and self._waiting and not self._queue_paused and not self._closed:
+                    pending, message = self._waiting.popleft()
+                    try:
+                        self._launch(pending, message)
+                    except WebError:
+                        continue  # The failed receipt was settled; advance the next one.
+            if self.on_idle and not self._closed:
+                self.on_idle(self)
 
-    async def stream(self, turn: ActiveTurn):
-        """Stream a turn without tying its lifetime to the browser connection."""
-        try:
-            while True:
-                try:
-                    event = await asyncio.wait_for(turn.queue.get(), timeout=HEARTBEAT_SECONDS)
-                except asyncio.TimeoutError:
-                    yield ": keep-alive\n\n"
-                    continue
-                if event is None:
-                    break
-                yield sse_frame(event)
-        finally:
-            turn.stream_detached = True
-            while not turn.queue.empty():
-                turn.queue.get_nowait()
+    def stream(self, turn: ActiveTurn, after: int = 0):
+        return turn.stream(after, heartbeat=HEARTBEAT_SECONDS)
+
+    def queue_state(self) -> dict:
+        with self._lock:
+            return {
+                "session_id": self._conversation.current_id,
+                "active": self._active.receipt() if self._active else None,
+                "waiting": [turn.receipt() for turn, _ in self._waiting],
+                "paused": self._queue_paused,
+                "revision": self._revision,
+            }
+
+    def remove_queued(self, turn_id: int) -> None:
+        with self._lock:
+            for turn, text in self._waiting:
+                if turn.turn_id == turn_id:
+                    self._waiting.remove((turn, text))
+                    if turn.attachments:
+                        turn.attachments.discard()
+                    pump = EventPump(turn, self._post)
+                    pump.finish("cancelled")
+                    pump.close()
+                    turn.finished.set()
+                    self._queue_paused = bool(self._waiting) and self._queue_paused
+                    return
+        raise WebError("inactive_turn", "This message is no longer queued.", 409)
 
     def insert(self, turn_id: int, session_id: str | None, message: str) -> None:
         with self._lock:
@@ -815,14 +885,7 @@ class WebBackend:
 
     @staticmethod
     def _post(turn: ActiveTurn, event: StreamEvent | None) -> None:
-        def deliver() -> None:
-            if not turn.stream_detached:
-                turn.queue.put_nowait(event)
-
-        try:
-            turn.loop.call_soon_threadsafe(deliver)
-        except RuntimeError:
-            pass  # Loop closed during shutdown; the worker still finishes cleanly.
+        turn.publish(event)
 
     def release(self, turn_id: int) -> None:
         with self._lock:
@@ -838,6 +901,8 @@ class WebBackend:
         self._require_open()
         if self._active is not None:
             raise WebError("busy", "A reply is being generated. Stop it or wait.", 409)
+        if self._waiting:
+            raise WebError("busy", "This session still has queued messages.", 409)
         if self._operation is not None:
             raise WebError(
                 "busy", "Another operation is still running. Wait for it to finish.", 409

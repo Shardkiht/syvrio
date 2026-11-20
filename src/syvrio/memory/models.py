@@ -3,12 +3,13 @@ from __future__ import annotations
 import calendar
 import re
 import secrets
-from datetime import date
+from datetime import date, datetime
+from pathlib import PurePosixPath
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from ..time import parse_timestamp, serialize_timestamp, utc_now
+from ..time import parse_timestamp, serialize_timestamp, utc_timestamp
 
 _SHORT_FIELD = re.compile(
     r"(?P<label>[\u3400-\u4dbf\u4e00-\u9fffA-Za-z][\u3400-\u4dbf\u4e00-\u9fffA-Za-z0-9 _-]{1,17})"
@@ -24,6 +25,16 @@ def short_field(text: str) -> tuple[str, str] | None:
     return None
 
 
+class MemoryEmotion(BaseModel):
+    """The user's own wording, separated by when the feeling was experienced."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True, str_min_length=1)
+
+    event: str | None = None
+    recollection: str | None = None
+    unspecified: str | None = None
+
+
 class MemoryContext(BaseModel):
     """可选的事实上下文；日期字符串自身保留年、月、日精度。"""
 
@@ -32,16 +43,22 @@ class MemoryContext(BaseModel):
     event_time: str | None = None
     valid_from: str | None = None
     valid_to: str | None = None
-    time_text: str | None = None
     location: str | None = None
-    location_kind: Literal["event", "residence"] | None = None
-    emotion: str | None = None
-    emotion_at: Literal["event", "expression"] | None = None
-    emotion_source: Literal["explicit"] | None = None
+    emotion: MemoryEmotion | None = None
 
     def markdown_fields(self) -> list[tuple[str, str]]:
         values = self.model_dump(exclude_none=True)
-        return [(key, values[name]) for key, name in _CONTEXT_KEYS.items() if name in values]
+        fields = [(key, values[name]) for key, name in _CONTEXT_KEYS.items() if name in values]
+        fields.extend(
+            (f"emotion.{phase}", text) for phase, text in values.get("emotion", {}).items()
+        )
+        return fields
+
+    @property
+    def emotion_texts(self) -> tuple[str, ...]:
+        if self.emotion is None:
+            return ()
+        return tuple(self.emotion.model_dump(exclude_none=True).values())
 
     @field_validator("event_time", "valid_from", "valid_to")
     @classmethod
@@ -57,7 +74,7 @@ class MemoryContext(BaseModel):
             raise ValueError("事实日期不存在") from exc
         return value
 
-    @field_validator("time_text", "location", "emotion")
+    @field_validator("location")
     @classmethod
     def validate_text(cls, value: str | None) -> str | None:
         if value is not None:
@@ -68,16 +85,8 @@ class MemoryContext(BaseModel):
 
     @model_validator(mode="after")
     def validate_context(self) -> MemoryContext:
-        if (self.location is None) != (self.location_kind is None):
-            raise ValueError("地点与地点类型须同时提供")
-        if self.emotion is None:
-            if self.emotion_at is not None or self.emotion_source is not None:
-                raise ValueError("情绪标注缺少情绪原文")
-        elif self.emotion_source != "explicit":
-            raise ValueError("第一版仅保存用户明确表达的情绪")
-        elif self.emotion_at is None:
-            # 无法区分时，只记录当前表达，不能倒推为事件当时的情绪。
-            self.emotion_at = "expression"
+        if self.emotion is not None and not self.emotion_texts:
+            self.emotion = None
         if self.valid_from and self.valid_to:
             start = date.fromisoformat(
                 self.valid_from + "-01" * (3 - len(self.valid_from.split("-")))
@@ -91,31 +100,81 @@ class MemoryContext(BaseModel):
         return self
 
 
-_CONTEXT_NAMESPACES = {
-    "temporal": ("event_time", "valid_from", "valid_to", "time_text"),
-    "spatial": ("location", "location_kind"),
-    "affective": ("emotion", "emotion_at", "emotion_source"),
-}
-_CONTEXT_KEYS = {f"{ns}.{key}": key for ns, keys in _CONTEXT_NAMESPACES.items() for key in keys}
+_CONTEXT_KEYS = {key: key for key in ("event_time", "valid_from", "valid_to", "location")}
+_EMOTION_KEYS = {f"emotion.{phase}": phase for phase in MemoryEmotion.model_fields}
+MemoryStatus = Literal["active", "deprecated"]
 
 
-class Candidate(BaseModel):
-    text: str
-    topic: str = "uncategorized"
-    title: str | None = None
-    confidence: float = Field(default=0.8, ge=0.0, le=1.0)
-    sensitive: bool = False
-    kind: Literal["add", "update", "conflict"] = "add"
-    reason: str = ""
+class TimeRange(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    start: str | None = None
+    end: str | None = None
+
+    @model_validator(mode="after")
+    def validate_bounds(self) -> TimeRange:
+        if self.start is None and self.end is None:
+            raise ValueError("Provide a start or an end for a time range.")
+        MemoryContext(valid_from=self.start, valid_to=self.end)
+        return self
+
+
+class MemoryDraft(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    text: str = Field(min_length=1)
+    topic: str = Field(min_length=1)
     context: MemoryContext | None = None
+
+    @field_validator("topic")
+    @classmethod
+    def topic_name(cls, value: str) -> str:
+        if "\\" in value or ":" in value or any(
+            not part or part.startswith(".") for part in value.split("/")
+        ):
+            raise ValueError("Use a topic name or a relative topic such as general/reading.")
+        return value
+
+
+class RecallEntry(MemoryDraft):
+    id: str = Field(min_length=1)
+    status: MemoryStatus = "active"
+
+
+class MemoryEntry(RecallEntry):
+    recorded_at: datetime
+
+    @field_validator("recorded_at")
+    @classmethod
+    def aware_timestamp(cls, value: datetime) -> datetime:
+        if value.utcoffset() is None:
+            raise ValueError("recorded_at needs an explicit UTC offset.")
+        return value
+
+
+class MemoryUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str = Field(min_length=1)
+    context: MemoryContext | None = None
+    status: MemoryStatus | None = None
+
+    @model_validator(mode="after")
+    def has_change(self) -> MemoryUpdate:
+        if self.status is None and not (self.context and self.context.markdown_fields()):
+            raise ValueError("A memory update needs context or status.")
+        return self
+
+
+class Candidate(MemoryDraft):
+    """A draft returned by document extraction, optionally requiring clarification."""
+    question: str | None = Field(default=None, min_length=1)
+    related_ids: list[str] = Field(default_factory=list)
 
 
 class ExtractionResult(BaseModel):
     memories: list[Candidate] = Field(default_factory=list)
 
 
-InferenceKind = Literal["profile", "emotion", "reflection"]
-InferenceStatus = Literal["hypothesis", "confirmed", "rejected", "superseded"]
+InferenceKind = str
+InferenceStatus = Literal["hypothesis", "confirmed", "deprecated"]
 
 
 class Inference(BaseModel):
@@ -125,27 +184,16 @@ class Inference(BaseModel):
 
     id: str
     text: str = Field(min_length=1)
-    kind: InferenceKind
+    kind: str = Field(min_length=1)
     source_ids: list[str] = Field(min_length=1)
     created_at: str
     updated_at: str
     status: InferenceStatus = "hypothesis"
-    source_fingerprints: dict[str, str] = Field(default_factory=dict)
 
     @field_validator("created_at", "updated_at")
     @classmethod
     def validate_timestamp(cls, value: str) -> str:
         return serialize_timestamp(parse_timestamp(value))
-
-    @model_validator(mode="after")
-    def validate_fingerprints(self) -> Inference:
-        if self.source_fingerprints:
-            if set(self.source_fingerprints) != set(self.source_ids) or any(
-                not re.fullmatch(r"[0-9a-f]{64}", value)
-                for value in self.source_fingerprints.values()
-            ):
-                raise ValueError("推断证据指纹须覆盖全部来源并使用有效摘要。")
-        return self
 
     @field_validator("source_ids")
     @classmethod
@@ -156,7 +204,8 @@ class Inference(BaseModel):
 
 
 class ReflectionProposal(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    kind: str = Field(min_length=1)
     text: str = Field(min_length=1, max_length=600)
     source_ids: list[str] = Field(min_length=1, max_length=12)
 
@@ -199,54 +248,31 @@ class ProfileItem(BaseModel):
     updated_at: str
 
 
-class PendingItem(BaseModel):
-    id: str
-    created_at: str
-    source: str
-    text: str
-    topic: str
-    title: str | None = None
-    confidence: float
-    sensitive: bool = False
-    kind: str = "add"
-    reason: str = ""
+class PendingItem(MemoryDraft):
+    id: str = Field(default_factory=lambda: f"p-{secrets.token_hex(12)}", min_length=1)
+    created_at: str = Field(default_factory=utc_timestamp)
+    question: str = Field(min_length=1)
+    related_ids: list[str] = Field(default_factory=list)
     session_id: str | None = None
     message_id: str | None = None
-    conflict_with: str | None = None
-    context: MemoryContext | None = None
 
     @field_validator("created_at")
     @classmethod
-    def validate_timestamp(cls, value: str) -> str:
-        return serialize_timestamp(parse_timestamp(value))
+    def validate_timestamp(cls, stamp: str) -> str:
+        return serialize_timestamp(parse_timestamp(stamp))
 
+    @field_validator("related_ids")
     @classmethod
-    def from_candidate(
-        cls,
-        candidate: Candidate,
-        source: str,
-        reason: str,
-        session_id: str | None = None,
-        message_id: str | None = None,
-        conflict_with: str | None = None,
-    ) -> "PendingItem":
-        stamp = utc_now()
-        return cls(
-            id=f"p-{stamp:%Y%m%d-%H%M%S}-{secrets.token_hex(4)}",
-            created_at=serialize_timestamp(stamp.replace(microsecond=0)),
-            source=source,
-            text=candidate.text,
-            topic=candidate.topic,
-            title=candidate.title,
-            confidence=candidate.confidence,
-            sensitive=candidate.sensitive,
-            kind=candidate.kind,
-            reason=reason,
-            session_id=session_id,
-            message_id=message_id,
-            conflict_with=conflict_with,
-            context=candidate.context,
-        )
+    def unique_ids(cls, values: list[str]) -> list[str]:
+        if any(not value.strip() for value in values):
+            raise ValueError("A related memory ID cannot be empty.")
+        return list(dict.fromkeys(values))
+
+    @model_validator(mode="after")
+    def source_pair(self) -> PendingItem:
+        if (self.session_id is None) != (self.message_id is None):
+            raise ValueError("A session source needs both a session and a message ID.")
+        return self
 
 
 class FieldNode(BaseModel):
@@ -275,13 +301,25 @@ class Entry(BaseModel):
     topic_title: str = Field(default="", exclude=True)
 
     @property
+    def source_session_id(self) -> str | None:
+        return self.metadata.get("session_id")
+
+    @property
+    def source_message_id(self) -> str | None:
+        return self.metadata.get("message_id")
+
+    @property
     def context(self) -> MemoryContext | None:
         if self.context_fields:
             values: dict[str, str] = {}
+            emotions: dict[str, str] = {}
             for node in self.context_fields:
-                name = _CONTEXT_KEYS.get(node.key)
-                if name and node.value is not None:
+                if node.value is None:
+                    continue
+                if name := _CONTEXT_KEYS.get(node.key):
                     values.setdefault(name, node.value)
+                elif phase := _EMOTION_KEYS.get(node.key):
+                    emotions.setdefault(phase, node.value)
             # A manually written v2 record can omit companion fields. Project only
             # understood scalar values without inventing type or provenance.
             for key in ("event_time", "valid_from", "valid_to"):
@@ -289,44 +327,34 @@ class Entry(BaseModel):
                     MemoryContext.validate_date(values.get(key))
                 except ValueError:
                     values.pop(key, None)
-            return MemoryContext.model_construct(**values) if values else None
+            if not values and not emotions:
+                return None
+            emotion = MemoryEmotion.model_validate(emotions) if emotions else None
+            return MemoryContext.model_construct(**values, emotion=emotion)
         raw = self.metadata.get("context")
         return MemoryContext.model_validate_json(raw) if raw else None
 
+    def as_recall(self) -> RecallEntry:
+        topic = self.topic
+        if topic.startswith("memories/") and topic.endswith(".md"):
+            topic = PurePosixPath(topic.removeprefix("memories/")).with_suffix("").as_posix()
+        return RecallEntry(id=self.id, status=self.status, topic=topic, text=self.text, context=self.context)
+
+    def as_memory(self) -> MemoryEntry:
+        return MemoryEntry(**self.as_recall().model_dump(), recorded_at=parse_timestamp(self.timestamp))
+
     @property
     def index_text(self) -> str:
+        context = self.context
+        if context is None:
+            return self.text
         return "\n".join(
-            [
-                self.text,
-                *(
-                    f.raw_markdown
-                    for f in (*self.context_fields, *self.extension_fields)
-                    if f.key
-                    not in {
-                        "syvrio.recorded_at",
-                        "syvrio.supersedes",
-                        "syvrio.session",
-                        "syvrio.message",
-                        "syvrio.change_kind",
-                        "migration.evidence_v1",
-                        "migration.evidence_v2",
-                    }
-                ),
-            ]
+            value for value in (self.text, context.location, *context.emotion_texts) if value
         )
 
     @property
     def embedding_text(self) -> str:
-        indexed = self.index_text
-        field = short_field(self.text)
-        if field is None or self.text.rstrip().endswith("。"):
-            # A field whose value already forms a sentence needs no vector rewrite.
-            return indexed
-        label, value = field
-        if not re.search(r"[\u3400-\u4dbf\u4e00-\u9fff]", label):
-            return indexed
-        context = f"\n主题：{self.topic_title}" if 1 <= len(self.topic_title) <= 64 else ""
-        return f"{label}是{value}。{context}{indexed[len(self.text) :]}"
+        return self.text
 
 
 class TopicInfo(BaseModel):

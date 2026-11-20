@@ -24,16 +24,14 @@ from ..time import format_local_timestamp
 STATUS_LABELS = {
     "hypothesis": "Pending",
     "confirmed": "Confirmed",
-    "rejected": "Rejected",
-    "superseded": "Invalidated",
+    "deprecated": "Deprecated",
 }
 KIND_LABELS = {"profile": "Profile", "emotion": "Emotion", "reflection": "Reflection"}
 FILTERS = (
     ("all", "All"),
     ("hypothesis", "Pending"),
     ("confirmed", "Confirmed"),
-    ("rejected", "Rejected"),
-    ("superseded", "Invalidated"),
+    ("deprecated", "Deprecated"),
 )
 REVIEWABLE = {"hypothesis", "confirmed"}
 
@@ -47,7 +45,7 @@ def _short_id(source_id: str) -> str:
     return source_id if len(source_id) <= 18 else source_id[:10] + "…" + source_id[-5:]
 
 
-_META_COLORS = {"hypothesis": "#6cb6ff", "rejected": "#6f6f6f", "superseded": "#6f6f6f"}
+_META_COLORS = {"hypothesis": "#6cb6ff", "deprecated": "#6f6f6f"}
 
 
 def _prompt(item: Inference) -> Text:

@@ -6,6 +6,8 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+TURN_UNDO_DIR = "turn-undo"
+
 
 def syvrio_home() -> Path:
     return Path.home() / ".syvrio"
@@ -36,6 +38,10 @@ class SyvrioPaths:
     @property
     def sessions_dir(self) -> Path:
         return self.vault_dir / "sessions"
+
+    @property
+    def attachments_dir(self) -> Path:
+        return self.vault_dir.resolve() / "attachments"
 
     @property
     def records_dir(self) -> Path:

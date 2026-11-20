@@ -80,6 +80,7 @@ def test_chat_latency_separates_stream_and_tool_completion_without_payloads(tmp_
     from threading import Event
     from types import SimpleNamespace
 
+    from syvrio.agent.registry import ToolOutcome, ToolRegistry, ToolSpec
     from syvrio.agent.runtime import AgentRuntime
     from syvrio.agent.session import SessionStore
     from syvrio.infra.config import ChatConfig, Config, LLMConfig, RetrievalConfig
@@ -100,7 +101,7 @@ def test_chat_latency_separates_stream_and_tool_completion_without_payloads(tmp_
     tool_call = {
         "index": 0,
         "id": "test-tool-id",
-        "function": {"name": "memorize", "arguments": '{"text": "private synthetic memory"}'},
+        "function": {"name": "consult", "arguments": '{"text": "private synthetic memory"}'},
     }
     rounds = iter(
         [
@@ -129,6 +130,13 @@ def test_chat_latency_separates_stream_and_tool_completion_without_payloads(tmp_
         chat=ChatConfig(auto_recall=0),
         retrieval=RetrievalConfig(method="keyword"),
     )
+    def consult(arguments):
+        client.complete(config.llm, [{"role": "user", "content": arguments["text"]}])
+        return ToolOutcome(True, "ok", "ok")
+
+    registry = ToolRegistry()
+    registry.register(ToolSpec("consult", "Consult a model", {"type": "object"}, consult))
+    monkeypatch.setattr("syvrio.agent.runtime.build_tools", lambda *args, **kwargs: registry)
     service = MemoryService(config)
     service.init_vault()
     runtime = AgentRuntime(
@@ -253,6 +261,36 @@ def test_cli_uses_parsed_subcommand_in_diagnostics(tmp_path, monkeypatch):
     assert [event["state"] for event in events if event["event"] == "cli.failed"] == [
         {"command": "status"}
     ]
+
+
+def test_keyring_failure_is_reported_once_and_scrubbed_for_all_readers(monkeypatch):
+    import keyring
+
+    from syvrio.infra.config import LLMConfig, read_api_key
+
+    monkeypatch.setattr(diagnostics, "_RECORDED_ONCE", set())
+    monkeypatch.delenv("SYVRIO_SYNTHETIC_KEY", raising=False)
+    monkeypatch.setenv("DIAGNOSTIC_TEST_TOKEN", "sample-secret-value")
+
+    def broken(*args):
+        import os
+
+        raise RuntimeError("credential store unavailable " + os.environ["DIAGNOSTIC_TEST_TOKEN"])
+
+    monkeypatch.setattr(keyring, "get_password", broken)
+    llm = LLMConfig(api_key_env="SYVRIO_SYNTHETIC_KEY")
+    assert llm.api_key() is None
+    path = diagnostics.start_diagnostics()
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        assert list(pool.map(lambda _: llm.api_key(), range(8))) == [None] * 8
+    assert read_api_key("SYVRIO_SYNTHETIC_KEY") == ""
+    diagnostics.stop_diagnostics()
+    assert llm.api_key() is None
+    events = [event for event in read_events(path) if event["event"] == "degraded.keyring"]
+    assert len(events) == 1
+    detail = events[0]["traceback"]
+    assert "credential store unavailable" in detail and "RuntimeError" in detail
+    assert "sample-secret-value" not in path.read_text(encoding="utf-8")
 
 
 def test_record_once_retries_when_event_could_not_be_queued(monkeypatch):

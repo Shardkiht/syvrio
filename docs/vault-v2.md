@@ -1,127 +1,128 @@
-# 记忆 Schema v2、Vault 布局 v2 与时间规范
+# Vault 格式、备份与时间规范
 
-- 适用分支：`main`
-- 文档状态：现行数据格式与时间基准
-- 更新日期：2026-11-17
+此页描述统一后端开发分支的实际存储格式。文末保留历史工具适用的数据版本与校验方法。
 
 ## 记录格式
 
-记忆文件中的每个顶层无序列表项就是一条记录。正文先用自由 Markdown 书写，同一列表项内再放一个独立的 `**Core**` 段落；可选的 `**Context**` 和 `**Extensions**` 段落按此顺序跟随。字段列表要缩进到该条目内。正文里的代码围栏和普通嵌套列表仍算内容。
+正式记忆、待审核候选和推断使用 UTF-8 Markdown。路径决定记录类型。每条记录是一个以 `**Core**` 开始的顶层列表项，其后按顺序可有 `**Context**` 和 `**Extensions**`。正式记忆的逻辑主题取自 `memories/` 下的相对路径，例如 `memories/events/exhibits.md` 对应 `events/exhibits`。
 
 ```markdown
-# 展览
+# 示例展览
 
-* 我去看了一个**纸质雕塑**展。
-
-  **Core**
+* **Core**
   * `id`: `mem-example`
   * `status`: `active`
-  * `source`: `note`
-  * `confidence`: `0.95`
+  * `text`:
+    ~~~
+    我去看了一场纸艺展。
+    最喜欢的是入口处的纸灯。
+    ~~~
 
   **Context**
-  * `temporal.event_time`: `2024-06`
-  * `spatial.location`: `示例港`
-  * `affective.emotion`: `惊喜`
+  * `event_time`: `2024-06`
+  * `location`: `示例展厅`
+  * `emotion.event`: `有点紧张`
+  * `emotion.recollection`: `现在觉得很开心`
 
   **Extensions**
-  * `custom.marker`: `cobalt-fox`
-  * `custom.marker`: `second-marker`
-  * `entities.person`:
-    * `name`: `示例助手`
+  * `recorded_at`: `2026-01-20T08:30:00+00:00`
+  * `session_id`: `session-example`
+  * `message_id`: `message-example`
+  * `custom.marker`: `合成样例`
 ```
 
-Core 恰好四个字段。文件必须是 UTF-8；解码失败时报错会指出受影响的 Vault 相对路径，便于重新以 UTF-8 保存。ID 在整个 Vault 内唯一，且不应再改动。状态取 `active`、`superseded` 或 `deleted`。来源是非空字符串，置信度是 0 到 1 之间的有限数值。字段名用 snake_case，可带点分隔的命名空间。可选段落允许有序、重复的字段和嵌套分组。标量值使用行内代码；更长的反引号定界符可以包含较短的反引号；字面换行用保留前缀 `~syvrio-escaped~` 加百分号编码写入。这里没有 frontmatter，也没有内嵌 JSON 元数据。
+Core 恰好包含 `id`、`status`、`text`。单行正文可写成行内代码，多行正文用缩进围栏保存，保留前后空行、缩进和原换行符。元数据标量用行内代码，内部含反引号可以使用更长的定界符。程序写入带换行的元数据时采用 `~syvrio-escaped~` 前缀和百分号编码。扩展名支持小写字母、数字、下划线和点分命名空间。未知扩展可以重复、嵌套，程序更新已知字段时保留这些扩展的原文字节。
 
-`syvrio.recorded_at`、`syvrio.supersedes`、`syvrio.session`、`syvrio.message` 和 `syvrio.change_kind` 保存写入时间、关联和来源链，不能替代事件时间。程序用时间上下文生成当前视图和历史视图，并把正文、Context 与 Extensions 一起索引供召回使用。选中的记录以完整原文作为非可信 Markdown 引用交给模型，同时附上 Vault 相对路径与行号；超长记录直接跳过而不是截断。修改状态只替换该值所在位置，其余记录字节与 LF/CRLF 保持不变。
+`recorded_at` 是必填写入时刻。有会话来源时同时保存 `session_id` 和 `message_id`，可用 `read_memory_source` 查到用户原话。`supersedes` 可指向被更正或发生变化的旧事实。记忆 ID 跨主题唯一。`active` 和 `deprecated` 分别表示可用和已弃用，弃用的事实继续保留原文与来源。
 
-```text
-~/.syvrio/
-  config.toml
-  vault/
-    README.md
-    SOUL.md
-    memories/<category>/<topic>.md
-    sessions/YYYY/MM/<id>.jsonl
-    sessions/legacy/undated/<id>.jsonl
-    records/memory/{pending,resolved,audit,inferences}.jsonl
-  runtime/
-    indexes/vectors.npz
-    cache/search/
-    cache/profile/profile-summary.json
-    state/{reflection,fingerprints,git-sync,usage,vault-binding}.json
-    jobs/dreaming/jobs.jsonl
-    session-reasoning/<session-id>/<message-id>.json
-    turn-undo/<session-id>/<first-user-message-id>.json
-    locks/{client,vault,git}.lock
-    logs/
-```
+Context 支持 `event_time`、`valid_from`、`valid_to`、`location` 和情绪字段。`emotion.event` 保存事件当时的感受，`emotion.recollection` 保存回想时的感受，`emotion.unspecified` 保存时点不明确的情绪原话。同一事实可以同时保留两种感受。更新可以补齐空字段及更改状态。改写事实正文时建立新 ID，根据更正或状态演化的语义处理旧事实。
 
-类别可以嵌套。主题名重复时用 Vault 相对 Markdown 路径区分。Git 只跟踪 Vault，看到的是记忆、会话和记录变更。切换活动 Vault 前先停掉正在运行的 Syvrio 客户端。Runtime 绑定到别的 Vault 后，其已知派生文件全部失效，Vault 数据本身不受影响。在 Syvrio 停止时删除 Runtime 会保留事实与会话文本，但会丢掉本机推理附件、计数和任务进度；需要这些记录就单独备份 Runtime。
+## 数据布局
 
-助手记录可能带有 `reasoning_local` 标记，指向 Runtime 中的私有推理附件；附件含推理正文和可选的协议片段。恢复数据后还想重开这些推理，就必须保留 Runtime。旧会话无需重写 JSONL：没有该标记的助手记录照样渲染回复；附件或附件 ID 缺失时，回复仍可加载，只是没有推理内容。旧的正文内嵌推理字段不用于展示，也不参与模型重放。
+| 相对 Vault 的路径 | 用途 |
+| --- | --- |
+| `memories/<category>/<topic>.md` | 正式记忆，类别可嵌套 |
+| `memories/pending.md` | 活动候选及其 `question`、`related_ids`、来源信息 |
+| `archived/pending.md` | 用户拒绝的候选原文，保留其扩展 |
+| `inferences/<kind>/<id>.md` | 一个动态分类下每条推断的独立记录 |
+| `profile.md` | 后台 Dream 生成的完整只读画像 |
+| `records/memory-changes.jsonl` | 正式记忆变化事件 |
+| `records/memory/audit.jsonl` | 操作审计 |
+| `sessions/YYYY/MM/<id>.jsonl` | 会话事件、稳定消息 ID、附件清单、压缩与沉淀进度 |
+| `attachments/<session-id>/<message-id>/<attachment-id>.<ext>` | 已绑定到消息的上传原件 |
+| `SOUL.md` | 可选的个性化提示词 |
 
-从支持整回合撤销的版本开始，Ctrl+Enter 新增的用户消息可以带可选 `turn_root`，指向同一回合首条用户消息。旧记录无需更新。工具写入前，Runtime 下的 `turn-undo/` 记录受影响的本地文件原始状态和预期写入结果。此日志包含私有备份，不进入 Vault Git 历史。撤销时先核对所有受影响的文件和推断。发生后续冲突时保留整个回合，成功时追加会话和审计事件；原有审计和推断历史保留。工具记录上的可选 `turn_undo_recorded` 标记表明撤销依赖这份 Runtime 日志；如果日志丢失，请先恢复匹配的 Runtime。没有此标记的旧回合仍可撤回对话。删除会话也会清理对应的本机撤销日志。
+确认候选时写入正式记忆，并从活动文件移除。改写后确认会保存最终正文、清空与旧表述关联的 Context，并同时登记后台补充任务。拒绝会把原文移到归档。`related_ids` 提供审核上下文，仅审核候选本身不会改变这些已有事实。批准重试以候选的稳定 ID 找回已写入的结果。
 
-配置查找顺序：`SYVRIO_CONFIG` → 当前目录 `syvrio.toml` → `~/.syvrio/config.toml`；最后一个文件不存在时仍接受旧的平台配置路径。`vault` 与 `runtime` 是各自独立的顶层设置，`SYVRIO_RUNTIME` 覆盖 Runtime 路径。Runtime 必须位于任何 Git 工作树之外，并与 Vault 分开。见 [config.example.toml](../config.example.toml)。
+推断的 Core 包含 `id`、`status`、`text`、`kind`、`source_ids`，Extensions 保存 `created_at`、`updated_at`。`source_ids` 是包含一个或多个 `id` 子项的列表，指向真实的正式记忆。用户可将 `hypothesis` 确认为 `confirmed`，或弃用为 `deprecated`。人工改写会在同一事务中弃用旧记录并用新 ID 创建已确认记录，旧文继续可查。事实发生变化后，已有推断保留其当前状态。事实检索仅投影记忆 ID、状态、主题、正文和 Context。
 
-## 迁移既有 Vault
+正式记忆首次写入产生 `{"id":"mem-example","change":"created"}`。已有事实的实际修改仅记录发生变化的新值，例如 `{"id":"mem-example","change":{"context":{"valid_to":"2026-01"},"status":"deprecated"}}`。同值重试保留原有变化日志。候选和推断单独保存各自的生命周期。
 
-1. 停掉所有 Syvrio 写入方。把整个 Vault（含隐藏文件和 `.git`）以及既有 Runtime 归档，校验 SHA-256，并把归档恢复到测试目录。
-2. 在恢复出的副本上执行下面的命令，目标目录对必须为空且共享同一父目录。旧日志或状态也在 Vault 外时用 `--source-runtime`。
-3. 核对计数和新 Runtime 中的私有报告，比对 ID、会话字节和记录日志，验证测试副本后再切换配置。对未改动、完全一致的目标对重复执行 `--apply` 是安全的。校验会检测源数据被编辑、冲突或变更；新的迁移请用全新目标目录。发布 Runtime 之后被中断的运行，可依据已验证的报告继续。
-4. 把本地配置切到验证通过的目标对，保留原配置和归档用于回滚。v1 读端无法打开 v2 记录；回滚必须把旧程序和旧 Vault 一起恢复。
+## Runtime 与恢复
 
-```sh
-python scripts/migrate_vault_v2.py --source /path/to/restore --destination /path/to/vault-v2 --dry-run
-python scripts/migrate_vault_v2.py --source /path/to/restore --destination /path/to/vault-v2 --apply
-python scripts/migrate_vault_v2.py --source /path/to/restore --destination /path/to/vault-v2 --verify
-```
+Vault 与 Runtime 使用独立路径。配置中的 `vault`、`runtime` 与环境覆盖规则见[配置示例](../config.example.toml)。Runtime 应位于 Git 工作树之外。Web、TUI、CLI 和 MCP 的业务请求连接同一个常驻后端。后端按实际 Vault 身份获取独占权，Runtime 里另外保存本地端点和运行锁。
 
-Runtime 目标默认是 `vault-v2-runtime`，可用 `--runtime-destination` 指定同级目录。脚本不写输入、不改配置、不联网。原始记忆文件保存在 Runtime 的私有旧版归档里，会话与记录 JSONL 按字节复制。没有显式 ID 的旧文件沿用一个读端的确定性 ID；ID 重复会中止迁移。来源未知写为 `migration:unknown`；置信度缺失或非法时使用保守的存储值 `0` 并加 `migration.review_required` 标记。这些只是审查标记，不是推断出的事实。未知键和无法直接表示的取值以编码后的 extension 值保留，同时留在原始归档文件中。
+| 相对 Runtime 的路径 | 用途 |
+| --- | --- |
+| `state/backend.json` | 本地端口、访问令牌和绑定的 Vault |
+| `locks/`、`state/git-sync.json` | 写入、Git 协调与同步状态 |
+| `indexes/`、`cache/` | 可重建索引与缓存 |
+| `jobs/background-memory/<vault-hash>/{distillation,context,dream}/` | 后台任务、版本和续跑进度 |
+| `jobs/vault-transactions/`、`jobs/session-deletions/` | 跨文件写入与永久删除会话的恢复记录 |
+| `session-reasoning/<session-id>/<message-id>.json` | 本机保存的助手推理附件 |
+| `turn-undo/<session-id>/<first-user-message-id>.json` | 最新回合文件撤回需要的原始状态与校验值 |
+| `logs/` | 本地诊断日志 |
+
+多文件修改先在 Runtime 保存恢复记录，再在 Vault 锁内逐个替换目标文件。操作全部成功才清除恢复记录。进程异常退出后，下次访问会先恢复整个未完成操作。若文件被其他写入方改成了无法验证的版本，恢复会停下并报告冲突。Git 快照与 Vault 写入共用同一把写锁。
+
+`/undo` 只处理最新回合。安全插入的用户消息通过 `turn_root` 关联到首条消息。撤回时校验受影响文件和仍会存续的来源引用，再统一恢复文件并追加会话撤回事件。新增记忆在无冲突时可以随这次撤回消失。这是正式记忆允许物理移除的例外。别的写者修改了受影响文件或新增了依赖时保留整个回合。已发出的联网请求无法收回。需要撤回工具写入的回合必须有对应 Runtime 日志。
+
+## 附件和备份
+
+Web 与 TUI 可以一起上传多份文档或图片。每份原件在会话中有稳定 ID、显示名、字节数、媒体类型和 SHA-256。恢复原件时按这些标识核对。Vault 根的 `.gitignore` 排除 `/attachments/`，仅克隆 Git 仓库无法还原上传原件。
+
+迁机或完整备份时先停掉常驻后端及其他写入者，复制整个 Vault，包括 `attachments/`。如果上次运行异常退出，先用原先配对的 Vault 和 Runtime 重开并完成恢复，再制作快照或切换 Runtime。需要保留历史思考面板、撤回能力或未完成任务时同时复制匹配的 Runtime，并妥善保护其中的本地凭据和原文件快照。助手消息的 `reasoning_local` 标记关联 Runtime 附件。推理附件缺失时，仍可读取会话回复。
+
+永久删除会话前会检查正式记忆的来源，包括已弃用的记忆。仍有引用时需保留会话。只有活动候选引用时，确认框会列出这些候选，确认删除后一起移除。会话拥有的上传原件和本地辅助文件随会话删除。
 
 ## 时间规范
 
-创建绝对时间戳使用 `syvrio.time.utc_now()` 或 `utc_timestamp()`，用 `serialize_timestamp()` 持久化为带 `+00:00` 的 ISO 8601。输入与比较用 `parse_timestamp()`：它要求显式偏移、接受 `Z`，返回 UTC datetime。可选字段缺失时保持原有含义；绝对时间戳字段里出现非法值或不带偏移的值，需要显式做数据修正。
+绝对时刻使用带 UTC 偏移的 ISO 8601，程序写入统一为 `+00:00`。形式包括记忆 `recorded_at`、候选 `created_at`、推断 `created_at/updated_at`、审计 `at` 和会话事件 `at`。程序输入要求明确偏移，展示按查看者时区转换。会话保存源消息已知的 `original_local_date`，供跨午夜、跨时区时解释“昨天”“去年”等表述。无法确定来源本地日期时保留不确定性。
 
-展示时按查看者本地时区输出 `YYYY-MM-DD HH:mm`，只在必要时加秒。TUI 与 CLI 用 `format_local_timestamp()`，Web 接收 UTC 时间戳后在浏览器侧用 `web/src/time.ts` 转换；两边都使用 00–23 小时制。TUI 会话标签可以只显示 `HH:mm`。本地展示不影响排序。
-
-日历日期（含按天精度导入的记录）、日期区间、Git 的每日墙钟计划、搜索配额的自然日边界、Unix 秒、耗时与超时都保持原有类型和语义。相对日期表达式的输入若自带偏移，按来源日历解释；UTC 存储的消息在解释新的相对日期时，用当前客户端的本地日历确定日期锚点。
+`event_time`、`valid_from`、`valid_to` 为日历值，可分别精确到 `YYYY`、`YYYY-MM` 或 `YYYY-MM-DD`。日期区间、Git 每日计划、搜索配额的自然日与耗时各保留自身语义。历史事件的日期和写入数据库的时刻可分别追溯。
 
 ## 时间字段清单
 
-| 存储 | 绝对时间戳字段 | 旧表示 |
+| 数据 | 字段 | 含义 |
 | --- | --- | --- |
-| `sessions/**/*.jsonl` | `started_at`、`at`；列表的 `updated_at`、`last_message_at` 由它们派生 | 创建时间为本地裸时间，消息与控制记录带本地偏移 |
-| `memories/**/*.md` | Extensions 中的 `syvrio.recorded_at` | 本地裸时间；导入记录带偏移或按天精度 |
-| `records/memory/pending.jsonl`、`resolved.jsonl` | `created_at`，适用时含 `resolved_at` | 本地裸时间 |
-| `records/memory/audit.jsonl` | `at` | 本地裸时间 |
-| `records/memory/inferences.jsonl` | `created_at`；快照上的 `updated_at`，含 `revision.records[]` | 本地偏移 |
-| Runtime `state/reflection.json` | `last_checked_at`；`profile` 与 `dream` 的 `last_attempt_at`、`last_success_at`、`next_retry_at` | 本地偏移 |
-| Runtime `jobs/dreaming/jobs.jsonl`、`cache/profile/profile-summary.json` | 分别为 `at`、`generated_at` | 本地偏移 |
-| Runtime `state/git-sync.json` | `last_commit_at`、`last_push_at`、`last_sync_at`、`retry_after` | Git 提交偏移或本地偏移 |
-| Runtime 诊断与延迟日志 | `time` | UTC；既有日志本来就是 UTC |
-| 搜索缓存与额度 | 缓存年龄用 Unix 秒；配额键是本地自然日/月 | 不变 |
-| Web API | 会话时间字段与命令载荷时间戳 | 现在按 UTC 发送，在浏览器侧本地化展示 |
+| 会话事件 | `started_at`、`at` | 会话开始和事件发生的 UTC 时刻 |
+| 用户来源消息 | `original_local_date` | 由已知原始偏移确定的本地日历日 |
+| 正式记忆 Extensions | `recorded_at` | 事实落盘的 UTC 时刻 |
+| 正式记忆和候选 Context | `event_time`、`valid_from`、`valid_to` | 事件或有效期的年、月或日 |
+| 活动及拒绝归档的候选 | `created_at` | 候选首次写入的 UTC 时刻 |
+| 推断 Extensions | `created_at`、`updated_at` | 本条推断创建及最近修订的 UTC 时刻 |
+| 审计记录 | `at` | 业务操作的 UTC 时刻 |
+| Git 同步状态 | `last_commit_at`、`last_push_at`、`last_sync_at`、`retry_after` | 提交、推送、同步与重试的 UTC 时刻 |
 
-记忆的事件时间与有效期保持日历字段。修改记忆状态会更新状态，并在适用时产生一条 UTC 审计事件，但不会改写原始记录时间。新增持久化时间字段时，同时更新这份清单与迁移脚本的字段映射。
+## 迁移既有 Vault
+
+迁移到本文格式需要单独的数据迁移。当前分支面向新格式 Vault。现存生产数据先完整备份并留在原部署上，原始附件单独核验。以下工具用于重现、验证较早版本的迁移结果。
+
+历史脚本 `scripts/migrate_vault_v2.py` 将旧 v1 Vault 复制到**历史 v2 格式**的独立 Vault 和 Runtime。它保留旧来源标记与历史格式元数据。对备份副本先预览，再写入全新的目标路径，最后核验哈希。
+
+```sh
+python scripts/migrate_vault_v2.py --source /path/to/restore --destination /path/to/historical-v2 --dry-run
+python scripts/migrate_vault_v2.py --source /path/to/restore --destination /path/to/historical-v2 --apply
+python scripts/migrate_vault_v2.py --source /path/to/restore --destination /path/to/historical-v2 --verify
+```
 
 ## 迁移时间戳（UTC）
 
-用 v1 Vault 时，先完成并验证[迁移既有 Vault](#迁移既有-vault)。整个迁移期间停掉 TUI、Web、MCP、定时 Git 同步以及所选 Vault/Runtime 的其他写入方。使用实际存储根路径，并在 apply 前确认来源时区。脚本从不读取活动配置，也不从本机推断来源时区。
+`scripts/migrate_timestamps_to_utc.py` 使用历史 Markdown 解析器和该格式的字段清单，作用于历史 Vault 或明确指定的会话目录。裸时间需要提供来源时区，夏令时歧义、缺失时区或非法时间会中止整批。操作前停掉所有写入者，在独立备份副本上预览。
 
-```bash
-uv run python scripts/migrate_timestamps_to_utc.py \
-  --vault /path/to/vault --runtime /path/to/runtime \
-  --source-timezone Asia/Shanghai --dry-run
-
-uv run python scripts/migrate_timestamps_to_utc.py \
-  --vault /path/to/vault --runtime /path/to/runtime \
-  --source-timezone Asia/Shanghai --apply --backup-dir /path/to/new-backup
+```sh
+python scripts/migrate_timestamps_to_utc.py --vault /path/to/historical-v2 --runtime /path/to/runtime --source-timezone Asia/Shanghai --dry-run
+python scripts/migrate_timestamps_to_utc.py --vault /path/to/historical-v2 --runtime /path/to/runtime --source-timezone Asia/Shanghai --apply --backup-dir /path/to/new-backup
 ```
 
-- `--vault` 含标准会话树；独立的会话树用 `--sessions` 指定。加 `--runtime` 会把活动 Runtime 一并迁移；同时作用于两者时，apply 会获取它的 client、Git 和 Vault 锁。
-- 不同范围可用 `--vault-source-timezone`、`--sessions-source-timezone`、`--runtime-source-timezone`；`--timezone-for` 可重复使用范围相对前缀，例如 `sessions/legacy=America/New_York`。匹配最具体的路径优先。
-- 默认是只读预览。非法值、裸时间缺少来源时区、记录格式错误、夏令时歧义或不存在的时间点都会在写入前中止整批。已被有效 recovery 标记覆盖的会话行按字节保留；其余问题用原始时区或偏移的独立证据解决后重新跑预览。
-- apply 要求在新的、位于数据根之外的备份目录中进行：先备份受影响文件再替换，在 `vault/`、`sessions/`、`runtime/` 下保留其相对路径，并使用原子替换。未知字段、缺失值与日历日期都保留；匹配的推断证据指纹继续有效，过期指纹仍为过期；Runtime 画像缓存可以重建。
-- apply 中断或想撤销时，先停掉写入方，再把每个备份文件复制回原根下相同的相对路径。`sessions/` 备份对应显式的会话根或 Vault 的 `sessions/` 目录。验证恢复结果前不要删备份。apply 是幂等的；迁移成功后最后一次 dry-run 应报告零变更。
+`--backup-dir` 应指向数据根以外的新目录。`--sessions` 可单独指定会话树。不同数据来源的时区可用 `--timezone-for` 按范围覆盖。恢复时使用备份中的原始相对路径，把旧版程序与对应格式的数据成对恢复。

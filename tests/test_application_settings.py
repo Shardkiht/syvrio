@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import json
+from concurrent.futures import ThreadPoolExecutor
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from threading import Thread
+
 import pytest
 
 from syvrio.application import settings as settings_module
 from syvrio.application.settings import SettingsUseCases
 from syvrio.infra.config import Config, LLMConfig, RetrievalConfig, load_config
 from syvrio.infra.providers import PRESETS
+from syvrio.llm import fetch_provider_models
 from syvrio.memory.service import MemoryService
 
 pytestmark = pytest.mark.config
@@ -238,6 +244,68 @@ def test_reasoning_options_follow_model_support(tmp_path, monkeypatch):
     assert settings.reasoning_options() == []
 
 
+def test_thinking_levels_use_provider_model_metadata_before_presets(tmp_path, monkeypatch):
+    service, runtime, settings = build(tmp_path)
+    requests = []
+    status = 200
+    rows = [
+        ("deep-model", {"effort": {"supported_levels": ["low", "high", "max"]}}),
+        ("router-model", {"reasoning": {"supported_efforts": ["high", "xhigh"]}}),
+        ("no-metadata", {}),
+        ("invalid", {"effort": {"supported_levels": ["high", {}]}}),
+    ]
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_GET(self):
+            requests.append(self.path)
+            body = json.dumps({"object": "list", "data": [
+                {"object": "model", "id": model, "created": 0, "owned_by": "fixture", **fields}
+                for model, fields in rows
+            ]}).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+        worker = Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        try:
+            monkeypatch.setenv("SYVRIO_TEST_CATALOG_KEY", "fixture")
+            llm = LLMConfig(provider="custom", model="deep-model", api_key_env="SYVRIO_TEST_CATALOG_KEY",
+                            base_url=f"http://127.0.0.1:{server.server_port}/v1")
+            service.config.llm = llm
+            monkeypatch.setattr(settings_module, "supported_params", lambda _: ())
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                listing = pool.submit(fetch_provider_models, llm)
+                options = settings.reasoning_options()
+            assert listing.result() == [model for model, _ in rows]
+            assert [value for value, _ in options] == ["", "low", "high", "max"]
+            assert settings.apply_reasoning("max").ok
+            assert not settings.apply_reasoning("medium").ok
+            assert runtime.model_label == "custom/deep-model"
+            assert service.config.llm.reasoning_effort == "max"
+            service.config.llm.model = "router-model"
+            assert [value for value, _ in settings.reasoning_options()] == ["", "high", "xhigh"]
+            monkeypatch.setattr(settings_module, "supported_params", lambda _: ("reasoning_effort",))
+            for model in ("no-metadata", "invalid", "unlisted"):
+                service.config.llm.model = model
+                assert [value for value, _ in settings.reasoning_options()] == ["", "low", "medium", "high"]
+            assert requests == ["/v1/models"]
+            status = 503
+            assert fetch_provider_models(llm, refresh=True) == []
+            service.config.llm.model = "deep-model"
+            assert [value for value, _ in settings.reasoning_options()] == ["", "low", "medium", "high"]
+            assert requests == ["/v1/models"] * 2
+        finally:
+            server.shutdown()
+            worker.join()
+
+
 def test_spark_thinking_modes_persist_without_overwriting_reasoning_effort(tmp_path):
     service, _, settings = build(tmp_path)
     service.config_path = tmp_path / "config.toml"
@@ -246,7 +314,7 @@ def test_spark_thinking_modes_persist_without_overwriting_reasoning_effort(tmp_p
     llm.model = "spark-x2.6"
     llm.reasoning_effort = "medium"
     assert settings.reasoning_selection() == ("Thinking mode", "enabled")
-    assert [value for value, _ in settings.reasoning_options()] == ["enabled", "auto", "disabled"]
+    assert [value for value, _ in settings.reasoning_options()] == ["auto", "disabled", "enabled"]
     assert not settings.apply_reasoning("high").ok
     assert settings.apply_reasoning("auto").ok
     assert settings.reasoning_selection() == ("Thinking mode", "auto")

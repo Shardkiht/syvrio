@@ -11,6 +11,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from ...application.contracts import ModelOption
+
 EventType = Literal[
     "start",
     "message_saved",
@@ -45,8 +47,8 @@ class HealthResponse(BaseModel):
     model: str
     busy: bool = False
     active_turn_id: int | None = None
-    # True when another TUI/Web client is blocked from writing the same Vault.
-    single_client: bool = True
+    # Multiple clients share the resident owner and its per-session queue.
+    single_client: bool = False
     static_ready: bool = True
 
 
@@ -89,6 +91,16 @@ class DeleteSessionResponse(BaseModel):
     deleted: bool = True
 
 
+class PendingDeletionItem(BaseModel):
+    id: str
+    text: str
+
+
+class SessionDeletionPreview(BaseModel):
+    pending: list[PendingDeletionItem]
+    revision: str
+
+
 class ProviderInfo(BaseModel):
     key: str
     label: str
@@ -99,6 +111,11 @@ class ProviderInfo(BaseModel):
 
 class ProviderListResponse(BaseModel):
     items: list[ProviderInfo]
+
+
+class ModelSearchResponse(BaseModel):
+    items: list[ModelOption]
+    unavailable_providers: list[str]
 
 
 class ProviderActionRequest(BaseModel):
@@ -148,12 +165,25 @@ class HistoryItem(BaseModel):
     id: str = ""
     role: Literal["user", "assistant", "tool", "summary"]
     content: str = ""
+    attachments: list[dict[str, str | int]] = Field(default_factory=list)
     at: str = ""
     reasoning: ReasoningBlock | None = None
     tool_calls: list[ToolCallInfo] = Field(default_factory=list)
     tool_name: str | None = None
     tool_ok: bool | None = None
     interrupted: bool = False
+
+
+class DraftAttachment(BaseModel):
+    message_id: str
+    id: str
+    name: str
+    media_type: str
+
+
+class MessageDraft(BaseModel):
+    text: str
+    attachments: list[DraftAttachment]
 
 
 class HistoryResponse(BaseModel):
@@ -172,6 +202,7 @@ class StreamEvent(BaseModel):
     type: EventType
     turn_id: int | None = None
     session_id: str | None = None
+    message_id: str | None = None
     # Short-lived deltas (content/reasoning), tool display and error messages.
     text: str = ""
     name: str | None = None
@@ -205,6 +236,7 @@ class CommandCatalogResponse(BaseModel):
 
 class CommandRequest(BaseModel):
     line: str = Field(min_length=1, max_length=2000)
+    expected_message_id: str | None = Field(None, pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$")
     pending_text: str | None = Field(default=None, min_length=1, max_length=100_000)
     inference_text: str | None = Field(default=None, min_length=1, max_length=100_000)
     session_id: str | None = None

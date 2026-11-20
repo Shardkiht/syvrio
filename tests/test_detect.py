@@ -2,14 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from syvrio.memory.detect import contains_secret, find_conflicts
-from syvrio.memory.models import Candidate, Entry
+from syvrio.memory.detect import bigram_coverage, contains_secret, has_literal_bigrams
 
 pytestmark = pytest.mark.memory
-
-
-def entry(entry_id: str, text: str, topic: str = "housing") -> Entry:
-    return Entry(id=entry_id, topic=topic, text=text, timestamp="2026-10-22T12:00:00")
 
 
 @pytest.mark.parametrize(
@@ -55,33 +50,9 @@ def test_allows_statements_about_credentials(text):
     assert not contains_secret(text)
 
 
-def test_numeric_conflict():
-    conflicts = find_conflicts(
-        Candidate(text="我的租房预算改成 5000", topic="housing"),
-        [entry("m1", "我的租房预算 4000")],
-    )
-    assert [item.id for item in conflicts] == ["m1"]
-
-
-def test_negation_conflict():
-    conflicts = find_conflicts(
-        Candidate(text="我不喜欢喝浓咖啡", topic="preferences"),
-        [entry("m1", "我喜欢喝浓咖啡", topic="preferences")],
-    )
-    assert [item.id for item in conflicts] == ["m1"]
-
-
-def test_near_duplicate_is_conflict():
-    conflicts = find_conflicts(
-        Candidate(text="使用 手冲滤纸冲咖啡", topic="devices"),
-        [entry("m1", "使用 手冲滤纸冲咖啡", topic="devices")],
-    )
-    assert [item.id for item in conflicts] == ["m1"]
-
-
-def test_unrelated_fact_has_no_conflict():
-    conflicts = find_conflicts(
-        Candidate(text="喜欢清淡风味", topic="preferences"),
-        [entry("m1", "目前住在市区", topic="housing")],
-    )
-    assert conflicts == []
+def test_literal_bigrams_support_retrieval_without_comparing_fact_truth():
+    assert has_literal_bigrams("预算")
+    assert not has_literal_bigrams("预 1 算")
+    assert bigram_coverage("租房预算", "租房预算是 5000") == 1
+    assert bigram_coverage("合成资料", "合成信息") == pytest.approx(1 / 3)
+    assert bigram_coverage("english", "english") == 0

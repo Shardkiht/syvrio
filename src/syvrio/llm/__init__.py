@@ -12,6 +12,7 @@ from .client import (
     embed_texts,
     fetch_provider_models,
     model_metadata,
+    provider_reasoning_levels,
     supported_params,
     warm_model_metadata,
 )
@@ -39,6 +40,7 @@ __all__ = [
     "fallback_summary",
     "fetch_provider_models",
     "model_metadata",
+    "provider_reasoning_levels",
     "supported_params",
     "warm_model_metadata",
 ]

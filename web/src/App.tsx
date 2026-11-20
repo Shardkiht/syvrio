@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { CommandPalette, CommandPanelDialog, CommandResultDialog, ConfirmDialog, SessionCommandDialog } from './components/CommandUI';
 import { Composer } from './components/Composer';
 import { CommandsIcon, PanelIcon, SettingsIcon } from './components/Icons';
@@ -11,6 +11,8 @@ import { isComposing, matchShortcut } from './state/shortcuts';
 import { applyTheme, readTheme, watchSystemTheme, type ThemeMode } from './state/theme';
 
 export default function App() {
+  const picker = useRef<HTMLInputElement>(null);
+  const openFiles = useCallback(() => picker.current?.click(), []);
   const {
     chat,
     contextUsage,
@@ -28,6 +30,7 @@ export default function App() {
     removeQueued,
     undoDraft,
     undoing,
+    actOnLastMessage,
     acknowledgeDraft,
     stop,
     newSession,
@@ -55,7 +58,7 @@ export default function App() {
     focusComposer,
     toggle,
     dismissError,
-  } = useChat();
+  } = useChat(openFiles);
 
   const model = health ? `${health.provider}/${health.model}` : 'Loading...';
   const empty = chat.messages.length === 0;
@@ -163,6 +166,9 @@ export default function App() {
               className="icon-button sessions-toggle"
               onClick={() => setSidebarOpen(true)}
               aria-label="Open sessions"
+              aria-controls="session-sidebar"
+              aria-expanded={sidebarOpen}
+              disabled={sidebarOpen}
               title="Show sidebar (Ctrl+B)"
             >
               <PanelIcon size={20} />
@@ -215,27 +221,26 @@ export default function App() {
             </div>
           )}
           <div className="thread">
-            <MessageList messages={chat.messages} sessionId={chat.sessionId} onToggle={toggle} />
+            <MessageList messages={chat.messages} sessionId={chat.sessionId} onToggle={toggle}
+              undoing={undoing} onMessageAction={actOnLastMessage} />
             <Composer
+              pickerRef={picker}
+              openFiles={openFiles}
               busy={chat.busy}
               progress={chat.progress}
               contextUsage={contextUsage}
               compaction={compaction}
-              onSend={(text) => void send(text)}
+              onSend={(text, files) => void send(text, files)}
               onInsert={insert}
               queued={queued}
               queuePaused={queuePaused}
               onRemoveQueued={removeQueued}
               undoDraft={undoDraft}
-              onUndo={chat.busy || chat.messages.some((message) => message.role === 'user')
-                ? () => void runCommand('/undo') : undefined}
-              undoing={undoing}
               onUndoDraftApplied={() => { if (chat.sessionId !== null) acknowledgeDraft(chat.sessionId); }}
               onStop={() => void stop()}
               catalog={catalog}
               focusSignal={focusSignal}
               hero={empty}
-              onOpenCommands={() => setPaletteOpen(true)}
             />
           </div>
         </main>
@@ -263,15 +268,25 @@ export default function App() {
           title="Delete session"
           testId="delete-overlay"
           confirmLabel="Delete permanently"
+          confirmDisabled={!deleteTarget.preview}
           message={
-            `Delete session "${deleteTarget.title}" permanently? This cannot be undone.`
+            `Delete session "${deleteTarget.title}" and its uploaded copies from the Vault? This cannot be undone.`
             + (deleteTarget.current
               ? '\nThe current session will be replaced by a new empty chat first.'
               : '')
           }
           onConfirm={() => { void confirmDeleteSession(); focusComposer(); }}
           onCancel={closeDelete}
-        />
+        >
+          {deleteTarget.notice && <div role="status">{deleteTarget.notice}</div>}
+          {!deleteTarget.preview && !deleteTarget.notice && <div role="status">Reading related pending items…</div>}
+          {deleteTarget.preview && deleteTarget.preview.pending.length > 0 && (
+            <div className="deletion-pending" tabIndex={0}>
+              <strong>Pending items that will also be deleted ({deleteTarget.preview.pending.length})</strong>
+              <ul>{deleteTarget.preview.pending.map(item => <li key={item.id}>{item.text}</li>)}</ul>
+            </div>
+          )}
+        </ConfirmDialog>
       )}
       {settingsOpen && (
         <SettingsPanel

@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from itertools import count
 from threading import Event, RLock
 from typing import Callable
 
 from ..agent.context import CompactionPhase
 from ..agent.insertion import InsertionRequest, TurnInsertion
 from ..agent.runtime import AgentRuntime
-from ..agent.session import Session, SessionStore
+from ..errors import SessionProtectedError
+from ..infra.attachments import AttachmentBatch
 from ..infra.diagnostics import record_event
 from ..llm import ChatModelError, GenerationCancelled
+from ..memory.models import PendingItem
 from ..memory.turn_undo import TurnUndoError
+from ..session import Session, SessionStore
 from .contracts import (
     QueuedItem,
     QueueSnapshot,
@@ -22,6 +26,13 @@ from .contracts import (
     TurnResult,
     UndoOutcome,
 )
+
+_TURN_IDS = count(1)
+
+
+def next_turn_id() -> int:
+    return next(_TURN_IDS)
+
 
 SAFE_COMMANDS = frozenset(
     {
@@ -52,6 +63,7 @@ SAFE_COMMANDS = frozenset(
 class QueuedLine:
     session_id: str
     line: str
+    attachments: AttachmentBatch | None = None
 
 
 class ConversationUseCases:
@@ -66,12 +78,12 @@ class ConversationUseCases:
         self._ask_in_flight: str | None = None
         self._ask_user_message_id: str | None = None
         self._active_turn_id: int | None = None
-        self._turn_seq = 0
         self._cancel: Event | None = None
         self._insertion: TurnInsertion | None = None
         self._undo_requested = False
         self._undo_target_session_id: str | None = None
         self._undo_target_message_id: str | None = None
+        self._undo_expected_message_id: str | None = None
         self.queue: list[QueuedLine] = []
         self.queue_paused_after_undo = False
         self.pending_new = False
@@ -175,7 +187,7 @@ class ConversationUseCases:
 
     # ---------- 提交路由 ----------
 
-    def submit_during_ask(self, line: str) -> Submission:
+    def submit_during_ask(self, line: str, attachments: AttachmentBatch | None = None) -> Submission:
         command = line.split(" ", 1)[0].lower() if line.startswith("/") else ""
         if command == "/undo":
             return self.request_undo()
@@ -184,7 +196,7 @@ class ConversationUseCases:
         if not self.runtime.has_session:
             self.runtime.ensure_session()
         session_id = self.runtime.session.id
-        item = QueuedLine(session_id=session_id, line=line)
+        item = QueuedLine(session_id=session_id, line=line, attachments=attachments)
         with self._lock:
             self.queue.append(item)
             index = len(self.queue) - 1
@@ -276,17 +288,17 @@ class ConversationUseCases:
             self._cancel.set()
             return True
 
-    def begin_turn(self, session_id: str | None = None) -> Event:
+    def begin_turn(self, session_id: str | None = None, *, turn_id: int | None = None) -> Event:
         token = Event()
         with self._lock:
-            self._turn_seq += 1
-            self._active_turn_id = self._turn_seq
+            self._active_turn_id = next_turn_id() if turn_id is None else turn_id
             self._cancel = token
             self._insertion = TurnInsertion()
             self._ask_active = True
             self._ask_in_flight = session_id
             self._ask_user_message_id = None
             self._undo_requested = False
+            self._undo_expected_message_id = None
             self._undo_target_session_id = None
             self._undo_target_message_id = None
         return token
@@ -320,15 +332,18 @@ class ConversationUseCases:
             if self._ask_active:
                 self._ask_user_message_id = message_id
 
-    def request_undo(self) -> Submission:
+    def request_undo(self, expected_message_id: str | None = None) -> Submission:
         with self._lock:
             if not self._ask_active:
                 return Submission("undo_now")
+            if expected_message_id is not None and expected_message_id != self._ask_user_message_id:
+                raise TurnUndoError("This message is no longer the latest. Refresh the conversation.")
             if self._undo_requested:
                 return Submission("undo_busy", message="Undo already in progress.")
             self._undo_requested = True
             self._undo_target_session_id = self._ask_in_flight
             self._undo_target_message_id = self._ask_user_message_id
+            self._undo_expected_message_id = expected_message_id
             if self._cancel is not None:
                 self._cancel.set()
         removed, pending_removed = self.purge_undo()
@@ -344,6 +359,7 @@ class ConversationUseCases:
         callbacks: TurnCallbacks,
         cancel: Event,
         session_id: str | None = None,
+        attachments: AttachmentBatch | None = None,
     ) -> TurnResult:
         bound = {"session_id": session_id, "user_message_id": None}
 
@@ -363,7 +379,7 @@ class ConversationUseCases:
             bound["user_message_id"] = message_id
             self.bind_user_message(message_id)
             if callbacks.on_inserted is not None:
-                callbacks.on_inserted(text)
+                callbacks.on_inserted(message_id, text)
 
         session = None
         status = "ok"
@@ -386,6 +402,7 @@ class ConversationUseCases:
             reply = self.runtime.ask(
                 line,
                 session=session,
+                **({"attachments": attachments} if attachments else {}),
                 on_session=on_session,
                 on_user_message=on_user_message,
                 on_event=callbacks.on_event,
@@ -457,6 +474,7 @@ class ConversationUseCases:
         with self._lock:
             target_sid = self._undo_target_session_id or session_id or self._ask_in_flight
             target_mid = user_message_id or self._undo_target_message_id
+            expected = self._undo_expected_message_id
         restored: str | None = None
         failed = False
         public_error = None
@@ -465,7 +483,7 @@ class ConversationUseCases:
                 # 始终从磁盘加载目标会话：后台 Worker 的写入可能晚于切回时
                 # 载入的内存对象，直接用当前对象会看不到刚追加的用户消息。
                 target_session = self.sessions.load(target_sid)
-                restored = self.runtime.undo(target_session, message_id=target_mid)
+                restored = self.runtime.undo(target_session, message_id=target_mid, expected_latest=expected)
             except Exception as exc:
                 failed = True
                 record_event("undo.failed", exc)
@@ -489,8 +507,8 @@ class ConversationUseCases:
             public_error=public_error,
         )
 
-    def undo_current(self) -> str | None:
-        return self.runtime.undo() if self.runtime.has_session else None
+    def undo_current(self, expected_message_id: str | None = None) -> str | None:
+        return self.runtime.undo(expected_latest=expected_message_id) if self.runtime.has_session else None
 
     # ---------- 会话生命周期 ----------
 
@@ -504,11 +522,6 @@ class ConversationUseCases:
         session = self.runtime.resume(session_id, close_current=True)
         return SwitchResult(session, f"{session.id} · {session.title()}", stats)
 
-    def consolidate_deferred(self, stop: Event | None = None) -> dict:
-        if stop is None:
-            return self.runtime.consolidate_pending(min_new_messages=3)
-        return self.runtime.consolidate_pending(min_new_messages=3, stop=stop)
-
     def rename_current(self, title: str) -> None:
         self.runtime.rename(title)
 
@@ -519,7 +532,7 @@ class ConversationUseCases:
             self.sessions.rename(self.sessions.load(session_id), title)
 
     def delete_guard(self, session_id: str) -> tuple[bool, str | None]:
-        """当前、生成中或队列引用的会话不可删除。"""
+        """Keep live sessions and the original evidence of any saved fact."""
         if self.runtime.has_session and session_id == self.runtime.current.id:
             return False, "Cannot delete the current session; use /new first."
         if (
@@ -528,13 +541,36 @@ class ConversationUseCases:
             or any(item.session_id == session_id for item in self.queue)
         ):
             return False, "Session is generating or has queued tasks; try again later."
+        return self._source_guard(session_id)
+
+    def _source_guard(self, session_id: str) -> tuple[bool, str | None]:
+        try:
+            reference = self.runtime.service.memory_referencing_session(session_id)
+        except (OSError, ValueError) as exc:
+            record_event("session.sources_unavailable", exc)
+            return False, "Could not verify saved memory sources. The session was kept."
+        if reference:
+            return False, f"Saved memory {reference} cites this session. Its original messages must be kept."
         return True, None
 
-    def delete_session(self, session_id: str) -> bool:
-        if not self.sessions.exists(session_id):
-            return False
-        self.sessions.delete(session_id)
-        return True
+    def deletion_preview(self, session_id: str) -> tuple[list[PendingItem], str]:
+        with self.runtime.service.write_lock:
+            if not self.sessions.exists(session_id):
+                raise KeyError(session_id)
+            allowed, reason = self._source_guard(session_id)
+            if not allowed:
+                raise SessionProtectedError(reason)
+            return self.runtime.service.queue.deletion_preview(session_id)
+
+    def delete_session(self, session_id: str, pending_revision: str = "") -> bool:
+        with self.runtime.service.write_lock:
+            if not self.sessions.exists(session_id):
+                return False
+            allowed, reason = self.delete_guard(session_id)
+            if not allowed:
+                raise SessionProtectedError(reason)
+            with self.runtime.service.queue.removing_with_session(session_id, pending_revision):
+                return self.sessions.delete(session_id)
 
     def session_exists(self, session_id: str) -> bool:
         return self.sessions.exists(session_id)

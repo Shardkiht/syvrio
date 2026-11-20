@@ -28,8 +28,8 @@ from textual.style import Style
 from textual.visual import RenderOptions, RichVisual
 from textual.widgets import Button, Input, Label, ListItem, ListView, Static
 
-from ..agent.session import Session
 from ..infra.diagnostics import record_event
+from ..session import Session
 from ..time import format_local_timestamp
 from .chat_theme import MARKDOWN_THEME
 from .command_catalog import SLASH_COMMANDS, slash_matches
@@ -325,9 +325,11 @@ class TranscriptView(VerticalScroll):
             content = str(record.get("content") or "")
             stamp = format_local_timestamp(record.get("at"), "%H:%M")
             if record.get("type") == "message":
+                if names := [item["name"] for item in record.get("attachments", [])]:
+                    content += "\n" + ", ".join(names)
                 if stamp:
                     widgets.append(Static(f"You · {stamp}", classes="who-user"))
-                widgets.append(Vertical(Static(content, classes="bubble"), classes="user-turn"))
+                widgets.append(Vertical(Static(content, classes="bubble", markup=False), classes="user-turn"))
                 continue
             reasoning = record.get("reasoning") or {}
             if (reasoning.get("text") or "").strip():

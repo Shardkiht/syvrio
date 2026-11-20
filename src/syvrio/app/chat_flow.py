@@ -7,6 +7,7 @@ from textual.widgets import Input, Static
 
 from ..application.contracts import ThinkingUpdate, TurnCallbacks, UndoOutcome
 from ..application.conversation import QueuedLine as _QueuedLine
+from ..infra.attachments import AttachmentBatch
 from ..infra.diagnostics import record_event
 from ..time import format_local_timestamp, utc_timestamp
 from .chat_widgets import ASSISTANT_NAME, ChatReply
@@ -35,8 +36,8 @@ class ChatFlowMixin:
     def _bind_ask_user_message(self, message_id: str) -> None:
         self.application.conversation.bind_user_message(message_id)
 
-    def _submit_during_ask(self, line: str) -> None:
-        submission = self.application.conversation.submit_during_ask(line)
+    def _submit_during_ask(self, line: str, attachments: AttachmentBatch | None = None) -> None:
+        submission = self.application.conversation.submit_during_ask(line, attachments)
         if submission.kind == "command":
             self._command(line)
         elif submission.kind in ("undo", "undo_busy"):
@@ -190,18 +191,19 @@ class ChatFlowMixin:
         self.refresh_pending()
         self.update_status()
 
-    def _start_ask(self, line: str, session_id: str | None = None) -> None:
+    def _start_ask(self, line: str, session_id: str | None = None, attachments: AttachmentBatch | None = None) -> None:
         stamp = format_local_timestamp(utc_timestamp(), "%H:%M")
         # 用户气泡只渲染进它所属会话的视图；后台任务不串入当前视图。
         if session_id is None or self.application.conversation.current_id == session_id:
-            self.add_user_turn(line, stamp)
+            label = line if not attachments else line + "\n" + ", ".join(item.name for item in attachments.files)
+            self.add_user_turn(label, stamp)
         else:
             self.notify("Running queued task in background session")
         self._begin_ask(session_id)
         token = self.application.conversation.cancel_event
         self._stream_stamp = stamp
         self.run_worker(
-            partial(self._ask_work, line, stamp, session_id, token),
+            partial(self._ask_work, line, stamp, session_id, token, attachments),
             group="ask",
             thread=True,
             exclusive=True,
@@ -221,7 +223,10 @@ class ChatFlowMixin:
             self._run_queued_command(item)
             self._drain_pending_intent()
             return
-        self._start_ask(item.line, item.session_id)
+        if item.attachments:
+            self._start_ask(item.line, item.session_id, item.attachments)
+        else:
+            self._start_ask(item.line, item.session_id)
 
     def _run_queued_command(self, item: _QueuedLine) -> None:
         """排队命令绑定提交时的会话：目标不是当前会话时先切回再执行。
@@ -273,6 +278,7 @@ class ChatFlowMixin:
         stamp: str,
         session_id: str | None,
         token,
+        attachments: AttachmentBatch | None = None,
     ) -> None:
         started = time.monotonic()
         turn_id = self.application.conversation.active_turn_id
@@ -283,13 +289,13 @@ class ChatFlowMixin:
                 self._thinking_update, turn_id, update
             ),
             on_progress=lambda phase: self.call_from_thread(self._progress_update, phase),
-            on_inserted=lambda text: self.call_from_thread(self._show_inserted_message, text),
+            on_inserted=lambda _id, text: self.call_from_thread(self._show_inserted_message, text),
             on_session=lambda session: self.call_from_thread(self._bind_ask_session, session.id),
             on_user_message=lambda message_id: self.call_from_thread(
                 self._bind_ask_user_message, message_id
             ),
         )
-        result = self.application.conversation.run_turn(line, callbacks, token, session_id)
+        result = self.application.conversation.run_turn(line, callbacks, token, session_id, attachments)
         if result.status == "undo":
             self._ui(self._finish_on_ui, result.turn_id, self._apply_undo_outcome, result.undo)
             return

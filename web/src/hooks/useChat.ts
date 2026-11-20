@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { api, NetworkError, streamChat } from '../api/client';
+import { api, ApiError, NetworkError, queueState, removeQueuedTurn, replayTurn, submitChat, type TurnReceipt } from '../api/client';
 import {
   addInfo,
   initialChatState,
@@ -10,12 +10,15 @@ import {
   type ChatState,
 } from '../state/chat';
 import { isCommandLine, panelFor, resultPanelFor, type CommandPanel, type PendingAction, type ReviewPanel } from '../state/commands';
-import type { CommandInfo, CompactionPhase, ContextUsage, HealthResponse, SessionInfo, StreamEvent } from '../types';
+import type { CommandInfo, CompactionPhase, ContextUsage, HealthResponse, SessionDeletionPreview, SessionInfo, StreamEvent } from '../types';
 
 const TERMINAL = new Set(['done', 'cancelled', 'failed']);
 const FLUSH_MS = 16;
+type QueuedMessage = { text: string; files: readonly File[] };
+type MessageAction = { sessionId: string; messageId: string; replacement?: QueuedMessage };
+type DeleteTarget = SessionInfo & { preview: SessionDeletionPreview | null; notice: string };
 
-export function useChat() {
+export function useChat(openFiles?: () => void) {
   const [chat, setChat] = useState<ChatState>(initialChatState);
   const chatRef = useRef<ChatState>(chat);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
@@ -47,23 +50,24 @@ export function useChat() {
   const [catalog, setCatalog] = useState<CommandInfo[]>([]);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [confirm, setConfirm] = useState<{ line: string; message: string } | null>(null);
-  const [deleteTarget, setDeleteTarget] = useState<SessionInfo | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [panel, setPanel] = useState<CommandPanel | null>(null);
   const [focusSignal, setFocusSignal] = useState(0);
-  const [queued, setQueued] = useState<string[]>([]);
-  const queueRef = useRef<string[]>([]);
+  const [queued, setQueued] = useState<TurnReceipt[]>([]);
+  const queueRef = useRef<TurnReceipt[]>([]);
   const [queuePaused, setQueuePaused] = useState(false);
-  const [sending, setSending] = useState(false);
   const [undoing, setUndoing] = useState(false);
   const undoRef = useRef(false);
   const [undoDrafts, setUndoDrafts] = useState<Record<string, string>>({});
-  const changeQueue = useCallback((items: string[]) => {
+  const changeQueue = useCallback((items: TurnReceipt[]) => {
     queueRef.current = items;
     setQueued(items);
   }, []);
   const removeQueued = useCallback((index: number) => {
-    changeQueue(queueRef.current.filter((_, position) => position !== index));
+    const item = queueRef.current[index];
+    if (item) void removeQueuedTurn(item.turn_id).then(() => queueState()).then(state => changeQueue(state.waiting))
+      .catch(() => undefined);
   }, [changeQueue]);
   const acknowledgeDraft = useCallback((sessionId: string) => {
     setUndoDrafts((drafts) => {
@@ -72,6 +76,10 @@ export function useChat() {
       return next;
     });
   }, []);
+  const sendRef = useRef<(text: string, files: readonly File[]) => Promise<void>>(async () => {});
+  const syncRef = useRef<() => Promise<void>>(async () => {});
+  const submissions = useRef(Promise.resolve());
+  const revision = useRef<{ session: string | null; value: number } | null>(null);
   const pendingHistoryRef = useRef(false);
   const navigation = useRef<Promise<void> | null>(null);
   const navigationVersion = useRef(0);
@@ -97,6 +105,12 @@ export function useChat() {
 
   const update = useCallback((fn: (prev: ChatState) => ChatState) => {
     const next = fn(chatRef.current);
+    if (next.sessionId !== chatRef.current.sessionId) {
+      try {
+        if (next.sessionId) window.sessionStorage.setItem('syvrio.session', next.sessionId);
+        else window.sessionStorage.removeItem('syvrio.session');
+      } catch { /* Browsing works when storage is disabled. */ }
+    }
     chatRef.current = next;
     setChat(next);
   }, []);
@@ -169,16 +183,25 @@ export function useChat() {
     line: string,
     confirmed = false,
     review?: { kind: ReviewPanel['kind']; text?: string },
+    messageAction?: MessageAction,
   ) => {
     const requestLine = line.trim();
     if (!requestLine) return;
     const name = requestLine.split(/\s+/, 1)[0].toLowerCase();
+    // Native file selection must happen inside the keyboard or pointer gesture.
+    const native = catalog.find((entry) => entry.support === 'client' && entry.intent === 'pick_attachments'
+      && requestLine.toLowerCase() === '/' + entry.name);
+    if (native && openFiles) {
+      openFiles();
+      return;
+    }
     if (name !== '/undo' || !chatRef.current.busy) {
       while (navigation.current || newCommand.current) await (navigation.current ?? newCommand.current);
     }
     const version = navigationVersion.current;
     const sequence = ++commandSequence.current;
     const sessionId = chatRef.current.sessionId;
+    if (messageAction && sessionId !== messageAction.sessionId) return;
     const isCompact = name === '/compact';
     const isUndo = name === '/undo';
     if (name === '/new' && queueRef.current.length) {
@@ -194,6 +217,7 @@ export function useChat() {
     try {
       const request = api.runCommand({
         line: requestLine,
+        expected_message_id: messageAction?.messageId,
         pending_text: review?.kind === 'pending' ? review.text : undefined,
         inference_text: review?.kind === 'inferences' ? review.text : undefined,
         session_id: sessionId,
@@ -230,7 +254,9 @@ export function useChat() {
 
       if (result.status === 'client') {
         if (!canPresent()) return;
-        if (result.intent === 'open_sessions') {
+        if (result.intent === 'pick_attachments') {
+          openFiles?.();
+        } else if (result.intent === 'open_sessions') {
           setPanel({ kind: 'sessions' });
         } else if (result.intent === 'open_settings') {
           setPanel(null);
@@ -270,14 +296,18 @@ export function useChat() {
       }
       if (isUndo && result.status === 'ok' && typeof result.data?.restored === 'string') {
         const target = result.session_id ?? chatRef.current.sessionId;
-        if (target !== null) {
+        if (messageAction?.replacement) {
+          if (version !== navigationVersion.current || chatRef.current.sessionId !== messageAction.sessionId) return;
+          void sendRef.current(messageAction.replacement.text, messageAction.replacement.files);
+          setQueuePaused(false);
+        } else if (target !== null) {
           const text = result.data.restored;
           setUndoDrafts((drafts) => ({ ...drafts, [target]: text }));
+          setQueuePaused(true);
         }
-        setQueuePaused(true);
         if (canPresent()) setPanel(null);
         setFocusSignal((value) => value + 1);
-        return;
+        return result;
       }
       if (!commandPanel && canPresent()) {
         const output = resultPanelFor(result);
@@ -302,7 +332,14 @@ export function useChat() {
         setUndoing(false);
       }
     }
-  }, [refreshHealth, refreshSessions, reloadHistory, update]);
+  }, [catalog, changeQueue, openFiles, refreshHealth, refreshSessions, reloadHistory, update]);
+
+  const actOnLastMessage = useCallback(async (
+    sessionId: string, messageId: string, replacement?: QueuedMessage,
+  ) => {
+    const result = await runCommand('/undo', false, undefined, { sessionId, messageId, replacement });
+    return result?.status === 'ok' && typeof result.data?.restored === 'string';
+  }, [runCommand]);
 
   const handleEvent = useCallback((event: StreamEvent) => {
     if (event.type === 'compaction') {
@@ -324,133 +361,101 @@ export function useChat() {
     }
   }, [flush, refreshSessions]);
 
-  const recoverReply = useCallback(async (
-    turnId: number, sessionId: string | null, controller: AbortController,
-  ) => {
-    const { signal } = controller;
-    const version = navigationVersion.current;
-    const stillHere = () => !signal.aborted && version === navigationVersion.current;
-    update((prev) => ({
-      ...prev, busy: true, turnId, progress: '等待服务器完成回复', error: null,
-    }));
-
-    try {
-      while (stillHere()) {
-        const info = await api.health();
-        if (!stillHere()) return;
-        setHealth(info);
-        setOnline(true);
-        if (info.active_turn_id !== turnId) break;
-        await new Promise<void>((resolve) => setTimeout(resolve, 1000));
-      }
-      if (!stillHere()) return;
-      const listing = await api.listSessions();
-      if (!stillHere()) return;
-      setSessions(listing.items);
-      const target = sessionId ?? listing.items.find((row) => row.current)?.id;
-      if (!target) throw new Error('找不到这轮回复对应的会话');
-      const history = await api.history(target);
-      if (stillHere()) update((prev) => loadHistory(prev, history));
-    } catch {
-      if (stillHere()) {
-        setQueuePaused(true);
-        update((prev) => ({
-          ...prev, busy: false, turnId: null, progress: '',
-          error: '暂时无法读取回复，请重新打开会话查看结果',
-        }));
-      }
-    }
-  }, [update]);
-
-  const send = useCallback(async (text: string, fromQueue = false) => {
-    const trimmed = text.trim();
-    if (!trimmed) return;
-    // Every slash line goes to the command API, never to the LLM. Commands may
-    // also run while a reply streams; the backend decides which ones are safe.
-    if (isCommandLine(trimmed)) {
-      await runCommand(trimmed);
-      return;
-    }
-    const version = navigationVersion.current;
-    while (navigation.current || newCommand.current) {
-      await (navigation.current ?? newCommand.current);
-    }
-    const sessionId = chatRef.current.sessionId;
-    const history = navigationHistory.current;
-    if (history) await history;
-    // The submit belongs to the view where the user pressed Send.
-    if (version !== navigationVersion.current || navigation.current || newCommand.current
-        || chatRef.current.sessionId !== sessionId) {
-      update((prev) => ({ ...prev, error: '会话已切换，请在目标会话重新发送' }));
-      return;
-    }
-    if (!fromQueue && queuePaused && !undoRef.current && controllerRef.current) {
-      changeQueue([trimmed, ...queueRef.current]);
-      setQueuePaused(false);
-      return;
-    }
-    if (chatRef.current.busy || controllerRef.current || undoRef.current
-        || (!fromQueue && !queuePaused && queueRef.current.length > 0)) {
-      changeQueue([...queueRef.current, trimmed]);
-      return;
-    }
-    if (queuePaused) setQueuePaused(false);
-    setSending(true);
-    update((prev) => startTurn(prev, trimmed, sessionId));
-    terminalRef.current = false;
-    turnRef.current = null;
+  const observe = useCallback(async (receipt: TurnReceipt) => {
+    if (controllerRef.current || receipt.session_id !== chatRef.current.sessionId) return;
     const controller = new AbortController();
     controllerRef.current = controller;
-    let failure: unknown = null;
+    const version = navigationVersion.current;
+    const current = () => !controller.signal.aborted && version === navigationVersion.current;
+    let seq = 0;
+    terminalRef.current = false;
+    turnRef.current = receipt.turn_id;
+    update(prev => {
+      const saved = receipt.message_id ? prev.messages.findIndex(m => m.role === 'user' && m.savedId === receipt.message_id) : -1;
+      const previous = saved < 0 ? prev : { ...prev, messages: prev.messages.slice(0, saved) };
+      return startTurn(previous, receipt.text, receipt.session_id, receipt.message_id ?? undefined);
+    });
     try {
-      await streamChat({ message: trimmed, session_id: sessionId }, handleEvent, controller.signal);
-    } catch (error) {
-      failure = error;
-    } finally {
-      flush();
-      const turnId = turnRef.current;
-      if (controller.signal.aborted) {
-        if (controllerRef.current === controller) {
-          controllerRef.current = null;
-          setSending(false);
+      while (current() && !terminalRef.current) {
+        try {
+          await replayTurn(receipt.turn_id, seq, event => {
+            if (!current() || event.seq <= seq) return;
+            seq = event.seq;
+            handleEvent(event);
+          }, controller.signal);
+          if (!terminalRef.current && current()) throw new Error('Stream interrupted');
+        } catch (error) {
+          if (error instanceof ApiError || !current()) break;
+          setOnline(false);
+          await new Promise(resolve => setTimeout(resolve, 1000));
         }
-        return;
       }
-      if (!terminalRef.current && turnId != null) {
-        await recoverReply(turnId, chatRef.current.sessionId, controller);
-      } else if (!terminalRef.current) {
-        const message = failure instanceof Error
-          ? failure.message
-          : '连接已断开，请重新打开会话查看回复';
-        update((prev) => reduceChat(prev, { seq: 0, type: 'failed', message }));
-        setQueuePaused(true);
-        if (fromQueue) changeQueue([trimmed, ...queueRef.current]);
-        // An HTTP error still means the server is reachable; only a transport
-        // failure (or a stream that ended without a terminal event) is offline.
-        if (!failure || failure instanceof NetworkError) setOnline(false);
-      } else {
+    } finally {
+      if (current()) {
+        flush();
+        await reloadHistory(receipt.session_id);
+        void refreshSessions();
         setOnline(true);
-      }
-      void refreshSessions();
-      if (pendingHistoryRef.current) {
-        pendingHistoryRef.current = false;
-        await reloadHistory(chatRef.current.sessionId);
       }
       if (controllerRef.current === controller) {
         controllerRef.current = null;
-        setSending(false);
+        if (current()) void syncRef.current().catch(() => undefined);
       }
     }
-  }, [changeQueue, flush, handleEvent, queuePaused, recoverReply, refreshSessions, reloadHistory, runCommand, update]);
+  }, [flush, handleEvent, refreshSessions, reloadHistory, update]);
+
+  const syncQueue = useCallback(async () => {
+    const version = navigationVersion.current;
+    const state = await queueState();
+    if (version !== navigationVersion.current || navigation.current || state.session_id !== chatRef.current.sessionId) return;
+    changeQueue(state.waiting);
+    setQueuePaused(state.paused);
+    if (state.active) void observe(state.active);
+    else if (!controllerRef.current && revision.current?.session === state.session_id && revision.current.value !== state.revision) {
+      await reloadHistory(state.session_id);
+    }
+    revision.current = { session: state.session_id, value: state.revision };
+  }, [changeQueue, observe, reloadHistory]);
+
+  syncRef.current = syncQueue;
+
+  const send = useCallback((text: string, files: readonly File[] = []): Promise<void> => {
+    const trimmed = text.trim();
+    if (!trimmed) return Promise.resolve();
+    if (isCommandLine(trimmed)) return runCommand(trimmed).then(() => {});
+    const version = navigationVersion.current;
+    const request = async () => {
+      while (navigation.current || newCommand.current) await (navigation.current ?? newCommand.current);
+      if (version !== navigationVersion.current) throw new Error('会话已切换，请在目标会话重新发送');
+      const receipt = await submitChat({ message: trimmed, session_id: chatRef.current.sessionId }, files);
+      if (version !== navigationVersion.current) return;
+      if (!chatRef.current.sessionId) update(prev => ({ ...prev, sessionId: receipt.session_id }));
+      const state = await queueState();
+      if (state.session_id !== receipt.session_id) return;
+      changeQueue(state.waiting);
+      setQueuePaused(state.paused);
+      if (!controllerRef.current) void observe(state.active ?? receipt);
+    };
+    const next = submissions.current.then(request).catch(error => {
+      if (error instanceof NetworkError) setOnline(false);
+      update(prev => ({ ...prev, error: error instanceof Error ? error.message : '发送失败' }));
+    });
+    submissions.current = next;
+    return next;
+  }, [changeQueue, observe, runCommand, update]);
+  sendRef.current = send;
 
   useEffect(() => {
-    if (chat.busy || sending || undoing || queuePaused
-        || controllerRef.current || undoRef.current) return;
-    const [first, ...rest] = queueRef.current;
-    if (first === undefined) return;
-    changeQueue(rest);
-    void send(first, true);
-  }, [chat.busy, changeQueue, queuePaused, queued, send, sending, undoing]);
+    if (!chat.sessionId) return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const refresh = async () => {
+      try { await syncQueue(); } catch { /* The next display refresh retries. */ }
+      if (!stopped) timer = setTimeout(refresh, 1000);
+    };
+    void refresh();
+    return () => { stopped = true; clearTimeout(timer); };
+  }, [chat.sessionId, syncQueue]);
 
   const insert = useCallback(async (text: string) => {
     const turnId = turnRef.current ?? chatRef.current.turnId;
@@ -540,17 +545,24 @@ export function useChat() {
   const newSession = useCallback(() => navigate(null), [navigate]);
   const selectSession = useCallback((sessionId: string) => navigate(sessionId), [navigate]);
 
-  const requestDeleteSession = useCallback((session: SessionInfo) => {
+  const requestDeleteSession = useCallback((session: SessionInfo, notice = '') => {
     if (chatRef.current.busy) {
       update((prev) => ({ ...prev, error: '请先停止当前回复，再删除会话' }));
       return;
     }
-    setDeleteTarget(session);
+    const target: DeleteTarget = { ...session, preview: null, notice };
+    setDeleteTarget(target);
+    void api.deletionPreview(session.id).then(
+      preview => setDeleteTarget(current => current === target ? { ...target, preview } : current),
+      error => setDeleteTarget(current => current === target
+        ? { ...target, notice: error instanceof Error ? error.message : 'Could not load related pending items.' }
+        : current),
+    );
   }, [update]);
 
   const confirmDeleteSession = useCallback(async () => {
     const target = deleteTarget;
-    if (!target) return;
+    if (!target?.preview) return;
     setDeleteTarget(null);
     try {
       // The Application guard (same as TUI) refuses to delete the live
@@ -561,9 +573,13 @@ export function useChat() {
         await navigate(null);
         if (chatRef.current.sessionId === target.id) return;
       }
-      await api.deleteSession(target.id);
+      await api.deleteSession(target.id, target.preview.revision);
       await refreshSessions();
     } catch (error) {
+      if (error instanceof ApiError && error.code === 'pending_changed') {
+        requestDeleteSession({ ...target, current: target.id === chatRef.current.sessionId }, error.message);
+        return;
+      }
       update((prev) => addInfo(
         prev,
         `Delete failed: ${error instanceof Error ? error.message : 'unknown error'}`,
@@ -571,15 +587,18 @@ export function useChat() {
     } finally {
       setFocusSignal((value) => value + 1);
     }
-  }, [deleteTarget, navigate, refreshSessions, update]);
+  }, [deleteTarget, navigate, refreshSessions, requestDeleteSession, update]);
 
   useEffect(() => {
     let alive = true;
-    const recovery = new AbortController();
     const version = navigationVersion.current;
     const sessionListVersion = sessionsVersion.current;
     void (async () => {
       try {
+        let saved: string | null = null;
+        try { saved = window.sessionStorage.getItem('syvrio.session'); } catch { /* Optional. */ }
+        if (saved) await api.switchSession(saved).catch(() => undefined);
+        if (!alive || navigationVersion.current !== version) return;
         const [info, listing, commands] = await Promise.all([
           api.health(),
           api.listSessions(),
@@ -596,12 +615,12 @@ export function useChat() {
           update((prev) => ({ ...prev, error: 'Web 静态资源未构建，请运行 scripts/build_web.py' }));
         }
         const current = listing.items.find((item) => item.current);
-        if (version === navigationVersion.current && !chatRef.current.busy
-            && info.active_turn_id != null) {
-          if (current) {
-            update((prev) => ({ ...prev, sessionId: current.id }));
+        if (info.active_turn_id != null && version === navigationVersion.current) {
+          const state = await queueState();
+          if (alive && state.active && version === navigationVersion.current) {
+            update(prev => ({ ...prev, sessionId: state.session_id }));
+            void observe(state.active);
           }
-          await recoverReply(info.active_turn_id, current?.id ?? null, recovery);
         } else if (current && version === navigationVersion.current && !chatRef.current.busy) {
           const history = await api.history(current.id);
           if (alive && version === navigationVersion.current && !chatRef.current.busy) {
@@ -614,16 +633,20 @@ export function useChat() {
     })();
     const goOnline = () => setOnline(true);
     const goOffline = () => setOnline(false);
+    const onPageHide = (event: PageTransitionEvent) => {
+      if (!event.persisted) void api.disconnect().catch(() => undefined);
+    };
+    window.addEventListener('pagehide', onPageHide);
     window.addEventListener('online', goOnline);
     window.addEventListener('offline', goOffline);
     return () => {
       alive = false;
-      recovery.abort();
       window.removeEventListener('online', goOnline);
       window.removeEventListener('offline', goOffline);
+      window.removeEventListener('pagehide', onPageHide);
       controllerRef.current?.abort();
     };
-  }, [recoverReply, update]);
+  }, [observe, update]);
 
   const toggleSidebar = useCallback(() => setSidebarOpen((open) => !open), []);
   const focusComposer = useCallback(() => setFocusSignal((value) => value + 1), []);
@@ -672,10 +695,11 @@ export function useChat() {
     refreshSessions,
     send,
     insert,
-    queued,
+    queued: queued.map(item => item.text),
     queuePaused,
     removeQueued,
     undoing,
+    actOnLastMessage,
     undoDraft: chat.sessionId === null ? undefined : undoDrafts[chat.sessionId],
     acknowledgeDraft,
     stop,

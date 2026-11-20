@@ -1,60 +1,44 @@
-"""Reflection 调度判定与运行用例；TUI 生命周期仍负责触发定时器。"""
+"""Submit Dream requests and display the resident scheduler's status."""
 
 from __future__ import annotations
 
-from threading import Event
+from datetime import UTC, datetime
 
-from ..memory.service import MemoryService
+from ..background_memory import BackgroundMemory
 from ..time import format_local_timestamp
 from .contracts import ReflectionSchedule
 
 
 class ReflectionUseCases:
-    def __init__(self, service: MemoryService) -> None:
-        self.service = service
+    def __init__(self, background: BackgroundMemory):
+        self.background = background
 
-    @property
-    def engine(self):
-        return self.service.reflection
-
-    def auto_check_due(self) -> bool:
-        return self.engine.auto_check_due()
-
-    def auto_plan(self):
-        return self.engine.auto_plan()
-
-    def run(
-        self,
-        mode: str,
-        budget: int,
-        *,
-        cancel: Event | None = None,
-        auto: bool = False,
-    ):
-        return self.engine.run(
-            mode,
-            budget,
-            cancel_event=cancel,
-            auto=auto,
-            refresh_summary=mode == "profile",
-        )
+    def run(self, mode: str, budget: int = 20) -> str:
+        if mode != "dream":
+            raise ValueError("Use /dream to regenerate the complete profile and hypotheses.")
+        return self.background.request_dream(budget)
 
     def cancel(self) -> None:
-        self.engine.cancel()
+        self.background.cancel_dream()
+
+    def status(self) -> dict:
+        return self.background.dream_status()
 
     def schedule(self) -> ReflectionSchedule:
-        overview = self.engine.schedule_overview()
-        profile = overview["profile"]
-        dream = overview["dream"]
-        config = self.service.config.chat
+        status = self.status()
+        next_at = status["next_at"]
+        next_run = (
+            format_local_timestamp(datetime.fromtimestamp(next_at, UTC).isoformat())
+            if next_at
+            else None
+        )
         return ReflectionSchedule(
-            running=False,
-            enabled=bool(config.auto_reflect),
-            profile_next=format_local_timestamp(profile.get("next_attempt_at")),
-            dream_next=format_local_timestamp(dream.get("next_attempt_at")),
-            profile_pending=(
-                f"{profile.get('pending', 0)} pending changes"
-                + (", inference batch pending" if profile.get("pending_inferences") else "")
-            ),
-            dream_pending=bool(dream.get("pending")),
+            running=status["state"] == "queued",
+            enabled=status["enabled"],
+            profile_next=next_run,
+            dream_next=next_run,
+            profile_pending=status.get("phase")
+            if status["state"] in {"queued", "paused"}
+            else None,
+            dream_pending=status["state"] in {"queued", "paused"},
         )

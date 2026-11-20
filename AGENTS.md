@@ -31,26 +31,19 @@ Python 3.12+、uv、hatchling、Typer、FastMCP、LiteLLM、Pydantic v2、pytest
 
 多格式文件解析复用 MarkItDown（可选 extra `documents`）；解析插件与云端转换不启用。文件工具只对当前用户消息明确提供的文件开放，文件内容不构成新的访问授权。
 
+Web 和 TUI 的聊天上传原件保存在 `Vault/attachments/`。该目录由 Vault 根目录的 `.gitignore` 排除，迁移和备份时应按文件复制；会话中的附件清单使用稳定 ID 与校验值。
+
 ## 分层
 
-```text
-app → application → agent → memory → retrieval → infra
-application → llm → infra
-memory/agent → llm → infra
-```
+- `app/` 与仓库根的 `web/` 提供 CLI、TUI、MCP、Web 展示与输入适配。客户端业务操作通过统一后端接口调用。
+- `backend/` 管理常驻进程、唯一实例、本地访问凭据、客户端发现和请求路由。`application/` 编排会话 FIFO、安全插入、撤回、审核和设置等用例。
+- `agent/` 管理模型循环、上下文与工具调用。Agent 发起正式记忆变更或创建候选前通过 Recall 核验当前证据，将结果提供给模型判断。
+- `session/` 提供会话事件投影、可靠写入、会话列表和原始消息查询。可信来源由调用方关联到具体用户消息。
+- `background_memory/` 负责会话沉淀、改写后补 Context 和 Dream。后台作业保存检查点，通过 MemoryService 的正式入口更新知识。Profile 先整体发布，随后创建新的待审推断。
+- `memory/` 拥有领域模型、MemoryService、Markdown 解析和存储、候选、推断、审计及变化追踪。`retrieval/` 使用事实的只读数据执行关键词或向量检索。
+- `llm/` 适配模型服务。`infra/` 提供配置、文件、持久事务、运行锁、Git、任务状态、上传原件和搜索等共享能力。搜索供应商各自负责自己的字段映射。
 
-- `app/`：Typer CLI、TUI、FastMCP、FastAPI Web 入口与展示适配；只做参数解析、焦点/键盘/渲染、Worker 与 UI 线程投递。
-- `application/`：与前端无关的用例编排（会话/FIFO/Undo、记忆审查、设置、Reflection/Git 协调）与数据契约；禁止依赖 Textual、Rich、Typer 或 `app/`，也不重复实现 Agent/Memory 核心逻辑。
-- `agent/`：Agent 循环、上下文压缩、工具注册、会话记录。
-- `memory/`：抽取、裁决、存储、队列、审计。
-- `web/`（仓库根目录）：React 前端，使用 REST/SSE 连接 Web 适配，不实现记忆裁决。
-- `retrieval/`：检索接口与实现，`Retriever` 是替换点。
-- `llm/`：LiteLLM 适配、摘要。
-- `infra/`：配置、供应商、Git、token 估算、终端交互、联网搜索。
-
-新增代码不要制造新的反向依赖或循环依赖；跨模块使用相对导入。
-现有 `retrieval` 只读 `memory` 的 `models`、`store`、`detect` 获取条目与字面覆盖，这是已知例外；新增检索实现不要反向依赖 memory 的写入逻辑。
-`infra/search/` 包含 SearchQuery/SearchResult/Provider 契约、open-websearch adapter、registry/router/cache；上层只依赖 router，供应商字段映射只放在 adapter，HTTP 直接用 httpx，不引入 LangChain/LlamaIndex。
+跨模块使用相对导入。事务、锁和文件层只处理持久化机制。记忆裁决与来源核验放在业务服务或 Agent。
 
 ## 代码风格
 
@@ -63,25 +56,16 @@ memory/agent → llm → infra
 
 ## 记忆与存储不变量
 
-- `memories/<category>/<topic>.md` 是长期记忆的唯一事实来源。文件递归扫描，Vault 相对路径唯一标识主题。
-- 每个顶层无序列表项包含 Content、必填 Core、可选 Context 和 Extensions。解析保留源码位置，编辑仅替换必要字段；原文整体作为非可信数据交给模型。详见 [v2 规范](docs/vault-v2.md)。
-- 更正采用“新条目 + `supersedes`”，旧条目置为 `superseded`；删除是软删除 `deleted`，不物理移除。
-- 已发生的状态演化使用 `change_kind=evolution` 与明确的 `context.valid_from`，区别于纠错；历史视图只恢复无歧义的演化链，不能复活纠错/删除内容。当前召回排除已过期/尚未生效条目，不猜测未知日期。
-- 新推断保存来源内容指纹；来源修改或到期时失效。画像是事实与独立推断的可重建视图，只有已确认且来源相关的画像推断可限量注入聊天，仍须标注非事实。
-- Dreaming/画像刷新支持默认启用的 TUI 空闲自动调度与手动触发，默认每次最多一次请求，禁用任务级重试和候补模型；只以有效事实为证据，结果待审查。自动任务低频且彼此独立：Dreaming 默认每 24 小时最多一次，Profile 默认每 7 天最多一次；普通新增只记待处理变更，达到阈值或重要变化（目标/偏好/职业方向等）才允许在冷却后提前更新。无变化时只做文件指纹检查。周期、冷却与失败退避持久化到 `runtime/state/reflection.json`，画像来源指纹基线在 `runtime/state/fingerprints.json`，摘要缓存在 `runtime/cache/profile/profile-summary.json`；三者均为派生状态，可删除重建且不进入 Git 历史。进度追加 `runtime/jobs/dreaming/jobs.jsonl`，取消、失败或重启不删除已有记录；网络等待不持有记忆写锁，发布前重新核验证据。
-- 待确认候选写 `records/memory/pending.jsonl`，处理结果追加到 `resolved.jsonl`；更正、删除等操作写 `audit.jsonl`。
-- 可选事实上下文以开放的 Context 字段保存；日期精度由 YYYY / YYYY-MM / YYYY-MM-DD 保留，不以写入时间补猜事实时间。改写后确认与手动更正不继承旧上下文。
-- 推断单独追加到 `records/memory/inferences.jsonl`，不参与事实检索；新假设只接受有效事实来源 ID，来源去重，重复证据不提升可信度。用户确认仍保持推断与事实分离；状态变更追加 revision 快照事件，更正在同一事件保存新旧状态。来源失效后不可重新启用旧推断；损坏日志不得静默忽略或覆盖；显式尾行恢复仅追加 recovery 标记（ignored_line 为 1 起始物理行号），中间损坏仍报错。
-- `runtime/indexes/vectors.npz` 是向量检索的派生缓存（含 `model_id`，换模型自动失效），独立于 Vault，可删除重建，不进 Git 历史。
-- Vault 写入（记忆、会话追加、审计/推断/回顾日志）与 Git 快照共享 `runtime/locks/vault.lock`；Stage/Commit/Push 使用 `runtime/locks/git.lock`。两把锁跨进程互斥，固定顺序 Git → Vault；Push 网络等待只持 Git 锁。同步状态 `runtime/state/git-sync.json` 与锁文件位于 Vault 外。
-- `runtime/cache/search/search-cache.json` 是联网搜索的派生缓存（按 TTL 过期），独立于 Vault，可删除重建，不进 Git 历史。
-- `runtime/cache/profile/profile-summary.json`、`runtime/state/fingerprints.json`、`runtime/state/reflection.json` 分别是画像摘要、来源指纹基线与自动回顾调度状态，均为派生数据，独立于 Vault，可删除重建，不进 Git 历史。
-- `sessions/YYYY/MM/<id>.jsonl` 是追加写的事件流，不重写旧行；上下文压缩只追加 `summary` 记录，不删除原文。
-- 会话追加前递归隐藏已识别凭据；损坏尾行只读恢复，续写追加 `recovery` 标记记录 `ignored_line`（1 起始物理行号），保留原始字节；未标记的中间行损坏不能静默忽略。
-- `vault/SOUL.md` 是可选自定义人设：存在时替换系统提示词的人设段，机制规则固定拼接在后不可覆盖；它是指令不是记忆，不参与抽取与检索。
-- 密钥、验证码、API Key 在写入前拦截；不把密钥写入 vault、配置示例或测试。
-- 旧 Vault 使用 `scripts/migrate_vault_v2.py` 显式迁移：先校验备份和恢复，再以 `--dry-run` 检查、`--apply` 复制到新目录、`--verify` 校验。启动时拒绝 v1 布局，不自动迁移。
-- `syvrio.toml`、`vault/`、`sessions/`、`.env`、密钥文件都不提交。
+- 正式记忆按逻辑主题保存在 `memories/<category>/<topic>.md`，ID 跨主题唯一。顶层列表以 `**Core**` 开头，Core 只有 `id/status/text`。`recorded_at`、会话来源对和可选替代关系保存在 Extensions。更新保留未知扩展、原文换行与未修改记录的字节。详见 [Vault 格式](docs/vault-v2.md)。
+- `active/deprecated` 是正式记忆的两种状态。更正以新 ID 写入并弃用旧事实。状态演化可以保存新旧有效期，保持真实历史。时间精度按已有证据保留。补充 Context 只填空字段，`emotion.event/recollection/unspecified` 分别保存相应时点的用户原话。
+- `memories/pending.md` 是唯一活动候选文件。确认只写入最终事实并移除候选。改写后确认同时登记异步 Context 补充任务。用户拒绝的原文进入 `archived/pending.md`。`related_ids` 为审核提供背景，已有事实的状态需独立操作。
+- `inferences/<kind>/<id>.md` 保存独立推断，状态为 `hypothesis/confirmed/deprecated`。来源必须是真实记忆 ID。用户改写时在同一事务弃用旧文并以新 ID 保存确认后的推断。来源变化保留推断现状。`profile.md` 由 Dream 从当前事实和已确认推断生成。
+- `records/memory-changes.jsonl` 针对正式记忆创建和实际字段变化各写一行。变化事件只含记忆 ID 和创建标志或新值。`records/memory/audit.jsonl` 是独立的操作审计。通过 `vault_transaction(paths)` 一并写入事实、日志及相关任务。嵌套操作复用外层事务，成功提交或失败时整体恢复。
+- 常驻后端按物理 Vault 独占运行。Vault 写入和 Git 快照使用 Runtime 的 `vault.lock`。Git 操作按 `Git → Vault` 顺序取锁，网络推送等待只持有 Git 锁。使用同一套已解析的 `SyvrioPaths` 构造领域存储与后台作业。
+- `sessions/YYYY/MM/<id>.jsonl` 追加消息、摘要、撤回和沉淀事件。稳定消息 ID 定位原话。保存绝对 UTC 时刻与已知的来源本地日期。尾行恢复以物理行号追加 `recovery` 标记及诊断。会话写入前屏蔽已识别的凭据。
+- 最新回合 `/undo` 为正式记忆可恢复原文件的例外。先核对所有受影响文件和存续引用，再在一个事务内恢复文件并追加撤回事件。其他会话写过同一文件或新增引用时拒绝整次撤回。Runtime 持久化撤回凭据、推理附件与后台进度，应与需要恢复的 Vault 配对备份。
+- 永久删除会话时，有正式记忆来源引用就拒绝。相关活动候选须在确认界面列出并随会话移除。消息的上传副本随会话删除。`Vault/attachments/` 由 Vault Git 忽略，迁移时另行复制并核对校验值。
+- `SOUL.md` 是可选人设。敏感凭据、真实配置与用户数据只能留在本地。历史离线工具处理各自的旧格式。生产 Vault 升级到当前格式需专门设计和验证迁移流程。
 
 ## 测试
 

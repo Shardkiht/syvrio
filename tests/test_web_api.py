@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from syvrio.agent import runtime as agent_runtime
 from syvrio.app.web.backend import WebBackend, WebError
 from syvrio.app.web.server import create_app
+from syvrio.background_memory import distillation
 from syvrio.infra.config import (
     ChatConfig,
     Config,
@@ -21,6 +22,7 @@ from syvrio.infra.config import (
     RetrievalConfig,
     SearchConfig,
 )
+from syvrio.infra.jobs import job_path, read_job
 from syvrio.infra.locking import LockTimeout
 from syvrio.llm import (
     AssistantTurn,
@@ -30,7 +32,7 @@ from syvrio.llm import (
     ToolCall,
 )
 from syvrio.memory.extractor import StaticExtractor
-from syvrio.memory.models import Candidate, ExtractionResult
+from syvrio.memory.models import ExtractionResult, MemoryDraft
 from syvrio.memory.service import MemoryService
 
 pytestmark = pytest.mark.web
@@ -77,7 +79,8 @@ class GatedModel(FakeModel):
 
 
 @pytest.fixture
-def backend(tmp_path):
+def backend(tmp_path, monkeypatch):
+    monkeypatch.setattr(distillation, "ask", lambda *args: distillation.Result(memories=[]))
     config = Config(
         vault=tmp_path / "vault",
         llm=LLMConfig(
@@ -121,6 +124,150 @@ def types(events):
     return [event["type"] for event in events]
 
 
+def test_mixed_attachments_reach_model_and_survive_move(client, backend, tmp_path):
+    import base64
+    from io import BytesIO
+    from shutil import copytree
+
+    from PIL import Image
+    from typer.testing import CliRunner
+
+    from syvrio.agent.session import SessionStore
+    from syvrio.app.cli import app as cli
+    from syvrio.infra.paths import SyvrioPaths
+
+    image = BytesIO()
+    Image.new("RGB", (2, 2), color="blue").save(image, "PNG")
+    data = image.getvalue()
+    secret_path = tmp_path / "local-only.txt"
+    secret_path.write_text("must stay local", encoding="utf-8")
+
+    class Model(FakeModel):
+        def chat(self, messages, tools, **kwargs):
+            if messages[-1]["role"] == "tool":
+                assert "synthetic document" in messages[-1]["content"]
+                return AssistantTurn(content="Verified both attachments.")
+            parts = messages[-1]["content"]
+            assert any(part.get("image_url", {}).get("url") == "data:image/png;base64," + base64.b64encode(data).decode() for part in parts)
+            schema = next(tool["function"] for tool in tools if tool["function"]["name"] == "read_file")
+            assert schema["parameters"]["properties"]["path"]["enum"] == ["1. notes.txt"]
+            return AssistantTurn(tool_calls=[ToolCall("read", "read_file", {"path": "1. notes.txt"})])
+
+    backend._runtime.model = Model([])
+    response = client.post("/api/chat/attachments", data={"message": f'Analyze these files "{secret_path}"'},
+                           files=[("files", ("notes.txt", b"synthetic document")), ("files", ("picture.png", data))])
+    events = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")]
+    assert response.status_code == 200 and events[-1]["type"] == "done", response.text
+    assert events[-1]["text"] == "Verified both attachments."
+    sid = events[-1]["session_id"]
+    record = client.get(f"/api/sessions/{sid}").json()["items"][0]
+    assert [file["name"] for file in record["attachments"]] == ["notes.txt", "picture.png"]
+    file_id = record["attachments"][1]["id"]
+    draft = client.get(f"/api/sessions/{sid}/messages/{record['id']}/draft")
+    assert draft.status_code == 200
+    assert draft.json()["text"] == record["content"]
+    assert [item["name"] for item in draft.json()["attachments"]] == ["notes.txt", "picture.png"]
+    assert all(item["message_id"] == record["id"] for item in draft.json()["attachments"])
+    url = f"/api/sessions/{sid}/messages/{record['id']}/attachments/{file_id}"
+    assert client.get(url).content == data
+    paths = backend._service.paths
+    backend._service.repo.stage_all()
+    staged = backend._service.repo.staged_paths()
+    assert any(item.startswith("sessions/") for item in staged)
+    assert not any(item.startswith("attachments/") for item in staged)
+    moved = SyvrioPaths(tmp_path / "moved-vault", tmp_path / "moved-runtime")
+    copytree(paths.vault_dir, moved.vault_dir)
+    sessions = SessionStore(moved)
+    assert sessions.verify_attachments() == (2, [])
+    command = ["verify-attachments", "--vault", str(moved.vault_dir)]
+    result = CliRunner().invoke(cli, command)
+    assert result.exit_code == 0 and "Verified 2 attachment(s)" in result.output
+    assert not moved.runtime_dir.exists()
+    path = moved.vault_dir / "attachments" / sid / record["id"] / (file_id + ".png")
+    path.write_bytes(b"x" * len(data))
+    count, errors = sessions.verify_attachments()
+    assert count == 1 and len(errors) == 1 and "checksum" in errors[0]
+    path.unlink()
+    result = CliRunner().invoke(cli, command)
+    assert result.exit_code == 1 and "picture.png" in result.output and "missing" in result.output
+
+
+def test_latest_message_actions_use_the_saved_id_and_reject_an_outdated_view(client, backend):
+    first = collect(client, "same question")
+    sid = first[-1]["session_id"]
+    first_mid = next(event["message_id"] for event in first if event["type"] == "message_saved")
+    second = collect(client, "same question", sid)
+    second_mid = next(event["message_id"] for event in second if event["type"] == "message_saved")
+    assert first_mid != second_mid
+    assert client.get(f"/api/sessions/{sid}/messages/{first_mid}/draft").status_code == 409
+    body = {"line": "/undo", "session_id": sid, "expected_message_id": first_mid}
+    assert client.post("/api/commands", json=body).json()["status"] == "error"
+    assert len(backend._sessions.load(sid).messages) == 2
+    body["expected_message_id"] = second_mid
+    result = client.post("/api/commands", json=body).json()
+    assert result["status"] == "ok" and result["data"]["restored"] == "same question"
+    assert [record["id"] for record in backend._sessions.load(sid).messages] == [first_mid]
+
+
+def test_web_chat_paths_do_not_authorize_server_files(backend, client, tmp_path):
+    path = tmp_path / "private.txt"
+    path.write_text("local only", encoding="utf-8")
+
+    class Model(FakeModel):
+        def chat(self, messages, tools, **kwargs):
+            names = {tool["function"]["name"] for tool in tools}
+            assert not {"read_file", "import_file"}.intersection(names)
+            return AssistantTurn(content="No local file access.")
+
+    backend._runtime.model = Model([])
+    assert collect(client, f'Read "{path}"')[-1]["text"] == "No local file access."
+    assert client.post("/api/chat/attachments", files=[("files", ("bad.png", b"invalid"))]).status_code == 422
+
+
+def test_clients_generate_in_parallel_and_share_fifo_for_the_same_session(client, backend):
+    first, second = (backend._sessions.create().id for _ in range(2))
+    peer = TestClient(client.app, base_url=BASE_URL, headers={"X-Syvrio-View": "a" * 32})
+    observer = TestClient(client.app, base_url=BASE_URL, headers={"X-Syvrio-View": "b" * 32})
+    entered = {label: threading.Event() for label in ("one", "two")}
+    finish = threading.Event()
+
+    class Model(FakeModel):
+        def chat(self, messages, tools, on_delta=None, cancel=None, *, on_reasoning=None):
+            label = messages[-1]["content"]
+            if label in entered:
+                entered[label].set()
+                assert finish.wait(10)
+            return AssistantTurn(content=f"reply {label}")
+
+    backend._runtime.model = Model([])
+    for tab, target in ((client, first), (peer, second), (observer, first)):
+        assert tab.post(f"/api/sessions/{target}/switch").status_code == 200
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        a = pool.submit(collect, client, "one", first)
+        b = pool.submit(collect, peer, "two", second)
+        try:
+            assert all(event.wait(5) for event in entered.values())
+            first_turn = client.get("/api/health").json()["active_turn_id"]
+            second_turn = peer.get("/api/health").json()["active_turn_id"]
+            assert observer.get("/api/health").json()["active_turn_id"] == first_turn
+            assert first_turn and second_turn and first_turn != second_turn
+            assert not peer.post("/api/chat/cancel", json={"turn_id": first_turn}).json()["cancelled"]
+            queued = pool.submit(collect, observer, "next", first)
+            for _ in range(200):
+                with backend._lock:
+                    if backend._waiting:
+                        break
+                time.sleep(0.005)
+            assert backend._waiting and not queued.done()
+        finally:
+            finish.set()
+        assert [item.result()[-1]["type"] for item in (a, b, queued)] == ["done"] * 3
+    assert backend._sessions.load(first).user_texts() == ["one", "next"]
+    assert backend._sessions.load(second).user_texts() == ["two"]
+    assert observer.post("/api/sessions").status_code == 201
+    assert any(row["current"] and row["id"] == first for row in client.get("/api/sessions").json()["items"])
+
+
 def wait_active(backend):
     for _ in range(200):
         if backend.active_turn_id() is not None:
@@ -139,7 +286,7 @@ def test_health_and_openapi(client, backend):
     assert body["status"] == "ok"
     assert body["provider"] == "custom"
     assert body["busy"] is False
-    assert body["single_client"] is True
+    assert body["single_client"] is False
     assert client.get("/openapi.json").status_code == 200
 
 
@@ -281,6 +428,10 @@ def test_web_insert_waits_for_the_model_and_never_splits_a_tool_batch(
         assert model.followup[-2]["role"] == "tool"
         assert model.followup[-1] == {"role": "user", "content": "a supplement"}
         assert backend._conversation.current.user_texts() == ["original", "a supplement"]
+        inserted = next(item for item in events if item["type"] == "message_inserted")
+        sid, mid = inserted["session_id"], inserted["message_id"]
+        draft = client.get(f"/api/sessions/{sid}/messages/{mid}/draft").json()
+        assert draft["text"] == "original\n\na supplement"
         undo = client.post("/api/commands", json={"line": "/undo"}).json()
         assert undo["data"]["restored"] == "original\n\na supplement"
         assert backend._conversation.current.user_texts() == []
@@ -297,13 +448,19 @@ def test_web_undo_during_generation_returns_saved_text_and_waits_for_rollback(cl
         try:
             assert model.entered.wait(5)
             session_id = backend._conversation.current_id
+            target = backend._conversation.ask_user_message_id
+            assert target
+            stale = client.post("/api/commands", json={
+                "line": "/undo", "session_id": session_id, "expected_message_id": "stale",
+            }).json()
+            assert stale["status"] == "error" and not backend._conversation.undo_requested
             # A different command already holds the ordinary command mutex.
             # Undo still registers its cancellation before that lock is released.
             with backend._command_lock:
                 command = pool.submit(
                     client.post,
                     "/api/commands",
-                    json={"line": "/undo", "session_id": session_id},
+                    json={"line": "/undo", "session_id": session_id, "expected_message_id": target},
                 )
                 assert backend._conversation.cancel_event.wait(5)
                 assert not command.done()
@@ -326,25 +483,14 @@ def test_undo_during_tool_write_reverts_the_completed_write_and_stops_the_next(
     client, backend, monkeypatch
 ):
     service = backend._service
-    service.extractor = StaticExtractor(
-        ExtractionResult(
-            memories=[
-                Candidate(text="合成：暂时写入的活动偏好", topic="undo-inflight", confidence=0.99),
-            ]
-        )
-    )
-    model = backend._runtime.model = FakeModel(
-        [
-            AssistantTurn(
-                tool_calls=[
-                    ToolCall("write-1", "memorize", {"text": "保存合成偏好"}),
-                    ToolCall(
-                        "write-2", "correct", {"entry_id": "not-run", "text": "must not execute"}
-                    ),
-                ]
-            )
-        ]
-    )
+    arguments = {"text": "保存合成偏好", "topic": "undo-inflight"}
+    model = backend._runtime.model = FakeModel([
+        AssistantTurn(tool_calls=[ToolCall("review", "memorize", arguments)]),
+        AssistantTurn(tool_calls=[
+            ToolCall("write-1", "memorize", arguments),
+            ToolCall("write-2", "correct", {"entry_id": "not-run", "text": "must not execute", "topic": "other"}),
+        ]),
+    ])
     entered = threading.Event()
     release = threading.Event()
     affected = service.store.topic_path("undo-inflight")
@@ -377,7 +523,7 @@ def test_undo_during_tool_write_reverts_the_completed_write_and_stops_the_next(
         assert response["data"]["restored"] == "tool undo"
         events = stream.result(timeout=5)
     assert written.is_set() and not affected.exists()
-    assert model.calls == 1
+    assert model.calls == 2
     assert not any(
         event.get("name") == "correct" for event in events if event["type"] == "tool_start"
     )
@@ -385,6 +531,35 @@ def test_undo_during_tool_write_reverts_the_completed_write_and_stops_the_next(
 
 
 # ---------- session deletion ----------
+
+
+def test_searches_all_configured_models_and_can_select_a_result_beyond_the_first_page(client, backend, monkeypatch):
+    from syvrio.application.contracts import SettingsResult
+
+    settings = backend._app_service.settings
+    catalog = {"custom": [f"fixture-{n:03d}" for n in range(45)], "deepseek": ["Chat-New-Model"], "spark": []}
+    requests = []
+
+    def discover(*, cached_only=False, refresh=False):
+        requests.append((cached_only, refresh))
+        return catalog
+
+    monkeypatch.setattr(settings, "model_catalog", discover)
+    selected = []
+    def switch(provider, model):
+        selected.append((provider, model))
+        return SettingsResult(True, "switched")
+    monkeypatch.setattr(settings, "apply_model", switch)
+
+    result = client.get("/api/settings/models", params={"q": " new-MODEL "}).json()
+    assert [(row["provider"], row["model"]) for row in result["items"]] == [("deepseek", "Chat-New-Model")]
+    assert result["unavailable_providers"] == ["spark"] and not selected
+    assert requests == [(False, False)]
+    assert client.get("/api/settings/models", params={"q": "not-present"}).json()["items"] == []
+    assert len(client.get("/api/settings/models", params={"refresh": True}).json()["items"]) == 47
+    assert requests[-1] == (False, True)
+    applied = client.post("/api/commands", json={"line": "/model deepseek/Chat-New-Model"}).json()
+    assert applied["status"] == "ok" and selected == [("deepseek", "Chat-New-Model")]
 
 
 def test_delete_session_requires_confirmation_then_removes_file(client, backend):
@@ -422,6 +597,43 @@ def test_current_session_is_protected_from_deletion(client, backend):
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "session_protected"
     assert backend._sessions.exists(session_id)
+
+
+def test_delete_lists_pending_requires_current_revision_and_never_deletes_a_memory(client, backend):
+
+    service = backend._runtime.service
+    store = backend._sessions
+    target, other = store.create(), store.create()
+    for session in (target, other):
+        store.append(session, {"type": "message", "role": "user", "content": "original", "id": "m-src"})
+
+    def draft(session, text):
+        item = service.create_pending(MemoryDraft(text=text, topic="topic"), "Check wording?", [],
+                                      session_id=session.id, message_id="m-src")
+        return item.id
+
+    first, survivor = draft(target, "First draft"), draft(other, "Other session")
+    url = f"/api/sessions/{target.id}"
+    before = client.get(url + "/deletion-preview").json()
+    assert before["pending"] == [{"id": first, "text": "First draft"}]
+    added = draft(target, "Added during confirmation")
+    params = {"confirmed": "true", "pending_revision": before["revision"]}
+    refused = client.delete(url, params=params)
+    assert refused.status_code == 409 and refused.json()["error"]["code"] == "pending_changed"
+    assert store.exists(target.id) and service.queue.get(first) and service.queue.get(added)
+    after = client.get(url + "/deletion-preview").json()
+    assert {row["id"] for row in after["pending"]} == {first, added}
+    params["pending_revision"] = after["revision"]
+    assert client.delete(url, params=params).status_code == 200
+    assert not store.exists(target.id) and [item.id for item in service.pending()] == [survivor]
+    assert not service.queue.resolved_path.exists()
+
+    url = f"/api/sessions/{other.id}"
+    params["pending_revision"] = client.get(url + "/deletion-preview").json()["revision"]
+    fact = service.add(MemoryDraft(text="Persisted", topic="topic"), session_id=other.id, message_id="m-src")
+    for response in (client.get(url + "/deletion-preview"), client.delete(url, params=params)):
+        assert response.status_code == 409 and response.json()["error"]["code"] == "session_protected"
+    assert service.store.find(fact.id) and service.queue.get(survivor) and store.exists(other.id)
 
 
 def test_delete_rejects_unknown_traversal_and_cross_site(client):
@@ -700,7 +912,8 @@ def test_disconnect_keeps_turn_running_until_done_or_explicit_stop(backend, expl
             model.release.set()
         assert await asyncio.to_thread(turn.finished.wait, 10)
         await asyncio.sleep(0)
-        assert turn.queue.empty()
+        replay = [frame async for frame in backend.stream(turn)]
+        assert any(('event: cancelled' if explicit_stop else 'event: done') in frame for frame in replay)
 
     asyncio.run(scenario())
     assert backend.active_turn_id() is None
@@ -714,7 +927,7 @@ def test_disconnect_keeps_turn_running_until_done_or_explicit_stop(backend, expl
         assert reply.content == "partial done"
 
 
-def test_switch_rejected_while_generating(backend):
+def test_reselecting_active_session_preserves_the_turn(backend):
     model = GatedModel()
     backend._runtime.model = model
     app = create_app(backend, autostart=False)
@@ -726,8 +939,9 @@ def test_switch_rejected_while_generating(backend):
         future = pool.submit(collect, streamer, "first", created)
         wait_active(backend)
         response = controller.post(f"/api/sessions/{created}/switch")
-        assert response.status_code == 409
-        assert response.json()["error"]["code"] == "busy"
+        assert response.status_code == 200
+        assert response.json()["session_id"] == created
+        assert backend.active_turn_id() is not None
         model.release.set()
         future.result(timeout=15)
 
@@ -892,13 +1106,13 @@ class GatedExtractor:
         self.calls = 0
         self.fail = fail
 
-    def extract(self, text, context):
+    def ask(self, service, prompt, payload, schema):
         self.calls += 1
         self.entered.set()
         assert self.release.wait(timeout=10)
         if self.fail:
             raise RuntimeError("synthetic extraction failure")
-        return ExtractionResult(memories=[])
+        return distillation.Result(memories=[])
 
 
 def seed_distillation(backend):
@@ -912,20 +1126,26 @@ def seed_distillation(backend):
     return session
 
 
-def wait_for_distillation(backend):
-    with backend._lock:
-        worker = backend._distill_worker
-    if worker is not None:
-        worker.join(timeout=5)
-        assert not worker.is_alive()
+def wait_until(check):
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        if check():
+            return
+        time.sleep(.05)
+    assert check()
+
+
+def wait_for_distillation(backend, session):
+    path = job_path(backend._service.paths, "distillation", session.id)
+    wait_until(lambda: not path.exists())
 
 
 @pytest.mark.parametrize("entry", ["create", "switch", "command"])
-def test_navigation_and_chat_finish_while_distillation_waits(client, backend, entry):
+def test_navigation_and_chat_finish_while_distillation_waits(client, backend, entry, monkeypatch):
     session = seed_distillation(backend)
     target = backend._sessions.create()
     extractor = GatedExtractor()
-    backend._service.extractor = extractor
+    monkeypatch.setattr(distillation, "ask", extractor.ask)
     try:
         if entry == "create":
             assert client.post("/api/sessions").status_code == 201
@@ -942,17 +1162,17 @@ def test_navigation_and_chat_finish_while_distillation_waits(client, backend, en
         assert extractor.calls == 1
     finally:
         extractor.release.set()
-    wait_for_distillation(backend)
+    wait_for_distillation(backend, session)
     loaded = backend._sessions.load(session.id)
     assert loaded.user_texts_after_distilled() == []
-    assert [row["up_to"] for row in loaded.records if row["type"] == "distilled"] == ["m-seed-2"]
-    assert extractor.calls == 1
+    assert [row["up_to"] for row in loaded.records if row["type"] == "distilled"] == ["m-seed-0", "m-seed-1", "m-seed-2"]
+    assert extractor.calls >= 3
 
 
-def test_background_does_not_publish_stale_snapshot_after_resuming(client, backend):
+def test_background_does_not_publish_stale_snapshot_after_resuming(client, backend, monkeypatch):
     session = seed_distillation(backend)
     extractor = GatedExtractor()
-    backend._service.extractor = extractor
+    monkeypatch.setattr(distillation, "ask", extractor.ask)
     try:
         assert client.post("/api/sessions").status_code == 201
         assert extractor.entered.wait(timeout=3)
@@ -960,43 +1180,43 @@ def test_background_does_not_publish_stale_snapshot_after_resuming(client, backe
         assert "done" in types(collect(client, "new synthetic message", session.id))
     finally:
         extractor.release.set()
-    wait_for_distillation(backend)
-    assert len(backend._sessions.load(session.id).undistilled_messages()) == 4
+    wait_for_distillation(backend, session)
+    assert [row["content"] for row in backend._sessions.load(session.id).undistilled_messages()] == ["new synthetic message"]
     assert client.post("/api/sessions").status_code == 201
-    wait_for_distillation(backend)
+    wait_for_distillation(backend, session)
     loaded = backend._sessions.load(session.id)
     assert not loaded.undistilled_messages()
     assert [row["up_to"] for row in loaded.records if row["type"] == "distilled"] == [
-        loaded.last_user_message_id()
+        "m-seed-0", "m-seed-1", "m-seed-2", loaded.last_user_message_id()
     ]
 
 
-def test_background_failure_leaves_cursor_for_startup_catchup(client, backend):
+def test_background_failure_leaves_a_retryable_job(client, backend, monkeypatch):
     session = seed_distillation(backend)
     extractor = GatedExtractor(fail=True)
-    backend._service.extractor = extractor
+    monkeypatch.setattr(distillation, "ask", extractor.ask)
     extractor.release.set()
     assert client.post("/api/sessions").status_code == 201
-    wait_for_distillation(backend)
-    loaded = backend._sessions.load(session.id)
-    assert any(row["type"] == "extraction_error" for row in loaded.records)
-    assert len(loaded.undistilled_messages()) == 3
-    backend._service.extractor = StaticExtractor(ExtractionResult(memories=[]))
-    assert backend._app_service.startup_catchup()["consolidated"] == 1
-    assert backend._app_service.startup_catchup()["consolidated"] == 0
+    path = job_path(backend._service.paths, "distillation", session.id)
+    wait_until(lambda: (read_job(path) or {}).get("failures"))
+    assert len(backend._sessions.load(session.id).undistilled_messages()) == 3
+    extractor.fail = False
+    wait_for_distillation(backend, session)
+    assert not backend._sessions.load(session.id).undistilled_messages()
 
 
-def test_shutdown_stops_background_publication_and_keeps_client_lock(client, backend):
+def test_shutdown_stops_background_publication_and_keeps_client_lock(client, backend, monkeypatch):
     session = seed_distillation(backend)
     extractor = GatedExtractor()
-    backend._service.extractor = extractor
+    monkeypatch.setattr(distillation, "ask", extractor.ask)
     assert client.post("/api/sessions").status_code == 201
     try:
         assert extractor.entered.wait(timeout=3)
 
+        stop = backend._background._stop
         def release_on_shutdown():
-            assert backend._distill_stop.wait(timeout=3)
-            assert backend._client_lock.locked
+            assert stop.wait(timeout=5)
+            assert backend._client_lock.runtime_lock.locked
             assert client.post("/api/sessions").status_code == 503
             extractor.release.set()
 
@@ -1006,7 +1226,7 @@ def test_shutdown_stops_background_publication_and_keeps_client_lock(client, bac
             future.result(timeout=5)
     finally:
         extractor.release.set()
-    assert not backend._client_lock.locked
+    assert not backend._client_lock.runtime_lock.locked
     assert len(backend._sessions.load(session.id).undistilled_messages()) == 3
 
 
@@ -1019,28 +1239,28 @@ def test_chat_rejects_stale_empty_view(client, backend):
     assert not backend._sessions.load(session.id).messages
 
 
-def test_stopping_runtime_catchup_does_not_write_after_release(backend):
+def test_new_backend_resumes_jobs_after_shutdown(backend, monkeypatch):
     session = seed_distillation(backend)
+    extractor = GatedExtractor()
+    monkeypatch.setattr(distillation, "ask", extractor.ask)
     backend._conversation.switch(None)
-    extractor = GatedExtractor(fail=True)
-    backend._service.extractor = extractor
-
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        catchup = pool.submit(backend._runtime.consolidate_pending)
-        try:
-            assert extractor.entered.wait(timeout=3)
-            shutdown = pool.submit(backend._runtime.stop_catchup)
-            assert backend._runtime._catchup_stopped.wait(timeout=3)
-            assert not shutdown.done()
-        finally:
-            extractor.release.set()
-        shutdown.result(timeout=5)
-        catchup.result(timeout=5)
-
-    loaded = backend._sessions.load(session.id)
-    assert len(loaded.undistilled_messages()) == 3
-    assert not any(row["type"] == "extraction_error" for row in loaded.records)
-    assert backend._runtime.consolidate_pending()["scanned"] == 0
+    assert extractor.entered.wait(5)
+    stop = backend._background._stop
+    def release_after_stop():
+        assert stop.wait(5)
+        extractor.release.set()
+    with ThreadPoolExecutor() as pool:
+        releasing = pool.submit(release_after_stop)
+        backend.shutdown()
+        releasing.result(5)
+    assert len(backend._sessions.load(session.id).undistilled_messages()) == 3
+    successor = WebBackend(service=backend._service)
+    try:
+        successor.startup()
+        wait_for_distillation(successor, session)
+        assert not successor._sessions.load(session.id).undistilled_messages()
+    finally:
+        successor.shutdown()
 
 
 def test_empty_view_accepts_first_message_after_new_and_refresh(client, backend):

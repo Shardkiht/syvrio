@@ -15,9 +15,7 @@ class Case:
     name: str
     text: str = "合成事实"
     expected: str = "admitted"
-    confidence: float = 0.95
-    sensitive: bool = False
-    kind: str = "add"
+    question: str | None = None
     context: dict | None = None
     seed: str | None = None
 
@@ -25,77 +23,60 @@ class Case:
 # 固定模型输出，评估解析、存储与裁决；不冒充真实模型的语义抽取准确率。
 CASES = [
     Case("明确事实"),
-    Case("低置信候选", expected="queued", confidence=0.5),
-    Case("敏感候选", expected="queued", sensitive=True),
-    Case("更新候选", expected="queued", kind="update"),
-    Case("冲突候选", expected="queued", kind="conflict"),
+    Case("重要歧义", expected="queued", question="是哪一种偏好？"),
+    Case("普通私人事实", text="去年购入一辆合成单车"),
+    Case("变化待澄清", expected="queued", question="这一变化从何时开始？"),
+    Case("资料归属存疑", expected="queued", question="这段经历是谁的？"),
     Case("完全重复", text="喜欢纸质阅读", seed="喜欢纸质阅读", expected="duplicates"),
-    Case("空白重复", text="喜欢 纸质 阅读", seed="喜欢纸质阅读", expected="duplicates"),
-    Case("数字冲突", text="每周阅读 5 次", seed="每周阅读 2 次", expected="queued"),
-    Case("否定冲突", text="不喜欢纸质阅读", seed="喜欢纸质阅读", expected="queued"),
+    Case("不同事实", text="喜欢阅读纸质杂志", seed="喜欢纸质书"),
+    Case("数字冲突", text="每周阅读 5 次", seed="每周阅读 2 次", expected="queued", question="哪段时间？"),
+    Case("否定冲突", text="不喜欢纸质阅读", seed="喜欢纸质阅读", expected="queued", question="以前还是现在？"),
     Case("凭据拦截", text="密码是 synthetic-only", expected="blocked"),
     Case("年份精度", context={"event_time": "2024"}),
     Case("月份精度", context={"event_time": "2024-06"}),
     Case("日期精度", context={"event_time": "2024-02-29"}),
     Case("无效日期", context={"event_time": "2023-02-29"}, expected="invalid"),
-    Case("未知相对时间", context={"time_text": "去年"}),
+    Case("未知相对时间", text="去年去过合成展馆"),
     Case("生效区间", context={"valid_from": "2024-06", "valid_to": "2025"}),
     Case("倒置区间", context={"valid_from": "2025", "valid_to": "2024"}, expected="invalid"),
-    Case("事件地点", context={"location": "合成展馆", "location_kind": "event"}),
-    Case("居住地点", context={"location": "合成居所", "location_kind": "residence"}),
-    Case("缺少地点类型", context={"location": "合成展馆"}, expected="invalid"),
-    Case(
-        "当时情绪",
-        context={"emotion": "当时开心", "emotion_at": "event", "emotion_source": "explicit"},
-    ),
-    Case(
-        "当前表达",
-        context={
-            "emotion": "如今想起感到遗憾",
-            "emotion_at": "expression",
-            "emotion_source": "explicit",
-        },
-    ),
+    Case("事件地点", context={"location": "合成展馆"}),
+    Case("居住地点", context={"location": "合成居所"}),
+    Case("空白地点", context={"location": "  "}, expected="invalid"),
+    Case("事件当时", context={"emotion": {"event": "很开心"}}),
+    Case("回想时", context={"emotion": {"recollection": "感到遗憾"}}),
+    Case("两个时点", context={"emotion": {"event": "紧张", "recollection": "释然"}}),
+    Case("情绪时点未知", context={"emotion": {"unspecified": "五味杂陈"}}),
     Case(
         "推断情绪拒绝",
-        context={"emotion": "似乎不开心", "emotion_source": "inferred"},
+        context={"emotion": {"inferred": "似乎不开心"}},
         expected="invalid",
     ),
     Case(
         "上下文凭据拦截",
-        context={"location": "密码是 synthetic-only", "location_kind": "event"},
+        context={"location": "密码是 synthetic-only"},
         expected="blocked",
     ),
 ]
 
 
 def run_case(case: Case, vault: Path) -> str | None:
-    candidate = {
-        "text": case.text,
-        "topic": "synthetic",
-        "confidence": case.confidence,
-        "kind": case.kind,
-        "sensitive": case.sensitive,
-        "context": case.context,
-    }
+    service = MemoryService(Config(vault=vault, retrieval=RetrievalConfig(method="keyword")))
+    seed = service.note(case.seed, topic="synthetic") if case.seed else None
+    candidate = {"text": case.text, "topic": "synthetic", "context": case.context,
+                 "question": case.question, "related_ids": [seed.id] if seed and case.question else []}
     try:
         extraction = parse_extraction(json.dumps({"memories": [candidate]}, ensure_ascii=False))
     except ValueError as exc:
         return None if case.expected == "invalid" else f"解析失败：{exc}"
     if case.expected == "invalid":
         return "应拒绝无效上下文，但解析成功"
-    service = MemoryService(
-        Config(vault=vault, retrieval=RetrievalConfig(method="keyword")),
-        extractor=StaticExtractor(extraction),
-    )
-    seed = service.store.append("synthetic", case.seed) if case.seed else None
-    result = service.memorize(case.text, source="synthetic-eval")
+    result = service.import_text(case.text, extractor=StaticExtractor(extraction))
     counts = {
         key: len(getattr(result, key)) for key in ("admitted", "queued", "duplicates", "blocked")
     }
     if counts.get(case.expected) != 1 or sum(counts.values()) != 1:
         return f"预期 {case.expected}，实际 {counts}"
-    if seed and case.expected == "queued" and result.queued[0].conflict_with != seed.id:
+    if seed and case.expected == "queued" and seed.id not in result.queued[0].related_ids:
         return "冲突来源 ID 丢失"
     if result.admitted:
         entry = service.store.find(result.admitted[0].id)
@@ -124,45 +105,44 @@ def main() -> int:
 
 def run_contextual_eval(vault: Path) -> dict:
     """小型合成对照，比较不带上下文的关键词检索与明确时间/地点/情绪条件。"""
-    from syvrio.memory.models import MemoryContext
+    from syvrio.memory.models import MemoryContext, MemoryDraft
 
     service = MemoryService(Config(vault=vault, retrieval=RetrievalConfig(method="keyword")))
     old = service.store.append(
         "preferences", "合成偏好早期状态", context=MemoryContext(valid_from="2020-01-01")
     )
-    new = service.evolve(old.id, "合成偏好后期状态", "2024-01-01")
+    new = service.transition(old.id, MemoryDraft(topic="preferences", text="合成偏好后期状态",
+                              context=MemoryContext(valid_from="2024-01-01")), previous_valid_to="2023")
     target = service.store.append(
         "events",
         "合成展览活动",
         context=MemoryContext(
             event_time="2024-06",
             location="合成展馆甲",
-            location_kind="event",
-            emotion="期待",
-            emotion_source="explicit",
+            emotion={"event": "期待", "recollection": "怀念"},
         ),
     )
-    service.store.append(
+    other = service.store.append(
         "events",
         "合成展览活动",
         context=MemoryContext(
             event_time="2025-06",
             location="合成展馆乙",
-            location_kind="event",
-            emotion="遗憾",
-            emotion_source="explicit",
+            emotion={"unspecified": "遗憾"},
         ),
     )
     cases = [
-        ("合成偏好", {"as_of": "2022-01-01"}, old.id),
-        ("合成偏好", {}, new.id),
-        ("合成展览", {"date_from": "2024", "date_to": "2024"}, target.id),
+        ("合成偏好", {"time_range": {"start": "2022", "end": "2022"}}, old.id),
+        ("合成偏好", {"time_range": {"start": "2025"}}, new.id),
+        ("合成展览", {"time_range": {"start": "2024", "end": "2024"}}, target.id),
         ("合成展览", {"location": "合成展馆甲"}, target.id),
         ("合成展览", {"emotion": "期待"}, target.id),
+        ("合成展览", {"emotion": "怀念"}, target.id),
+        ("合成展览", {"emotion": "遗憾"}, other.id),
     ]
     result = {"cases": len(cases)}
     for name in ("baseline", "contextual"):
-        recall, reciprocal = 0.0, 0.0
+        ranks = []
         for query, filters, expected in cases:
             hits = (
                 service.retriever.search(query, 5)
@@ -170,9 +150,13 @@ def run_contextual_eval(vault: Path) -> dict:
                 else service.recall(query, 5, **filters)
             )
             ids = [hit.id for hit in hits]
-            recall += float(bool(ids) and ids[0] == expected)
-            reciprocal += 1 / (ids.index(expected) + 1) if expected in ids else 0
-        result[name] = {"Recall@1": recall / len(cases), "MRR@5": reciprocal / len(cases)}
+            ranks.append(ids.index(expected) + 1 if expected in ids else 0)
+        result[name] = {
+            "Recall@1": ranks.count(1) / len(ranks),
+            "Hit@3": sum(0 < rank <= 3 for rank in ranks) / len(ranks),
+            "Hit@5": sum(0 < rank <= 5 for rank in ranks) / len(ranks),
+            "MRR@5": sum(1 / rank for rank in ranks if rank) / len(ranks),
+        }
     return result
 
 

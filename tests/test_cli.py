@@ -12,6 +12,44 @@ pytestmark = pytest.mark.cli
 runner = CliRunner()
 
 
+@pytest.fixture(autouse=True)
+def resident_transport(monkeypatch):
+    """Exercise the same authenticated HTTP routes with model fixtures in this process."""
+    from contextlib import ExitStack
+
+    from fastapi.testclient import TestClient
+
+    from syvrio.app.web.backend import WebBackend
+    from syvrio.app.web.server import create_app
+    from syvrio.backend.client import ResidentClient
+    from syvrio.memory.service import get_service
+
+    with ExitStack() as instances:
+        clients = {}
+
+        class LocalClient(ResidentClient):
+            def __init__(self, config, vault):
+                service = get_service(config, vault)
+                self.config, self.paths = service.config, service.paths
+                api = create_app(WebBackend(service=service), resident_token="fixture")
+                self.transport = instances.enter_context(TestClient(api, base_url="http://localhost"))
+                self.transport.headers.update({"X-Syvrio-Token": "fixture", "X-Syvrio-View": "cli-test"})
+
+            def request(self, method, path, **kwargs):
+                response = self.transport.request(method, path, **kwargs)
+                self._check(response)
+                return response.json() if response.content else None
+
+        def use(config, vault):
+            key = (config, vault)
+            if key not in clients:
+                clients[key] = LocalClient(config, vault)
+            return clients[key]
+
+        monkeypatch.setattr("syvrio.app.cli._service", use)
+        yield
+
+
 def invoke(args):
     return runner.invoke(app, args)
 
@@ -127,8 +165,6 @@ def test_init_note_recall_commit(tmp_path):
             "喝咖啡偏好清淡风味",
             "--topic",
             "preferences",
-            "--title",
-            "偏好",
             "--config",
             str(config),
         ]
@@ -161,26 +197,26 @@ def test_init_note_recall_commit(tmp_path):
     assert "memory:" in result.output
 
 
-def test_note_duplicate_fails(tmp_path):
+def test_explicit_notes_are_not_deduplicated_by_text(tmp_path):
     config = tmp_path / "syvrio.toml"
     vault = tmp_path / "vault"
     invoke(["init", "--vault", str(vault), "--config", str(config)])
     first = invoke(["note", "同一条事实", "--config", str(config)])
     assert first.exit_code == 0
     second = invoke(["note", "同一条事实", "--config", str(config)])
-    assert second.exit_code == 1
-    assert "已存在" in second.output
+    assert second.exit_code == 0, second.output
+    assert "已记录" in second.output
 
 
-def test_memorize_without_api_key_reports_hint(tmp_path, monkeypatch):
+def test_explicit_memorize_works_without_model_key(tmp_path, monkeypatch):
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     config = tmp_path / "syvrio.toml"
     vault = tmp_path / "vault"
     invoke(["init", "--vault", str(vault), "--config", str(config)])
 
     result = invoke(["memorize", "一段对话", "--config", str(config)])
-    assert result.exit_code == 1
-    assert "DEEPSEEK_API_KEY" in result.output
+    assert result.exit_code == 0, result.output
+    assert "已记录" in result.output
 
 
 def test_import_without_api_key_reports_hint(tmp_path, monkeypatch):
@@ -206,9 +242,10 @@ def test_import_dry_run_then_apply(tmp_path, monkeypatch, suffix):
         def __init__(self, config, topics=None):
             self.topics = topics or []
 
-        def extract(self, text):
+        def extract(self, text, evidence):
+            assert "memories" in evidence
             return ExtractionResult(
-                memories=[Candidate(text="咖啡偏好清淡风味", topic="preferences", confidence=0.95)]
+                memories=[Candidate(text="咖啡偏好清淡风味", topic="preferences")]
             )
 
     monkeypatch.setattr(service_module, "ImportExtractor", FakeImportExtractor)
@@ -242,19 +279,19 @@ def test_cli_correct_and_forget(tmp_path):
     service.init_vault()
     entry = service.note("旧表述：住在城西", topic="housing")
 
-    result = invoke(["correct", entry.id, "新表述：住在滨江", "--vault", str(vault)])
+    result = invoke(["correct", entry.id, "新表述：住在滨江", "--topic", "housing", "--vault", str(vault)])
     assert result.exit_code == 0, result.output
     assert "已更正" in result.output
-    assert service.store.find(entry.id).status == "superseded"
+    assert service.store.find(entry.id).status == "deprecated"
     assert service.store.has_text("新表述：住在滨江")
 
     active = service.store.entries(topic="housing")
     assert len(active) == 1
-    result = invoke(["forget", active[0].id, "--reason", "测试删除", "--vault", str(vault)])
+    result = invoke(["deprecate", active[0].id, "--vault", str(vault)])
     assert result.exit_code == 0, result.output
-    assert "已删除" in result.output
+    assert "已弃用" in result.output
     assert service.store.entries(topic="housing") == []
-    assert service.store.find(active[0].id).status == "deleted"
+    assert service.store.find(active[0].id).status == "deprecated"
 
 
 def test_cli_correct_rejects_inactive_entry(tmp_path):
@@ -268,11 +305,11 @@ def test_cli_correct_rejects_inactive_entry(tmp_path):
     service = MemoryService(config, extractor=StaticExtractor(ExtractionResult(memories=[])))
     service.init_vault()
     entry = service.note("一条记录", topic="misc")
-    service.forget(entry.id)
+    service.deprecate(entry.id)
 
-    result = invoke(["correct", entry.id, "试图更正已删除的记忆", "--vault", str(vault)])
+    result = invoke(["correct", entry.id, "试图更正已弃用的记忆", "--topic", "misc", "--vault", str(vault)])
     assert result.exit_code == 1
-    assert "不能更正" in result.output
+    assert "active memory" in result.output
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows redirected stream encoding")

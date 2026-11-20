@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
+
 import numpy as np
 import pytest
 
@@ -80,6 +83,22 @@ def test_incremental_sync_embeds_only_new_entries(tmp_path):
     store.append("career", "在找后端工作")
     retriever.search("工作", 3)
     assert len(embedder.passages) == 3
+
+
+def test_concurrent_queries_share_one_complete_vector_index(tmp_path):
+    store = seeded_store(tmp_path)
+    embedder = FakeEmbedder(GROUPS)
+    retriever = VectorRetriever(store, embedder)
+    start = Barrier(4)
+
+    def search(query):
+        start.wait(timeout=10)
+        return retriever.search(query)[0].topic
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        topics = list(pool.map(search, ["住房", "咖啡"] * 2))
+    assert topics == ["memories/general/housing.md", "memories/general/preferences.md"] * 2
+    assert len(embedder.passages) == 2
 
 
 def test_cache_persists_across_instances(tmp_path):
@@ -169,7 +188,7 @@ def test_search_ignores_deleted_entries(tmp_path):
     retriever = VectorRetriever(store, FakeEmbedder(GROUPS))
     assert retriever.search("后端", 3)
 
-    store.set_status(entry.id, "deleted")
+    store.set_status(entry.id, "deprecated")
     assert all(hit.id != entry.id for hit in retriever.search("后端", 3))
 
 
@@ -318,7 +337,7 @@ def test_field_index_respects_token_boundaries_and_longest_labels(tmp_path):
     assert not any(hit.matched_field for hit in keyword.search("SPINNING"))
     assert keyword.search("Find my pin")[0].id == latin.id
 
-    store.set_status(long.id, "deleted")
+    store.set_status(long.id, "deprecated")
     assert not any(hit.id == long.id for hit in keyword.search("备份卷标"))
 
 
@@ -364,11 +383,10 @@ def test_embedding_cache_rebuilds_changed_short_fact_only(tmp_path):
         vector.cache_path,
         model=np.array(embedder.model_id),
         ids=np.array([short.id, long.id]),
-        hashes=np.array([text_hash(short.index_text), text_hash(long.index_text)]),
+        hashes=np.array([text_hash("passage including a topic title"), text_hash(long.text)]),
         vectors=np.array([[1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]]),
     )
-    assert short.embedding_text != short.index_text
-    assert "合成人物资料" in short.embedding_text
+    assert short.embedding_text == short.text
     assert long.embedding_text == long.index_text
     assert vector.search("姓名")[0].id == short.id
     assert embedder.passages == [short.embedding_text]
@@ -383,7 +401,7 @@ def test_embedding_cache_rebuilds_changed_short_fact_only(tmp_path):
     embedder.passages.clear()
     vector.sync()
     updated = store.find(short.id)
-    assert embedder.passages == [updated.embedding_text]
+    assert embedder.passages == []
     assert updated.raw_markdown == short.raw_markdown
 
 
@@ -476,7 +494,9 @@ def test_init_vault_preserves_user_gitignore_without_final_newline(tmp_path):
 
     service.init_vault()
 
-    assert gitignore.read_bytes() == b"*.log"
+    assert gitignore.read_bytes() == b"*.log\n/attachments/\n"
+    service.init_vault()
+    assert gitignore.read_bytes() == b"*.log\n/attachments/\n"
 
 
 def test_sync_refuses_duplicate_entry_ids_across_topics(tmp_path):
@@ -489,7 +509,8 @@ def test_sync_refuses_duplicate_entry_ids_across_topics(tmp_path):
     housing = store.topic_path("housing")
     housing.write_text(
         render_record(
-            "在找市区的房子", Core(id="mem-dup", status="active", source="chat", confidence=1.0)
+            Core(id="mem-dup", status="active", text="在找市区的房子"),
+            extensions=[("recorded_at", "2026-01-01T00:00:00Z")],
         ),
         encoding="utf-8",
     )

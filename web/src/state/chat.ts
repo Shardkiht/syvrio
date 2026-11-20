@@ -1,4 +1,4 @@
-import type { HistoryResponse, StreamEvent } from '../types';
+import type { HistoryItem, HistoryResponse, StreamEvent } from '../types';
 
 /** Ordered segments keep Thinking / Tool / Result / Thinking / Answer intact. */
 export type Segment =
@@ -26,7 +26,7 @@ export type Segment =
   | { kind: 'event'; id: string; text: string };
 
 export type ChatMessage =
-  | { id: string; role: 'user'; content: string; at?: string }
+  | { id: string; savedId?: string; role: 'user'; content: string; at?: string; attachments?: HistoryItem['attachments'] }
   | {
       id: string;
       role: 'assistant';
@@ -58,12 +58,12 @@ export const initialChatState: ChatState = {
   progress: '',
 };
 
-export function startTurn(state: ChatState, text: string, sessionId: string | null): ChatState {
+export function startTurn(state: ChatState, text: string, sessionId: string | null, savedId?: string): ChatState {
   return {
     ...state,
     messages: [
       ...state.messages,
-      { id: nextId('u'), role: 'user', content: text },
+      { id: nextId('u'), role: 'user', content: text, savedId },
       { id: nextId('a'), role: 'assistant', segments: [], streaming: true, interrupted: false },
     ],
     busy: true,
@@ -139,9 +139,16 @@ export function reduceChat(state: ChatState, event: StreamEvent): ChatState {
     case 'start':
       return { ...base, turnId: event.turn_id ?? null, progress: 'Thinking' };
 
+    case 'message_saved': {
+      if (!event.message_id) return base;
+      const user = [...base.messages].reverse().find((message) => message.role === 'user');
+      return { ...base, messages: base.messages.map((message) =>
+        message === user ? { ...message, savedId: event.message_id } : message) };
+    }
+
     case 'message_inserted': {
       const completed = finishLive(base, (live) => ({ ...live, streaming: false }));
-      return { ...startTurn(completed, event.text || '', sessionId), turnId: base.turnId };
+      return { ...startTurn(completed, event.text || '', sessionId, event.message_id), turnId: base.turnId };
     }
 
     case 'progress':
@@ -326,7 +333,7 @@ export function loadHistory(state: ChatState, history: HistoryResponse): ChatSta
   for (let index = 0; index < history.items.length; index += 1) {
     const item = history.items[index];
     if (item.role === 'user') {
-      messages.push({ id: item.id || nextId('u'), role: 'user', content: item.content, at: item.at });
+      messages.push({ id: item.id || nextId('u'), savedId: item.id, role: 'user', content: item.content, at: item.at, attachments: item.attachments });
     } else if (item.role === 'assistant') {
       // Tool results are separate journal records that follow their call. Fold
       // them back into the call so the transcript shows one entry per call

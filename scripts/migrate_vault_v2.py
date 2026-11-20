@@ -20,9 +20,14 @@ import yaml
 
 from syvrio.agent.session import SESSION_ID_RE
 from syvrio.infra.paths import SyvrioPaths
-from syvrio.memory.inference import evidence_v2
 from syvrio.memory.legacy import FRONTMATTER_RE, parse_legacy_line
-from syvrio.memory.schema import Core, SchemaError, parse_document, render_record
+from syvrio.memory.legacy_schema import (
+    Core,
+    SchemaError,
+    evidence_v2,
+    parse_document,
+    render_record,
+)
 
 RECORDS = frozenset({"pending.jsonl", "resolved.jsonl", "audit.jsonl", "inferences.jsonl"})
 RUNTIME = {

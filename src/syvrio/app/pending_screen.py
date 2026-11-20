@@ -100,7 +100,7 @@ class PendingScreen(ModalScreen):
     def _show_detail(self) -> None:
         item = self._current()
         self.query_one("#pending-topic", Static).update(item.topic)
-        self.query_one("#pending-reason", Static).update(item.reason)
+        self.query_one("#pending-reason", Static).update("\n".join(filter(None, (item.question, ", ".join(item.related_ids)))))
         self.query_one("#pending-text", Static).update(item.text)
         self.query_one("#pending-detail-body", VerticalScroll).scroll_home(
             animate=False, immediate=True

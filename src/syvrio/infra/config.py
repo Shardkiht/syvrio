@@ -6,6 +6,7 @@ import os
 import re
 import sys
 import tomllib
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -19,13 +20,32 @@ CONTEXT_WINDOW_PRESETS = (100_000, 200_000, 400_000, 600_000)
 DEFAULT_CONTEXT_WINDOW = CONTEXT_WINDOW_PRESETS[0]
 DEFAULT_EMBEDDING_MODEL = "BAAI/bge-small-zh-v1.5"
 DEFAULT_EMBEDDING_BASE_URL = "https://api.siliconflow.cn/v1"
-SPARK_THINKING_MODES = ("enabled", "auto", "disabled")
+SPARK_THINKING_MODES = ("auto", "disabled", "enabled")
 CONFIG_FILENAME = "syvrio.toml"
 RECENT_MODEL_LIMIT = 5
 _TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 
 
 KEYRING_SERVICE = "syvrio"
+_keyring_error_reporter: Callable[[Exception], None] | None = None
+
+
+def set_keyring_error_reporter(reporter: Callable[[Exception], None] | None) -> None:
+    """Attach the active diagnostic sink without making configuration depend on logging."""
+    global _keyring_error_reporter
+    _keyring_error_reporter = reporter
+
+
+def _stored_key(env_name: str) -> str | None:
+    try:
+        import keyring
+
+        return keyring.get_password(KEYRING_SERVICE, env_name) or None
+    except Exception as error:
+        reporter = _keyring_error_reporter
+        if reporter is not None:
+            reporter(error)
+        return None
 
 
 class ConfigError(SyvrioError, ValueError):
@@ -84,18 +104,7 @@ class LLMConfig:
         env_value = os.environ.get(self.api_key_env)
         if env_value:
             return env_value
-        try:
-            import keyring
-
-            return keyring.get_password(KEYRING_SERVICE, self.api_key_env) or None
-        except Exception as exc:
-            # Degrading to "no key" misleads users into thinking none is stored;
-            # record once so the broken backend is attributable afterwards.
-            # Imported lazily: diagnostics imports this module at startup.
-            from .diagnostics import record_once
-
-            record_once("degraded.keyring", exc)
-            return None
+        return _stored_key(self.api_key_env)
 
 
 @dataclass(slots=True)
@@ -180,12 +189,7 @@ def read_api_key(env_name: str) -> str:
     value = os.environ.get(env_name, "").strip()
     if value:
         return value
-    try:
-        import keyring
-
-        return (keyring.get_password(KEYRING_SERVICE, env_name) or "").strip()
-    except Exception:
-        return ""
+    return (_stored_key(env_name) or "").strip()
 
 
 @dataclass(slots=True)

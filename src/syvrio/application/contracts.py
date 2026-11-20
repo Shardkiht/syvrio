@@ -7,8 +7,8 @@ from typing import Callable
 
 from ..agent.context import CompactionPhase
 from ..agent.runtime import AgentReply, ThinkingUpdate
-from ..agent.session import Session
 from ..memory.models import Inference, PendingItem
+from ..session import Session
 
 
 @dataclass(frozen=True)
@@ -55,7 +55,7 @@ class TurnCallbacks:
     on_progress: Callable[[str], None] | None = None
     on_session: Callable[[Session], None] | None = None
     on_user_message: Callable[[str], None] | None = None
-    on_inserted: Callable[[str], None] | None = None
+    on_inserted: Callable[[str, str], None] | None = None
     on_thinking: Callable[[ThinkingUpdate], None] | None = None
     # Outcome of the tool call whose display text arrives through ``on_event``
     # next; the Web stream needs it to label failures without a history reload.

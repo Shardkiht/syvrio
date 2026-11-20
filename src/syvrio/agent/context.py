@@ -5,9 +5,10 @@ from dataclasses import dataclass, field
 from typing import Callable, Literal
 
 from ..infra.config import ChatConfig
+from ..infra.diagnostics import record_event
 from ..infra.tokens import estimate_messages_tokens, estimate_tokens
 from ..llm import Summarizer
-from .session import Session, SessionStore, dated_message, new_message_id, transcript
+from ..session import Session, SessionStore, new_message_id, transcript
 
 SUMMARY_MAX_CHARS = 1200
 CompactionPhase = Literal["running", "done", "failed"]
@@ -18,7 +19,6 @@ class ContextPlan:
     messages: list[dict]
     compacted: bool = False
     evicted_records: int = 0
-    flushed: dict | None = None
     summary: str = ""
     estimated_tokens: int = 0
     events: list[str] = field(default_factory=list)
@@ -120,12 +120,12 @@ class ContextManager:
         config: ChatConfig,
         summarizer: Summarizer,
         sessions: SessionStore,
-        flush: Callable[[list[str], Session], dict] | None = None,
+        request_distillation: Callable[[str, str], None] | None = None,
     ):
         self.config = config
         self.summarizer = summarizer
         self.sessions = sessions
-        self.flush = flush
+        self.request_distillation = request_distillation
 
     @property
     def input_budget(self) -> int:
@@ -174,7 +174,6 @@ class ContextManager:
         total = base_tokens + estimate_tokens(summary_text) + records_tokens(history)
         compacted = False
         evicted_total = 0
-        flushed: dict | None = None
         events: list[str] = []
 
         if force or total > self.trigger_tokens:
@@ -187,7 +186,7 @@ class ContextManager:
                     on_compaction("running")
 
             try:
-                history, summary_text, evicted_total, flushed, events = self._compact(
+                history, summary_text, evicted_total, events = self._compact(
                     session, history, summary_text, base_tokens, force=force, on_start=begin
                 )
             except Exception:
@@ -223,7 +222,6 @@ class ContextManager:
             messages=messages,
             compacted=compacted,
             evicted_records=evicted_total,
-            flushed=flushed,
             summary=summary_text,
             estimated_tokens=estimate_messages_tokens(messages),
             events=events,
@@ -237,10 +235,9 @@ class ContextManager:
         base_tokens: int,
         force: bool,
         on_start: Callable[[], None],
-    ) -> tuple[list[dict], str, int, dict | None, list[str]]:
+    ) -> tuple[list[dict], str, int, list[str]]:
         events: list[str] = []
         evicted_total = 0
-        flushed: dict | None = None
         keep_tokens = self.config.keep_recent_tokens
         if force:
             history_tokens = records_tokens(history)
@@ -261,21 +258,6 @@ class ContextManager:
                 and record.get("role") == "user"
                 and record.get("id") in pending_ids
             ]
-            distilled_ids: list[str] = []
-            if user_records and self.flush:
-                try:
-                    flushed = self.flush(
-                        [dated_message(record) for record in user_records], session
-                    )
-                except Exception as exc:
-                    flushed = {"error": str(exc)}
-                if flushed.get("error"):
-                    events.append(
-                        f"Memory distillation during compaction failed: {flushed['error']}"
-                    )
-                elif not flushed.get("deferred"):
-                    distilled_ids = [record["id"] for record in user_records]
-
             summary_text = self.summarizer.summarize(
                 summary_text,
                 transcript(evicted),
@@ -294,11 +276,17 @@ class ContextManager:
                     "id": new_message_id(),
                     "content": summary_text,
                     "covered_records": covered,
-                    "distilled_ids": distilled_ids,
+                    "distilled_ids": [],
                     "records": cutoff,
                     "tokens": estimate_tokens(summary_text),
                 },
             )
+            if user_records and self.request_distillation:
+                try:
+                    self.request_distillation(session.id, user_records[-1]["id"])
+                except Exception as exc:
+                    record_event("catchup.failed", exc)
+                    events.append("Memory distillation request deferred until backend recovery.")
             history = history[cutoff:]
             evicted_total += cutoff
             events.append(
@@ -308,7 +296,7 @@ class ContextManager:
                 break
             keep_tokens = max(400, keep_tokens // 2)
 
-        return history, summary_text, evicted_total, flushed, events
+        return history, summary_text, evicted_total, events
 
     def _fits(self, history: list[dict], summary_text: str, base_tokens: int) -> bool:
         total = base_tokens + estimate_tokens(summary_text) + records_tokens(history)

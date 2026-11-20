@@ -14,11 +14,10 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from syvrio.infra.files import atomic_write
 from syvrio.infra.locking import client_instance_lock, git_operation_lock, vault_write_lock
 from syvrio.infra.paths import SyvrioPaths
-from syvrio.memory.inference import evidence_v2, source_fingerprint
-from syvrio.memory.schema import _span_code, parse_document
-from syvrio.memory.store import atomic_write
+from syvrio.memory.legacy_schema import _span_code, evidence_v2, parse_document, source_fingerprint
 from syvrio.time import parse_timestamp, serialize_timestamp
 
 RECORD_FIELDS = {

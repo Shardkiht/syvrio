@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { CommandDialog } from './CommandUI';
 import { api } from '../api/client';
+import { thinkingOptions } from '../state/commands';
 import { SHORTCUT_HELP } from '../state/shortcuts';
 import type { ThemeMode } from '../state/theme';
-import type { CommandResponse, HealthResponse } from '../types';
+import type { CommandResponse, HealthResponse, ModelSearchResponse } from '../types';
 import { ProvidersSection } from './ProvidersSection';
 
 type SectionKey = 'model' | 'appearance' | 'thinking' | 'context' | 'providers' | 'about';
@@ -23,13 +24,6 @@ const THEMES: { key: ThemeMode; label: string; description: string }[] = [
   { key: 'dark', label: 'Dark', description: 'Dim background, light text' },
 ];
 
-interface ModelOption {
-  provider: string;
-  model: string;
-  label?: string;
-  current?: boolean;
-}
-
 interface ThinkState {
   current: string;
   options: string[];
@@ -44,28 +38,12 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' ? (value as Record<string, unknown>) : null;
 }
 
-/** Never render an option that the server did not actually send. */
-function readModels(result: CommandResponse): ModelOption[] {
-  const rows = asRecord(result.data)?.options;
-  if (!Array.isArray(rows)) return [];
-  return rows.flatMap((row) => {
-    const item = asRecord(row);
-    if (!item || typeof item.provider !== 'string' || typeof item.model !== 'string') return [];
-    return [{
-      provider: item.provider,
-      model: item.model,
-      label: typeof item.label === 'string' ? item.label : undefined,
-      current: item.current === true,
-    }];
-  });
-}
-
 function readThink(result: CommandResponse): ThinkState | null {
   const data = asRecord(result.data);
   if (!data || typeof data.current !== 'string' || !Array.isArray(data.options)) return null;
   return {
     current: data.current,
-    options: data.options.filter((value): value is string => typeof value === 'string'),
+    options: thinkingOptions(data.options),
   };
 }
 
@@ -99,7 +77,7 @@ export function SettingsPanel({
   initialSection?: SectionKey;
 }) {
   const [section, setSection] = useState<SectionKey>(initialSection);
-  const [models, setModels] = useState<ModelOption[]>([]);
+  const [catalog, setCatalog] = useState<(ModelSearchResponse & { query: string }) | null>(null);
   const [think, setThink] = useState<ThinkState | null>(null);
   const [context, setContext] = useState<ContextState | null>(null);
   const [customContext, setCustomContext] = useState('');
@@ -107,25 +85,38 @@ export function SettingsPanel({
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [loadingModel, setLoadingModel] = useState(true);
-  const [customModel, setCustomModel] = useState('');
+  const [modelQuery, setModelQuery] = useState('');
+  const searchRequest = useRef<AbortController | null>(null);
+  const query = modelQuery.trim();
 
   const loadModel = useCallback(async (refresh = false) => {
+    searchRequest.current?.abort();
+    const request = new AbortController();
+    searchRequest.current = request;
     setLoadingModel(true);
     setError('');
     try {
-      const result = await api.runCommand({
-        line: refresh ? '/model refresh' : '/model',
-        session_id: null,
-        confirmed: false,
-      });
-      setModels(readModels(result));
-      if (result.status === 'error' || result.status === 'busy') setError(result.message);
+      const result = await api.searchModels(query, refresh, request.signal);
+      if (!request.signal.aborted) setCatalog({ ...result, query });
     } catch (failure) {
-      setError(failure instanceof Error ? failure.message : 'Could not load models');
+      if (!request.signal.aborted) {
+        setError(failure instanceof Error ? failure.message : 'Could not load models');
+        setCatalog(null);
+      }
     } finally {
-      setLoadingModel(false);
+      if (!request.signal.aborted) setLoadingModel(false);
     }
-  }, []);
+  }, [query]);
+
+  useEffect(() => {
+    if (section !== 'model') return;
+    setLoadingModel(true);
+    const timer = window.setTimeout(() => void loadModel(), query ? 160 : 0);
+    return () => {
+      window.clearTimeout(timer);
+      searchRequest.current?.abort();
+    };
+  }, [section, query, loadModel, health?.provider, health?.model]);
 
   const loadThinking = useCallback(async () => {
     try {
@@ -145,9 +136,8 @@ export function SettingsPanel({
   }, []);
 
   useEffect(() => {
-    void loadModel();
     void loadThinking();
-  }, [loadModel, loadThinking]);
+  }, [loadThinking]);
 
   const run = async (line: string, after?: () => void) => {
     setBusy(true);
@@ -179,14 +169,14 @@ export function SettingsPanel({
   const validCustomContext = /^\d+$/.test(customContext.trim())
     && Number.isSafeInteger(customContextValue) && customContextValue >= 2_000;
 
-  const currentModel = models.find((item) => item.current);
+  const results = catalog?.query === query ? catalog : null;
   const currentLabel = health ? `${health.provider}/${health.model}` : '(loading)';
 
   return (
     <CommandDialog title="Settings" className="settings-dialog"
       testId="settings-overlay" onClose={onClose}>
         <div className="settings-head">
-          <div className="confirm-title">Settings</div>
+          <h2 className="confirm-title">Settings</h2>
           <button type="button" onClick={onClose} aria-label="Close settings">Close</button>
         </div>
         <div className="settings-layout">
@@ -238,7 +228,7 @@ export function SettingsPanel({
                 <p className="settings-hint">
                   Active: <strong data-testid="settings-current-model">{currentLabel}</strong>
                 </p>
-                <div className="providers-actions">
+                <div className="providers-actions model-toolbar">
                   <button
                     type="button"
                     disabled={busy || loadingModel}
@@ -246,10 +236,22 @@ export function SettingsPanel({
                   >
                     Refresh model list
                   </button>
+                  <input
+                    type="search"
+                    className="model-search"
+                    aria-label="Search models by name"
+                    aria-controls="settings-model-list"
+                    placeholder="Search model name"
+                    autoComplete="off"
+                    maxLength={512}
+                    spellCheck={false}
+                    value={modelQuery}
+                    onChange={event => setModelQuery(event.target.value)}
+                  />
                 </div>
-                <div className="option-list" data-testid="settings-models">
-                  {loadingModel && !models.length && <div className="empty">Loading models…</div>}
-                  {models.map((item) => (
+                <div className="option-list" id="settings-model-list" data-testid="settings-models">
+                  {loadingModel && !results && <div className="empty" role="status">Searching models…</div>}
+                  {results?.items.map((item) => (
                     <button
                       key={`${item.provider}/${item.model}`}
                       type="button"
@@ -257,43 +259,20 @@ export function SettingsPanel({
                       disabled={busy}
                       aria-pressed={item.current}
                       data-testid={`model-${item.provider}-${item.model}`}
-                      onClick={() => void run(`/model ${item.provider}/${item.model}`, () => {
-                        void loadModel();
-                      })}
+                      onClick={() => void run(`/model ${item.provider}/${item.model}`)}
                     >
                       <span>{item.label || `${item.provider}/${item.model}`}</span>
                       <small>{item.current ? 'current' : item.provider}</small>
                     </button>
                   ))}
-                  {!loadingModel && !models.length && (
-                    <div className="empty">
-                      No model list cached. Refresh, or switch by ID below.
+                  {!loadingModel && results && results.items.length === 0 && (
+                    <div className="empty" role="status">
+                      {query ? 'No matching models.' : 'No models available.'}
                     </div>
                   )}
-                </div>
-                <div className="provider-form">
-                  <label>
-                    Switch by model ID
-                    <input
-                      type="text"
-                      value={customModel}
-                      onChange={(event) => setCustomModel(event.target.value)}
-                      placeholder="model-name"
-                      data-testid="settings-custom-model"
-                    />
-                  </label>
-                  <div className="confirm-actions">
-                    <button
-                      type="button"
-                      disabled={busy || !customModel.trim() || !(currentModel?.provider ?? health?.provider)}
-                      onClick={() => void run(
-                        `/model ${currentModel?.provider ?? health?.provider}/${customModel.trim()}`,
-                        () => { setCustomModel(''); void loadModel(); },
-                      )}
-                    >
-                      Apply
-                    </button>
-                  </div>
+                  {results && results.unavailable_providers.length > 0 && (
+                    <p className="settings-hint">Model catalog unavailable for {results.unavailable_providers.join(', ')}.</p>
+                  )}
                 </div>
               </div>
             )}
@@ -302,8 +281,8 @@ export function SettingsPanel({
               <div className="settings-section" data-testid="settings-thinking">
                 <div className="settings-section-title">Thinking</div>
                 <p className="settings-hint">
-                  Reasoning effort for the active model. “default” leaves the
-                  provider default untouched.
+                  Reasoning effort for the active model.
+                  {think?.options.includes('') && ' “default” uses the provider setting.'}
                 </p>
                 <div className="option-list">
                   {!think && <div className="empty">This model exposes no reasoning options.</div>}
@@ -368,10 +347,7 @@ export function SettingsPanel({
 
             {section === 'providers' && (
               <ProvidersSection
-                onChanged={() => {
-                  onChanged();
-                  void loadModel();
-                }}
+                onChanged={onChanged}
                 onNotice={setNotice}
               />
             )}

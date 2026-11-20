@@ -181,22 +181,12 @@ class MemoryUseCases:
     # ---------- Profile ----------
 
     def profile(self) -> ProfileSnapshot:
-        summary = self.service.reflection.profile_summary()
+        summary = self.service.profile.profile_summary()
         if summary is None:
-            return ProfileSnapshot(
-                body=(
-                    "No profile summary yet. Save preferences, goals or habits, then run "
-                    "/profile refresh to generate a cross-topic summary.\n\n"
-                    "The summary is a derived view over valid facts; source facts stay unchanged."
-                ),
-                status="Not generated",
-            )
+            return ProfileSnapshot(body="Run /dream to generate a profile.", status="Not generated")
         return ProfileSnapshot(
             body=summary.text,
-            status="Outdated · Source facts changed; run /profile refresh."
-            if summary.stale
-            else "Up to date",
-            stale=summary.stale,
+            status=f"Last generated {summary.generated_at}" if summary.generated_at else "Generated profile",
             generated_at=summary.generated_at,
             fact_count=summary.fact_count,
             unique_count=summary.unique_count,
