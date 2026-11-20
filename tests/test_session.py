@@ -339,8 +339,69 @@ def test_delete_session_file(tmp_path):
     assert store.delete(session.id) is False
 
 
+def test_permanent_delete_removes_only_this_sessions_uploaded_copies(tmp_path, monkeypatch):
+    from dataclasses import asdict
+    from pathlib import Path
+
+    from syvrio.infra.attachments import AttachmentBatch
+
+    store, first = make_store(tmp_path / "vault")
+    second = store.create()
+    source = tmp_path / "notes.txt"
+    source.write_bytes(b"same document in two sessions")
+    for session in (first, second):
+        mid = new_message_id()
+        with source.open("rb") as stream:
+            batch = AttachmentBatch.stage(store.attachments_dir, [(source.name, stream)])
+        batch.bind(session.id, mid)
+        store.append(session, {"type": "message", "id": mid, "role": "user", "content": "Read",
+                               "attachments": [asdict(item) for item in batch.files]})
+    unlink = Path.unlink
+    reasoning = store._reasoning_path(first.id, "assistant")
+    journal = store._turn_undo_root / first.id / "turn.json"
+    for sidecar in (reasoning, journal):
+        sidecar.parent.mkdir(parents=True)
+        sidecar.write_bytes(b"preserve on failure")
+
+    def fail_to_unlink(path, *args, **kwargs):
+        if path == first.path:
+            raise PermissionError("session is open")
+        return unlink(path, *args, **kwargs)
+
+    with monkeypatch.context() as mp:
+        mp.setattr(Path, "unlink", fail_to_unlink)
+        with pytest.raises(PermissionError, match="session is open"):
+            store.delete(first.id)
+    assert store.verify_attachments() == (2, [])
+    assert all(sidecar.read_bytes() == b"preserve on failure" for sidecar in (reasoning, journal))
+    assert store.delete(first.id)
+    assert not any(sidecar.exists() for sidecar in (reasoning, journal))
+    with pytest.raises(FileNotFoundError):
+        store.append(first, {"type": "title", "title": "late write"})
+    assert not first.path.exists()
+    assert not (store.attachments_dir / first.id).exists()
+    assert store.verify_attachments() == (1, [])
+    assert source.read_bytes() == b"same document in two sessions"
+
+
+@pytest.mark.parametrize("committed", [False, True])
+def test_recover_attachment_deletion_after_interruption(tmp_path, committed):
+    store, session = make_store(tmp_path)
+    for root in store._sidecar_roots:
+        pending = root / ".deleting" / session.id
+        pending.mkdir(parents=True)
+        (pending / "saved.txt").write_bytes(b"keep if deletion did not commit")
+    if committed:
+        session.path.unlink()
+    store.recover_deletions()
+    store.recover_deletions()
+    for root in store._sidecar_roots:
+        assert not (root / ".deleting" / session.id).exists()
+        assert (root / session.id / "saved.txt").is_file() is (not committed)
+
+
 def test_create_retries_id_collision_without_overwrite(tmp_path, monkeypatch):
-    from syvrio.agent import session as session_module
+    from syvrio.session import store as session_module
 
     monkeypatch.setattr(session_module, "utc_now", lambda: datetime(2026, 1, 1, tzinfo=UTC))
     tokens = iter(["aaaa", "aaaa", "ffff"])

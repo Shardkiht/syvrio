@@ -13,3 +13,11 @@ from __future__ import annotations
 
 class SyvrioError(Exception):
     """Base class for all deliberate, user-reachable Syvrio failures."""
+
+
+class SessionProtectedError(SyvrioError):
+    """The session is in use or holds original evidence for a saved memory."""
+
+
+class SessionDeletionChanged(SyvrioError):
+    """Related pending items changed since the user saw the confirmation."""

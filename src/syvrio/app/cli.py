@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import ipaddress
-import json
 import sys
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated
 
@@ -11,7 +10,8 @@ import click
 import typer
 
 from .. import __version__
-from ..agent.session import SessionStore
+from ..backend.client import ResidentClient
+from ..backend.ownership import BackendLease
 from ..errors import SyvrioError
 from ..infra.config import (
     Config,
@@ -24,7 +24,9 @@ from ..infra.diagnostics import record_event, start_diagnostics, stop_diagnostic
 from ..infra.documents import SUPPORTED_SUFFIXES, DocumentError, read_document
 from ..infra.gitops import GitError
 from ..memory.extractor import ExtractorError, split_chunks
-from ..memory.service import MemoryService, get_service
+from ..memory.models import MemoryContext, MemoryDraft
+from ..memory.service import MemoryService
+from ..session import SessionStore
 from .session_ui import print_sessions
 from .tui import run_chat
 from .ui import console, fail, padded, print_hits, styled_table
@@ -62,9 +64,6 @@ def _root(
         console.print(ctx.get_help())
         return
     service = _service(None, None)
-    if service.config.llm.requires_api_key() and not service.config.llm.api_key():
-        console.print(padded("[#b8b8b8]未配置 API Key，先运行 syvrio setup。[/]"))
-        return
     try:
         run_chat(service)
     except Exception as exc:
@@ -73,8 +72,21 @@ def _root(
         console.print(ctx.get_help())
 
 
-def _service(config: Path | None, vault: Path | None) -> MemoryService:
-    return get_service(config, vault)
+def _service(config: Path | None, vault: Path | None) -> ResidentClient:
+    return ResidentClient(config, vault)
+
+
+@app.command("verify-attachments")
+def verify_attachments(
+    vault: Annotated[Path, typer.Option("--vault", exists=True, file_okay=False)],
+) -> None:
+    """核对附件迁移结果。检查会话清单、文件大小和 SHA-256。"""
+    checked, errors = SessionStore(vault.resolve()).verify_attachments()
+    for detail in errors:
+        typer.echo(detail, err=True)
+    typer.echo(f"Verified {checked} attachment(s), {len(errors)} error(s).")
+    if errors:
+        raise typer.Exit(code=1)
 
 
 @app.command()
@@ -140,7 +152,8 @@ def init(
     cfg = load_config(config_path) if config_path.exists() else Config(vault=vault)
     vault_changed = cfg.vault.expanduser().resolve() != vault
     cfg.vault = vault
-    result = MemoryService(cfg).init_vault()
+    with BackendLease(cfg.paths(config_path)):
+        result = MemoryService(cfg, config_path=config_path).init_vault()
     if not config_path.exists():
         write_example_config(config_path, vault)
     elif vault_changed:
@@ -163,7 +176,10 @@ def setup(
     from ..infra.providers import run_setup
 
     try:
-        result = run_setup(config, vault)
+        from ..backend.endpoint import client_paths
+        _, paths = client_paths(config, vault)
+        with BackendLease(paths):
+            result = run_setup(config, vault)
     except KeyboardInterrupt:
         fail("已取消。")
         return
@@ -210,49 +226,23 @@ def list_sessions(
 ) -> None:
     """列出历史会话。"""
     service = _service(config, vault)
-    print_sessions(SessionStore(service.paths).list(limit))
+    print_sessions(service.call("sessions", limit=limit))
 
 
+@app.command("note")
 @app.command()
 def memorize(
-    text: str = typer.Argument(..., help="一段对话或陈述"),
-    source: str = typer.Option("chat", "--source", help="来源标记"),
+    text: str = typer.Argument(..., help="已确认的事实原文"),
+    topic: str = typer.Option("uncategorized", "--topic", "-t", help="记忆主题"),
     config: Path | None = CONFIG_OPTION,
     vault: Path | None = VAULT_OPTION,
 ) -> None:
-    """从对话中抽取本人事实，静默写入；不确定项进入待确认队列。"""
-    service = _service(config, vault)
+    """保存一条明确事实。"""
     try:
-        result = service.memorize(text, source)
-    except ExtractorError as exc:
-        fail(str(exc), exc=exc)
-        return
-    for entry in result.admitted:
-        console.print(f"[bold]已写入[/] [{entry.topic}] {entry.text}")
-    for item in result.queued:
-        console.print(f"[#b8b8b8]待确认[/] {item.id} [{item.topic}] {item.text}  ({item.reason})")
-    for text_ in result.duplicates:
-        console.print(f"[dim]已存在，跳过：{text_}[/dim]")
-    if not result.admitted and not result.queued:
-        console.print("[dim]没有可记录的新信息。[/dim]")
-
-
-@app.command()
-def note(
-    text: str = typer.Argument(..., help="要记录的事实"),
-    topic: str = typer.Option("uncategorized", "--topic", "-t", help="主题 slug"),
-    title: str | None = typer.Option(None, "--title", help="主题标题"),
-    config: Path | None = CONFIG_OPTION,
-    vault: Path | None = VAULT_OPTION,
-) -> None:
-    """直接记录一条事实，不调用 LLM。"""
-    service = _service(config, vault)
-    try:
-        entry = service.note(text, topic=topic, title=title)
+        entry = _service(config, vault).memorize(MemoryDraft(text=text, topic=topic))
+        console.print(f"已记录 [{entry.topic}] {entry.text}", markup=False)
     except ValueError as exc:
         fail(str(exc), exc=exc)
-        return
-    console.print(f"[bold]已记录[/] [{entry.topic}] {entry.text}")
 
 
 @app.command("import")
@@ -327,13 +317,11 @@ def import_memories(
 @app.command()
 def recall(
     query: str = typer.Argument(..., help="检索关键词"),
-    limit: int = typer.Option(10, "--limit", "-n", help="最多返回条数"),
+    limit: int = typer.Option(7, "--limit", "-n", min=1, help="最多返回条数"),
     date_from: str | None = typer.Option(None, "--from", help="事件起始日期：年、年月或年月日"),
     date_to: str | None = typer.Option(None, "--to", help="事件截止日期"),
     location: str | None = typer.Option(None, "--location", help="明确记载的地点"),
     emotion: str | None = typer.Option(None, "--emotion", help="明确表达的情绪"),
-    as_of: str | None = typer.Option(None, "--as-of", help="历史状态时点 YYYY-MM-DD"),
-    view: str = typer.Option("current", "--view", help="current 当前有效 / history 历史演化"),
     config: Path | None = CONFIG_OPTION,
     vault: Path | None = VAULT_OPTION,
 ) -> None:
@@ -342,12 +330,9 @@ def recall(
         hits = _service(config, vault).recall(
             query,
             limit,
-            date_from=date_from,
-            date_to=date_to,
+            time_range={"start": date_from, "end": date_to} if date_from or date_to else None,
             location=location,
             emotion=emotion,
-            as_of=as_of,
-            view=view,
         )
     except ValueError as exc:
         fail(str(exc), exc=exc)
@@ -355,17 +340,22 @@ def recall(
     print_hits(query, hits)
 
 
-@app.command("evolve")
-def evolve(
+@app.command("evolve", hidden=True)
+@app.command()
+def transition(
     entry_id: str = typer.Argument(...),
     text: str = typer.Argument(..., help="变化后的事实"),
-    effective_from: str = typer.Option(..., "--from", help="变化日期 YYYY-MM-DD"),
+    topic: str = typer.Option(..., "--topic", "-t", help="新状态的主题"),
+    effective_from: str | None = typer.Option(None, "--from", help="新状态的起始日期"),
+    previous_valid_to: str | None = typer.Option(None, "--previous-until", help="旧状态的截止日期"),
     config: Path | None = CONFIG_OPTION,
     vault: Path | None = VAULT_OPTION,
 ) -> None:
     """记录已发生的状态变化，保留历史；原先记错请使用 correct。"""
     try:
-        entry = _service(config, vault).evolve(entry_id, text, effective_from)
+        context = MemoryContext(valid_from=effective_from) if effective_from else None
+        draft = MemoryDraft(text=text, topic=topic, context=context)
+        entry = _service(config, vault).transition(entry_id, draft, previous_valid_to)
         console.print(f"已记录时间变化：{entry.id}")
     except (ValueError, KeyError) as exc:
         fail(str(exc), exc=exc)
@@ -373,31 +363,11 @@ def evolve(
 
 @app.command("profile")
 def profile(
-    refresh: bool = typer.Option(False, "--refresh", help="调用模型增量生成待审查画像推断"),
-    requests: int = typer.Option(1, "--requests", min=0, max=20, help="本次模型请求上限"),
     config: Path | None = CONFIG_OPTION,
     vault: Path | None = VAULT_OPTION,
 ) -> None:
-    """查看来源可追溯的画像；默认不调用模型。"""
-    service = _service(config, vault)
-    if refresh:
-        _reflect(service, "profile", requests)
-    for item in service.reflection.profile():
-        console.print(item.model_dump_json(), markup=False)
-
-
-def _reflect(service: MemoryService, mode: str, requests: int) -> None:
-
-    try:
-        result = service.reflection.run(mode, requests, refresh_summary=mode == "profile")
-        console.print(json.dumps(asdict(result), ensure_ascii=False), markup=False)
-        if result.error:
-            raise typer.Exit(1)
-    except KeyboardInterrupt:
-        service.reflection.cancel()
-        fail("回顾已取消；已完成进度保留。")
-    except ValueError as exc:
-        fail(str(exc), exc=exc)
+    """查看最近一次 Dream 生成的画像。"""
+    console.print(_service(config, vault).call("profile") or "暂无画像，可运行 syvrio dream。", markup=False)
 
 
 @app.command("dream")
@@ -407,7 +377,8 @@ def dream(
     vault: Path | None = VAULT_OPTION,
 ) -> None:
     """增量回顾有效事实，生成待审查假设；默认最多一次模型请求。"""
-    _reflect(_service(config, vault), "dream", requests)
+    job = _service(config, vault).call("dream", max_requests=requests)
+    console.print(f"已提交 Dream 任务 {job}", markup=False)
 
 
 @app.command("inferences")
@@ -415,20 +386,12 @@ def inferences(
     inference_id: str | None = typer.Argument(None),
     action: str | None = typer.Option(None, "--action", help="confirm / reject / correct"),
     text: str | None = typer.Option(None, "--text", help="更正后的假设内容"),
-    recover_tail: bool = typer.Option(
-        False, "--recover-tail", help="显式恢复损坏尾行，保留原始字节"
-    ),
     config: Path | None = CONFIG_OPTION,
     vault: Path | None = VAULT_OPTION,
 ) -> None:
     """查看或审查推断；确认不会自动写入事实记忆。"""
     service = _service(config, vault)
     try:
-        if recover_tail:
-            if action or inference_id or text:
-                raise ValueError("恢复尾行不能与审查操作同时使用。")
-            recovered = service.recover_inference_tail()
-            console.print("已追加尾行恢复标记。" if recovered else "无需恢复。")
         if action:
             if not inference_id:
                 raise ValueError("操作时必须提供推断 ID。")
@@ -458,11 +421,11 @@ def pending(
     table = styled_table("待确认")
     table.add_column("ID")
     table.add_column("主题")
-    table.add_column("置信度")
-    table.add_column("原因")
+    table.add_column("待确认问题")
+    table.add_column("关联记忆")
     table.add_column("内容", overflow="fold")
     for item in items:
-        table.add_row(item.id, item.topic, f"{item.confidence:.2f}", item.reason, item.text)
+        table.add_row(item.id, item.topic, item.question, ", ".join(item.related_ids), item.text)
     console.print(table)
 
 
@@ -503,13 +466,13 @@ def reject(
 def correct(
     entry_id: str = typer.Argument(..., help="要更正的记忆 ID"),
     text: str = typer.Argument(..., help="更正后的完整表述"),
-    reason: str = typer.Option("", "--reason", help="更正原因"),
+    topic: str = typer.Option(..., "--topic", "-t", help="更正后的主题"),
     config: Path | None = CONFIG_OPTION,
     vault: Path | None = VAULT_OPTION,
 ) -> None:
-    """更正一条记忆：写入新条目，旧条目置为 superseded。"""
+    """写入更正后的新条目并将原记忆标为弃用。"""
     try:
-        entry = _service(config, vault).correct(entry_id, text, reason)
+        entry = _service(config, vault).correct(entry_id, MemoryDraft(text=text, topic=topic))
     except KeyError as exc:
         fail(str(exc), exc=exc)
         return
@@ -517,26 +480,26 @@ def correct(
         fail(str(exc), exc=exc)
         return
     console.print(f"[bold]已更正[/] [{entry.topic}] {entry.text}")
-    console.print(f"[dim]旧条目 {entry_id} 已置为 superseded，审计已记录[/dim]")
+    console.print(f"[dim]旧条目 {entry_id} 已弃用，审计已记录[/dim]")
 
 
+@app.command("forget", hidden=True)
 @app.command()
-def forget(
-    entry_id: str = typer.Argument(..., help="要删除的记忆 ID"),
-    reason: str = typer.Option("", "--reason", help="删除原因"),
+def deprecate(
+    entry_id: str = typer.Argument(..., help="要弃用的记忆 ID"),
     config: Path | None = CONFIG_OPTION,
     vault: Path | None = VAULT_OPTION,
 ) -> None:
-    """软删除一条记忆（保留审计，Git 可回滚）。"""
+    """弃用一条记忆，保留 ID、原文、来源和审计记录。"""
     try:
-        entry = _service(config, vault).forget(entry_id, reason)
+        entry = _service(config, vault).deprecate(entry_id)
     except KeyError as exc:
         fail(str(exc), exc=exc)
         return
     except ValueError as exc:
         fail(str(exc), exc=exc)
         return
-    console.print(f"[bold]已删除[/] {entry.id} [{entry.topic}] {entry.text}")
+    console.print(f"[bold]已弃用[/] {entry.id} [{entry.topic}] {entry.text}")
 
 
 @app.command("topics")
@@ -634,6 +597,39 @@ def serve(
     from .server import build_server
 
     build_server(service=service).run()
+
+
+@app.command("backend")
+def backend_command(
+    action: str = typer.Argument("status", help="run / start / status / stop"),
+    config: Path | None = CONFIG_OPTION,
+    vault: Path | None = VAULT_OPTION,
+) -> None:
+    """查看、启动或关闭此 Vault 的常驻后端。"""
+    from ..backend.endpoint import client_paths, connect, discover
+
+    _, paths = client_paths(config, vault)
+    if action == "run":
+        from .web.server import serve_resident
+        serve_resident(paths.config_file, paths.vault_dir)
+    elif action == "start":
+        base, _ = connect(paths)
+        typer.echo(f"Running: {base}")
+    elif action == "status":
+        found = discover(paths)
+        typer.echo(f"Running: {found[0]}" if found else "Stopped")
+    elif action == "stop":
+        if found := discover(paths):
+            import httpx
+            with httpx.Client(trust_env=False, timeout=10) as client:
+                response = client.post(found[0] + "/api/resident/shutdown",
+                                       headers={"X-Syvrio-Token": found[1]}, json={})
+                response.raise_for_status()
+            typer.echo("Shutdown requested.")
+        else:
+            typer.echo("Stopped")
+    else:
+        fail("Choose run, start, status or stop.")
 
 
 @app.command()

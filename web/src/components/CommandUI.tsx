@@ -193,6 +193,8 @@ export function ConfirmDialog({
   onCancel,
   title = 'Confirm',
   confirmLabel = 'Confirm',
+  confirmDisabled = false,
+  children,
   testId = 'confirm-overlay',
 }: {
   message: string;
@@ -200,21 +202,24 @@ export function ConfirmDialog({
   onCancel: () => void;
   title?: string;
   confirmLabel?: string;
+  confirmDisabled?: boolean;
+  children?: ReactNode;
   testId?: string;
 }) {
   return (
     <CommandDialog title={title} className="confirm-dialog" testId={testId} role="alertdialog"
       onClose={onCancel} onKeyDown={(event) => {
-        if (event.key === 'Enter' && event.target === event.currentTarget) {
+        if (!confirmDisabled && event.key === 'Enter' && event.target === event.currentTarget) {
           event.preventDefault();
           onConfirm();
         }
       }}>
         <div className="confirm-title">{title}</div>
         <div className="confirm-message" data-testid="confirm-message">{message}</div>
+        {children}
         <div className="confirm-actions">
           <button type="button" onClick={onCancel}>Cancel</button>
-          <button type="button" className="confirm-ok" onClick={onConfirm}>{confirmLabel}</button>
+          <button type="button" className="confirm-ok" disabled={confirmDisabled} onClick={onConfirm}>{confirmLabel}</button>
         </div>
     </CommandDialog>
   );

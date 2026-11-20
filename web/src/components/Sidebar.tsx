@@ -20,8 +20,11 @@ export function Sidebar({
 }) {
   return (
     <>
-      {open && <div className="sidebar-scrim" onClick={onClose} data-testid="sidebar-scrim" />}
-      <aside className={`sidebar${open ? ' open' : ''}`} data-testid="sidebar">
+      <div className="sidebar-scrim" data-open={open} aria-hidden="true"
+        onClick={onClose} data-testid="sidebar-scrim" />
+      <aside id="session-sidebar" className={`sidebar${open ? ' open' : ''}`}
+        aria-hidden={!open} ref={(node) => { node?.toggleAttribute('inert', !open); }}
+        data-testid="sidebar">
         <div className="sidebar-head">
           <img className="brand-mark" src="/syvrio.svg" alt="Syvrio" width={30} height={30} />
           <button

@@ -11,8 +11,9 @@ from textual.widgets import Button, Input, Static
 
 from syvrio.agent.runtime import AgentRuntime
 from syvrio.agent.session import SessionStore, new_message_id
-from syvrio.app.chat_app import ChatApp, SidebarToggle
+from syvrio.app.chat_app import ChatApp
 from syvrio.app.chat_input import BarInput
+from syvrio.app.chat_widgets import SidebarToggle
 from syvrio.app.command_catalog import SLASH_COMMANDS
 from syvrio.app.git_screen import GitConfirmScreen, GitScreen
 from syvrio.infra.config import (
@@ -50,6 +51,29 @@ class FakeChatModel:
 class FakeSummarizer:
     def summarize(self, previous, transcript, max_chars=1200):
         return "会话摘要"
+
+
+async def test_attach_multiple_files_from_composer(tmp_path):
+    from textual.widgets import TextArea
+
+    app = build_app(tmp_path, [AssistantTurn(content="OK")])
+    docs = [tmp_path / "first.txt", tmp_path / "second.md"]
+    for path in docs:
+        path.write_text("synthetic document", encoding="utf-8")
+    async with app.run_test(size=(100, 32)) as pilot:
+        await app.workers.wait_for_complete()
+        await pilot.press("ctrl+o")
+        await pilot.pause()
+        app.screen.query_one(TextArea).text = "\n".join(map(str, docs))
+        app.screen.query_one("#attach-selected", Button).press()
+        await pilot.pause()
+        app.query_one("#input", Input).value = "Inspect these files"
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        stored = app.sessions.load(app.runtime.current.id)
+        assert [item["name"] for item in stored.messages[0]["attachments"]] == [p.name for p in docs]
+        assert app.sessions.verify_attachments() == (2, [])
 
 
 async def test_inference_review_uses_worker_and_keeps_facts_separate(tmp_path):
@@ -780,127 +804,12 @@ async def test_profile_refresh_does_not_block_chat_while_running(tmp_path, monke
         release.set()
 
 
-@pytest.mark.parametrize("apply", [False, True])
-async def test_import_command_uses_worker_and_releases_busy(tmp_path, monkeypatch, apply):
-    from syvrio.memory import service as module
-    from syvrio.memory.models import Candidate
-
-    class Extractor:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def extract(self, text):
-            return ExtractionResult(memories=[Candidate(text="合成用户偏好茶饮", confidence=0.95)])
-
-    monkeypatch.setattr(module, "ImportExtractor", Extractor)
-    path = tmp_path / "synthetic conversation.txt"
-    path.write_text("合成聊天记录", encoding="utf-8")
-    app = build_app(tmp_path, [])
-    async with app.run_test() as pilot:
-        app._command(f'/import "{path}"' + (" --apply" if apply else ""))
-        if apply:
-            await pilot.pause()
-            assert "Confirm Memory Import" in str(app.screen.query_one(".pick-title").render())
-            assert app.screen.query_one("#pick-list").highlighted_child.value is False
-            assert not app.busy and not app.service.store.entries()
-            app.screen.query_one("#pick-list").index = 1
-            await pilot.press("enter")
-        for _ in range(100):
-            await pilot.pause()
-            if not app._import_running:
-                break
-        assert not app._import_running and not app.busy
-        assert bool(app.service.store.entries()) is apply
-        assert not app.query_one("#input", Input).disabled
 
 
-async def test_import_error_releases_busy(tmp_path):
-    app = build_app(tmp_path, [])
-    async with app.run_test() as pilot:
-        app._command(f'/import "{tmp_path / "missing.pdf"}"')
-        for _ in range(100):
-            await pilot.pause()
-            if not app._import_running:
-                break
-        assert not app._import_running and not app.busy
-        assert any("import failed" in str(card.render()).lower() for card in app.query(".card"))
 
 
-async def test_import_apply_cancel_starts_no_parsing_or_writes(tmp_path, monkeypatch):
-    app = build_app(tmp_path, [])
-    path = tmp_path / "synthetic.txt"
-    path.write_text("合成导入内容", encoding="utf-8")
-    monkeypatch.setattr(
-        "syvrio.application.memory.read_document",
-        lambda *_: pytest.fail("取消前不得解析文档"),
-    )
-    async with app.run_test(size=(80, 24)) as pilot:
-        app._command(f'/import "{path}" --apply')
-        await pilot.pause()
-        assert "Confirm Memory Import" in str(app.screen.query_one(".pick-title").render())
-        assert str(path) in str(app.screen.query_one("#pick-detail-text").content)
-        assert app.screen.query_one("#pick-list").highlighted_child.value is False
-        for width, height in ((120, 36), (100, 30), (80, 24), (60, 20)):
-            await pilot.resize_terminal(width, height)
-            await pilot.pause()
-            card = app.screen.query_one("#pick-card").region
-            assert card.width <= width and card.height <= height
-            assert app.screen.query_one("#pick-list").region.bottom <= card.bottom
-            hint_widget = app.screen.query_one(".pick-hint")
-            assert hint_widget.region.height >= 1 and hint_widget.region.bottom <= card.bottom
-            if width == 60:
-                assert str(hint_widget.render()) == "PgUp/PgDn Read · Enter Confirm · Esc Cancel"
-                assert hint_widget.region.height == 1
-        await pilot.press("enter")
-        await pilot.pause()
-        assert not app.busy and not app.service.store.entries()
-        assert app.query_one("#input", Input).has_focus
-        assert any("Import cancelled" in str(card.render()) for card in app.query(".card"))
-
-        app._command(f'/import "{path}" --apply')
-        await pilot.pause()
-        await pilot.press("escape")
-        await pilot.pause()
-        assert not app.busy and not app.service.store.entries()
 
 
-async def test_import_apply_confirms_once_for_multiple_files(tmp_path, monkeypatch):
-    import asyncio
-
-    from syvrio.memory import service as module
-    from syvrio.memory.models import Candidate
-
-    extracted = []
-
-    class Extractor:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def extract(self, text):
-            extracted.append(text)
-            return ExtractionResult(memories=[Candidate(text=text, confidence=0.95)])
-
-    monkeypatch.setattr(module, "ImportExtractor", Extractor)
-    source = tmp_path / "batch"
-    source.mkdir()
-    (source / "one.txt").write_text("合成第一条记忆", encoding="utf-8")
-    (source / "two.txt").write_text("合成第二条记忆", encoding="utf-8")
-    app = build_app(tmp_path, [])
-    async with app.run_test(size=(100, 30)) as pilot:
-        app._command(f'/import "{source}" --apply')
-        await pilot.pause()
-        assert "Confirm Memory Import" in str(app.screen.query_one(".pick-title").render())
-        app.screen.query_one("#pick-list").index = 1
-        await pilot.press("enter")
-        await asyncio.wait_for(app.workers.wait_for_complete(), timeout=30)
-        await pilot.pause()
-        assert len(extracted) == 2
-        assert {entry.text for entry in app.service.store.entries()} == {
-            "合成第一条记忆",
-            "合成第二条记忆",
-        }
-        assert not app.busy
-        assert "PickScreen" not in type(app.screen).__name__
 
 
 def build_app(tmp_path, turns, extract_on_exit=False, search=None, git=None):
@@ -1340,7 +1249,7 @@ async def test_slash_help_card(tmp_path):
 
 
 async def test_command_palette_filter_navigate_execute(tmp_path):
-    from syvrio.app.chat_app import CommandPalette
+    from syvrio.app.chat_widgets import CommandPalette
 
     app = build_app(tmp_path, [])
     async with app.run_test(size=(120, 40)) as pilot:
@@ -1365,7 +1274,7 @@ async def test_command_palette_filter_navigate_execute(tmp_path):
 
 
 async def test_command_palette_escape_closes(tmp_path):
-    from syvrio.app.chat_app import CommandPalette
+    from syvrio.app.chat_widgets import CommandPalette
 
     app = build_app(tmp_path, [])
     async with app.run_test(size=(120, 40)) as pilot:
@@ -1401,7 +1310,7 @@ async def test_tab_completes_highlighted_command_without_executing(tmp_path, mon
         ("/model re", "/model refresh"),
         ("/dream ca", "/dream cancel"),
         ("/profile refresh 3", "/profile refresh 3"),
-        ("/import /tmp/notes", "/import /tmp/notes"),
+        ("/rename my notes", "/rename my notes"),
         ("ordinary text", "ordinary text"),
     ],
 )
@@ -1433,7 +1342,7 @@ async def test_tab_completes_command_then_subcommand(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("prefix", ["/", "/rename"])
 async def test_command_palette_sits_above_input(tmp_path, prefix):
-    from syvrio.app.chat_app import CommandPalette
+    from syvrio.app.chat_widgets import CommandPalette
 
     app = build_app(tmp_path, [])
     async with app.run_test(size=(120, 40)) as pilot:
@@ -1451,8 +1360,7 @@ async def test_command_palette_sits_above_input(tmp_path, prefix):
 
 
 async def test_command_palette_columns_align(tmp_path):
-    from syvrio.app.chat_app import CommandPalette
-    from syvrio.app.chat_widgets import CommandRow
+    from syvrio.app.chat_widgets import CommandPalette, CommandRow
 
     app = build_app(tmp_path, [])
     async with app.run_test(size=(120, 40)) as pilot:
@@ -1473,7 +1381,7 @@ async def test_command_palette_columns_align(tmp_path):
 
 
 async def test_command_palette_scrolls_highlighted_command_into_view(tmp_path):
-    from syvrio.app.chat_app import CommandPalette
+    from syvrio.app.chat_widgets import CommandPalette
 
     app = build_app(tmp_path, [])
     async with app.run_test(size=(120, 40)) as pilot:
@@ -1501,7 +1409,7 @@ async def test_command_palette_scrolls_highlighted_command_into_view(tmp_path):
 async def test_command_palette_mouse_wheel_scrolls(tmp_path):
     from textual.events import MouseScrollDown
 
-    from syvrio.app.chat_app import CommandPalette
+    from syvrio.app.chat_widgets import CommandPalette
 
     app = build_app(tmp_path, [])
     async with app.run_test(size=(120, 40)) as pilot:
@@ -1521,7 +1429,7 @@ async def test_command_palette_mouse_wheel_scrolls(tmp_path):
     [("/pro", ["profile"]), ("/dre", ["dream"]), ("/inf", ["inferences"])],
 )
 async def test_command_palette_prefix_filters(tmp_path, prefix, expected):
-    from syvrio.app.chat_app import CommandPalette
+    from syvrio.app.chat_widgets import CommandPalette
 
     app = build_app(tmp_path, [])
     async with app.run_test() as pilot:
@@ -1535,7 +1443,7 @@ async def test_command_palette_prefix_filters(tmp_path, prefix, expected):
 async def test_command_palette_click_runs_visible_command(tmp_path):
     import asyncio
 
-    from syvrio.app.chat_app import CommandPalette
+    from syvrio.app.chat_widgets import CommandPalette
 
     app = build_app(tmp_path, [])
     async with app.run_test(size=(120, 40)) as pilot:
@@ -1551,7 +1459,7 @@ async def test_command_palette_click_runs_visible_command(tmp_path):
 
 @pytest.mark.parametrize("size", [(80, 24), (120, 40)])
 async def test_command_palette_fits_small_viewport_and_input_stays_visible(tmp_path, size):
-    from syvrio.app.chat_app import CommandPalette
+    from syvrio.app.chat_widgets import CommandPalette
 
     app = build_app(tmp_path, [])
     async with app.run_test(size=size) as pilot:
@@ -2277,7 +2185,7 @@ async def test_sidebar_rows_align_with_new_session(tmp_path):
 
 async def test_sidebar_items_are_compact_and_clickable(tmp_path):
     from syvrio.agent.session import new_message_id
-    from syvrio.app.chat_app import SessionItem
+    from syvrio.app.chat_widgets import SessionItem
 
     app = build_app(tmp_path, [])
     ids = []
@@ -2393,7 +2301,7 @@ async def test_resuming_torn_session_shows_recovery_notice_and_continues(tmp_pat
 
 
 async def test_session_switch_updates_sidebar_without_reload(tmp_path, monkeypatch):
-    from syvrio.app.chat_app import SessionItem
+    from syvrio.app.chat_widgets import SessionItem
 
     app = build_app(tmp_path, [])
     store = app.sessions
@@ -2477,7 +2385,7 @@ async def test_delete_session_uses_captured_row(tmp_path):
 
         assert not store.exists(session.id)
         assert store.exists(survivor.id)
-        from syvrio.app.chat_app import SessionItem
+        from syvrio.app.chat_widgets import SessionItem
 
         # 文件删除先于 DOM 异步清理完成；等到旧节点移除、列表收敛后再断言。
         remaining = []
@@ -4062,7 +3970,7 @@ async def test_slash_commands_during_streaming_use_palette_and_execute(tmp_path,
             await _wait_ask_started(app, pilot)
             for _ in range(100):
                 await pilot.pause()
-                if app._stream_buffer:
+                if app._stream_buffer == "streaming reply":
                     break
             assert app._stream_buffer == "streaming reply"
 
@@ -4922,39 +4830,6 @@ async def test_command_during_ask_queues_and_runs_after_reply(tmp_path):
         await _wait_idle(app, pilot)
 
 
-async def test_import_during_reply_runs_in_background(tmp_path, monkeypatch):
-    from types import SimpleNamespace
-
-    app = build_app(tmp_path, [])
-    model = GatedChatModel([AssistantTurn(content="reply")])
-    reply_gate, import_gate, import_started = (threading.Event() for _ in range(3))
-    model.gates.append(reply_gate)
-    app.runtime.model = model
-
-    def import_path(*args, **kwargs):
-        import_started.set()
-        import_gate.wait(timeout=20)
-        return SimpleNamespace(errors=[])
-
-    monkeypatch.setattr(app.application.memory, "import_path", import_path)
-    async with app.run_test(size=(120, 40)) as pilot:
-        widget = app.query_one("#input", Input)
-        try:
-            widget.value = "q"
-            await pilot.press("enter")
-            await _wait_ask_started(app, pilot)
-            widget.value = "/import example.txt"
-            await pilot.press("enter")
-            for _ in range(100):
-                await pilot.pause()
-                if import_started.is_set():
-                    break
-            assert import_started.is_set() and app._ask_active
-            assert not widget.disabled and not app._queue
-        finally:
-            reply_gate.set()
-            import_gate.set()
-        await _wait_idle(app, pilot)
 
 
 async def test_switch_consolidate_skipped_while_ask_in_flight(tmp_path, monkeypatch):
@@ -6027,7 +5902,7 @@ async def test_generation_finished_recorded_once_and_stale_finish_keeps_queue(
         assert app.application.conversation.queue_snapshot().count == 1
 
 
-async def test_context_compact_and_import_failures_release_only_own_state(tmp_path, monkeypatch):
+async def test_context_and_compact_failures_release_only_own_state(tmp_path, monkeypatch):
     app = build_app(tmp_path, [])
     gated = GatedChatModel([AssistantTurn(content="reply")])
     gated.gates.append(threading.Event())
@@ -6069,18 +5944,6 @@ async def test_context_compact_and_import_failures_release_only_own_state(tmp_pa
         assert app._navigation_busy is False
         assert app._ask_active is False
 
-        def fail_import(*args, **kwargs):
-            raise RuntimeError("synthetic import failure")
-
-        monkeypatch.setattr(app.application.memory, "import_path", fail_import)
-        app._start_import(tmp_path / "missing.txt", False)
-        for _ in range(200):
-            await pilot.pause()
-            if any("Import failed" in str(card.render()) for card in app.query(".card")):
-                break
-        assert app._navigation_busy is False
-        assert app._ask_active is False
-        assert not app.busy
 
 
 @pytest.mark.parametrize("size", [(80, 24), (120, 40)])

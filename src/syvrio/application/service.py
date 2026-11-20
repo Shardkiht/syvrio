@@ -17,20 +17,16 @@ class ApplicationService:
         self,
         runtime: AgentRuntime,
         service: MemoryService,
+        background=None,
     ) -> None:
         self.conversation = ConversationUseCases(runtime, runtime.sessions)
         self.memory = MemoryUseCases(service)
         self.settings = SettingsUseCases(service, runtime)
-        self.reflection = ReflectionUseCases(service)
+        self.reflection = ReflectionUseCases(background)
         self.git = GitUseCases(service)
         self._service = service
 
     # ---------- 生命周期 ----------
-
-    def startup_catchup(self) -> dict:
-        result = self.conversation.runtime.consolidate_pending()
-        auto_commit = self._service.commit_pending_changes()
-        return {**result, "auto_commit": auto_commit}
 
     def warm_search(self) -> str | None:
         search = self._service.config.search

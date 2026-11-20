@@ -4,6 +4,7 @@ import logging
 import math
 import re
 from functools import lru_cache
+from threading import Lock
 from unicodedata import normalize
 
 from rank_bm25 import BM25Okapi
@@ -114,39 +115,50 @@ class KeywordRetriever:
         self.store = store
         self.k1 = k1
         self.b = b
+        self._index_lock = Lock()
         self._entries: list[Entry] = []
         self._bm25: BM25Okapi | None = None
         self._fields: dict[str, list[int]] = {}
         self._fingerprint: tuple[tuple[str, str], ...] | None = None
 
-    def _index(self) -> tuple[list[Entry], BM25Okapi | None]:
+    def _index(self) -> tuple[list[Entry], BM25Okapi | None, dict[str, list[int]]]:
+        with self._index_lock:
+            return self._snapshot()
+
+    def _snapshot(self) -> tuple[list[Entry], BM25Okapi | None, dict[str, list[int]]]:
         fingerprint = self.store.fingerprint()
-        if self._bm25 is None or fingerprint != self._fingerprint:
-            self._entries = self.store.entries()
-            self._fields = {}
-            for index, entry in enumerate(self._entries):
+        if fingerprint != self._fingerprint:
+            entries = self.store.entries()
+            fields: dict[str, list[int]] = {}
+            for index, entry in enumerate(entries):
                 if field := short_field(entry.text):
-                    self._fields.setdefault(_field_key(field[0]), []).append(index)
-            corpus = [list(tokenize(entry.index_text)) for entry in self._entries]
-            self._bm25 = BM25Okapi(corpus, k1=self.k1, b=self.b) if any(corpus) else None
-            if self._bm25 is not None:
+                    fields.setdefault(_field_key(field[0]), []).append(index)
+            corpus = [list(tokenize(entry.index_text)) for entry in entries]
+            bm25 = BM25Okapi(corpus, k1=self.k1, b=self.b) if any(corpus) else None
+            if bm25 is not None:
                 # Okapi 的负 IDF 会让小库的相关结果全部被过滤；使用正值的平滑 IDF。
                 frequencies: dict[str, int] = {}
                 for document in corpus:
                     for token in set(document):
                         frequencies[token] = frequencies.get(token, 0) + 1
-                self._bm25.idf = {
+                bm25.idf = {
                     token: math.log1p((len(corpus) - count + 0.5) / (count + 0.5))
                     for token, count in frequencies.items()
                 }
+            self._entries, self._bm25, self._fields = entries, bm25, fields
             self._fingerprint = fingerprint
-        return self._entries, self._bm25
+        return self._entries, self._bm25, self._fields
+
+    def unique_field(self, field: str) -> Entry | None:
+        entries, _, fields = self._index()
+        indices = fields.get(_field_key(field), [])
+        return entries[indices[0]] if len(indices) == 1 else None
 
     def search(self, query: str, limit: int = 10) -> list[SearchHit]:
         query = query.strip()
         if not query:
             return []
-        entries, bm25 = self._index()
+        entries, bm25, field_indices = self._index()
         if not entries or bm25 is None:
             return []
         query_tokens = list(tokenize(query))
@@ -154,8 +166,8 @@ class KeywordRetriever:
             return []
 
         scores = bm25.get_scores(query_tokens)
-        labels = _query_field_labels(query, self._fields) if self._fields else set()
-        fields = _lookup_fields(query, labels, self._fields, entries)
+        labels = _query_field_labels(query, field_indices) if field_indices else set()
+        fields = _lookup_fields(query, labels, field_indices, entries)
         lowered = query.lower()
         ranked = sorted(
             (

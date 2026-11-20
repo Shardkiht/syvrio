@@ -30,10 +30,10 @@ SLASH_COMMANDS = [
     ("context", "/context", "Context window"),
     ("setup", "/setup", "Run setup in terminal"),
     ("rename", "/rename <title>", "Rename session"),
-    ("import", "/import <path> [--apply]", "Import a file or directory (preview by default)"),
+    ("import", "/import", "Choose local files to attach"),
     ("pending", "/pending", "Review pending"),
     ("inferences", "/inferences", "View and review inferences"),
-    ("profile", "/profile [refresh [n]]", "View or refresh profile"),
+    ("profile", "/profile", "View the generated profile"),
     ("dream", "/dream [n|cancel|resume|status]", "Run reflection, cancel or view status"),
     ("topics", "/topics [name]", "Browse topics"),
     ("help", "/help", "Show commands"),
@@ -124,11 +124,7 @@ WEB_CAPABILITIES: dict[str, WebCapability] = {
         note="Opens the Web settings panel for providers, keys and endpoints.",
     ),
     "rename": WebCapability(SERVER, "rename"),
-    "import": WebCapability(
-        UNSUPPORTED,
-        "",
-        note="A browser-supplied path must never be read by the server. Use the TUI.",
-    ),
+    "import": WebCapability(CLIENT, "pick_attachments", note="Choose files on this device."),
     "pending": WebCapability(
         SERVER, "pending", note="List, approve or reject: /pending approve|reject|edit <id>."
     ),
@@ -138,7 +134,7 @@ WEB_CAPABILITIES: dict[str, WebCapability] = {
         note="List, confirm or reject: /inferences confirm|reject|correct <id>.",
     ),
     "profile": WebCapability(
-        SERVER, "profile", note="View profile; /profile refresh [n] refreshes it."
+        SERVER, "profile", note="View the latest generated profile. Use /dream to request regeneration."
     ),
     "dream": WebCapability(
         SERVER, "dream", note="Status, cancel or run: /dream [status|cancel|<n>]."
@@ -211,7 +207,7 @@ def _inference_data(items) -> dict[str, Any]:
         "kind": "inferences",
         "count": len(items),
         "rows": [
-            {"id": item.id, "text": item.text, "topic": item.kind, "reason": item.status}
+            {"id": item.id, "text": item.text, "topic": item.kind, "status": item.status}
             for item in items[:MAX_ROWS]
         ],
     }
@@ -222,7 +218,8 @@ def _pending_data(items) -> dict[str, Any]:
         "kind": "pending",
         "count": len(items),
         "rows": [
-            {"id": item.id, "text": item.text, "topic": item.topic, "reason": item.reason}
+            {"id": item.id, "text": item.text, "topic": item.topic, "question": item.question,
+             "related_ids": item.related_ids, "session_id": item.session_id, "message_id": item.message_id}
             for item in items[:MAX_ROWS]
         ],
     }
@@ -234,8 +231,6 @@ class CommandUseCases:
     def __init__(self, application: ApplicationService) -> None:
         self.app = application
         self.conversation = application.conversation
-        # Mirror the TUI's per-client reflection pause (UI state, not a Vault write).
-        self.reflection_paused = False
 
     def catalog(self) -> tuple[WebCommandInfo, ...]:
         return web_command_catalog()
@@ -306,6 +301,7 @@ class CommandUseCases:
         *,
         busy: bool = False,
         confirmed: bool = False,
+        expected_message_id: str | None = None,
     ) -> CommandResult:
         name, argument = parse_command(line)
         if not line.startswith("/") or name not in command_names():
@@ -316,6 +312,8 @@ class CommandUseCases:
                 message=f"Unknown command: /{name}. Type /help for available commands.",
             )
         capability = WEB_CAPABILITIES[name]
+        if name == "import" and argument:
+            return CommandResult("error", name, message="Use /import without a path to choose files on this device.")
         if capability.support == CLIENT:
             return CommandResult(
                 "client", name, capability.intent, message=capability.note or capability.intent
@@ -345,7 +343,7 @@ class CommandUseCases:
                 + ". This changes stored data and cannot be undone.",
             )
         try:
-            return self._dispatch(name, argument, busy)
+            return self._dispatch(name, argument, busy, expected_message_id)
         except TurnUndoError as exc:
             record_event("undo.failed", exc)
             return CommandResult("error", name, capability.intent, message=str(exc))
@@ -355,7 +353,9 @@ class CommandUseCases:
                 "error", name, capability.intent, message=f"Command failed ({type(exc).__name__})."
             )
 
-    def _dispatch(self, name: str, argument: str, busy: bool) -> CommandResult:
+    def _dispatch(
+        self, name: str, argument: str, busy: bool, expected_message_id: str | None = None
+    ) -> CommandResult:
         conversation = self.conversation
         application = self.app
 
@@ -399,8 +399,12 @@ class CommandUseCases:
             return CommandResult("ok", name, "summary", text[:MAX_TEXT])
 
         if name == "topics":
+            if argument:
+                topic = application.memory.service.read_topic(argument)
+                lines = [f"[{entry['status']}] {entry['text']}" for entry in topic['entries']]
+                return CommandResult("ok", name, "topics", f"{topic['topic']}\n\n" + "\n".join(lines), data=topic)
             rows = application.memory.topics()
-            names = [str(row.get("name") or row.get("title") or "") for row in rows[:MAX_ROWS]]
+            names = [str(row.get("topic") or row.get("title") or "") for row in rows]
             names = [item for item in names if item]
             return CommandResult(
                 "ok",
@@ -475,21 +479,6 @@ class CommandUseCases:
             )
 
         if name == "profile":
-            head, _, rest = argument.partition(" ")
-            if head.lower() == "cancel":
-                self.reflection_paused = True
-                application.reflection.cancel()
-                return CommandResult("ok", name, "profile", "Reflection cancelled.")
-            if head.lower() == "refresh":
-                budget = int(rest.strip()) if rest.strip().isdigit() else 1
-                application.reflection.run("profile", budget)
-                snapshot = application.memory.profile()
-                return CommandResult(
-                    "ok",
-                    name,
-                    "profile",
-                    f"Profile refreshed.\n\n{snapshot.status}\n\n{snapshot.body}"[:MAX_TEXT],
-                )
             snapshot = application.memory.profile()
             return CommandResult(
                 "ok", name, "profile", f"{snapshot.status}\n\n{snapshot.body}"[:MAX_TEXT]
@@ -498,25 +487,18 @@ class CommandUseCases:
         if name == "dream":
             reflection = application.reflection
             head = argument.strip().lower()
-            if head == "resume":
-                self.reflection_paused = False
-                return CommandResult("ok", name, "dream", "Automatic reflection resumed.")
             if head == "cancel":
-                self.reflection_paused = True
                 reflection.cancel()
-                return CommandResult("ok", name, "dream", "Automatic reflection cancelled.")
-            if head.isdigit():
-                reflection.run("dream", int(head))
-                return CommandResult(
-                    "ok", name, "dream", f"Reflection run for {head} item(s) completed."
-                )
+                return CommandResult("ok", name, "dream", "Dream cancelled.")
+            if head == "resume" or head.isdigit():
+                job = reflection.run("dream", int(head) if head.isdigit() else 20)
+                return CommandResult("ok", name, "dream", f"Dream submitted: {job}.")
             schedule = reflection.schedule()
+            status = reflection.status()
             lines = [
-                f"Automatic reflection: "
-                f"{'paused' if self.reflection_paused else 'enabled' if schedule.enabled else 'disabled'}",
-                f"Running: {'yes' if schedule.running else 'no'}",
-                f"Profile next: {schedule.profile_next or '-'}",
-                f"Dream next: {schedule.dream_next or '-'}",
+                f"Automatic Dream: {'enabled' if schedule.enabled else 'disabled'}",
+                f"State: {status['state']}",
+                f"Next: {schedule.dream_next or '-'}",
             ]
             return CommandResult(
                 "ok",
@@ -536,8 +518,13 @@ class CommandUseCases:
             head = argument.strip().lower()
             if head == "sync":
                 result = application.git.sync("manual")
-                message = str(getattr(result, "message", None) or "Git sync finished.")[:MAX_TEXT]
-                return CommandResult("ok", name, "git", message, data={"kind": "git"})
+                if result.status == "failed":
+                    return CommandResult("error", name, "git", (result.error or "Git synchronization failed.")[:MAX_TEXT])
+                message = (result.error or "Git sync finished.")[:MAX_TEXT]
+                return CommandResult("ok", name, "git", message, data={
+                    "kind": "git", "status": result.status, "committed": result.committed, "pushed": result.pushed,
+                    "push_skipped": result.push_skipped, "commit_hash": result.commit_hash,
+                })
             # Whitelist fields: never echo local paths or commit content.
             state = application.git.status()
             keys = (
@@ -557,7 +544,7 @@ class CommandUseCases:
                 name,
                 "git_status",
                 "\n".join(rows) + "\n\nUse /git sync to synchronise.",
-                data={"timestamps": timestamps},
+                data={"timestamps": timestamps, "status": {key: state[key] for key in keys if key in state}},
             )
 
         if name == "model":
@@ -597,7 +584,7 @@ class CommandUseCases:
 
         if name == "undo":
             if busy:
-                submission = conversation.request_undo()
+                submission = conversation.request_undo(expected_message_id)
                 if submission.kind == "undo_busy":
                     return CommandResult(
                         "busy", name, "undo", submission.message or "Undo already in progress."
@@ -610,7 +597,7 @@ class CommandUseCases:
                         "Generation stopped; the last turn is being undone.",
                         data={"undo_pending": True},
                     )
-            restored = conversation.undo_current()
+            restored = conversation.undo_current(expected_message_id)
             return CommandResult(
                 "ok",
                 name,
@@ -646,7 +633,7 @@ class CommandUseCases:
             found = sum(len(models) for models in catalog.values())
         else:
             try:
-                options = settings.model_options()
+                options = settings.model_options(capabilities=False)
             except Exception:
                 options = []
 
@@ -685,7 +672,7 @@ class CommandUseCases:
                     "model",
                     "Usage: /model <provider>/<model>. Use /model to list options.",
                 )
-            known = any(item["provider"] == provider and item["model"] == model for item in payload)
+            known = any(option.provider == provider and option.model == model for option in options)
             # Providers with no /models list still allow switching by explicit
             # ID on the configured provider; unknown providers stay rejected.
             if not known and provider != llm.provider:

@@ -22,6 +22,7 @@ from ..llm import (
     cached_provider_models,
     fetch_provider_models,
     model_metadata,
+    provider_reasoning_levels,
     supported_params,
 )
 from ..memory.service import MemoryService
@@ -87,9 +88,9 @@ class SettingsUseCases:
             if (provider, model) in seen:
                 continue
             seen.add((provider, model))
-            key = replace(current, provider=provider, model=model).litellm_model()
             caps: list[str] = []
             if capabilities:
+                key = replace(current, provider=provider, model=model).litellm_model()
                 info = model_metadata(key)
                 max_input = info.get("max_input_tokens")
                 if max_input:
@@ -114,6 +115,20 @@ class SettingsUseCases:
         options.sort(key=lambda option: recent.get((option.provider, option.model), len(recent)))
         return options
 
+    def search_models(self, query: str = "", *, refresh: bool = False) -> tuple[list[ModelOption], list[str]]:
+        catalog = self.model_catalog(refresh=refresh)
+        options = self.model_options(catalog, capabilities=False)
+        current = self.service.config.llm
+        if not any(option.current for option in options):
+            label = f"{current.provider}/{current.model}"
+            options.insert(0, ModelOption(current.provider, current.model, label, current=True))
+        needle = query.strip().casefold()
+        matches = [
+            option for option in options
+            if needle in f"{option.provider}/{option.model}".casefold() or needle in option.label.casefold()
+        ]
+        return matches, [provider for provider, models in catalog.items() if not models]
+
     def provider_options(self) -> list[ProviderOption]:
         current = self.service.config.llm.provider
         return [
@@ -128,15 +143,24 @@ class SettingsUseCases:
         ]
 
     def supports_reasoning(self) -> bool:
-        llm = self.service.config.llm
-        return llm.is_spark or "reasoning_effort" in supported_params(llm.litellm_model())
+        return bool(self.reasoning_options())
 
     def reasoning_options(self) -> list[tuple[str, str]]:
-        if self.service.config.llm.is_spark:
-            return [(mode, mode) for mode in SPARK_THINKING_MODES]
-        if not self.supports_reasoning():
-            return []
-        return [("", "default"), ("low", "low"), ("medium", "medium"), ("high", "high")]
+        return [(value, value or "default") for value in self._reasoning_values(self.service.config.llm)]
+
+    @staticmethod
+    def _reasoning_values(llm: LLMConfig) -> tuple[str, ...]:
+        levels = provider_reasoning_levels(llm)
+        if llm.is_spark:
+            if levels is not None and all(value in SPARK_THINKING_MODES for value in levels):
+                return tuple(value for value in SPARK_THINKING_MODES if value in levels)
+            return SPARK_THINKING_MODES
+        if levels is not None:
+            # The empty choice drops the request parameter and restores the provider default.
+            return ("", *(level for level in levels if level != "default")) if levels else ()
+        if "reasoning_effort" in supported_params(llm.litellm_model()):
+            return ("", "low", "medium", "high")
+        return ()
 
     def reasoning_selection(self) -> tuple[str, str]:
         llm = self.service.config.llm
@@ -260,9 +284,8 @@ class SettingsUseCases:
             )
 
         info = model_metadata(new_llm.litellm_model())
-        if new_llm.reasoning_effort and "reasoning_effort" not in supported_params(
-            new_llm.litellm_model()
-        ):
+        if (not new_llm.is_spark and new_llm.reasoning_effort
+                and new_llm.reasoning_effort not in self._reasoning_values(new_llm)):
             new_llm.reasoning_effort = None
         context_window = self.service.config.chat.context_window
         max_input = info.get("max_input_tokens")
@@ -290,9 +313,13 @@ class SettingsUseCases:
 
     def apply_reasoning(self, value: str) -> SettingsResult:
         llm = self.service.config.llm
+        choices = self._reasoning_values(llm)
+        if value not in choices:
+            allowed = ", ".join(option or "default" for option in choices)
+            return SettingsResult(False, f"Allowed thinking options: {allowed or '(none)'}.")
+        if self.service.config.llm is not llm:
+            return SettingsResult(False, "The active model changed. Reopen Thinking and try again.")
         if llm.is_spark:
-            if value not in SPARK_THINKING_MODES:
-                return SettingsResult(False, "Thinking mode must be enabled, auto, or disabled.")
             new_llm = replace(llm, spark_thinking=value)
         else:
             new_llm = replace(llm, reasoning_effort=value or None)

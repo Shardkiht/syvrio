@@ -15,7 +15,7 @@ from threading import RLock, current_thread
 
 from .. import __version__
 from ..time import serialize_timestamp, utc_now
-from .config import ConfigError, load_config
+from .config import ConfigError, load_config, set_keyring_error_reporter
 
 _EVENTS = frozenset(
     {
@@ -39,7 +39,9 @@ _EVENTS = frozenset(
         "tui.finalize_failed",
         "session.scan_failed",
         "session.delete_failed",
+        "session.sources_unavailable",
         "web.startup_hook_failed",
+        "backend.startup_hook_failed",
         "degraded.keyring",
         "degraded.tiktoken",
         "degraded.gitsync_state",
@@ -170,6 +172,7 @@ def start_diagnostics(config_file: Path | None = None) -> Path | None:
         _listener = QueueListener(_queue, handler, latency_handler)
         _listener.start()
         _path = path
+        set_keyring_error_reporter(lambda error: record_once("degraded.keyring", error))
         record_event("app.start")
         return path
 
@@ -180,6 +183,7 @@ def stop_diagnostics() -> None:
     with _lock:
         if _listener is None:
             return
+        set_keyring_error_reporter(None)
         record_event("app.stop")
         # QueueListener.stop uses put_nowait for its sentinel: drain first so a
         # full queue cannot prevent shutdown. No producers enqueue under this lock.

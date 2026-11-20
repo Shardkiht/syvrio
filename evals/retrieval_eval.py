@@ -22,6 +22,7 @@ import tempfile
 from pathlib import Path
 
 from syvrio.infra.config import Config, LLMConfig, RetrievalConfig
+from syvrio.memory.schema import Core, render_record
 from syvrio.memory.service import MemoryService
 from syvrio.retrieval import KeywordRetriever
 from syvrio.retrieval.vector import LocalEmbedder, VectorRetriever
@@ -84,15 +85,17 @@ def main() -> None:
         service = MemoryService(config)
         service.init_vault()
         ids: list[str] = []
-        known: set[str] = set()
-        for item in corpus:
-            entry = service.store.append(
-                item["category"], item["text"], source="eval", confidence=1.0, known_ids=known
-            )
-            known.add(entry.id)
-            ids.append(entry.id)
-        print(f"语料 {len(ids)} 条 · 用例 {len(cases)} 例\n")
-
+        by_topic: dict[str, list[str]] = {}
+        for index, item in enumerate(corpus):
+            key = f"fixture-{index}"
+            ids.append(key)
+            record = render_record(Core(id=key, status="active", text=item["text"]),
+                                   extensions=[("recorded_at", "2024-01-01T00:00:00Z")])
+            by_topic.setdefault(item["category"], []).append(record)
+        for category, records in by_topic.items():
+            path = service.store.topic_path(category)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(f"# {category}\n\n" + "\n".join(records), encoding="utf-8")
         retrievers: dict = {"keyword": KeywordRetriever(service.store)}
         if not args.keyword:
             if not LocalEmbedder.available():

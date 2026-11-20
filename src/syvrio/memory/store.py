@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 import hashlib
-import os
+import json
 import re
 import secrets
-import stat
-import tempfile
-from datetime import UTC, date, datetime, time
-from pathlib import Path, PurePosixPath
+from datetime import UTC, datetime
+from pathlib import Path
 
+from ..infra.files import safe_component
 from ..infra.paths import SyvrioPaths, vault_paths
+from ..infra.transaction import VaultTransaction, vault_transaction
 from ..time import parse_timestamp, serialize_timestamp, utc_now
 from .models import Entry, MemoryContext, TopicInfo
 from .schema import (
@@ -17,16 +17,19 @@ from .schema import (
     Core,
     Document,
     SchemaError,
+    _render_fields,
     _span_code,
+    append_record,
+    context_values,
     parse_document,
     render_record,
+    replacements,
 )
 from .turn_undo import capture_file_write
 
 SLUG_RE = re.compile(r"[^\w\u4e00-\u9fff-]+")
 STATUS_ACTIVE = "active"
-STATUS_SUPERSEDED = "superseded"
-STATUS_DELETED = "deleted"
+STATUS_DEPRECATED = "deprecated"
 
 
 def slugify(value: str) -> str:
@@ -38,41 +41,24 @@ def normalize_text(text: str) -> str:
     return re.sub(r"\s+", "", text).strip().lower()
 
 
-def atomic_write(path: Path, payload: bytes) -> None:
+def tracked_write(tx: VaultTransaction, path: Path, payload: bytes) -> None:
     capture_file_write(path, payload)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = None
+    tx.write(path, payload)
+
+
+def read_utf8(path: Path) -> str:
+    if path.resolve() != path.absolute():
+        raise SchemaError(f"Redirected Markdown file: {path.name}.")
     try:
-        with tempfile.NamedTemporaryFile(
-            dir=path.parent, prefix=f".{path.name}.", suffix=".tmp", delete=False
-        ) as handle:
-            temporary = Path(handle.name)
-            if path.exists():
-                os.chmod(temporary, stat.S_IMODE(path.stat().st_mode))
-            handle.write(payload)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
+        return path.read_bytes().decode("utf-8")
+    except FileNotFoundError:
+        return ""
+    except UnicodeDecodeError as exc:
+        raise SchemaError(f"{path}: invalid UTF-8. Save the file as UTF-8.") from exc
 
 
 def _recorded_time(value: str) -> datetime:
-    if not value:
-        return datetime.min.replace(tzinfo=UTC)
-    if len(value) == 10:
-        # Day-precision records have no instant. Use their date as a sort bucket only.
-        return datetime.combine(date.fromisoformat(value), time.min, tzinfo=UTC)
-    return parse_timestamp(value)
-
-
-def _timestamp_line(entry: Entry) -> int:
-    """Line of syvrio.recorded_at, which sits below the record's opening line."""
-    offset = entry.raw_markdown.find("syvrio.recorded_at")
-    if offset < 0:
-        return entry.line
-    return entry.line + entry.raw_markdown.count("\n", 0, offset)
+    return parse_timestamp(value) if value else datetime.min.replace(tzinfo=UTC)
 
 
 class MemoryStore:
@@ -80,29 +66,29 @@ class MemoryStore:
         self.paths = vault if isinstance(vault, SyvrioPaths) else vault_paths(vault)
         self.vault = self.paths.vault_dir
         self.root = self.paths.memories_dir
+        self.changes_path = self.vault / "records" / "memory-changes.jsonl"
 
     def ensure(self) -> None:
+        if self.root.resolve() != self.root.absolute():
+            raise SchemaError("Redirected memories directory.")
         self.root.mkdir(parents=True, exist_ok=True)
 
     def _files(self) -> list[Path]:
-        if self.root.is_symlink():
-            raise SchemaError("memories directory cannot be a symlink")
-        return sorted(self.root.rglob("*.md"))
+        if self.root.resolve() != self.root.absolute():
+            raise SchemaError("Redirected memories directory.")
+        pending = self.root / "pending.md"
+        return sorted(path for path in self.root.rglob("*.md") if path != pending)
 
     def _topic(self, path: Path) -> str:
         return path.relative_to(self.vault).as_posix()
 
     def topic_path(self, topic: str) -> Path:
-        parts = PurePosixPath(topic.strip()).parts
-        if (
-            not parts
-            or topic.startswith("/")
-            or "\\" in topic
-            or ".." in parts
-            or any(part.startswith(".") for part in parts)
-        ):
-            raise ValueError("invalid memory topic")
-        if parts[0] == "memories" and len(parts) >= 3 and parts[-1].endswith(".md"):
+        parts = topic.strip().split("/")
+        if not all(safe_component(part) for part in parts):
+            raise ValueError("Invalid memory topic.")
+        if parts[0] == "memories":
+            if len(parts) < 3 or not parts[-1].endswith(".md"):
+                raise ValueError("Use a topic such as general/reading.")
             path = self.vault.joinpath(*parts)
         elif len(parts) > 1:
             path = self.root.joinpath(*(slugify(p) for p in parts[:-1]), f"{slugify(parts[-1])}.md")
@@ -110,160 +96,191 @@ class MemoryStore:
             slug = slugify(parts[0])
             matches = [p for p in self._files() if p.stem == slug]
             if len(matches) > 1:
-                raise ValueError("ambiguous topic; use its vault-relative path")
+                raise ValueError("Ambiguous topic; use its vault-relative path.")
             path = matches[0] if matches else self.root / "general" / f"{slug}.md"
         self._assert_path(path)
         return path
 
     def _assert_path(self, path: Path) -> None:
-        if path.is_symlink() or not path.resolve().is_relative_to(self.root.resolve()):
-            raise SchemaError("memory path points outside memories or is a symlink")
+        if path == self.root / "pending.md":
+            raise SchemaError("The pending queue is reserved for unreviewed drafts.")
+        if (
+            path.resolve() != path.absolute()
+            or not path.is_relative_to(self.root)
+            or not all(safe_component(p) for p in path.relative_to(self.root).parts)
+        ):
+            raise SchemaError("Invalid or redirected memory path.")
 
     def fingerprint(self) -> tuple[tuple[str, str], ...]:
-        items = []
-        for path in self._files():
-            self._assert_path(path)
-            items.append((self._topic(path), hashlib.sha256(path.read_bytes()).hexdigest()))
-        return tuple(items)
+        with vault_transaction(self.paths):
+            items = []
+            for path in self._files():
+                self._assert_path(path)
+                items.append((self._topic(path), hashlib.sha256(path.read_bytes()).hexdigest()))
+            return tuple(items)
 
     def document(self, path: Path) -> Document:
-        self._assert_path(path)
-        relative = self._topic(path)
-        try:
-            raw = path.read_bytes().decode("utf-8") if path.exists() else ""
-        except UnicodeDecodeError as exc:
-            raise SchemaError(
-                f"{relative}: invalid UTF-8. Save the memory file as UTF-8 and try again."
-            ) from exc
-        document = parse_document(raw, relative, relative)
-        for record in document.records:
-            try:
-                _recorded_time(record.entry.timestamp)
-            except ValueError as exc:
-                raise SchemaError(
-                    f"{relative}:{_timestamp_line(record.entry)}: invalid syvrio.recorded_at "
-                    f"{record.entry.timestamp!r}; absolute timestamps need an explicit UTC "
-                    "offset. A vault migrated from v1 must be normalized first: "
-                    "python scripts/migrate_timestamps_to_utc.py --vault <vault> "
-                    "--runtime <runtime> --source-timezone <IANA> --apply --backup-dir <new>"
-                ) from exc
-        return document
+        with vault_transaction(self.paths):
+            self._assert_path(path)
+            relative = self._topic(path)
+            return parse_document(read_utf8(path), relative, relative)
 
     @staticmethod
     def new_entry_id(stamp: datetime | None = None) -> str:
         stamp = stamp or utc_now()
         return f"mem-{stamp:%Y%m%d-%H%M%S}-{secrets.token_hex(4)}"
 
+    def _change(self, tx, entry_id, change):
+        path = self.changes_path
+        row = json.dumps({"id": entry_id, "change": change}, ensure_ascii=False) + "\n"
+        if path.resolve() != path.absolute():
+            raise SchemaError("Redirected memory change log.")
+        old = path.read_bytes() if path.exists() else b""
+        if old and not old.endswith(b"\n"):
+            raise SchemaError("Incomplete memory change log.")
+        tracked_write(tx, path, old + row.encode("utf-8"))
+
     def append(
         self,
         topic: str,
         text: str,
         *,
-        source: str = "chat",
-        confidence: float = 1.0,
-        note: str | None = None,
         when: datetime | None = None,
         title: str | None = None,
         extra: dict[str, str] | None = None,
         entry_id: str | None = None,
-        supersedes: str | None = None,
-        known_ids: set[str] | None = None,
         context: MemoryContext | None = None,
+        supersedes: str | None = None,
     ) -> Entry:
-        stamp = when or utc_now()
-        if known_ids is None:
-            known_ids = {entry.id for entry in self.entries(include_inactive=True)}
-        if entry_id is not None and entry_id in known_ids:
-            raise ValueError("duplicate memory id")
-        while entry_id is None or entry_id in known_ids:
-            entry_id = self.new_entry_id(stamp)
-        path = self.topic_path(topic)
-        relative = self._topic(path)
-        original = self.document(path).raw_markdown
-        newline = "\r\n" if "\r\n" in original else "\n"
-        extensions = {
-            "recorded_at": serialize_timestamp(stamp.replace(microsecond=0)),
-            **{key: value for key, value in (extra or {}).items() if key != "recorded_at"},
-            "supersedes": supersedes,
-            "note": note,
-        }
-        record = render_record(
-            text.strip(),
-            Core(id=entry_id, status=STATUS_ACTIVE, source=source, confidence=confidence),
-            context.markdown_fields() if context else (),
-            [(f"syvrio.{key}", value) for key, value in extensions.items() if value],
-            newline,
-        )
-        prefix = (
-            original + (newline if original.endswith(("\n", "\r")) else newline * 2)
-            if original
-            else (f"# {' '.join((title or path.stem).splitlines())}{newline}{newline}")
-        )
-        output = prefix + record
-        parsed = parse_document(output, relative, relative)
-        if not parsed.records or parsed.records[-1].entry.id != entry_id:
-            raise SchemaError(f"{relative}: appended record is not a complete Markdown list item")
-        atomic_write(path, output.encode("utf-8"))
-        return parsed.records[-1].entry
+        with vault_transaction(self.paths) as tx:
+            stamp = when or utc_now()
+            existing = {entry.id for entry in self.entries(include_inactive=True)}
+            if entry_id is not None and entry_id in existing:
+                raise ValueError("duplicate memory id")
+            while entry_id is None or entry_id in existing:
+                entry_id = self.new_entry_id(stamp)
+            path = self.topic_path(topic)
+            relative = self._topic(path)
+            original = self.document(path).raw_markdown
+            nl = "\r\n" if "\r\n" in original else "\n"
+            extensions = dict(extra or {})
+            extensions["recorded_at"] = serialize_timestamp(stamp)
+            if supersedes is not None:
+                if supersedes not in existing:
+                    raise ValueError("Unknown superseded memory id.")
+                extensions["supersedes"] = supersedes
+            record = render_record(
+                Core(id=entry_id, status=STATUS_ACTIVE, text=text),
+                context.markdown_fields() if context else (),
+                extensions.items(),
+                nl,
+            )
+            output = append_record(original, record, title or path.stem, nl)
+            parsed = parse_document(output, relative, relative)
+            entry = parsed.records[-1].entry
+            if entry.id != entry_id or entry.text != text:
+                raise SchemaError(f"{relative}: failed to round-trip appended memory.")
+            tracked_write(tx, path, output.encode("utf-8"))
+            self._change(tx, entry_id, "created")
+            return entry
 
     def entries(self, topic: str | None = None, include_inactive: bool = False) -> list[Entry]:
-        if not self.root.exists():
-            return []
-        paths = [self.topic_path(topic)] if topic else self._files()
-        ids: set[str] = set()
-        result = []
-        for path in paths:
-            for record in self.document(path).records:
-                entry = record.entry
-                if entry.id in ids:
-                    raise SchemaError(
-                        f"{entry.source_path}:{entry.line}: duplicate memory id across topics"
-                    )
-                ids.add(entry.id)
-                if include_inactive or entry.status == STATUS_ACTIVE:
-                    result.append(entry)
-        return result
+        with vault_transaction(self.paths):
+            ids = set()
+            result = []
+            for path in [self.topic_path(topic)] if topic else self._files():
+                for record in self.document(path).records:
+                    entry = record.entry
+                    if entry.id in ids:
+                        raise SchemaError(
+                            f"{entry.source_path}:{entry.line}: duplicate memory id across topics"
+                        )
+                    ids.add(entry.id)
+                    if include_inactive or entry.status == STATUS_ACTIVE:
+                        result.append(entry)
+            return result
 
     def find(self, entry_id: str) -> Entry | None:
         return next((e for e in self.entries(include_inactive=True) if e.id == entry_id), None)
 
-    def set_status(self, entry_id: str, status: str) -> bool:
-        if status not in STATUSES:
-            raise ValueError("invalid memory status")
-        entry = self.find(entry_id)
-        if entry is None:
-            return False
-        path = self.topic_path(entry.topic)
-        document = self.document(path)
-        record = next(r for r in document.records if r.entry.id == entry_id)
-        if record.entry.status != status:
-            raw = document.raw_markdown
-            atomic_write(
-                path,
-                (raw[: record.status_start] + _span_code(status) + raw[record.status_end :]).encode(
-                    "utf-8"
-                ),
+    def update(
+        self, entry_id: str, *, context: MemoryContext | None = None, status: str | None = None
+    ) -> Entry:
+        if status is not None and status not in STATUSES:
+            raise ValueError("Invalid memory status.")
+        with vault_transaction(self.paths) as tx:
+            entry = self.find(entry_id)
+            if entry is None:
+                raise ValueError("Unknown memory id.")
+            path = self.topic_path(entry.topic)
+            doc = self.document(path)
+            block = next(record.block for record in doc.records if record.entry.id == entry_id)
+            raw = doc.raw_markdown
+            fields = block.values("Context")
+            add = {}
+            for key, value in context.markdown_fields() if context else ():
+                if key in fields and fields[key] != value:
+                    raise ValueError(f"Context field {key} already has a value.")
+                if key not in fields:
+                    add[key] = value
+            edits = []
+            change = {}
+            if status is not None and status != entry.status:
+                left, right = block.positions["Core", "status"]
+                edits.append((left, right, _span_code(status)))
+                change["status"] = status
+            if add:
+                MemoryContext.model_validate(context_values(fields | add))
+                nl = "\r\n" if "\r\n" in block.raw else "\n"
+                pos = block.headings["Extensions"]
+                insert = _render_fields(add.items(), "  ", nl) + nl
+                if "Context" not in block.sections:
+                    insert = "  **Context**" + nl + insert
+                edits.append((pos, pos, insert))
+                change["context"] = context_values(add)
+            if not edits:
+                return entry
+            output = replacements(raw, edits)
+            updated = next(
+                r.entry
+                for r in parse_document(output, entry.source_path, entry.topic).records
+                if r.entry.id == entry_id
             )
-        return True
+            tracked_write(tx, path, output.encode("utf-8"))
+            self._change(tx, entry_id, change)
+            return updated
+
+    def fill_context(self, entry_id: str, context: MemoryContext) -> Entry:
+        return self.update(entry_id, context=context)
+
+    def set_status(self, entry_id: str, status: str) -> bool:
+        with vault_transaction(self.paths):
+            if self.find(entry_id) is None:
+                return False
+            self.update(entry_id, status=status)
+            return True
 
     def topics(self) -> list[TopicInfo]:
-        result = []
-        for path in self._files():
-            document = self.document(path)
-            title = next(
-                (
-                    line[2:].strip()
-                    for line in document.raw_markdown.splitlines()
-                    if line.startswith("# ")
-                ),
-                path.stem,
-            )
-            active = sum(r.entry.status == STATUS_ACTIVE for r in document.records)
-            modified = datetime.fromtimestamp(path.stat().st_mtime).date().isoformat()
-            result.append(
-                TopicInfo(topic=self._topic(path), title=title, entries=active, updated=modified)
-            )
-        return result
+        with vault_transaction(self.paths):
+            result = []
+            for path in self._files():
+                document = self.document(path)
+                title = next(
+                    (
+                        line[2:].strip()
+                        for line in document.raw_markdown.splitlines()
+                        if line.startswith("# ")
+                    ),
+                    path.stem,
+                )
+                active = sum(r.entry.status == STATUS_ACTIVE for r in document.records)
+                modified = datetime.fromtimestamp(path.stat().st_mtime).date().isoformat()
+                result.append(
+                    TopicInfo(
+                        topic=self._topic(path), title=title, entries=active, updated=modified
+                    )
+                )
+            return result
 
     def has_text(self, text: str) -> bool:
         target = normalize_text(text)

@@ -21,6 +21,7 @@ export interface StreamEvent {
   type: EventType;
   turn_id?: number | null;
   session_id?: string | null;
+  message_id?: string;
   text?: string;
   name?: string | null;
   seconds?: number | null;
@@ -72,6 +73,11 @@ export interface DeleteSessionResponse {
   deleted: boolean;
 }
 
+export interface SessionDeletionPreview {
+  pending: Array<{ id: string; text: string }>;
+  revision: string;
+}
+
 export interface ProviderInfo {
   key: string;
   label: string;
@@ -82,6 +88,11 @@ export interface ProviderInfo {
 
 export interface ProviderListResponse {
   items: ProviderInfo[];
+}
+
+export interface ModelSearchResponse {
+  items: Array<{ provider: string; model: string; label: string; current: boolean }>;
+  unavailable_providers: string[];
 }
 
 export type ProviderAction = 'set_key' | 'update_key' | 'set_endpoint' | 'remove';
@@ -122,6 +133,7 @@ export interface ReasoningBlock {
 }
 
 export interface HistoryItem {
+  attachments?: { id: string; name: string; size: number; media_type: string }[];
   id: string;
   role: 'user' | 'assistant' | 'tool' | 'summary';
   content: string;
@@ -131,6 +143,11 @@ export interface HistoryItem {
   tool_name: string | null;
   tool_ok: boolean | null;
   interrupted: boolean;
+}
+
+export interface MessageDraft {
+  text: string;
+  attachments: { id: string; message_id: string; name: string; media_type: string }[];
 }
 
 export interface HistoryResponse {
@@ -175,6 +192,7 @@ export interface CommandCatalogResponse {
 
 export interface CommandRequest {
   line: string;
+  expected_message_id?: string;
   pending_text?: string;
   inference_text?: string;
   session_id: string | null;

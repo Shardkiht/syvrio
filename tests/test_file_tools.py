@@ -47,25 +47,32 @@ def test_file_read_redacts_before_tool_output(service, tmp_path):
 def test_import_is_preview_by_default_and_reports_remaining_chunks(service, tmp_path, monkeypatch):
     path = tmp_path / "synthetic.txt"
     path.write_text("合成笔记" * 2000, encoding="utf-8")
+    from syvrio.agent.evidence import RecallContext
+
     calls = []
+    candidate = Candidate(text="合成用户偏好茶饮", topic="preferences")
 
-    def extract(text, **kwargs):
-        calls.append(kwargs)
-        return service._adjudicate(
-            [Candidate(text="合成用户偏好茶饮", confidence=0.95)],
-            kwargs["source"],
-            dry_run=kwargs["dry_run"],
-        )
+    def prepare(text):
+        calls.append(text)
+        return service.evidence_version(include_pending=True), [candidate]
 
-    monkeypatch.setattr(service, "import_text", extract)
-    handler = file_handlers(service, [path])["import_file"]
-    result = handler({"path": str(path)})
-    assert result["next_chunk"] == 2
+    monkeypatch.setattr(service, "prepare_import", prepare)
+    sessions = SessionStore(service.paths)
+    session = sessions.create()
+    sessions.append(session, {"type": "message", "role": "user", "content": "请导入附件", "id": "m-file"})
+    evidence = RecallContext(service)
+    handler = file_handlers(service, [path], evidence=evidence, session=session)["import_file"]
+    args = {"path": str(path)}
+    result = handler(args)
+    assert result["next_chunk"] == 2 and result["drafts"][0]["text"] == candidate.text
     assert service.store.entries() == []
-    assert calls[0]["dry_run"] is True
-    result = handler({"path": str(path), "apply": True})
-    assert result["mode"] == "applied"
-    assert service.store.entries()[0].metadata["source"].endswith("#chunk:1")
+    evidence.begin_model_request()
+    review = handler({**args, "apply": True})
+    assert review["status"] == "review_required" and service.store.entries() == []
+    evidence.begin_model_request()
+    result = handler({**args, "apply": True})
+    assert result["mode"] == "applied" and len(calls) == 1
+    assert service.store.entries()[0].source_message_id == "m-file"
 
 
 def test_tool_registration_is_scoped_to_current_turn(service, tmp_path):

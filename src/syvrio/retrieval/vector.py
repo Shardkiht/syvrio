@@ -3,14 +3,17 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import os
+import tempfile
 import time
 from collections.abc import Callable
+from pathlib import Path
+from threading import RLock
 
 import numpy as np
 
 from ..infra.diagnostics import record_event
 from ..memory.models import Entry
-from ..memory.store import MemoryStore, normalize_text
+from ..memory.store import MemoryStore
 from .base import SearchHit
 
 MIN_SCORE = 0.05
@@ -19,7 +22,7 @@ RETRY_COOLDOWN_SECONDS = 60.0
 
 
 def text_hash(text: str) -> str:
-    return hashlib.sha256(normalize_text(text).encode("utf-8")).hexdigest()[:16]
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def _unit(matrix: np.ndarray) -> np.ndarray:
@@ -74,6 +77,7 @@ class VectorRetriever:
         self._degraded = False
         self._clock = clock
         self._retry_at = 0.0
+        self._index_lock = RLock()
 
     @property
     def degraded(self) -> bool:
@@ -86,6 +90,10 @@ class VectorRetriever:
 
     def sync(self, *, expected_dim: int | None = None) -> None:
         """与记忆条目对齐：复用未变更向量，只为新增/变更条目计算 embedding。"""
+        with self._index_lock:
+            self._sync(expected_dim=expected_dim)
+
+    def _sync(self, *, expected_dim: int | None = None) -> None:
         if self._degraded and self._clock() < self._retry_at:
             return
         fingerprint = self.store.fingerprint()
@@ -129,7 +137,7 @@ class VectorRetriever:
                     self._mark_degraded()
                     return
                 if keep and expected_dim is None and vectors.shape[1] != cached.shape[1]:
-                    self.sync(expected_dim=vectors.shape[1])
+                    self._sync(expected_dim=vectors.shape[1])
                     return
                 if rows and vectors.shape[1] != rows[0].shape[1]:
                     raise ValueError("embedding 返回维度与已有向量不一致")
@@ -149,6 +157,11 @@ class VectorRetriever:
             self._save_cache(self._entries, matrix)
 
     def search(self, query: str, limit: int = 10) -> list[SearchHit]:
+        # Keep the matrix and its entry IDs from one revision for this query.
+        with self._index_lock:
+            return self._search(query, limit)
+
+    def _search(self, query: str, limit: int) -> list[SearchHit]:
         query = query.strip()
         if not query:
             return []
@@ -224,9 +237,10 @@ class VectorRetriever:
         if matrix is None:
             return
         self.cache_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.cache_path.with_name(self.cache_path.name + ".tmp")
+        tmp: Path | None = None
         try:
-            with open(tmp, "wb") as handle:
+            with tempfile.NamedTemporaryFile(dir=self.cache_path.parent, delete=False) as handle:
+                tmp = Path(handle.name)
                 np.savez_compressed(
                     handle,
                     model=np.array(self.embedder.model_id),
@@ -238,6 +252,7 @@ class VectorRetriever:
         except OSError:
             # 写盘失败不影响本次检索；下次进程启动会重新计算缺失向量。
             try:
-                tmp.unlink(missing_ok=True)
+                if tmp is not None:
+                    tmp.unlink(missing_ok=True)
             except OSError:
                 pass

@@ -41,7 +41,12 @@ def estimate_messages_tokens(messages: list[dict]) -> int:
     total = 0
     for message in messages:
         total += 4
-        total += estimate_tokens(str(message.get("content") or ""))
+        content = message.get("content")
+        if isinstance(content, list):
+            # Estimate image blocks independently of their base64 transport encoding.
+            total += sum(1024 if part.get("type") == "image_url" else estimate_tokens(part.get("text", "")) for part in content)
+        else:
+            total += estimate_tokens(str(content or ""))
         if reasoning := message.get("reasoning_content"):
             total += estimate_tokens(reasoning)
         for call in message.get("tool_calls") or []:

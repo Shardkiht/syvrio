@@ -94,7 +94,7 @@ def seed_vault(vault: Path) -> int:
     root.mkdir(parents=True)
     for topic, entries in topics.items():
         records = [
-            render_record(text, Core(id=ident, status="active", source="eval", confidence=1.0))
+            render_record(Core(id=ident, status="active", text=text), extensions=[("recorded_at", "2024-01-01T00:00:00Z")])
             for ident, text in entries
         ]
         (root / f"{topic}.md").write_text(

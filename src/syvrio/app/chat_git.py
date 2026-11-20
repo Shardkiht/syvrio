@@ -13,26 +13,6 @@ from .git_screen import GitScreen
 
 
 class ChatGitMixin:
-    def _start_git_scheduler(self) -> None:
-        self._git_screen: GitScreen | None = None
-        self._git_sync_running = False
-        self._git_last_notice: str | None = None
-        # 轻量进程内调度：TUI 不运行时不会主动执行，启动补执行负责错过的计划。
-        self.set_interval(30, self._git_scheduler_tick)
-
-    def _git_scheduler_tick(self) -> None:
-        if not getattr(self, "_reflection_ready", False):
-            return
-        if getattr(self, "_git_sync_running", False) or self.application.git.running:
-            return
-        try:
-            due = self.application.git.due()
-        except Exception as exc:
-            record_event("git_sync.scheduler_failed", exc)
-            return
-        if due:
-            self.start_git_sync(None, trigger="scheduled")
-
     # ---------- /git 界面 ----------
 
     def open_git_screen(self) -> None:

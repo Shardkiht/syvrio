@@ -11,7 +11,7 @@ from syvrio.memory.extractor import (
     parse_import,
     split_chunks,
 )
-from syvrio.memory.models import Candidate, ExtractionResult
+from syvrio.memory.models import Candidate, ExtractionResult, MemoryDraft
 from syvrio.memory.service import MemoryService
 
 pytestmark = pytest.mark.memory
@@ -29,12 +29,8 @@ def service(tmp_path) -> MemoryService:
 
 
 def test_parse_import_accepts_valid_payload():
-    result = parse_import(
-        '{"memories":[{"text":"偏好清淡风味","topic":"preferences","confidence":0.9}]}'
-    )
-
-    assert len(result.memories) == 1
-    assert result.memories[0].topic == "preferences"
+    result = parse_import('{"memories":[{"text":"偏好清淡风味","topic":"preferences"}]}')
+    assert len(result.memories) == 1 and result.memories[0].topic == "preferences"
 
 
 def test_import_extractor_preserves_explicit_context(monkeypatch):
@@ -44,12 +40,12 @@ def test_import_extractor_preserves_explicit_context(monkeypatch):
     def fake_complete(config, messages, **kwargs):
         captured.extend(messages)
         return response(
-            '{"memories":[{"text":"2024年参观合成展馆","confidence":0.95,"context":{"event_time":"2024","location":"合成展馆","location_kind":"event"}}]}'
+            '{"memories":[{"text":"2024年参观合成展馆","context":{"event_time":"2024","location":"合成展馆"}}]}'
         )
 
     svc_result = ImportExtractor(LLMConfig(), completer=fake_complete).extract("2024年参观合成展馆")
     assert svc_result.memories[0].context.event_time == "2024"
-    assert "禁止用抽取或写入当天" in captured[0]["content"]
+    assert "没有可靠锚点" in captured[0]["content"]
 
 
 def test_parse_import_rejects_invalid_item():
@@ -66,7 +62,7 @@ def test_import_extractor_retries_with_feedback(monkeypatch):
     monkeypatch.setattr(LLMConfig, "api_key", lambda self: "test-key")
     outputs = [
         response("不是 JSON"),
-        response('{"memories":[{"text":"瑞幸偏拿铁","topic":"preferences","confidence":0.9}]}'),
+        response('{"memories":[{"text":"瑞幸偏拿铁","topic":"preferences"}]}'),
     ]
     calls = []
 
@@ -100,51 +96,45 @@ def test_import_extractor_requires_api_key():
         ImportExtractor(LLMConfig()).extract("档案内容")
 
 
-def test_import_text_adjudicates_candidates(tmp_path):
+def test_import_routes_explicit_questions_and_protects_credentials(tmp_path):
     svc = service(tmp_path)
-    svc.store.append("preferences", "已经存在的记忆", source="seed")
-    extractor = _StaticResult(
-        [
-            Candidate(text="咖啡偏好清淡风味", topic="preferences", confidence=0.95),
-            Candidate(text="当时记录未验证：曾询问茶叶保存", topic="learning", confidence=0.5),
-            Candidate(text="密码是 abcd1234", topic="identity", confidence=0.9),
-            Candidate(text="已经存在的记忆", topic="preferences", confidence=0.9),
-        ]
-    )
-
-    result = svc.import_text("档案内容", source="import:test", extractor=extractor)
-
-    assert len(result.admitted) == 1
-    assert len(result.queued) == 1
-    assert len(result.duplicates) == 1
-    assert len(result.blocked) == 1
-    assert svc.store.entries()[0].metadata["source"] == "seed"
-    assert "咖啡偏好清淡" in svc.store.entries()[-1].text
-    assert svc.pending()[0].reason.startswith("low confidence")
+    existing = svc.note("已经存在的记忆", topic="preferences")
+    extractor = _StaticResult([
+        Candidate(text="咖啡偏好清淡风味", topic="preferences"),
+        Candidate(text="当时记录未验证：曾询问茶叶保存", topic="learning", question="是本人要保存茶叶吗？"),
+        Candidate(text="密码是 abcd1234", topic="identity"),
+        Candidate(text=existing.text, topic="preferences"),
+    ])
+    result = svc.import_text("档案内容", extractor=extractor)
+    assert [e.text for e in result.admitted] == ["咖啡偏好清淡风味"]
+    assert [p.question for p in result.queued] == ["是本人要保存茶叶吗？"]
+    assert len(result.duplicates) == len(result.blocked) == 1
+    assert len(svc.current_facts()) == 2 and len(svc.pending()) == 1
 
 
 def test_import_text_dry_run_writes_nothing(tmp_path):
     svc = service(tmp_path)
-    extractor = _StaticResult([Candidate(text="干跑条目", topic="preferences", confidence=0.95)])
-
+    extractor = _StaticResult([Candidate(text="干跑条目", topic="preferences")])
     result = svc.import_text("档案内容", dry_run=True, extractor=extractor)
-
-    assert result.admitted[0].id == "(dry-run)"
-    assert svc.store.entries() == []
-    assert svc.pending() == []
+    assert [item.text for item in result.admitted] == ["干跑条目"]
+    assert not svc.store.entries() and not svc.pending()
 
 
-def test_import_text_detects_conflicts(tmp_path):
+def test_import_uses_recalled_facts_and_active_questions_for_semantic_review(tmp_path):
+    import json
     svc = service(tmp_path)
-    svc.store.append("housing", "在找市区的房子，预算 4000 以内", source="seed")
-    extractor = _StaticResult(
-        [Candidate(text="在找市区的房子，预算 5000 以内", topic="housing", confidence=0.95)]
-    )
-
-    result = svc.import_text("档案内容", extractor=extractor)
-
-    assert result.admitted == []
-    assert result.queued[0].conflict_with is not None
+    old = svc.note("租房预算 4000", topic="housing")
+    existing = svc.create_pending(MemoryDraft(text="租房地点未定", topic="housing"), "在哪租房？", [])
+    class Review:
+        def extract(self, text, context):
+            recalled = json.loads(context)
+            assert old.id in {r["id"] for r in recalled["memories"]}
+            assert existing.id in {r["id"] for r in recalled["pending"]}
+            return ExtractionResult(memories=[Candidate(text="租房预算 5000", topic="housing",
+                                      question="这是否取代原有的预算？", related_ids=[old.id])])
+    result = svc.import_text("租房预算", extractor=Review())
+    assert not result.admitted and result.queued[0].related_ids == [old.id]
+    assert svc.store.find(old.id).status == "active"
 
 
 def test_split_chunks_respects_boundaries():
@@ -161,7 +151,7 @@ class _StaticResult:
 
         self.result = ExtractionResult(memories=memories)
 
-    def extract(self, text: str) -> object:
+    def extract(self, text: str, context: str = "") -> object:
         return self.result
 
 
@@ -204,7 +194,7 @@ def test_import_text_passes_store_topics_to_extractor(tmp_path, monkeypatch):
         def __init__(self, config, topics=None):
             captured["topics"] = topics or []
 
-        def extract(self, text):
+        def extract(self, text, context=""):
             return ExtractionResult(memories=[])
 
     monkeypatch.setattr(service_module, "ImportExtractor", FakeImportExtractor)
@@ -215,4 +205,4 @@ def test_import_text_passes_store_topics_to_extractor(tmp_path, monkeypatch):
 
     service.import_text("新内容")
 
-    assert captured["topics"] == ["memories/general/preferences.md"]
+    assert captured["topics"] == [service.store.topics()[0].topic]

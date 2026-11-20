@@ -43,6 +43,14 @@ export function PlusIcon(props: IconProps) {
   );
 }
 
+export function EditIcon(props: IconProps) {
+  return <Svg {...props}><path d="m14.5 5.5 4 4M4 20l4.7-1 12-12a2.8 2.8 0 0 0-4-4l-12 12L4 20Z" /></Svg>;
+}
+
+export function UndoIcon(props: IconProps) {
+  return <Svg {...props}><path d="m9 4-5 5 5 5M5 9h9a6 6 0 0 1 0 12" /></Svg>;
+}
+
 export function CommandsIcon(props: IconProps) {
   return (
     <Svg {...props}>

@@ -32,7 +32,7 @@ describe('theme preference', () => {
     applyTheme('dark');
 
     expect(document.documentElement.dataset.theme).toBe('dark');
-    expect(document.querySelector('meta[name="theme-color"]')?.getAttribute('content')).toBe('#0e1014');
+    expect(document.querySelector('meta[name="theme-color"]')?.getAttribute('content')).toBe('#292c32');
     expect(readTheme()).toBe('dark');
   });
 
@@ -43,7 +43,7 @@ describe('theme preference', () => {
     const unwatch = watchSystemTheme(() => applyTheme('auto'));
 
     expect(document.documentElement.hasAttribute('data-theme')).toBe(false);
-    expect(document.querySelector('meta[name="theme-color"]')?.getAttribute('content')).toBe('#0e1014');
+    expect(document.querySelector('meta[name="theme-color"]')?.getAttribute('content')).toBe('#292c32');
     system.setDark(false);
     expect(document.querySelector('meta[name="theme-color"]')?.getAttribute('content')).toBe('#f6f7f9');
 

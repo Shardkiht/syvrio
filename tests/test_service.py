@@ -6,8 +6,15 @@ import pytest
 
 from syvrio.infra.config import Config, LLMConfig, RetrievalConfig
 from syvrio.memory.extractor import StaticExtractor
-from syvrio.memory.models import Candidate, ExtractionResult, MemoryContext, PendingItem
+from syvrio.memory.models import (
+    Candidate,
+    ExtractionResult,
+    MemoryContext,
+    MemoryDraft,
+    PendingItem,
+)
 from syvrio.memory.service import MemoryService
+from syvrio.session import SessionStore
 
 pytestmark = pytest.mark.memory
 
@@ -22,70 +29,116 @@ def make_service(tmp_path, candidates):
     return service
 
 
-@pytest.mark.parametrize("confidence", [0.95, 0.5])
-def test_context_survives_admission_and_pending_approval(tmp_path, confidence):
-    context = MemoryContext(event_time="2024-06", time_text="2024年6月")
-    svc = make_service(
-        tmp_path, [Candidate(text="2024年6月参加合成展览", confidence=confidence, context=context)]
+def draft(text, topic="misc", **context):
+    return MemoryDraft(
+        text=text, topic=topic, context=MemoryContext(**context) if context else None
     )
-    result = svc.memorize("合成对话", session_id="s-test", message_id="m-test")
-    if result.queued:
-        assert svc.pending()[0].context == context
-        entry = svc.approve(result.queued[0].id)
+
+
+def message_source(service, content):
+    sessions = SessionStore(service.paths)
+    session = sessions.create()
+    sessions.append(
+        session, {"type": "message", "role": "user", "id": "m-test", "content": content}
+    )
+    return {"session_id": session.id, "message_id": "m-test"}
+
+
+@pytest.mark.parametrize("question", [None, "是在哪个展馆？"])
+def test_context_and_trusted_source_survive_import_and_approval(tmp_path, question):
+    context = MemoryContext(event_time="2024-06", emotion={"event": "紧张", "recollection": "开心"})
+    candidate = Candidate(text="参观展览", topic="events", context=context, question=question)
+    svc = make_service(tmp_path, [candidate])
+    original = "2024年6月参加展览时紧张，现在想起来开心。"
+    source = message_source(svc, original)
+    version, candidates = svc.prepare_import(original, extractor=svc.extractor)
+    result = svc.apply_import(candidates, version, **source)
+    if question:
+        (queued,) = result.queued
+        assert svc.queue.decode(svc.queue.pending_path.read_bytes()) == [queued]
+        assert queued.context == context and not result.admitted
+        entry = svc.approve(queued.id)
     else:
-        entry = result.admitted[0]
-        assert result.to_dict()["admitted"][0]["context"]["event_time"] == "2024-06"
+        (entry,) = result.admitted
+        assert result.to_dict()["admitted"][0]["context"]["emotion"] == context.emotion.model_dump(
+            exclude_none=True
+        )
     assert svc.store.find(entry.id).context == context
-    assert entry.metadata["session"] == "s-test"
-    assert entry.metadata["message"] == "m-test"
+    assert (
+        entry.source_session_id == source["session_id"]
+        and entry.source_message_id == source["message_id"]
+    )
+    assert svc.read_memory_source(entry.id)["message"]["content"] == original
+    assert svc.memory_referencing_session(source["session_id"]) == entry.id
 
 
-def test_approve_rewrite_drops_stale_context(tmp_path):
+def test_import_dry_run_and_duplicate_retry(tmp_path):
     svc = make_service(
         tmp_path,
         [
             Candidate(
-                text="2024年参观合成展馆",
-                confidence=0.5,
-                context=MemoryContext(
-                    event_time="2024", location="合成展馆", location_kind="event"
-                ),
-            )
+                text="有过紧张的感受",
+                topic="events",
+                context=MemoryContext(emotion={"event": "紧张"}),
+            ),
+            Candidate(text="也许在附近", topic="location", question="具体在哪里？"),
         ],
     )
-    item = svc.memorize("合成对话").queued[0]
-    entry = svc.approve(item.id, text_override="2025年参观合成展馆")
-    assert entry.context is None
-    resolved = json.loads(svc.queue.resolved_path.read_text(encoding="utf-8"))
-    assert resolved["context"]["event_time"] == "2024"
+    result = svc.import_text("外部材料", dry_run=True, extractor=svc.extractor)
+    assert result.to_dict()["admitted"][0]["context"] == {"emotion": {"event": "紧张"}}
+    assert [p.text for p in result.queued] == ["也许在附近"]
+    assert not svc.pending() and not svc.current_facts() and not svc.store.changes_path.exists()
+    saved = svc.import_text("外部材料", extractor=svc.extractor)
+    again = svc.import_text("外部材料", extractor=svc.extractor)
+    assert again.duplicates == ["有过紧张的感受"] and not again.admitted
+    assert again.queued == saved.queued and len(svc.pending()) == 1
+    assert len(svc.store.changes_path.read_bytes().splitlines()) == 1
 
 
-def test_context_credentials_block_before_admission_or_queue(tmp_path):
-    svc = make_service(
-        tmp_path,
-        [
-            Candidate(
-                text="合成事件",
-                confidence=0.5,
-                context=MemoryContext(location="密码是 synthetic-only", location_kind="event"),
-            )
-        ],
-    )
-    result = svc.memorize("合成对话")
-    assert result.blocked == ["合成事件"]
-    assert svc.pending() == [] and svc.store.entries() == []
+def test_import_rejects_stale_evidence_across_call_and_retries_fresh(tmp_path):
+    svc = make_service(tmp_path, [Candidate(text="导入的事实", topic="misc")])
+    stale, candidates = svc.prepare_import("材料", extractor=svc.extractor)
+    svc.note("读取后发生了另一次写入")
+    with pytest.raises(ValueError, match="fresh evidence"):
+        svc.apply_import(candidates, stale)
+    assert [r.text for r in svc.current_facts()] == ["读取后发生了另一次写入"]
+    assert svc.import_text("材料", extractor=svc.extractor).admitted[0].text == "导入的事实"
 
 
-def test_import_dry_run_includes_context_without_writing(tmp_path):
+def test_source_identity_is_idempotent_without_sharing_unrelated_messages(tmp_path):
     svc = make_service(tmp_path, [])
-    candidate = Candidate(
-        text="2024年合成事件", confidence=0.95, context=MemoryContext(event_time="2024")
-    )
-    result = svc.import_text(
-        "合成文档", dry_run=True, extractor=StaticExtractor(ExtractionResult(memories=[candidate]))
-    )
-    assert result.admitted[0].context == candidate.context
-    assert svc.store.entries() == []
+    text = "合成候选"
+    one, two = message_source(svc, text), message_source(svc, text)
+    record = draft(text)
+    pending = svc.create_pending(record, "需要确认吗？", [], **one)
+    assert svc.create_pending(record, "需要确认吗？", [], **one).id == pending.id
+    other = svc.create_pending(record, "需要确认吗？", [], **two)
+    assert other.id != pending.id and svc.queue.deletion_preview(two["session_id"])[0] == [other]
+    with pytest.raises(ValueError):
+        svc.create_pending(
+            record, "需要确认吗？", [], session_id=one["session_id"], message_id="missing"
+        )
+    entry = svc.add(record, entry_id="mem-fixed", **one)
+    assert svc.add(record, entry_id="mem-fixed", **one) == entry
+    with pytest.raises(ValueError):
+        svc.add(record, entry_id="mem-fixed", **two)
+    assert svc.store.entries() == [entry]
+    generated = svc.add(draft("另一条事实", "general/misc"), **one)
+    reopened = MemoryService(svc.config)
+    assert reopened.add(draft("另一条事实", "misc"), **one).id == generated.id
+    independent = reopened.add(draft("另一条事实", "misc"), **two)
+    assert independent.id != generated.id
+    assert len(reopened.store.changes_path.read_bytes().splitlines()) == 3
+
+
+def test_queue_question_and_payload_cannot_store_credentials(tmp_path):
+    svc = make_service(tmp_path, [])
+    secret = "api_key=synthetic-token-123"
+    with pytest.raises(ValueError):
+        svc.create_pending(draft("普通事实"), secret, [])
+    with pytest.raises(ValueError):
+        svc.create_pending(draft("普通事实", location=secret), "何时？", [])
+    assert not svc.pending() and not svc.store.entries()
 
 
 def test_init_creates_vault_git_and_readme(tmp_path):
@@ -93,228 +146,71 @@ def test_init_creates_vault_git_and_readme(tmp_path):
     vault = tmp_path / "vault"
     assert (vault / "README.md").exists()
     assert (vault / ".git").is_dir()
+    assert b"/attachments/" in (vault / ".gitignore").read_bytes().splitlines()
     assert service.history(limit=5)[0]["subject"] == "memory: 初始化记忆库"
 
 
-def test_memorize_admits_and_queues(tmp_path):
-    service = make_service(
-        tmp_path,
-        [
-            Candidate(text="偏好清淡风味", topic="preferences", confidence=0.95),
-            Candidate(text="可能喜欢浅烘", topic="preferences", confidence=0.5),
-            Candidate(text="最近在吃药", topic="health", confidence=0.99, sensitive=True),
-            Candidate(text="预算改为 5000", topic="housing", confidence=0.99, kind="conflict"),
-        ],
-    )
-
-    result = service.memorize("一段对话", source="chat")
-
-    assert [entry.text for entry in result.admitted] == ["偏好清淡风味"]
-    assert {item.text for item in result.queued} == {"可能喜欢浅烘", "最近在吃药", "预算改为 5000"}
-    assert service.status()["pending"] == 3
-
-
-def test_memorize_skips_duplicates(tmp_path):
-    service = make_service(tmp_path, [Candidate(text="偏好清淡风味", confidence=0.95)])
-    service.memorize("第一次")
-    result = service.memorize("第二次")
-    assert result.admitted == []
-    assert result.duplicates == ["偏好清淡风味"]
-    assert len(service.store.entries()) == 1
-
-
-def test_approve_writes_entry_and_clears_pending(tmp_path):
-    service = make_service(
-        tmp_path, [Candidate(text="可能喜欢浅烘", topic="preferences", confidence=0.5)]
-    )
-    item = service.memorize("对话").queued[0]
-
-    entry = service.approve(item.id)
-
-    assert entry.text == "可能喜欢浅烘"
-    assert entry.metadata["source"] == "chat+approved"
-    assert entry.metadata["note"] == "人工确认"
-    assert service.store.entries(include_inactive=True) == [entry]
-    assert service.pending() == []
-    audit = json.loads(service.audit.path.read_text(encoding="utf-8"))
-    assert audit.pop("at")
-    assert audit == {"action": "approve", "item": item.id, "entry": entry.id, "supersedes": ""}
-    assert "人工确认" in (tmp_path / "vault" / "memories" / "general" / "preferences.md").read_text(
-        encoding="utf-8"
-    )
-
-
-@pytest.mark.parametrize("original", ["可能喜欢浅烘", "API key: demo-placeholder"])
-def test_approve_override_writes_only_final_entry(tmp_path, original):
+def test_reopening_vault_preserves_user_ignore_rules_and_excludes_uploads(tmp_path):
     service = make_service(tmp_path, [])
-    item = PendingItem.from_candidate(
-        Candidate(text=original, topic="preferences", title="偏好", confidence=0.5),
-        "chat",
-        "low confidence",
-        session_id="s-demo-session",
-        message_id="m-demo-message",
+    vault = service.config.vault
+    path = vault / ".gitignore"
+    prior = b"# private rules\r\n*.local\r\n!/attachments/"
+    path.write_bytes(prior)
+    upload = vault / "attachments" / "sample.txt"
+    upload.parent.mkdir()
+    upload.write_bytes(b"private document")
+    (vault / "sample.txt").write_bytes(b"ordinary vault file")
+    MemoryService(service.config, extractor=service.extractor)
+    expected = prior + b"\r\n/attachments/\r\n"
+    assert path.read_bytes() == expected
+    service.repo.stage_all()
+    staged = service.repo.staged_paths()
+    assert "sample.txt" in staged and "attachments/sample.txt" not in staged
+    MemoryService(service.config, extractor=service.extractor)
+    assert path.read_bytes() == expected
+
+
+@pytest.mark.parametrize("override", [None, "我喜欢深烘咖啡"])
+def test_approval_retries_and_never_changes_related_fact(tmp_path, override):
+    svc = make_service(tmp_path, [])
+    old = svc.note("我喜欢喝茶", "preferences")
+    item = svc.create_pending(
+        draft("我喜欢咖啡", topic="preferences", event_time="2024"), "这是新增偏好吗？", [old.id]
     )
-    service.queue.add(item)
-
-    entry = service.approve(item.id, text_override=" \t喜欢中烘咖啡\n ")
-
-    assert entry.text == "喜欢中烘咖啡"
-    assert entry.status == "active"
-    assert entry.supersedes is None
-    assert entry.metadata == {
-        "source": "chat+approved",
-        "confidence": "0.50",
-        "note": "人工改写后确认",
-        "session": "s-demo-session",
-        "message": "m-demo-message",
-    }
-    assert service.store.entries(include_inactive=True) == [entry]
-    assert service.topics()[0]["title"] == "偏好"
-    assert service.pending() == []
-    resolved = json.loads(service.queue.resolved_path.read_text(encoding="utf-8"))
-    assert resolved["id"] == item.id
-    assert resolved["status"] == "approved"
-    audit = json.loads(service.audit.path.read_text(encoding="utf-8"))
-    assert audit.pop("at")
-    assert audit == {
-        "action": "approve",
-        "item": item.id,
-        "entry": entry.id,
-        "supersedes": "",
-        "text_override": "喜欢中烘咖啡",
-    }
-
-
-@pytest.mark.parametrize("override", [None, " \t每周喝三次咖啡\n "])
-def test_approve_conflict_links_final_entry_to_old_entry(tmp_path, override):
-    service = make_service(tmp_path, [])
-    old = service.note("每周喝一次咖啡", topic="preferences")
-    item = PendingItem.from_candidate(
-        Candidate(text="每周喝两次咖啡", topic="preferences", confidence=0.5),
-        "chat",
-        "possible conflict",
-        conflict_with=old.id,
-    )
-    service.queue.add(item)
-
-    entry = service.approve(item.id, text_override=override)
-
-    expected_text = item.text if override is None else override.strip()
-    entries = service.store.entries(include_inactive=True)
-    assert [(e.id, e.text, e.status, e.supersedes) for e in entries] == [
-        (old.id, old.text, "superseded", None),
-        (entry.id, expected_text, "active", old.id),
-    ]
-    assert service.pending() == []
-    audit = json.loads(service.audit.path.read_text(encoding="utf-8"))
-    assert audit["action"] == "approve"
-    assert audit["entry"] == entry.id
-    assert audit["supersedes"] == old.id
-    if override is None:
-        assert "text_override" not in audit
-    else:
-        assert audit["text_override"] == expected_text
-
-
-def test_approve_stale_conflict_replaces_current_successor(tmp_path):
-    service = make_service(
-        tmp_path,
-        [
-            Candidate(text="每月合成预算为200元", topic="budget", confidence=1.0),
-            Candidate(text="每月合成预算为300元", topic="budget", confidence=1.0),
-        ],
-    )
-    old = service.note("每月合成预算为100元", topic="budget")
-    items = service.memorize("合成预算更新").queued
-    assert len(items) == 2
-    first = service.approve(items[0].id)
-    second = service.approve(items[1].id)
-    assert first.supersedes == old.id
-    assert second.supersedes == first.id
-    assert service.store.entries() == [second]
-    assert service.store.find(first.id).status == "superseded"
-
-
-def test_approve_stale_conflict_does_not_resurrect_deleted_memory(tmp_path):
-    service = make_service(tmp_path, [])
-    old = service.note("合成旧事实")
-    item = PendingItem.from_candidate(
-        Candidate(text="合成新事实"), "test", "conflict", conflict_with=old.id
-    )
-    service.queue.add(item)
-    service.forget(old.id)
-    with pytest.raises(ValueError, match="已删除"):
-        service.approve(item.id)
-    assert service.pending() == [item]
-    assert service.store.entries() == []
-
-
-def test_approve_append_failure_keeps_previous_memory_active(tmp_path, monkeypatch):
-    service = make_service(tmp_path, [])
-    old = service.note("合成旧事实")
-    item = PendingItem.from_candidate(
-        Candidate(text="合成新事实"), "test", "conflict", conflict_with=old.id
-    )
-    service.queue.add(item)
-
-    def fail(*args, **kwargs):
-        raise OSError("合成写盘失败")
-
-    monkeypatch.setattr(service.store, "append", fail)
-    with pytest.raises(OSError):
-        service.approve(item.id)
-    assert service.store.entries() == [old]
-    assert service.pending() == [item]
-
-
-@pytest.mark.parametrize("conflict", [False, True])
-@pytest.mark.parametrize(
-    ("override", "error"),
-    [("", "内容为空"), (" \t\n ", "内容为空"), (" API key: demo-placeholder ", "已拦截写入")],
-)
-def test_approve_invalid_override_leaves_storage_unchanged(tmp_path, conflict, override, error):
-    service = make_service(tmp_path, [])
-    old = service.note("每周喝一次咖啡", topic="preferences")
-    rejected = PendingItem.from_candidate(Candidate(text="不保留的候选"), "chat", "low confidence")
-    service.queue.add(rejected)
-    service.reject(rejected.id)
-    item = PendingItem.from_candidate(
-        Candidate(text="每周喝两次咖啡", topic="preferences", confidence=0.5),
-        "chat",
-        "low confidence",
-        conflict_with=old.id if conflict else None,
-    )
-    service.queue.add(item)
-    paths = [
-        service.store.topic_path("preferences"),
-        service.queue.pending_path,
-        service.queue.resolved_path,
-        service.audit.path,
-    ]
-    before = {path: path.read_bytes() for path in paths}
-
-    with pytest.raises(ValueError, match=error):
-        service.approve(item.id, text_override=override)
-
-    assert service.pending() == [item]
-    assert service.store.entries(include_inactive=True) == [old]
-    assert {path: path.read_bytes() for path in paths} == before
-
-
-def test_reject_clears_pending(tmp_path):
-    service = make_service(tmp_path, [Candidate(text="不确定", confidence=0.4)])
-    item = service.memorize("对话").queued[0]
-
-    assert service.reject(item.id).id == item.id
-    assert service.pending() == []
-    assert service.store.entries() == []
-
-
-def test_note_rejects_duplicate(tmp_path):
-    service = make_service(tmp_path, [])
-    service.note("使用 手冲滤纸", topic="devices")
+    order = svc.approve(item.id, text_override=override)
+    assert order.text == (override or item.text) and order.id != old.id
+    assert order.context == (None if override else item.context)
+    assert svc.store.find(old.id).status == "active" and svc.store.find(old.id).text == old.text
+    assert not svc.pending() and not svc.queue.resolved_path.exists()
+    before = svc.store.changes_path.read_bytes(), svc.audit.path.read_bytes()
+    assert svc.approve(item.id, text_override=override) == order
     with pytest.raises(ValueError):
-        service.note("使用 手冲滤纸", topic="devices")
+        svc.approve(item.id, text_override="不同的重试正文")
+    assert (svc.store.changes_path.read_bytes(), svc.audit.path.read_bytes()) == before
+    assert [json.loads(line)["action"] for line in before[1].splitlines()] == ["add", "add"]
+
+
+def test_review_keeps_deprecated_related_fact_and_archive_contains_original_only(tmp_path):
+    svc = make_service(tmp_path, [])
+    old = svc.note("先前事实")
+    item = svc.create_pending(draft("待确认", location="示例展厅"), "这里指哪里？", [old.id])
+    svc.deprecate(old.id)
+    before = svc.audit.path.read_bytes(), svc.store.changes_path.read_bytes()
+    assert svc.reject(item.id) == item
+    assert svc.queue.decode(svc.queue.resolved_path.read_bytes()) == [item]
+    assert not svc.pending() and svc.store.find(old.id).status == "deprecated"
+    assert (svc.audit.path.read_bytes(), svc.store.changes_path.read_bytes()) == before
+
+
+@pytest.mark.parametrize("value", ["", "   ", "API key: demo-placeholder"])
+def test_invalid_approval_keeps_original_and_all_files(tmp_path, value):
+    svc = make_service(tmp_path, [])
+    item = svc.create_pending(draft("候选"), "是这个意思吗？", [])
+    before = svc.queue.pending_path.read_bytes()
+    with pytest.raises(ValueError):
+        svc.approve(item.id, text_override=value)
+    assert svc.pending() == [item] and svc.queue.pending_path.read_bytes() == before
+    assert not svc.current_facts() and not svc.store.changes_path.exists()
 
 
 def test_commit_generates_fallback_summary_and_history(tmp_path):
@@ -346,44 +242,25 @@ def test_push_without_remote_reports_error_but_keeps_commit(tmp_path):
     assert "remote" in result["push_error"]
 
 
-def test_recall_and_topics(tmp_path):
+def test_recall_and_read_topic_return_structured_active_facts(tmp_path):
     service = make_service(tmp_path, [])
-    service.note("喜欢清淡风味", topic="preferences", title="偏好")
-    service.note("找后端工作", topic="career")
-
-    assert service.recall("清淡")[0].topic == "memories/general/preferences.md"
-    topics = {item["topic"]: item for item in service.topics()}
-    assert topics["memories/general/preferences.md"]["title"] == "偏好"
-    assert topics["memories/general/preferences.md"]["entries"] == 1
-
-
-def test_read_topic_returns_only_active_entries_for_known_topic(tmp_path):
-    service = make_service(tmp_path, [])
-    service.note("保留的有效条目", topic="preferences", title="偏好")
-    removed = service.note("已删除的旧条目", topic="preferences")
-    service.forget(removed.id)
-
-    result = service.read_topic("偏好")
-
-    assert result["topic"] == "memories/general/preferences.md"
-    assert "* 保留的有效条目\n\n  **Core**" in result["content"]
-    assert "已删除的旧条目" not in result["content"]
-    assert result["entries"] == 1
-    assert result["truncated"] is False
-    with pytest.raises(KeyError):
+    wanted = service.note("喜欢清淡风味", topic="preferences")
+    old = service.note("以前的偏好", topic="preferences")
+    service.deprecate(old.id)
+    (hit,) = service.recall("清淡")
+    assert hit.id == wanted.id and hit.topic == "general/preferences"
+    result = service.read_topic("general/preferences")
+    assert result == {
+        "topic": "general/preferences",
+        "entries": [hit.model_dump(exclude_none=True)],
+    }
+    assert set(result["entries"][0]) == {"id", "status", "text", "topic"}
+    topics = service.topics()
+    assert len(topics) == 1 and topics[0]["entries"] == 1
+    with pytest.raises((ValueError, KeyError)):
         service.read_topic("../preferences")
-
-
-def test_read_topic_truncates_to_token_budget(tmp_path):
-    from syvrio.infra.tokens import estimate_tokens
-
-    service = make_service(tmp_path, [])
-    service.note("很长的主题内容" * 100, topic="documents")
-
-    result = service.read_topic("documents", max_tokens=30)
-
-    assert result["truncated"] is True
-    assert estimate_tokens(result["content"]) <= 30
+    with pytest.raises(KeyError):
+        service.read_topic("no-such-topic")
 
 
 def test_commit_push_failure_does_not_hide_commit(tmp_path):
@@ -443,116 +320,108 @@ def test_commit_pending_changes_auto_commits_without_llm(tmp_path):
         "我的 API 密钥是 synthetic-token-1234",
     ],
 )
-def test_note_correct_and_memorize_reject_secrets(tmp_path, text):
-    service = make_service(tmp_path, [Candidate(text=text, confidence=0.95)])
+def test_note_correct_and_import_reject_secrets(tmp_path, text):
+    svc = make_service(tmp_path, [Candidate(text=text, topic="misc")])
     with pytest.raises(ValueError):
-        service.note(text)
-    assert service.store.entries() == []
-
-    entry = service.note("普通偏好", topic="preferences")
+        svc.note(text)
+    entry = svc.note("普通偏好", "preferences")
     with pytest.raises(ValueError):
-        service.correct(entry.id, text)
-    result = service.memorize("合成输入")
-    assert result.blocked == [text]
-    assert not result.admitted and not result.queued
-    assert service.store.find(entry.id).status == "active"
-    assert [item.text for item in service.store.entries()] == ["普通偏好"]
+        svc.correct(entry.id, draft(text))
+    result = svc.import_text("合成材料", extractor=svc.extractor)
+    assert result.blocked and text not in repr(result.blocked)
+    assert not result.admitted and not result.queued and svc.current_facts() == [entry]
 
 
-def test_normal_credential_description_can_be_memorized(tmp_path):
+def test_normal_credential_description_can_be_imported(tmp_path):
     text = "这个软件的密码管理器好用"
-    service = make_service(tmp_path, [Candidate(text=text, topic="devices", confidence=0.95)])
-    result = service.memorize(text)
-    assert [entry.text for entry in result.admitted] == [text]
-    assert not result.blocked
+    svc = make_service(tmp_path, [Candidate(text=text, topic="devices")])
+    assert svc.import_text(text, extractor=svc.extractor).admitted[0].text == text
 
 
-def test_approve_rejects_secret_and_keeps_pending(tmp_path):
-    service = make_service(tmp_path, [])
-    item = PendingItem.from_candidate(
-        Candidate(text="api_key=abcd1234", topic="misc", confidence=0.5), "chat", "low confidence"
-    )
-    service.queue.add(item)
-
+def test_approve_rejects_secret_from_manually_edited_candidate(tmp_path):
+    svc = make_service(tmp_path, [])
+    item = PendingItem(text="api_key=abcd1234", topic="misc", question="确认吗？")
+    svc.queue.add(item)
     with pytest.raises(ValueError):
-        service.approve(item.id)
-    assert service.store.entries() == []
-    assert [pending.id for pending in service.pending()] == [item.id]
+        svc.approve(item.id)
+    assert svc.pending() == [item] and not svc.current_facts()
 
 
 @pytest.mark.parametrize(
-    "operation,stage",
+    ("operation", "stage"),
     [
-        ("approve", "status"),
-        ("approve", "resolve"),
         ("approve", "audit"),
+        ("approve", "resolve"),
+        ("approve", "context_job"),
         ("correct", "status"),
         ("correct", "audit"),
-        ("reject", "resolve"),
-        ("reject", "audit"),
-        ("forget", "audit"),
+        ("transition", "status"),
+        ("reject", "pending"),
+        ("deprecate", "audit"),
     ],
 )
-def test_manual_write_failure_rolls_back_and_retry_is_consistent(
+def test_failed_multi_file_operations_restore_every_file_and_can_retry(
     tmp_path, monkeypatch, operation, stage
 ):
-    service = make_service(tmp_path, [])
-    old = service.note("Synthetic original fact", topic="preferences")
-    item = PendingItem.from_candidate(
-        Candidate(text="Synthetic replacement fact", topic="other"),
-        "test",
-        "conflict",
-        conflict_with=old.id,
-    )
-    service.queue.add(item)
-    service.audit.write("synthetic-baseline")
-    paths = [
-        service.store.topic_path("preferences"),
-        service.store.topic_path("other"),
-        service.queue.pending_path,
-        service.queue.resolved_path,
-        service.audit.path,
-    ]
-    before = {path: path.read_bytes() if path.exists() else None for path in paths}
+    from syvrio.infra import transaction
+    from syvrio.memory import service as service_module
+
+    svc = make_service(tmp_path, [])
+    old = svc.note("最初事实", "old")
+    pending = svc.create_pending(draft("待确认的事实", "new"), "具体是什么？", [old.id])
+
+    def snapshot():
+        roots = (
+            svc.paths.memories_dir,
+            svc.paths.vault_dir / "archived",
+            svc.paths.vault_dir / "records",
+            svc.paths.jobs_dir,
+        )
+        return {p: p.read_bytes() for root in roots for p in root.rglob("*") if p.is_file()}
 
     def execute():
         if operation == "approve":
-            return service.approve(item.id)
+            return svc.approve(pending.id, text_override="实际确认的事实")
         if operation == "correct":
-            return service.correct(old.id, "Synthetic replacement fact")
+            return svc.correct(old.id, draft("更正文", "new"))
+        if operation == "transition":
+            return svc.transition(old.id, draft("后续事实", "new"), previous_valid_to="2025")
         if operation == "reject":
-            return service.reject(item.id)
-        return service.forget(old.id)
+            return svc.reject(pending.id)
+        return svc.deprecate(old.id)
 
-    obj, name = {
-        "status": (service.store, "set_status"),
-        "resolve": (service.queue, "resolve"),
-        "audit": (service.audit, "write"),
-    }[stage]
-    original = getattr(obj, name)
+    def fail(*args, **kwargs):
+        raise OSError("injected disk error")
 
-    def fail_after_write(*args, **kwargs):
-        original(*args, **kwargs)
-        raise OSError("synthetic write failure")
-
+    before = snapshot()
     with monkeypatch.context() as patch:
-        patch.setattr(obj, name, fail_after_write)
-        with pytest.raises(OSError, match="synthetic write failure"):
+        if stage == "pending":
+            writer = transaction.atomic_write
+
+            def fail_pending(path, payload):
+                return fail() if path == svc.queue.pending_path else writer(path, payload)
+
+            patch.setattr(transaction, "atomic_write", fail_pending)
+        else:
+            obj, name = {
+                "status": (svc.store, "update"),
+                "audit": (svc.audit, "write"),
+                "resolve": (svc.queue, "resolve"),
+                "context_job": (service_module, "enqueue_context_fill"),
+            }[stage]
+            patch.setattr(obj, name, fail)
+        with pytest.raises(OSError, match="injected"):
             execute()
-    assert {path: path.read_bytes() if path.exists() else None for path in paths} == before
-    assert service.store.entries() == [old]
-    assert service.pending() == [item]
+    assert snapshot() == before
+    assert svc.store.find(old.id).status == "active" and svc.pending() == [pending]
     execute()
-    active = service.store.entries()
-    assert len(active) == (0 if operation == "forget" else 1)
-    assert service.pending() == ([] if operation in ("approve", "reject") else [item])
-    logs = [
-        json.loads(line) for line in service.audit.path.read_text(encoding="utf-8").splitlines()
-    ]
-    assert [row["action"] for row in logs] == ["synthetic-baseline", operation]
-    if operation in ("approve", "correct"):
-        assert len(service.store.entries(include_inactive=True)) == 2
-        assert active[0].supersedes == old.id
-        assert service.store.find(old.id).status == "superseded"
-    if operation in ("approve", "reject"):
-        assert len(service.queue.resolved_path.read_text(encoding="utf-8").splitlines()) == 1
+    assert snapshot() != before
+    if operation in {"approve", "reject"}:
+        assert not svc.pending() and svc.store.find(old.id).status == "active"
+    elif operation == "transition":
+        assert (
+            svc.store.find(old.id).status == "active"
+            and svc.store.find(old.id).context.valid_to == "2025"
+        )
+    else:
+        assert svc.store.find(old.id).status == "deprecated" and svc.pending() == [pending]

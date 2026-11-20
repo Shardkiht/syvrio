@@ -4,7 +4,7 @@ export type ThemeMode = 'auto' | 'light' | 'dark';
 
 const STORAGE_KEY = 'syvrio.theme';
 
-const DARK_BG = '#0e1014';
+const DARK_BG = '#292c32';
 const LIGHT_BG = '#f6f7f9';
 
 export function readTheme(): ThemeMode {

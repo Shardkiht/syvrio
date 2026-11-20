@@ -114,7 +114,8 @@ def test_every_command_has_a_capability_marker(client):
     assert len(rows) == len(web_command_catalog())
     assert {row["support"] for row in rows} <= {SERVER, CLIENT, UNSUPPORTED}
     by_name = {row["name"]: row for row in rows}
-    assert by_name["import"]["support"] == UNSUPPORTED
+    assert by_name["import"]["support"] == CLIENT
+    assert by_name["import"]["usage"] == "/import"
     assert by_name["setup"]["support"] == CLIENT
     assert by_name["setup"]["intent"] == "open_settings"
     assert by_name["exit"]["support"] == CLIENT
@@ -144,27 +145,23 @@ def test_unknown_command_is_never_forwarded_to_the_llm(client, backend):
 
 def test_pending_review_preserves_full_text_and_requires_confirmation(client, backend):
     service = backend._app_service.memory.service
-    original = "I am testing the synthetic review text. " * 60
+    original = ("I am testing the synthetic review text. " * 60).rstrip()
     service.queue.add(
         PendingItem(
             id="p-example",
             created_at=utc_timestamp(),
-            source="chat",
             text=original,
             topic="preferences",
-            confidence=0.6,
-            reason="Ambiguous preference",
+            question="Which preference applies?",
         )
     )
     rows = run(client, "/pending").json()["data"]["rows"]
-    assert rows == [
-        {
-            "id": "p-example",
-            "text": original,
-            "topic": "preferences",
-            "reason": "Ambiguous preference",
-        }
-    ]
+    assert len(rows) == 1
+    row = rows[0]
+    assert (row["id"], row["text"], row["topic"]) == ("p-example", original, "preferences")
+    assert row["question"] == "Which preference applies?"
+    assert row["related_ids"] == []
+    assert row.get("session_id") is None and row.get("message_id") is None
 
     edited = "I revised the synthetic review text. " * 60 + "\n\nA separate note."
     response = run(client, "/pending edit p-example", pending_text=edited).json()
@@ -177,7 +174,7 @@ def test_pending_review_preserves_full_text_and_requires_confirmation(client, ba
     assert response["status"] == "ok", response
     assert response["data"]["rows"] == []
     assert not service.pending()
-    assert [entry.text for entry in service.current_facts()] == [edited]
+    assert [entry.text for entry in service.store.entries()] == [edited]
 
 
 def test_inference_command_edit_keeps_full_text_and_requires_confirmation(client, monkeypatch):
@@ -225,7 +222,8 @@ def test_import_never_reads_a_browser_supplied_path(client, tmp_path):
     secret = tmp_path / "private.txt"
     secret.write_text("SENTINEL-DO-NOT-LEAK", encoding="utf-8")
     body = run(client, f"/import {secret} --apply").json()
-    assert body["status"] == "unsupported"
+    assert body["status"] == "error"
+    assert run(client, "/import").json()["intent"] == "pick_attachments"
     assert "SENTINEL-DO-NOT-LEAK" not in str(body)
     assert str(secret) not in str(body)
     setup = run(client, "/setup").json()
@@ -252,7 +250,9 @@ def test_exit_is_client_only_and_never_stops_the_server(client):
 def test_help_lists_commands_and_browser_shortcut_notes(client):
     body = run(client, "/help").json()
     assert body["status"] == "ok"
-    for name in ("/new", "/model", "/undo", "/import"):
+    assert "/import" in body["message"]
+    assert "/import <path>" not in body["message"]
+    for name in ("/new", "/model", "/undo"):
         assert name in body["message"]
     assert "Ctrl+Shift+P" in body["message"]
     assert "Ctrl+P" in body["message"]

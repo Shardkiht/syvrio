@@ -10,6 +10,7 @@ from syvrio.agent.runtime import AgentRuntime
 from syvrio.agent.session import SessionStore
 from syvrio.application.contracts import TurnCallbacks
 from syvrio.application.conversation import ConversationUseCases
+from syvrio.errors import SessionProtectedError
 from syvrio.infra.config import ChatConfig, Config, LLMConfig, RetrievalConfig
 from syvrio.llm import AssistantTurn
 from syvrio.memory.extractor import StaticExtractor
@@ -216,6 +217,24 @@ def test_delete_guard_protects_current_and_queued_sessions(tmp_path):
     conv.enqueue(other.id, "queued")
     allowed, reason = conv.delete_guard(other.id)
     assert not allowed and "queued" in reason
+
+
+@pytest.mark.parametrize("status", ["active", "deprecated"])
+def test_refuses_session_delete_if_memory_was_written_during_confirmation(tmp_path, status):
+    runtime, conv = build(tmp_path, [])
+    target = runtime.sessions.create()
+    runtime.sessions.append(target, {"type": "message", "id": "m-source", "role": "user",
+                                     "content": "The original source"})
+    assert conv.delete_guard(target.id) == (True, None)
+    original = target.path.read_bytes()
+    with runtime.service.write_lock:
+        fact = runtime.service.store.append(
+            "personal", "Saved fact", extra={"session_id": target.id, "message_id": "m-source"}
+        )
+        runtime.service.store.set_status(fact.id, status)
+    with pytest.raises(SessionProtectedError, match=fact.id):
+        conv.delete_session(target.id)
+    assert target.path.read_bytes() == original
 
 
 def test_session_switch_new_resume_and_rename(tmp_path):

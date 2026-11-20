@@ -6,53 +6,48 @@
 
 from __future__ import annotations
 
-import json
 import time
 from datetime import date
 from functools import partial
-from urllib.parse import urlsplit
 
 from rich.markup import escape
-from textual.app import App, ComposeResult
+from textual.app import App
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.events import MouseDown, MouseUp
-from textual.widgets import Button, Input, Label, ListItem, ListView, Markdown, Static
+from textual.containers import VerticalScroll
+from textual.widgets import Input, Label, ListItem, ListView, Static
 from textual.worker import Worker, WorkerState
 
 from ..agent.insertion import InsertionRequest
 from ..agent.runtime import AgentRuntime
-from ..agent.session import Session, SessionStore
 from ..application.service import ApplicationService
+from ..errors import SessionDeletionChanged, SessionProtectedError
+from ..infra.attachments import AttachmentBatch
 from ..infra.diagnostics import record_event
 from ..infra.tokens import format_tokens
-from ..llm import warm_model_metadata
 from ..memory.service import MemoryService
+from ..session import Session, SessionStore
 from ..time import format_local_timestamp
+from .attachment_screen import AttachmentScreen
 from .chat_commands import ChatCommandsMixin
 from .chat_flow import ChatFlowMixin
 from .chat_git import ChatGitMixin
 from .chat_input import BarInput
 from .chat_reflection import ChatReflectionMixin
 from .chat_theme import APP_CSS
+from .chat_view import ChatViewMixin
 from .chat_widgets import (
-    ASSISTANT_NAME,
     ChatReply,
     CommandPalette,
-    HomePanel,
-    ModelPickerScreen,
-    NewSessionButton,
     PickScreen,
     SessionItem,
     SessionPickerScreen,
-    SidebarToggle,
     TranscriptView,
 )
-from .command_catalog import SLASH_COMMANDS, SLASH_SUBCOMMANDS
+from .command_catalog import SLASH_COMMANDS
 from .session_ui import visible_sessions
 
 
-class ChatApp(ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixin, App):
+class ChatApp(ChatViewMixin, ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixin, App):
     TITLE = "Syvrio — Personal Memory"
 
     CSS = APP_CSS
@@ -61,15 +56,10 @@ class ChatApp(ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixi
         Binding("ctrl+p", "model_providers", "Manage providers", priority=True, show=False),
         ("ctrl+q", "quit", "Quit"),
         ("ctrl+b", "toggle_sidebar", "Toggle sidebar"),
+        ("ctrl+o", "attach_files", "Attach files"),
         Binding("ctrl+enter", "insert_message", "Insert message", show=False, priority=True),
     ]
 
-    def action_model_providers(self) -> None:
-        # Textual 的全局命令面板也使用 Ctrl+P，只在模型选择器内改为供应商入口。
-        if isinstance(self.screen, ModelPickerScreen):
-            self.screen.action_providers()
-        else:
-            self.action_command_palette()
 
     def __init__(
         self,
@@ -86,7 +76,6 @@ class ChatApp(ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixi
         self._navigation_started = 0.0
         self._model_status = Static("", id="model-status")
         self._context_loading = False
-        self._import_running = False
         self._pending_review_busy = False
         self._stream_widget: ChatReply | None = None
         self._stream_buffer = ""
@@ -99,6 +88,7 @@ class ChatApp(ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixi
         self._usage_failed: tuple | None = None
         self._pending_undo_restore: dict[str, str] = {}
         self._safe_insert: InsertionRequest | None = None
+        self._attachments: dict[str | None, AttachmentBatch] = {}
 
     # ---------- 应用层兼容访问面（仅供旧 UI 测试与只读视图） ----------
 
@@ -150,27 +140,6 @@ class ChatApp(ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixi
 
     # ---------- 布局 ----------
 
-    def compose(self) -> ComposeResult:
-        with Horizontal(id="root"):
-            with Vertical(id="sidebar"):
-                with Horizontal(id="sidebar-head"):
-                    yield Static("Syvrio", id="brand")
-                    yield SidebarToggle("«", id="hide-sidebar")
-                yield NewSessionButton("+ New session", id="new-session")
-                yield ListView(id="sessions")
-            with Vertical(id="main"):
-                yield SidebarToggle("»", id="show-sidebar")
-                yield TranscriptView(id="chat", classes="thin-scroll")
-                yield CommandPalette()
-                yield Static("", id="send-queue", markup=False)
-                yield BarInput(placeholder="Message or /command", id="input")
-                with Horizontal(id="status-row"):
-                    yield Button("Undo", id="undo-turn")
-                    yield self._model_status
-                    yield Static("", id="status")
-                yield Static(
-                    "Enter send   Ctrl+P commands   Ctrl+B conversations", id="composer-hint"
-                )
 
     def on_mount(self) -> None:
         self.set_interval(0.15, self._render_model_status)
@@ -186,17 +155,9 @@ class ChatApp(ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixi
         self.query_one("#chat", VerticalScroll).can_focus = False
         self.query_one("#input", Input).focus()
         self._set_sidebar_visible(False)
-        self._run_catchup()
-        self._warm_search()
-        # 首次 /model、/context 会同步导入 LiteLLM；启动预热避免开屏空白期。
-        self.run_worker(
-            partial(warm_model_metadata, self.application.config.llm.litellm_model()),
-            group="warm",
-            thread=True,
-            exit_on_error=False,
-        )
-        self._start_auto_reflection()
-        self._start_git_scheduler()
+        self._git_screen = None
+        self._git_sync_running = False
+        self._git_last_notice = None
 
     def _handle_exception(self, error: Exception) -> None:
         record_event(
@@ -218,120 +179,14 @@ class ChatApp(ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixi
                 queued=self.application.conversation.queue_snapshot().count,
             )
 
-    def _warm_search(self) -> None:
-        self.run_worker(self._warm_search_work, group="search", thread=True, exit_on_error=False)
 
-    def _warm_search_work(self) -> None:
-        try:
-            result = self.application.warm_search()
-        except Exception as exc:
-            record_event("search.failed", exc)
-            self.call_from_thread(self.notify, f"Web search did not start: {exc}")
-            return
-        if result == "started":
-            self.call_from_thread(self.notify, "Web search started")
 
-    def _run_catchup(self) -> None:
-        self.run_worker(self._catchup_work, group="catchup", thread=True, exit_on_error=False)
 
-    def _catchup_work(self) -> None:
-        try:
-            result = self.application.startup_catchup()
-            auto_commit = result.pop("auto_commit", None)
-        except Exception as exc:
-            record_event("catchup.failed", exc)
-            self.call_from_thread(self._after_catchup_error, str(exc))
-            return
-        self.call_from_thread(self._after_catchup, result, auto_commit)
 
-    def _after_catchup_error(self, message: str) -> None:
-        self._reflection_ready = True
-        # 后台补记失败只提示，不动 busy：此时用户可能正在提问或切换会话。
-        self.add_card(f"Startup catch-up failed: {message}")
-        self.refresh_pending()
-        self.update_status()
-        self._git_scheduler_tick()
 
-    def _after_catchup(self, result: dict, auto_commit: str | None) -> None:
-        self._reflection_ready = True
-        if auto_commit:
-            self.notify(f"Auto-committed uncommitted vault changes: {auto_commit}")
-            self.refresh_sessions()
-        if result["consolidated"] or result["errors"]:
-            parts = []
-            if result["consolidated"]:
-                parts.append(
-                    f"Consolidated {result['consolidated']} unfinished session(s): "
-                    f"{result['admitted']} written, {result['queued']} pending"
-                )
-            for error in result["errors"]:
-                parts.append(f"Catch-up failed: {error}")
-            self.add_card("\n".join(parts), "Startup check")
-            self.refresh_sessions()
-            self.refresh_pending()
-            self.update_status()
-        self._git_scheduler_tick()
 
-    def action_toggle_sidebar(self) -> None:
-        self._set_sidebar_visible(not self.query_one("#sidebar", Vertical).display)
 
-    def _set_sidebar_visible(self, visible: bool) -> None:
-        self.query_one("#sidebar", Vertical).display = visible
-        self.query_one("#show-sidebar", SidebarToggle).display = not visible
 
-    def show_sidebar(self) -> None:
-        self._set_sidebar_visible(True)
-        self.query_one("#input", Input).focus()
-
-    def _focus_active_input(self) -> None:
-        if len(self.screen_stack) > 1:
-            for widget in self.screen.query(Input):
-                if widget.can_focus and widget.display and not widget.disabled:
-                    widget.focus()
-                    return
-            return
-        self.query_one("#input", Input).focus()
-
-    def pop_screen(self):
-        # 模态屏关闭后恢复输入框焦点与硬件光标；否则原生竖线会停在左上角闪烁。
-        result = super().pop_screen()
-        self.call_after_refresh(self._restore_input_cursor)
-        return result
-
-    def _restore_input_cursor(self) -> None:
-        for widget in self.screen.query(Input):
-            if widget.has_focus:
-                self.cursor_position = widget.cursor_screen_offset
-                return
-
-    def action_focus_next(self) -> None:
-        if len(self.screen_stack) == 1:
-            widget = self.query_one("#input", Input)
-            value = widget.value
-            if (
-                widget.has_focus
-                and widget.cursor_at_end
-                and widget.selection.is_empty
-                and value.startswith("/")
-            ):
-                palette = self.query_one("#cmd-palette", CommandPalette)
-                prefix = value[1:]
-                if palette.prefix != prefix:
-                    palette.open(prefix)
-                if command := palette.current:
-                    suffix = " " if command in SLASH_SUBCOMMANDS else ""
-                    widget.value = f"/{command}{suffix}"
-                    widget.cursor_position = len(widget.value)
-                    return
-        self._focus_active_input()
-
-    def action_focus_previous(self) -> None:
-        self._focus_active_input()
-
-    def run_command_from_palette(self, command: str) -> None:
-        self.query_one("#cmd-palette", CommandPalette).close()
-        self.query_one("#input", Input).value = ""
-        self._submit_command(f"/{command}")
 
     def _submit_command(self, line: str) -> None:
         name = line[1:].partition(" ")[0].lower()
@@ -389,26 +244,6 @@ class ChatApp(ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixi
             return
         self._switch_session(row["id"])
 
-    def on_key(self, event) -> None:
-        palette = self.query_one("#cmd-palette", CommandPalette)
-        if palette.display:
-            if event.key == "up":
-                event.prevent_default()
-                palette.move(-1)
-                return
-            if event.key == "down":
-                event.prevent_default()
-                palette.move(1)
-                return
-            if event.key == "escape":
-                event.prevent_default()
-                palette.close()
-                return
-
-        if event.key == "escape" and len(self.screen_stack) == 1 and self._ask_active:
-            event.prevent_default()
-            event.stop()
-            self._stop_generation()
 
     def _new_session(self) -> None:
         if self._navigation_busy:
@@ -476,28 +311,6 @@ class ChatApp(ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixi
             )
             return
         self.call_from_thread(self._after_session_switch, stats, label)
-        # 沉淀延后到后台：刚切走的会话标记 distill_deferred，这里立即补；
-        # 用户已开始新对话（busy）则不打断，留给下次启动补记。
-        if self.busy:
-            return
-        try:
-            # 切走时的后台补沉淀设阈值：小尾巴攒批留给启动补记，不烧小调用。
-            deferred = self.application.conversation.consolidate_deferred()
-        except Exception as exc:
-            record_event("catchup.failed", exc)
-            return
-        if deferred["consolidated"] or deferred["errors"]:
-            self.call_from_thread(self._after_deferred_distill, deferred)
-
-    def _after_deferred_distill(self, deferred: dict) -> None:
-        self.refresh_pending()
-        self.update_status()
-        if deferred["consolidated"]:
-            self.notify(
-                f"Previous session distilled in background: {deferred['admitted']} written, {deferred['queued']} pending"
-            )
-        for error in deferred["errors"]:
-            self.notify(f"Background distillation failed: {error}")
 
     def _after_session_switch(self, stats: dict, label: str | None) -> None:
         self._clear_chat()
@@ -529,11 +342,22 @@ class ChatApp(ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixi
     def confirm_delete_session(self, row: dict) -> None:
         if not self._session_deletable(row["id"]):
             return
+        try:
+            pending, revision = self.application.conversation.deletion_preview(row["id"])
+        except (KeyError, OSError, ValueError, SessionProtectedError) as exc:
+            self.notify(str(exc), severity="warning")
+            return
+        detail = None
+        if pending:
+            detail = f"Pending items that will also be deleted ({len(pending)})\n\n" + "\n\n".join(
+                f"• {item.text}" for item in pending
+            )
         self.push_screen(
             PickScreen(
-                f'Delete session "{escape(row["title"])}" permanently?\nThis cannot be undone.',
+                f'Delete session "{escape(row["title"])}" and its uploaded copies from the Vault?\nThis cannot be undone.',
                 [("Cancel", False), ("Delete permanently", True)],
-                partial(self._delete_session_result, row),
+                partial(self._delete_session_result, row, pending_revision=revision),
+                detail=detail,
             )
         )
 
@@ -555,7 +379,7 @@ class ChatApp(ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixi
             self._focus_session_picker_or_input()
         return allowed
 
-    def _delete_session_result(self, row: dict, confirmed) -> None:
+    def _delete_session_result(self, row: dict, confirmed, *, pending_revision: str = "") -> None:
         if confirmed is not True:
             self._focus_session_picker_or_input()
             return
@@ -565,13 +389,22 @@ class ChatApp(ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixi
         # 用弹窗打开前捕获的 row，不读列表当前高亮：模态期间列表可能被刷新重建。
         if self.application.conversation.session_exists(row["id"]):
             try:
-                self.application.conversation.delete_session(row["id"])
-            except OSError as exc:
+                self.application.conversation.delete_session(row["id"], pending_revision)
+            except SessionDeletionChanged as exc:
+                self.notify(str(exc), severity="warning")
+                self.confirm_delete_session(row)
+                return
+            except SessionProtectedError as exc:
+                self.notify(str(exc), severity="warning")
+                self._focus_session_picker_or_input()
+                return
+            except (OSError, ValueError) as exc:
                 record_event("session.delete_failed", exc)
                 self.notify("Session could not be deleted; the file was kept.", severity="warning")
                 self._focus_session_picker_or_input()
                 return
             self.refresh_sessions()
+            self.refresh_pending()
             self.notify("Session deleted.")
         else:
             self.notify("Session no longer exists.")
@@ -583,98 +416,21 @@ class ChatApp(ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixi
 
     # ---------- 对话流 ----------
 
-    def _chat(self) -> VerticalScroll:
-        return self.query_one("#chat", VerticalScroll)
 
-    def _clear_chat(self) -> None:
-        self.query_one("#chat", TranscriptView).clear_transcript()
-        # 视图销毁后活跃段控件失效；buffer 保留供切回时重放（落盘段由磁盘重建负责）。
-        self._stream_widget = None
-        self._thinking_widget = None
-        self._stream_flush_scheduled = False
 
-    def _scroll_end(self) -> None:
-        # 布局刷新前后都可能收到上滑/选择事件，真正滚动时再核验跟随意图。
-        self.call_after_refresh(self._chat().scroll_to_follow)
 
-    def on_mouse_down(self, event: MouseDown) -> None:
-        if event.widget is not None and self._chat() in event.widget.ancestors_with_self:
-            self._chat().selecting = True
-            self._chat().record_reading_state()
-            self.query_one("#input", BarInput).suspend_cursor()
 
-    def on_mouse_up(self, event: MouseUp) -> None:
-        self._chat().selecting = False
-        self._chat().record_reading_state()
 
-    def add_welcome(self) -> None:
-        chat = self._chat()
-        chat.add_class("home")
-        chat.mount(HomePanel(classes="welcome-shell"))
 
     def build_transcript(self) -> None:
         self._chat().remove_class("home")
         self.query_one("#chat", TranscriptView).show_session(self.application.conversation.current)
         self._scroll_end()
 
-    @staticmethod
-    def _tool_event_label(call: dict, result: dict) -> str:
-        """从历史 tool 记录重建事件行；结果 JSON 被截断时退化为成功/失败，不展示原文。"""
-        name = str(call.get("name") or result.get("name") or "tool")
-        arguments = call.get("arguments") or {}
-        ok = bool(result.get("ok"))
-        content = str(result.get("content") or "")
-        payload = None
-        if "\n" in content:
-            try:
-                payload = json.loads(content.split("\n", 1)[1])
-            except (TypeError, ValueError):
-                payload = None
-        if name == "search":
-            query = str(arguments.get("query") or "")[:20]
-            if ok and isinstance(payload, dict) and isinstance(payload.get("results"), list):
-                provider = payload.get("provider") or "open_websearch"
-                return f'Search "{query}": {len(payload["results"])} results ({provider})'
-            return f'Search "{query}"' + ("" if ok else " failed")
-        if name == "fetch_web":
-            url = str(arguments.get("url") or "")
-            if ok:
-                final_url = str((payload or {}).get("final_url") or url)
-                return f"Fetched {urlsplit(final_url).netloc or url}"
-            detail = str((payload or {}).get("error") or "")
-            return f"Fetch failed: {detail}" if detail else "Fetch failed"
-        return f"{name} {'ok' if ok else 'failed'}"
 
-    def add_user_turn(self, content: str, stamp: str | None = None) -> None:
-        chat = self._chat()
-        if chat.has_class("home"):
-            self._clear_chat()
-        chat.follow_output = True
-        if stamp:
-            chat.mount(Static(f"You · {stamp}", classes="who-user"))
-        # 容器构造时直接带子组件，避免“先挂载容器再补挂子组件”的时序问题。
-        chat.mount(Vertical(Static(content, classes="bubble"), classes="user-turn"))
-        self._scroll_end()
 
-    def add_assistant_turn(self, content: str, stamp: str, meta: str | None = None) -> None:
-        chat = self._chat()
-        chat.mount(Static(f"{ASSISTANT_NAME} · {stamp}", classes="who-ai"))
-        chat.mount(ChatReply(content or "(empty reply)", classes="reply"))
-        if meta:
-            chat.mount(Static(meta, classes="meta"))
-        chat.mount(Static("", classes="divider"))
-        self._scroll_end()
 
-    def add_card(self, text: str, title: str | None = None) -> None:
-        body = f"{title}\n{text}" if title else text
-        self._chat().mount(Static(body, classes="card", markup=False))
-        self._scroll_end()
 
-    def add_markdown_card(self, markdown: str, title: str | None = None) -> None:
-        if title:
-            self._chat().mount(Static(title, classes="who-ai"))
-        self._chat().mount(Markdown(markdown, classes="reply"))
-        self._scroll_end()
 
     # ---------- 状态栏与忙碌态 ----------
 
@@ -775,7 +531,6 @@ class ChatApp(ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixi
         return self._navigation_busy or self._ask_active
 
     def _begin_navigation(self) -> None:
-        self._reflection_activity()
         self._navigation_busy = True
         self._navigation_started = time.monotonic()
         self.query_one("#input", Input).disabled = True
@@ -789,7 +544,6 @@ class ChatApp(ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixi
         record_event(
             "generation.started", queued=self.application.conversation.queue_snapshot().count
         )
-        self._reflection_activity()
         self.application.conversation.begin_turn(session_id)
         self._progress_started = time.monotonic()
         self._progress_phase = "Working"
@@ -817,7 +571,6 @@ class ChatApp(ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixi
         return True
 
     def _release_input_if_idle(self) -> None:
-        self._reflection_activity()
         widget = self.query_one("#input", Input)
         # 输入只在导航操作期间禁用；LLM 等待期始终可输入（提交进全局队列）。
         widget.disabled = self._navigation_busy
@@ -852,22 +605,23 @@ class ChatApp(ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixi
 
     # ---------- 输入与回合 ----------
 
-    def on_input_changed(self, event: Input.Changed) -> None:
-        if event.input.id != "input":
-            return
-        self._reflection_activity()
-        palette = self.query_one("#cmd-palette", CommandPalette)
-        value = event.value
-        if value.startswith("/"):
-            palette.open(value[1:])
-        else:
-            palette.close()
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "undo-turn":
-            event.stop()
+
+    def action_attach_files(self) -> None:
+        if len(self.screen_stack) != 1:
+            return
+        session_id = self.application.conversation.current_id
+
+        def selected(batch: AttachmentBatch | None) -> None:
+            if batch is None:
+                return
+            if old := self._attachments.get(session_id):
+                old.discard()
+            self._attachments[session_id] = batch
+            self.notify("Attached: " + ", ".join(item.name for item in batch.files))
             self.query_one("#input", Input).focus()
-            self._submit_command("/undo")
+
+        self.push_screen(AttachmentScreen(self.service.paths.attachments_dir), selected)
 
     async def action_insert_message(self) -> None:
         if len(self.screen_stack) != 1 or not isinstance(self.focused, BarInput):
@@ -877,6 +631,9 @@ class ChatApp(ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixi
         if not text:
             return
         conversation = self.application.conversation
+        if conversation.active_turn_id and self._attachments.get(conversation.current_id):
+            self.notify("Press Enter to queue the message with its attachments.")
+            return
         turn_id = conversation.active_turn_id
         if turn_id is None:
             await widget.action_submit()
@@ -893,6 +650,9 @@ class ChatApp(ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixi
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         line = event.value.strip()
+        session_id = self.application.conversation.current_id
+        if not line and session_id in self._attachments:
+            line = "Analyze the attached files."
         if self._safe_insert and self._safe_insert.text == line:
             return
         event.input.value = ""
@@ -912,9 +672,13 @@ class ChatApp(ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixi
             self._submit_command(line)
             return
         palette.close()
+        attachments = self._attachments.pop(session_id, None)
         if self._ask_active:
-            self._submit_during_ask(line)
+            self._submit_during_ask(line, attachments)
             return
         # 用户主动开始下一轮消息后，撤销期间暂停的旧队列才恢复接续。
         self.application.conversation.resume_after_undo()
-        self._start_ask(line)
+        if attachments:
+            self._start_ask(line, attachments=attachments)
+        else:
+            self._start_ask(line)

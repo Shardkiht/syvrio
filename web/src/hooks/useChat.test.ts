@@ -62,61 +62,59 @@ it('keeps the current turn when the server reports /new is busy', async () => {
 });
 
 
-it('waits for a server reply already running when the page opens', async () => {
-  const health = {
+it('reattaches to the active turn when the page opens and then reloads saved history', async () => {
+  const turn = { turn_id: 42, session_id: 'new-session', text: 'original' };
+  const state = { session_id: turn.session_id, active: turn, waiting: [], revision: 0, paused: false };
+  const finished = deferred<void>();
+  vi.spyOn(api, 'health').mockResolvedValue({
     status: 'ok', version: 'test', provider: 'test', model: 'test', busy: true,
-    active_turn_id: 42, static_ready: true, single_client: true,
-  } as const;
-  const finished = deferred<import('../types').HealthResponse>();
-  vi.spyOn(api, 'health').mockResolvedValueOnce(health).mockReturnValue(finished.promise);
+    active_turn_id: 42, static_ready: true, single_client: false,
+  });
   vi.spyOn(api, 'commands').mockResolvedValue({ items: [] });
   vi.spyOn(api, 'listSessions').mockResolvedValue({ items: [] });
+  const queue = vi.spyOn(client, 'queueState').mockResolvedValue(state);
+  const replay = vi.spyOn(client, 'replayTurn').mockImplementation(async (_id, _after, emit) => {
+    emit({ type: 'start', seq: 1, turn_id: 42, session_id: turn.session_id });
+    await finished.promise;
+    emit({ type: 'done', seq: 2, turn_id: 42, text: 'Completed in background' });
+  });
   const history = vi.spyOn(api, 'history').mockResolvedValue({
-    session_id: 'new-session', title: 'Test', items: [
+    session_id: turn.session_id, title: 'Test', items: [
       { id: 'reply', role: 'assistant', content: 'Completed in background', at: '',
         reasoning: null, tool_calls: [], tool_name: null, tool_ok: null, interrupted: false },
     ], summary: null, has_earlier: false, current: true,
   });
   const { result } = renderHook(() => useChat());
   await waitFor(() => expect(result.current.chat.turnId).toBe(42));
-  expect(result.current.chat.busy).toBe(true);
   expect(history).not.toHaveBeenCalled();
-  vi.mocked(api.listSessions).mockResolvedValue({
-    items: [{ id: 'new-session', title: 'Test', messages: 1, current: true,
-      started_at: '', updated_at: '', last_message_at: '' }],
-  });
-  await act(async () => finished.resolve({ ...health, active_turn_id: null, busy: false }));
-  expect(history).toHaveBeenCalledWith('new-session');
-  expect(result.current.chat.busy).toBe(false);
+  queue.mockResolvedValue({ ...state, active: null, revision: 1 });
+  await act(async () => finished.resolve());
+  await waitFor(() => expect(result.current.chat.busy).toBe(false));
+  expect(replay).toHaveBeenCalledTimes(1);
   expect(JSON.stringify(result.current.chat.messages)).toContain('Completed in background');
 });
 
-
-it('reloads the original reply after a dropped stream without resending', async () => {
-  const health = {
-    status: 'ok', version: 'test', provider: 'test', model: 'test', busy: false,
-    active_turn_id: null, static_ready: true, single_client: true,
-  } as const;
-  vi.spyOn(api, 'health').mockResolvedValue(health);
+it('replays a dropped stream after its last event without resubmitting the message', async () => {
+  const turn = { turn_id: 42, session_id: 'original', text: 'Synthetic question' };
+  vi.spyOn(api, 'health').mockRejectedValue(new Error('not needed'));
   vi.spyOn(api, 'commands').mockResolvedValue({ items: [] });
   vi.spyOn(api, 'listSessions').mockResolvedValue({ items: [] });
-  const cancel = vi.spyOn(api, 'cancelTurn');
-  const stream = vi.spyOn(client, 'streamChat').mockImplementation(async (_body, emit) => {
-    emit({ type: 'start', seq: 1, session_id: 'original', turn_id: 42 });
-    throw new TypeError('Mobile connection dropped');
+  const submit = vi.spyOn(client, 'submitChat').mockResolvedValue(turn);
+  const state = { session_id: turn.session_id, active: turn, waiting: [], revision: 0, paused: false };
+  const queue = vi.spyOn(client, 'queueState').mockResolvedValue(state);
+  const replay = vi.spyOn(client, 'replayTurn').mockImplementation(async (_id, after, emit) => {
+    if (after === 0) {
+      emit({ type: 'start', seq: 1, turn_id: 42, session_id: turn.session_id });
+      throw new Error('Connection dropped');
+    }
+    expect(after).toBe(1);
+    queue.mockResolvedValue({ ...state, active: null, revision: 1 });
+    emit({ type: 'done', seq: 2, turn_id: 42, text: 'Saved on server' });
   });
-  const history = vi.spyOn(api, 'history').mockResolvedValue({
-    session_id: 'original', title: 'Test', items: [
-      { id: 'reply', role: 'assistant', content: 'Saved on server', at: '',
-        reasoning: null, tool_calls: [], tool_name: null, tool_ok: null, interrupted: false },
-    ], summary: null, has_earlier: false, current: true,
-  });
+  vi.spyOn(api, 'history').mockRejectedValue(new Error('display the replayed reply'));
   const { result } = renderHook(() => useChat());
-  await waitFor(() => expect(result.current.health?.version).toBe('test'));
-  await act(async () => { await result.current.send('Synthetic question'); });
-  expect(stream).toHaveBeenCalledTimes(1);
-  expect(cancel).not.toHaveBeenCalled();
-  expect(history).toHaveBeenCalledWith('original');
-  expect(result.current.chat.error).toBeNull();
-  expect(JSON.stringify(result.current.chat.messages)).toContain('Saved on server');
+  await act(async () => { await result.current.send(turn.text); });
+  await waitFor(() => expect(JSON.stringify(result.current.chat.messages)).toContain('Saved on server'), { timeout: 2500 });
+  expect(replay).toHaveBeenCalledTimes(2);
+  expect(submit).toHaveBeenCalledTimes(1);
 });

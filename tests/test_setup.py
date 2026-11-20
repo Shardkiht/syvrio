@@ -494,7 +494,7 @@ def test_provider_model_list_cache(monkeypatch):
     monkeypatch.setattr(
         client,
         "_fetch_provider_models_uncached",
-        lambda cfg, timeout, api_key: calls.append(1) or ["model-a"],
+        lambda cfg, timeout, api_key: calls.append(1) or {"model-a": None},
     )
     client.clear_model_cache()
     try:
@@ -522,7 +522,7 @@ def test_cached_provider_models_reads_cache_only(monkeypatch):
     monkeypatch.setattr(
         client,
         "_fetch_provider_models_uncached",
-        lambda cfg, timeout, api_key: calls.append(1) or ["model-a"],
+        lambda cfg, timeout, api_key: calls.append(1) or {"model-a": None},
     )
     client.clear_model_cache()
     try:

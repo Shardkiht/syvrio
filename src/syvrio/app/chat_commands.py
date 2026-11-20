@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from functools import partial
-from pathlib import Path
 
 from textual.widgets import Input, Static
 
@@ -77,15 +76,10 @@ class ChatCommandsMixin:
             else:
                 self._open_rename_prompt()
         elif command == "/import":
-            if not argument:
-                self.push_screen(
-                    TextInputScreen(
-                        "File or directory path (preview by default; add --apply to save)",
-                        on_result=lambda value: self._run_import(value) if value else None,
-                    )
-                )
+            if argument:
+                self.add_card("Use /import without a path to choose local files.")
             else:
-                self._run_import(argument)
+                self.action_attach_files()
         elif command == "/pending":
             self._open_pending()
         elif command == "/inferences":
@@ -408,103 +402,11 @@ class ChatCommandsMixin:
         self._end_navigation()
         self._drain_pending_intent()
 
-    def _after_import(self, message: str) -> None:
-        self._import_running = False
-        self.add_card(message)
-        self.update_status()
 
-    def _run_import(self, argument: str) -> None:
-        # 不用 POSIX shlex 拆路径，避免吃掉 Windows 反斜线。
-        argument = argument.strip()
-        apply = argument.endswith(" --apply")
-        filename = argument[:-8].strip() if apply else argument
-        if len(filename) >= 2 and filename[0] == filename[-1] and filename[0] in ("'", '"'):
-            filename = filename[1:-1]
-        if not filename:
-            self.add_card("Usage: /import <file-or-directory> [--apply]")
-            return
-        path = Path(filename).expanduser()
-        if apply:
-            self.push_screen(
-                PickScreen(
-                    "Confirm Memory Import",
-                    [("Cancel", False), ("Import and save", True)],
-                    partial(self._import_confirmed, path),
-                    detail=(
-                        f"Source: {path}\n\n"
-                        "This batch will write admitted memories directly to the Vault. "
-                        "The configured model may be called and may incur charges.\n\n"
-                        "If a later file or chunk fails, completed writes are retained. "
-                        "Cancel starts neither document parsing nor model calls."
-                    ),
-                )
-            )
-            return
-        self._start_import(path, False)
 
-    def _import_confirmed(self, path: Path, confirmed) -> None:
-        if confirmed is not True:
-            self.add_card("Import cancelled; no files were analyzed and no memories were written.")
-            self.query_one("#input", Input).focus()
-            return
-        self._start_import(path, True)
 
-    def _start_import(self, path: Path, apply: bool) -> None:
-        if self._import_running:
-            self.notify("An import is already running.")
-            return
-        self._import_running = True
-        self.add_card(
-            "Starting import: parsing is local; extraction calls the configured model and may incur charges. "
-            + ("Memories will be saved." if apply else "Preview only; memories will not be saved.")
-        )
-        self.run_worker(
-            partial(self._import_work, path, apply),
-            group="import",
-            thread=True,
-            exit_on_error=False,
-        )
 
-    def _import_work(self, path: Path, apply: bool) -> None:
-        try:
-            result = self.application.memory.import_path(
-                path,
-                apply,
-                on_progress=lambda item: self.call_from_thread(self._show_import_progress, item),
-            )
-        except Exception as exc:
-            record_event("command.failed", exc)
-            self.call_from_thread(self._after_import, f"Import failed: {exc}")
-            return
-        self.call_from_thread(self.refresh_pending)
-        message = (
-            "Import complete."
-            if apply
-            else "Preview complete; use /import <path> --apply to analyze again and save."
-        )
-        if result.errors:
-            message += (
-                f" {len(result.errors)} file/chunk(s) failed; completed changes were retained."
-            )
-        self.call_from_thread(self._after_import, message)
 
-    def _show_import_progress(self, progress) -> None:
-        if progress.chunk:
-            self.add_card(
-                f"Analyzing {progress.file}: chunk {progress.chunk}/{progress.total_chunks}"
-            )
-        if progress.error:
-            self.add_card(f"{progress.file} import failed: {progress.error}")
-            return
-        if not progress.chunk:
-            return
-        lines = [
-            f"{'Processed' if progress.apply else 'Preview'}: saved {progress.saved} · "
-            f"pending {progress.queued} · duplicates {progress.duplicates} · blocked {progress.blocked}"
-        ]
-        lines += [f"[{topic}] {text}" for topic, text in progress.admitted]
-        lines += [f"Pending [{topic}] {text}" for topic, text in progress.pending]
-        self.add_card("\n".join(lines))
 
     # ---------- 设置类选择器（逻辑在 application/settings.py） ----------
 
@@ -753,13 +655,32 @@ class ChatCommandsMixin:
         self.query_one("#input", Input).focus()
 
     def _pick_reasoning(self) -> None:
-        options = self.application.settings.reasoning_options()
+        self.run_worker(
+            self._load_reasoning_picker, group="thinking-picker", exclusive=True,
+            thread=True, exit_on_error=False,
+        )
+
+    def _load_reasoning_picker(self) -> None:
+        settings = self.application.settings
+        model = settings.service.config.llm
+        try:
+            options = settings.reasoning_options()
+        except Exception as exc:
+            record_event("command.failed", exc)
+            self.call_from_thread(self._background_error, "Could not load thinking options.")
+            return
+        self.call_from_thread(self._show_reasoning_picker, model, options)
+
+    def _show_reasoning_picker(self, model, options: list[tuple[str, str]]) -> None:
+        settings = self.application.settings
+        if settings.service.config.llm is not model:
+            return
         if not options:
             self.add_card(
                 f"{self.application.conversation.model_label} does not support reasoning effort; use /model to switch to a reasoning-capable model."
             )
             return
-        title, current = self.application.settings.reasoning_selection()
+        title, current = settings.reasoning_selection()
         entries = [(label, value, value == current) for value, label in options]
         self.push_screen(
             PickScreen(f"{title}: {current or 'default'}", entries, self._reasoning_picked)

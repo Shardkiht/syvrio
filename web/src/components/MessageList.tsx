@@ -1,7 +1,9 @@
 import { useCallback, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { attachmentUrl } from '../api/client';
 import type { ChatMessage, Segment } from '../state/chat';
 import { Collapsible } from './Collapsible';
 import { Markdown } from './Markdown';
+import { MessageActions, type MessageActionHandler } from './MessageActions';
 import { Thinking } from './Thinking';
 
 type ToolSegment = Extract<Segment, { kind: 'tool' }>;
@@ -132,11 +134,16 @@ export function MessageList({
   messages,
   sessionId,
   onToggle,
+  onMessageAction,
+  undoing = false,
 }: {
   messages: ChatMessage[];
   sessionId: string | null;
   onToggle: (segmentId: string) => void;
+  onMessageAction?: MessageActionHandler;
+  undoing?: boolean;
 }) {
+  const latestUser = [...messages].reverse().find((message) => message.role === 'user');
   const ref = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const following = useRef(true);
@@ -205,6 +212,15 @@ export function MessageList({
             return (
               <div className="turn user" key={message.id} data-testid="user-message">
                 <div className="bubble">{message.content}</div>
+                {sessionId && message.attachments?.map(file =>
+                  <a key={file.id} download={file.name}
+                    href={attachmentUrl(sessionId, message.savedId || message.id, file.id)}>
+                    {file.name}
+                  </a>)}
+                {message === latestUser && message.savedId && sessionId && onMessageAction && (
+                  <MessageActions key={sessionId + '/' + message.savedId} sessionId={sessionId}
+                    messageId={message.savedId} undoing={undoing} onAction={onMessageAction} />
+                )}
               </div>
             );
           }

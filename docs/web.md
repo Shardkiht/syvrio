@@ -1,17 +1,13 @@
 # Syvrio Web
 
-私有单用户 Web 客户端。Web 只是传输层，不重复实现 Agent、Memory、Session 或模型适配。
+Web、Textual TUI、CLI 和 MCP 连接到同一常驻后端。每个会话有独立的运行时和发送队列。后端持有 Vault 的写入所有权，统一处理工具调用、撤销、自动沉淀及定时回顾。
 
 ```text
-React Web ──┐
-            ├── ApplicationService ── AgentRuntime ── Memory / LLM ── Vault / Session
-Textual TUI ┘
+浏览器 → Web 网关 ─┐
+TUI / CLI / MCP ──┴─ 常驻后端 → 会话 / 记忆 / 模型
 ```
 
-- 后端 `src/syvrio/app/web/`：FastAPI + Pydantic，单 Worker，REST + SSE。
-- 前端 `web/`：React + TypeScript + Vite + 原生 CSS，pnpm 管理。
-- `src/syvrio/app/server.py` 仍是 MCP Server，未被 Web 覆盖。
-- TUI 保持独立运行；两种入口共享应用用例。
+浏览器使用 REST 和 SSE。网关沿用 Host 和 Origin 检查，并阻止访问仅供本机程序使用的管理接口。常驻后端只监听本机地址。首次连接会自动启动，退出客户端后继续运行。使用 `syvrio backend status` 查看状态，`syvrio backend stop` 安全停止。
 
 ## 开发与运行
 
@@ -86,19 +82,28 @@ uv run python scripts/build_web.py --wheel dist/*.whl  # 校验实际 wheel 内�
 | GET | `/api/sessions?limit=100` | 会话列表 |
 | POST | `/api/sessions` | 回到新对话首页（返回 `draft=true`、`session_id=null`，不写文件；首条消息才创建会话） |
 | POST | `/api/sessions/{id}/switch` | 切换/恢复会话 |
-| DELETE | `/api/sessions/{id}?confirmed=true` | 删除会话（需二次确认；当前/生成中会话受守卫保护） |
+| GET | `/api/sessions/{id}/deletion-preview` | 读取随会话移除的待确认内容及本次清单版本 |
+| DELETE | `/api/sessions/{id}?confirmed=true` | 确认删除，存在相关候选时通过 `pending_revision` 提交已查看的版本 |
 | GET | `/api/sessions/{id}?limit=300` | 最近的结构化历史；可读取本机 Runtime 思考附件，默认折叠 |
+| GET | `/api/sessions/{id}/messages/{message_id}/draft` | 读取最近回合的原文及附件清单供编辑；消息已变更时返回 409 |
 | GET | `/api/settings/providers` | 供应商、端点和配置状态；不返回已保存的 Key |
 | POST | `/api/settings/providers/{provider}` | 添加、更新或删除凭据，以及修改端点 |
 | GET | `/api/commands` | 共享命令目录（名称、用法、能力标记、子命令、快捷键） |
 | POST | `/api/commands` | 执行斜杠命令，返回结构化结果，不经过 LLM |
-| POST | `/api/chat` | 流式聊天，`text/event-stream` |
+| POST | `/api/chat?receipt=1` | 将消息放入当前会话队列，返回 202 和回合 ID。省略参数时直接返回该回合的 SSE 流 |
+| GET | `/api/chat/queue` | 查询本会话的活动回合、等候消息、暂停状态及修订号 |
+| DELETE | `/api/chat/queue/{turn_id}` | 移除尚未开始的排队消息 |
+| GET | `/api/chat/turns/{turn_id}?after=<seq>` | 订阅回合更新，从指定序号后重放已发出的事件 |
+| POST | `/api/chat/attachments` | 发送带附件的消息；同样支持 `?receipt=1`。使用 multipart 表单，可重复提交 `files`，可选字段为 `message` 和 `session_id` |
+| GET | `/api/sessions/{id}/messages/{message_id}/attachments/{attachment_id}` | 下载该消息对应的本地原件；文件缺失或校验失败时返回 404 |
 | POST | `/api/chat/insert` | 提交 `turn_id`、`session_id` 和 `message`；回合加入补充消息后返回 204，时机不可用返回 409 |
 | POST | `/api/chat/cancel` | 按 `turn_id` 取消当前请求 |
 
 Web、TUI 与 CLI 共用 `SessionStore.list()`：在应用列表条数上限前，按最后一条有效消息的时间倒序。撤销后的消息不计入排序；改名、摘要和沉淀记录不会把旧会话顶到前面。没有有效消息时使用创建时间。
 
-**删除会话**：侧栏每条会话悬停（或键盘聚焦）时出现 `×`，移动端常显。确认弹窗在浏览器侧提示「不可撤销」，服务端仍独立校验 `confirmed=true`、会话 ID 合法性、会话存在、`_require_idle()` 以及 `ConversationUseCases.delete_guard()`（与 TUI 同一守卫：当前会话、生成中、队列引用不可删），通过后由 `SessionStore.delete()` 删除 JSONL 与 Reasoning 附件。删除当前会话时 Web 先切到未落盘的新对话再删旧文件，等价于 TUI 的「先 `/new` 再 `Ctrl+D`」，服务端语义不变。删除失败返回稳定的 `delete_failed` 错误并保留文件。
+侧栏每条会话在悬停或键盘聚焦时显示删除按钮，移动端常显。删除确认框列出引用该会话的活动待确认内容。确认时服务端复核会话、队列、正式记忆来源及清单版本。仍有正式记忆引用时拒绝删除，已弃用记忆的来源也受保护。候选有变化时，显示新清单并重新确认。检查通过后一起移除相关候选、会话记录、该会话上传到 Vault 的副本、思考附件和撤销日志。删除当前会话时 Web 先切换到空白对话。会话记录删除失败会恢复相关候选与附件。
+
+最近一条已保存用户消息提供撤销和编辑重发按钮。编辑中的文本和附件选择在点击重发后才生效。两个按钮均调用 `POST /api/commands`，提交 `/undo`、`session_id` 和 `expected_message_id`。如果另一页面已发送新消息，后端拒绝撤销旧目标。成功重发时，修改后的消息优先于该会话中已有的排队消息。
 
 FastAPI 自动提供 `/openapi.json` 与 `/docs`。
 
@@ -118,7 +123,7 @@ FastAPI 自动提供 `/openapi.json` 与 `/docs`。
 | `cancelled` | — | 已停止，保留半截输出 |
 | `failed` | `message` | 失败，不泄露堆栈 |
 
-只有模型提供思考时才产生 Reasoning 事件。客户端只消费统一事件；Provider 协议在后端适配。浏览器断流不会取消正在运行的 Turn：已显示片段暂留，前端等待该轮完成，再从会话历史加载定稿。主动停止则发送匹配的 `turn_id`。
+只有模型提供思考时才产生 Reasoning 事件。客户端只消费统一事件；Provider 协议在后端适配。浏览器断流后，后端继续执行并保存该回合。客户端可查询队列、重新订阅事件，并从会话历史加载定稿。主动停止则发送匹配的 `turn_id`。
 
 ## Slash Command 与快捷键
 
@@ -132,13 +137,12 @@ FastAPI 自动提供 `/openapi.json` 与 `/docs`。
 | --- | --- | --- |
 | `server` | Web 后端通过 `CommandUseCases` 执行，复用 `ConversationUseCases` / `SettingsUseCases` / `MemoryUseCases` 等 | `/new`、`/model`、`/status`、`/undo` |
 | `client` | 纯浏览器交互 | `/sessions` 展开会话栏；`/setup` 打开设置面板；`/exit`、`/quit` 返回入口视图，**不会关闭后台 Web Server** |
-| `unsupported` | 明确提示不可用及原因，绝不静默忽略 | `/import` |
 
-- `/import` 不允许浏览器把任意路径交给服务器读取，返回 `unsupported` 并说明改用 TUI。
+- `/import` 与输入框附件按钮打开同一个本地多文件选择器。可选择文档和图片，取消不会改变草稿。选好的附件在按发送后才交给当前会话。命令不接受服务器路径。
 - `/git` 显示同步状态，`/git sync` 二次确认后执行同步。`/pending approve|reject|edit <id>` 和 `/inferences confirm|reject|correct <id>` 可从 Web 审查记录。
-- `/pending` 每条候选只列一次。选中后查看完整正文、主题及原因，可编辑多行内容、批准或拒绝；提交前需确认。写入成功原位刷新列表，失败时可重试且保留编辑内容。编辑表单通过命令请求的 `pending_text` 字段发送正文，独立于斜杠命令的长度上限。
-- `/profile refresh [n]` 手动刷新画像，`/dream <n>` 运行有请求预算的回顾，`/dream status|cancel|resume` 管理状态。TUI 仍提供更完整的专用审查界面和空闲调度。
-- 输入 `/undo` 或点击输入框旁的 **Undo** 会立即发出取消信号，跳过普通命令等待。已经开始的写工具先安全收尾，再撤销该回合的对话和有日志的本地文件写入。撤销成功后回填原文，暂停队列直到下一次主动发送。已有输入草稿时，等清空后再回填；受影响的文件后来被改动时，整次撤销会被拒绝。
+- `/pending` 每条候选只列一次。选中后查看完整正文、主题、待澄清问题和相关记忆 ID，可编辑多行内容、批准或拒绝；提交前需确认。写入成功原位刷新列表，失败时可重试且保留编辑内容。编辑表单通过命令请求的 `pending_text` 字段发送正文，独立于斜杠命令的长度上限。
+- `/profile` 展示最近生成的画像。`/dream <n>` 提交带有请求预算的后台回顾，`/dream status|cancel|resume` 查询、取消或继续。关闭客户端后，定时任务继续由常驻后端调度。
+- 输入 `/undo` 或点击最近一条用户消息上的撤销按钮，会立即发出取消信号。已经开始的写工具先安全收尾，再撤销该回合的对话和有日志的本地文件写入。撤销成功后回填原文，暂停队列直到下一次主动发送。已有输入草稿时，等清空后再回填。受影响的文件后来被改动时，整次撤销会被拒绝。
 - 未识别的 `/` 命令返回 `unknown` 并提示 `/help`；前端把所有 `/` 行发往 `/api/commands`，后端 `/api/chat` 也会拒绝斜杠开头的消息（`422 command_required`），双重保证不会误发给 LLM。
 - 多标签页：`POST /api/commands` 携带的 `session_id` 与 Runtime 当前会话不一致时返回 `409 session_mismatch`，提示刷新，避免旧标签页操作到别人的会话。
 
@@ -163,9 +167,9 @@ Web 单 Turn 模型下，`CommandUseCases.BUSY_READ_ONLY` 与 `BUSY_NO_ARGUMENT`
 
 | 分区 | 数据来源 | 说明 |
 | --- | --- | --- |
-| Model | `/model`、`/model refresh`、`/model <provider>/<model>` | 列出目录中的模型并标记当前项；目录为空时明确提示，可按模型 ID 切换 |
+| Model | `GET /api/settings/models?q=…`、`/model <provider>/<model>` | 刷新按钮右侧可按名称搜索所有已配置厂商的可用目录。首次自动获取，手动刷新可重新拉取。点选结果才切换 |
 | Appearance | 浏览器 `localStorage` | 默认跟随系统 / 浏览器明暗主题，也可固定亮色或暗色；只保存在当前浏览器 |
-| Thinking | `/think` | 仅展示模型真实支持的 reasoning 取值，`default` 表示不覆盖供应商默认 |
+| Thinking | `/think` | 优先读取模型目录为当前模型公布的档位，缺少有效档位或查询失败时采用预设。`auto` 置顶，`default` 表示使用供应商默认设置 |
 | Context | `/context` | 默认 100K，提供 100K、200K、400K、600K 预设和自定义 token 数；受模型上限约束 |
 | Providers | `GET/POST /api/settings/providers/{provider}` | 添加/更新 Key、修改 Base URL、删除供应商、自定义模型；**保存的 Key 永不回传浏览器** |
 | About | `/api/health` | 版本、当前 provider/model、是否生成中、单客户端锁、静态资源状态与快捷键 |
@@ -204,15 +208,13 @@ Web 单 Turn 模型下，`CommandUseCases.BUSY_READ_ONLY` 与 `BUSY_NO_ARGUMENT`
 
 `KEY_BINDINGS` 是唯一映射表；`Ctrl+Q`、`Ctrl+P` 明确列在 `RESERVED_KEYS` 中不做拦截，避免破坏浏览器正常功能，并在命令面板里显示替代组合键。
 
-## 并发与 TUI 边界
+## 跨客户端会话与并发
 
-- 单进程单 Worker，进程内共享一个 `ApplicationService` / `AgentRuntime`。
-- 脚本直接发送第二个 `POST /api/chat` 时仍会收到 `409 busy`。浏览器页面中的 Enter 和发送按钮会把消息加到本页队列，等当前回合结束后按顺序发出。离开或刷新页面会清空浏览器队列。
-- Ctrl+Enter 或 **Insert** 请求补充当前回合。接收窗口只在模型请求期间开放，工具执行中拒绝新的插入。已接收的补充消息在当前响应完整结束、已有工具结果写入后加入上下文，并通过 `message_inserted` 通知当前页面。上下文预算不足、回合已结束或取消时，输入草稿保留。
-- 取消请求必须带匹配的 `turn_id`；过期或伪造 ID 不会取消当前请求。
-- 浏览器切后台、退出或刷新导致流式连接断开时，当前回复继续生成并保存。重新打开页面后会等待在途回复完成并刷新历史。主动点停止仍会按该轮 ID 取消回复。
-- `runtime/locks/client.lock` 是整进程持有的独占标记：**TUI 与 Web 不能同时使用同一 Vault**。后启动的一方会收到明确错误（Web 拒绝启动，TUI 提示先关闭另一客户端）。进程退出或崩溃时由操作系统释放锁，不会残留。
-- `vault.lock` / `git.lock` 仍只保护单次写入，不是跨进程 Agent 协调机制。
+- Web、TUI、CLI、MCP 可以同时连接。每个网页标签页和终端独立选择会话，打开同一会话时共享正在生成的回复、等待队列及保存的历史。不同会话能同时生成。
+- 普通发送进入服务端队列，按接收顺序逐条执行。关闭页面、终端或 SSE 连接后，已接收的消息继续执行。网页刷新后从后端读取队列及当前回复。
+- Ctrl+Enter 或 **Insert** 在模型请求期间申请补充。工具运行时拒绝插入。已接收的补充仅在模型响应完整结束、相关工具结果写入后加入上下文；超过预算或回合状态变化时保留草稿。
+- 通过 `/undo` 打断当前回合，按会话及目标消息 ID 核对后撤销本地写入并回填原文。其他会话已修改相关文件或添加引用时，后端拒绝整次撤销。排队消息暂停，用户下一次主动发送后继续。
+- 同一 Vault 在本机只能由一个常驻后端写入，即使使用不同的 Runtime 目录也一样。关闭后端会等待后台工作停止，再释放所有权。
 
 ## 移动端适配
 
@@ -322,7 +324,7 @@ CLI 语法按 Tailscale 1.104.5 的 `tailscale serve --help` 核对：`serve <ta
 
 ## 使用边界
 
-Web 保持单用户、私有部署，没有内置登录或浏览器文件上传。待确认记忆和推断审核均有列表、详情和编辑弹窗，本地文件导入仍以 TUI 为主；CLI 仍可用于批处理。Web 和 TUI 由不同进程分别运行，不能同时占用同一 Vault/Runtime。
+Web 面向单用户私有部署。附件在用户设备上选择，手工发送后由常驻后端保存到 Vault 的 `attachments/` 目录；该目录由 Vault 的 Git 忽略。通过复制整个 Vault 可以一并迁移附件。
 
 ## 测试
 
@@ -333,7 +335,7 @@ uv run pytest -m web -q              # 后端 API / SSE / 并发 / 安全 / 命�
 uv run python scripts/build_web.py --check  # 校验已暂存静态资源
 ```
 
-命令相关自动化覆盖：目录与 TUI 一致性、能力标记、未知命令不转发 LLM、`/import` 不读取浏览器路径、`/undo` 优先取消与回填、忙期策略、会话错配 409、跨站写拒绝、选项面板不重开；前端覆盖前缀/子命令补全、`Tab`/`Enter`/`Escape`、方向键、IME 组字、快捷键冲突、命令面板、设置面板（模型切换、思考强度、上下文、供应商分区、About 不泄露 Key）、危险确认、命令失败后输入框恢复、生成中只读命令不打断流式回复。
+命令相关自动化覆盖：目录与 TUI 一致性、能力标记、未知命令不转发 LLM、`/import` 打开本地多选附件，不读取服务器路径、`/undo` 优先取消与回填、忙期策略、会话错配 409、跨站写拒绝、选项面板不重开；前端覆盖前缀/子命令补全、`Tab`/`Enter`/`Escape`、方向键、IME 组字、快捷键冲突、命令面板、设置面板（模型切换、思考强度、上下文、供应商分区、About 不泄露 Key）、危险确认、命令失败后输入框恢复、生成中只读命令不打断流式回复。
 
 
 ## PyPI 自动更新

@@ -4,65 +4,44 @@ import pytest
 from fastmcp import Client
 
 from syvrio.app.server import build_server
-from syvrio.infra.config import Config, LLMConfig
-from syvrio.memory.extractor import StaticExtractor
-from syvrio.memory.models import Candidate, ExtractionResult
-from syvrio.memory.service import MemoryService
 
 pytestmark = pytest.mark.mcp
 
 
-def make_server(tmp_path, candidates):
-    config = Config(vault=tmp_path / "vault", llm=LLMConfig())
-    service = MemoryService(
-        config, extractor=StaticExtractor(ExtractionResult(memories=candidates))
-    )
-    service.init_vault()
-    return build_server(service=service)
+async def reviewed(client, operation, arguments):
+    first = (await client.call_tool(operation, arguments)).data
+    assert first["status"] == "review_required"
+    return (await client.call_tool(operation, {**arguments, "review_token": first["review_token"]})).data
 
 
-async def test_mcp_memorize_recall_pending(tmp_path):
-    server = make_server(
-        tmp_path,
-        [
-            Candidate(text="偏好清淡风味", topic="preferences", confidence=0.95),
-            Candidate(text="可能喜欢浅烘", topic="preferences", confidence=0.5),
-        ],
-    )
-
-    async with Client(server) as client:
-        memorized = await client.call_tool("memorize", {"text": "一段对话"})
-        assert [entry["text"] for entry in memorized.data["admitted"]] == ["偏好清淡风味"]
-        assert len(memorized.data["queued"]) == 1
-
+async def test_mcp_memorize_recall_pending(service):
+    async with Client(build_server(service=service)) as client:
+        entry = await reviewed(client, "memorize", {"text": "偏好清淡风味", "topic": "preferences"})
+        assert entry["text"] == "偏好清淡风味"
+        assert "raw_markdown" not in entry
         recalled = await client.call_tool("recall", {"query": "清淡"})
-        assert recalled.data[0]["topic"] == "memories/general/preferences.md"
+        assert recalled.data[0]["id"] == entry["id"]
+        pending = await reviewed(client, "create_pending", {
+            "draft": {"text": "可能喜欢浅烘", "topic": "preferences"}, "question": "喜欢浅烘吗？",
+            "related_ids": [entry["id"]],
+        })
+        listed = await client.call_tool("review_pending", {})
+        assert listed.data[0]["question"] == "喜欢浅烘吗？"
+        assert listed.data[0]["related_ids"] == [entry["id"]]
+        assert (await client.call_tool("approve", {"item_id": pending["id"]})).data["text"] == "可能喜欢浅烘"
+        assert (await client.call_tool("review_pending", {})).data == []
 
-        pending = await client.call_tool("review_pending", {})
-        assert len(pending.data) == 1
-        item_id = pending.data[0]["id"]
 
-        approved = await client.call_tool("approve", {"item_id": item_id})
-        assert approved.data["text"] == "可能喜欢浅烘"
-
-        pending_after = await client.call_tool("review_pending", {})
-        assert pending_after.data == []
-
-
-async def test_mcp_topics_and_status(tmp_path):
-    server = make_server(
-        tmp_path, [Candidate(text="用 手冲滤纸", topic="devices", confidence=0.95)]
-    )
-
-    async with Client(server) as client:
-        await client.call_tool("memorize", {"text": "对话"})
-
-        topics = await client.call_tool("list_topics", {})
-        assert topics.data[0]["topic"] == "memories/general/devices.md"
-
-        topic = await client.call_tool("read_topic", {"topic": "devices"})
-        assert "* 用 手冲滤纸\n\n  **Core**" in topic.data["content"]
-        assert topic.data["entries"] == 1
-
-        status = await client.call_tool("status", {})
-        assert status.data["entries"] == 1
+async def test_mcp_topics_status_and_stale_evidence(service):
+    async with Client(build_server(service=service)) as client:
+        args = {"text": "用手冲滤纸", "topic": "devices"}
+        review = (await client.call_tool("memorize", args)).data
+        await reviewed(client, "note", {"text": "装有滤杯", "topic": "devices"})
+        refreshed = (await client.call_tool("memorize", {**args, "review_token": review["review_token"]})).data
+        assert refreshed["status"] == "review_required"
+        saved = (await client.call_tool("memorize", {**args, "review_token": refreshed["review_token"]})).data
+        topics = (await client.call_tool("list_topics", {})).data
+        assert len(topics) == 1 and topics[0]["entries"] == 2
+        topic = (await client.call_tool("read_topic", {"topic": "devices"})).data
+        assert len(topic["entries"]) == 2 and any(row["id"] == saved["id"] for row in topic["entries"])
+        assert (await client.call_tool("status", {})).data["entries"] == 2

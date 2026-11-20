@@ -10,7 +10,6 @@ from pathlib import Path
 
 import pytest
 
-from syvrio.agent.recall import memory_references
 from syvrio.agent.session import SessionStore
 from syvrio.infra.config import Config, RetrievalConfig
 from syvrio.memory.schema import SchemaError, parse_document
@@ -19,27 +18,26 @@ from syvrio.memory.store import MemoryStore
 
 EXAMPLE = """# Synthetic records
 
-* An **exhibit** and a [link](https://example.test).
-
-  - an ordinary nested bullet
-    - another bullet
-
-  ```markdown
-  **Core**
-  * `id`: `not-a-record`
-  ```
-
-  **Core**
+* **Core**
   * `id`: `mem-001`
   * `status`: `active`
-  * `source`: `test`
-  * `confidence`: `0.95`
+  * `text`:
+    ~~~~
+    An **exhibit** and a [link](https://example.test).
+
+    - an ordinary nested bullet
+      - another bullet
+    ~~~
+    **Core**
+    * `id`: `not-a-record`
+    ~~~
+    ~~~~
 
   **Context**
-  * `temporal.event_time`: `2024-06`
-  * `spatial.location`: `Synthetic Harbor`
-  * `affective.emotion`: `delighted`
-  * `future.arbitrary`: `multilingual 你好`
+  * `event_time`: `2024-06`
+  * `location`: `Synthetic Harbor`
+  * `emotion.event`: `delighted`
+  * `emotion.recollection`: `nostalgic`
 
   **Extensions**
   * `custom.marker`: `cobalt-fox`
@@ -48,14 +46,15 @@ EXAMPLE = """# Synthetic records
     * `name`: `Sample Agent`
     * `detail`:
       * `role`: `curator`
+  * `recorded_at`: `2026-01-01T00:00:00+00:00`
 
-* An _unrelated_ item.
-
-  **Core**
+* **Core**
   * `id`: `mem-002`
   * `status`: `active`
-  * `source`: `test`
-  * `confidence`: `0.80`
+  * `text`: `An _unrelated_ item.`
+
+  **Extensions**
+  * `recorded_at`: `2026-01-01T00:00:00+00:00`
 """
 
 
@@ -75,16 +74,15 @@ def test_parser_and_status_edit_preserve_raw_records(tmp_path, newline):
     assert first.entry.text.startswith("An **exhibit** and a [link]")
     assert "- another bullet" in first.entry.text and "`not-a-record`" in first.entry.text
     assert first.entry.context.event_time == "2024-06"
-    assert first.context[-1].value == "multilingual 你好"
-    assert [(n.key, n.value) for n in first.extensions[:2]] == [
+    assert [(n.key, n.value) for n in first.entry.extension_fields[:2]] == [
         ("custom.marker", "cobalt-fox"),
         ("custom.marker", "second-marker"),
     ]
-    assert first.extensions[2].children[1].children[0].value == "curator"
-    assert not second.context and not second.extensions
-    assert store.set_status("mem-001", "superseded")
+    assert first.entry.extension_fields[2].children[1].children[0].value == "curator"
+    assert not second.entry.context_fields and second.entry.extension_fields[0].key == "recorded_at"
+    assert store.set_status("mem-001", "deprecated")
     assert (
-        path.read_bytes() == raw.replace("`status`: `active`", "`status`: `superseded`", 1).encode()
+        path.read_bytes() == raw.replace("`status`: `active`", "`status`: `deprecated`", 1).encode()
     )
     assert store.document(path).records[1].entry.raw_markdown == second.entry.raw_markdown
 
@@ -96,7 +94,7 @@ def test_store_reports_non_utf8_memory_file(tmp_path):
     original = "# 合成记录\n".encode("gbk")
     path.write_bytes(original)
 
-    with pytest.raises(SchemaError, match=r"memories/custom/events\.md: invalid UTF-8.*Save"):
+    with pytest.raises(SchemaError, match=r"events\.md: invalid UTF-8.*Save"):
         store.entries()
 
     assert path.read_bytes() == original
@@ -105,52 +103,53 @@ def test_store_reports_non_utf8_memory_file(tmp_path):
 @pytest.mark.parametrize(
     ("old", "new", "problem"),
     [
-        ("`status`: `active`", "`status`: `other`", "invalid Core"),
-        ("`confidence`: `0.95`", "`confidence`: `NaN`", "invalid Core"),
-        ("`confidence`: `0.95`", "`unknown`: `0.95`", "exactly"),
-        ("`confidence`: `0.95`", "`id`: `mem-3`", "exactly"),
-        (
-            "**Core**\n  * `id`: `mem-001`",
-            "**Core**\n\n  **Core**\n  * `id`: `mem-001`",
-            "duplicate",
-        ),
-        ("`custom.marker`: `second-marker`", "`custom.marker` = `bad`", "invalid metadata"),
-        ("  * `custom.marker`: `second-marker`", "  * `custom.marker`:", "empty group"),
+        ("`status`: `active`", "`status`: `other`", "invalid memory record"),
+        ("`text`:", "`comment`:", "invalid memory record"),
+        ("`status`: `active`", "`id`: `mem-3`", "duplicate"),
+        ("  **Context**", "  **Core**", "out-of-order"),
+        ("`custom.marker`: `second-marker`", "`custom.marker` = `bad`", "invalid field"),
+        ("  * `custom.marker`: `second-marker`", "  * `custom.marker`:", "empty field"),
     ],
 )
 def test_parser_rejects_malformed_record(old, new, problem):
-    with pytest.raises(SchemaError, match=f"events.md:[0-9]+: .*{problem}"):
+    with pytest.raises(SchemaError, match=problem):
         parse_document(EXAMPLE.replace(old, new, 1), "events.md", "events")
 
 
-def test_retrieval_returns_complete_record_and_reindexes_edit(tmp_path):
+def test_retrieval_indexes_only_fact_location_and_emotion(tmp_path):
     config = Config(vault=tmp_path / "vault", retrieval=RetrievalConfig(method="keyword"))
     service = MemoryService(config)
     path = service.store.topic_path("events")
     path.parent.mkdir(parents=True)
     path.write_text(EXAMPLE, encoding="utf-8")
-    original = service.store.find("mem-001").raw_markdown
-    for query in (
-        "exhibit",
-        "2024-06",
-        "Synthetic Harbor",
-        "delighted",
-        "Sample Agent",
-        "cobalt-fox",
-    ):
+    entry = service.store.find("mem-001")
+    assert entry.index_text == "\n".join((entry.text, "Synthetic Harbor", "delighted", "nostalgic"))
+    assert entry.embedding_text == entry.text
+    for query in ("exhibit", "Synthetic Harbor", "delighted", "nostalgic"):
         hits = service.recall(query, limit=1)
         assert hits[0].id == "mem-001"
-        assert hits[0].raw_markdown == original
-        assert original in memory_references(hits)
-        assert "unrelated" not in memory_references(hits)
-        assert not memory_references(hits, max_tokens=40)
+    assert not service.recall("curator")
+    assert not service.recall("cobalt")
 
     before = path.stat()
-    path.write_text(EXAMPLE.replace("cobalt-fox", "silver-fox"), encoding="utf-8")
+    path.write_text(EXAMPLE.replace("delighted", "excited"), encoding="utf-8")
     os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
-    assert "`silver-fox`" in service.recall("silver-fox", limit=1)[0].raw_markdown
-    service.store.set_status("mem-001", "deleted")
-    assert not service.recall("silver-fox")
+    assert service.recall("excited")[0].id == "mem-001"
+    assert not service.recall("delighted")
+    service.store.set_status("mem-001", "deprecated")
+    assert not service.recall("excited")
+
+
+def test_pending_markdown_is_excluded_from_facts_and_index_fingerprint(tmp_path):
+    store = MemoryStore(tmp_path)
+    store.ensure()
+    fingerprint = store.fingerprint()
+    pending = store.root / "pending.md"
+    pending.write_text("Unreviewed draft", encoding="utf-8")
+    assert store.entries(include_inactive=True) == []
+    assert store.fingerprint() == fingerprint
+    with pytest.raises(SchemaError, match="reserved"):
+        store.document(pending)
 
 
 def test_relative_topics_disambiguate_equal_stems(tmp_path):
@@ -158,7 +157,7 @@ def test_relative_topics_disambiguate_equal_stems(tmp_path):
     a = store.append("work/notes", "synthetic first")
     b = store.append("education/notes", "synthetic second")
     assert a.topic != b.topic and store.entries(a.topic) == [a] and store.entries(b.topic) == [b]
-    with pytest.raises(ValueError, match="ambiguous"):
+    with pytest.raises(ValueError, match="(?i)ambiguous"):
         store.entries("notes")
 
 
@@ -177,7 +176,7 @@ def test_runtime_binding_invalidates_derived_data_without_vault_writes(tmp_path,
     cache = first.paths.index_dir / "vectors.npz"
     cache.parent.mkdir()
     cache.write_bytes(b"old")
-    summary = first.reflection.summary_path
+    summary = first.paths.cache_dir / "profile" / "profile-summary.json"
     summary.parent.mkdir(parents=True)
     summary.write_text("{}", encoding="utf-8")
     assert not (first.config.vault / ".syvrio").exists()
@@ -276,21 +275,22 @@ def test_migration_checks_recovery_hashes_and_history(tmp_path, migrator, monkey
         check=True,
         capture_output=True,
     )
-    store = MemoryStore(dst)
-    entry = store.find("mem-one")
+    from syvrio.memory.legacy_schema import parse_document as old_document
+    from syvrio.memory.legacy_schema import source_fingerprint
+
+    def old_entry(stem):
+        path = next((dst / "memories").rglob(f"{stem}.md"))
+        return old_document(path.read_text(encoding="utf-8"), str(path), stem).records[0].entry
+
+    entry = old_entry("one")
     assert any(
         node.key == "syvrio.future_field" and node.value == "synthetic"
         for node in entry.extension_fields
     )
-    from syvrio.memory.inference import source_fingerprint
-
-    marker = next(
-        node.value for node in entry.extension_fields if node.key == "migration.evidence_v1"
-    )
+    marker = next(n.value for n in entry.extension_fields if n.key == "migration.evidence_v1")
     assert source_fingerprint(entry) == marker
-    store.set_status("mem-one", "deleted")
-    assert source_fingerprint(store.find("mem-one")) != marker
-    assert store.entries("two")[0].id.startswith("mem-legacy-")
+    assert source_fingerprint(entry.model_copy(update={"status": "superseded"})) != marker
+    assert old_entry("two").id.startswith("mem-legacy-")
     sessions = SessionStore(dst)
     assert sessions.load("session-1").started_at == "2026-02-01T01:02:03+00:00"
     assert sessions.load("session-2").path.read_bytes() == undated

@@ -56,7 +56,7 @@ def test_search_limit(tmp_path):
 def test_search_ignores_inactive_entries(tmp_path):
     store = MemoryStore(tmp_path)
     entry = store.append("preferences", "喜欢浓咖啡")
-    store.set_status(entry.id, "deleted")
+    store.set_status(entry.id, "deprecated")
     assert KeywordRetriever(store).search("浓咖啡") == []
 
 

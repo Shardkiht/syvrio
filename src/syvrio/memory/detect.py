@@ -1,46 +1,18 @@
+"""Literal CJK retrieval signals and shared credential redaction."""
+
 from __future__ import annotations
 
 import re
 from functools import lru_cache
 
-from .models import Candidate, Entry
+from ..infra.secrets import contains_secret as contains_secret
+from ..infra.secrets import redact_secrets as redact_secrets
 
-NUMBER_RE = re.compile(r"\d+(?:\.\d+)?")
-NEGATION_RE = re.compile(r"(不|没|无|非|未|别|勿)")
-# 明确赋值保留 Unicode 值；仅靠空白分隔时要求 ASCII 凭据形态，避免把中文描述当密码。
-SECRET_RE = re.compile(
-    r"(api[_ -]?key|access[_ -]?token|secret|password|passwd|密码|口令|验证码|私钥)"
-    r"(?:\s*(?:是|为|[:：=])\s*\S{4,}|[!-~]{4,}|\s+[!-~]{4,})"
-    r"|((?:api\s*)?(?:密钥|秘钥)|(?:访问)?令牌|凭据)"
-    r"(?:\s*[:：=]\s*[\"'“‘]?[A-Za-z0-9_./+~-]{4,}"
-    r"|\s*(?:是|为)?\s*[\"'“‘]?(?=[A-Za-z0-9_./+~-]*[0-9_./+~-])[A-Za-z0-9_./+~-]{4,})",
-    re.I,
-)
-CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
 _CJK_RUN_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]{2,}")
 
 
-def _bigrams(text: str) -> set[str]:
-    cleaned = re.sub(r"\s+", "", text.lower())
-    chars = CJK_RE.findall(cleaned)
-    if len(chars) < 2:
-        return set(chars)
-    return {chars[index] + chars[index + 1] for index in range(len(chars) - 1)}
-
-
-def similarity(left: str, right: str) -> float:
-    left_set, right_set = _bigrams(left), _bigrams(right)
-    if not left_set or not right_set:
-        return 0.0
-    return len(left_set & right_set) / len(left_set | right_set)
-
-
 def bigram_coverage(query: str, text: str) -> float:
-    """query 的 CJK bigram 有多少出现在 text 里，衡量 keyword 命中的字面质量。
-
-    与 similarity（对称 Jaccard）不同：短查询对长条目时 Jaccard 必然偏低，
-    覆盖率只看"查询有多少落在条目里"，才能区分真命中与虚匹配。
-    """
+    """Fraction of literal adjacent CJK pairs from the query present in the text."""
     query_set = _literal_bigrams(query)
     if not query_set:
         return 0.0
@@ -56,35 +28,3 @@ def _literal_bigrams(text: str) -> frozenset[str]:
     return frozenset(
         run[i : i + 2] for run in _CJK_RUN_RE.findall(text) for i in range(len(run) - 1)
     )
-
-
-def contains_secret(text: str) -> bool:
-    return bool(SECRET_RE.search(text))
-
-
-def redact_secrets(text: str) -> str:
-    """会话落盘前隐藏已识别凭据，保留同一条消息中的其他内容。"""
-    return SECRET_RE.sub("[敏感信息已隐藏]", text)
-
-
-def find_conflicts(candidate: Candidate, entries: list[Entry]) -> list[Entry]:
-    conflicts: list[Entry] = []
-    candidate_numbers = set(NUMBER_RE.findall(candidate.text))
-    for entry in entries:
-        score = similarity(candidate.text, entry.text)
-        same_topic = entry.topic == candidate.topic
-        if score >= 0.85:
-            conflicts.append(entry)
-            continue
-        entry_numbers = set(NUMBER_RE.findall(entry.text))
-        numbers_differ = bool(
-            candidate_numbers and entry_numbers and candidate_numbers != entry_numbers
-        )
-        negation_differs = bool(NEGATION_RE.search(candidate.text)) != bool(
-            NEGATION_RE.search(entry.text)
-        )
-        if same_topic and numbers_differ and score >= 0.35:
-            conflicts.append(entry)
-        elif same_topic and negation_differs and score >= 0.45:
-            conflicts.append(entry)
-    return conflicts[:3]

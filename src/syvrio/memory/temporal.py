@@ -30,11 +30,11 @@ def validate_range(start: str | None, end: str | None) -> None:
         raise ValueError("查询结束日期不能早于开始日期。")
 
 
-def resolve_relative(value: str, anchor: str | None) -> str | None:
-    """仅解析可确定的相对日/月/年；锚点必须携带原始时区。"""
+def resolve_relative(value: str, anchor: date | str | None) -> str | None:
+    """根据可信本地日历日期或明确带偏移的原始消息时间，解析相对日、月、年。"""
     if not anchor:
         return None
-    day = timestamp_calendar_date(anchor)
+    day = anchor if type(anchor) is date else timestamp_calendar_date(anchor)
     text = value.strip()
     if text in {"今天", "昨天", "前天", "明天", "后天", "现在"}:
         offset = {"前天": -2, "昨天": -1, "今天": 0, "现在": 0, "明天": 1, "后天": 2}[text]
@@ -65,19 +65,22 @@ def matches_context(
         not context.location or location.strip().casefold() not in context.location.casefold()
     ):
         return False
-    if emotion and (
-        not context.emotion or emotion.strip().casefold() not in context.emotion.casefold()
-    ):
-        return False
+    if emotion:
+        term = emotion.strip().casefold()
+        if not any(term in text.casefold() for text in context.emotion_texts):
+            return False
     if start or end:
-        # 这里查询事件日期；不拿记录时间或不完整生效区间代替。
-        if not context.event_time:
-            return False
-        low, high = date_bounds(context.event_time)
-        if start and high < date_bounds(start)[0]:
-            return False
-        if end and low > date_bounds(end)[1]:
-            return False
+        first = date_bounds(start)[0] if start else date.min
+        last = date_bounds(end)[1] if end else date.max
+        periods = []
+        if context.event_time:
+            periods.append(date_bounds(context.event_time))
+        if context.valid_from or context.valid_to:
+            periods.append((
+                date_bounds(context.valid_from)[0] if context.valid_from else date.min,
+                date_bounds(context.valid_to)[1] if context.valid_to else date.max,
+            ))
+        return any(low <= last and high >= first for low, high in periods)
     return True
 
 
@@ -112,18 +115,16 @@ def select_facts(
             children.setdefault(entry.supersedes, []).append(entry)
     result = []
     for entry in entries:
-        if entry.status == "deleted":
-            continue
         context = entry.context
         start = date_bounds(context.valid_from)[0] if context and context.valid_from else None
         end = date_bounds(context.valid_to)[1] if context and context.valid_to else None
         if entry.status != "active":
-            if not (history or as_of) or entry.status != "superseded":
+            if not (history or as_of) or entry.status != "deprecated":
                 continue
             node = entry
             visited = {node.id}
             valid_chain = True
-            while node.status == "superseded":
+            while node.status == "deprecated":
                 successors = children.get(node.id, [])
                 if len(successors) != 1:
                     valid_chain = False

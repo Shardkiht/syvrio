@@ -22,6 +22,16 @@ function installFetch() {
   const lines: string[] = [];
   vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
     const method = init?.method ?? 'GET';
+    if (url.startsWith('/api/settings/models?')) {
+      const query = new URLSearchParams(url.split('?')[1]).get('q') ?? '';
+      lines.push('search:' + query);
+      const rows = [
+        { provider: 'deepseek', model: 'deepseek-flash', label: 'deepseek/deepseek-flash', current: true },
+        { provider: 'deepseek', model: 'deepseek-pro', label: 'deepseek/deepseek-pro', current: false },
+      ];
+      if (query.toLowerCase() === 'distant') rows.push({ provider: 'other', model: 'distant', label: 'Distant', current: false });
+      return json({ items: rows.filter(row => row.label.toLowerCase().includes(query.toLowerCase())), unavailable_providers: [] });
+    }
     if (url === '/api/settings/providers') {
       return json({ items: [
         { key: 'deepseek', label: 'DeepSeek', configured: true, current: true, endpoint: 'https://api.deepseek.com' },
@@ -33,18 +43,9 @@ function installFetch() {
     if (url === '/api/commands' && method === 'POST') {
       const body = JSON.parse(String(init?.body ?? '{}')) as { line: string };
       lines.push(body.line);
-      if (body.line === '/model') {
-        return json(commandResult({
-          command: 'model', intent: 'model', message: 'Current model: deepseek/deepseek-flash',
-          data: { options: [
-            { provider: 'deepseek', model: 'deepseek-flash', label: 'deepseek/deepseek-flash', current: true },
-            { provider: 'deepseek', model: 'deepseek-pro', label: 'deepseek/deepseek-pro', current: false },
-          ] },
-        }));
-      }
       if (body.line === '/think') {
         return json(commandResult({
-          command: 'think', data: { current: 'auto', options: ['', 'auto', 'high'] },
+          command: 'think', data: { current: 'high', options: ['high', 'medium', '', 'auto', 'low'] },
         }));
       }
       if (body.line === '/context') {
@@ -62,6 +63,29 @@ function installFetch() {
 afterEach(() => vi.unstubAllGlobals());
 
 describe('settings panel', () => {
+  it('searches the full catalog beside refresh without submitting typed model IDs', async () => {
+    const lines = installFetch();
+    render(<SettingsPanel health={HEALTH} theme="auto" onTheme={() => {}} onClose={() => {}} onChanged={() => {}} />);
+    await screen.findByTestId('model-deepseek-deepseek-pro');
+    const search = screen.getByRole('searchbox', { name: 'Search models by name' });
+    expect(search.previousElementSibling).toBe(screen.getByRole('button', { name: 'Refresh model list' }));
+    expect(screen.queryByText('Switch by model ID')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Apply' })).toBeNull();
+    fireEvent.change(search, { target: { value: '  PRO  ' } });
+    expect(screen.queryByTestId('model-deepseek-deepseek-flash')).toBeNull();
+    expect(await screen.findByTestId('model-deepseek-deepseek-pro')).toBeTruthy();
+    expect(lines).toContain('search:PRO');
+    fireEvent.change(search, { target: { value: 'distant' } });
+    expect(await screen.findByTestId('model-other-distant')).toBeTruthy();
+    fireEvent.change(search, { target: { value: 'unknown-model' } });
+    fireEvent.keyDown(search, { key: 'Enter' });
+    expect(await screen.findByText('No matching models.')).toBeTruthy();
+    expect(lines.filter(line => line.startsWith('/model '))).toEqual([]);
+    fireEvent.change(search, { target: { value: '' } });
+    fireEvent.click(await screen.findByTestId('model-deepseek-deepseek-flash'));
+    await waitFor(() => expect(lines).toContain('/model deepseek/deepseek-flash'));
+  });
+
   it('lists models and switches through the shared /model command', async () => {
     const lines = installFetch();
     const onChanged = vi.fn();
@@ -84,7 +108,11 @@ describe('settings panel', () => {
       <SettingsPanel health={HEALTH} theme="auto" onTheme={() => {}} onClose={() => {}} onChanged={() => {}} />,
     );
     fireEvent.click(screen.getByTestId('settings-tab-thinking'));
-    await waitFor(() => expect(screen.getByTestId('settings-thinking').textContent).toContain('default'));
+    await screen.findByTestId('think-auto');
+    const options = screen.getByTestId('settings-thinking').querySelectorAll('.option-row');
+    expect(Array.from(options, (button) => button.querySelector('span')?.textContent))
+      .toEqual(['auto', 'default', 'low', 'medium', 'high']);
+    expect(screen.getByTestId('think-high').getAttribute('aria-pressed')).toBe('true');
     fireEvent.click(screen.getByTestId('think-high'));
     await waitFor(() => expect(lines).toContain('/think high'));
   });

@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { Composer } from './Composer';
 
 function renderComposer() {
@@ -7,6 +7,20 @@ function renderComposer() {
     <Composer busy={false} progress="" onSend={() => {}} onStop={() => {}} />,
   );
 }
+
+it('uses the plus button to pick and send multiple attachments', () => {
+  const onSend = vi.fn();
+  render(<Composer busy={false} progress="" onSend={onSend} onStop={() => {}} />);
+  const picker = screen.getByLabelText('Select attachments') as HTMLInputElement;
+  const openPicker = vi.spyOn(picker, 'click');
+  fireEvent.click(screen.getByRole('button', { name: 'Attach files' }));
+  expect(openPicker).toHaveBeenCalledOnce();
+  expect(picker.multiple).toBe(true);
+  const files = [new File(['a'], 'one.txt'), new File(['b'], 'two.md')];
+  fireEvent.change(picker, { target: { files } });
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+  expect(onSend).toHaveBeenCalledWith('Analyze the attached files.', files);
+});
 
 /**
  * jsdom has no layout engine, so the tests pin the measurements the fit effect
