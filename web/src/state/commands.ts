@@ -88,6 +88,7 @@ export interface ReviewPanel {
   title: string;
   rows: PendingCandidate[];
   count: number;
+  edit?: { id: string; text?: string };
 }
 
 export interface ResultPanel {
@@ -111,6 +112,9 @@ export function panelFor(result: CommandResponse): CommandPanel | null {
       title: data.kind === 'pending' ? 'Pending review' : 'Inference review',
       rows: data.rows as PendingCandidate[],
       count: typeof data.count === 'number' ? data.count : data.rows.length,
+      edit: typeof data.edit_id === 'string'
+        ? { id: data.edit_id, text: typeof data.edit_text === 'string' ? data.edit_text : undefined }
+        : undefined,
     };
   }
 
@@ -166,6 +170,13 @@ export function commandMessage(result: CommandResponse): string {
   };
   const title = heading[result.status] ?? result.status;
   let message = result.message;
+  if (result.intent === 'profile' && typeof result.data?.status === 'string') {
+    const generated = result.data.generated_at;
+    const status = typeof generated === 'string' && generated
+      ? 'Last generated ' + formatLocalTimestamp(generated)
+      : result.data.status;
+    message = status + '\n\n' + message;
+  }
   const timestamps = result.intent === 'git_status' ? result.data?.timestamps : null;
   if (timestamps && typeof timestamps === 'object') {
     message = message.split('\n').map((line) => {
@@ -185,7 +196,7 @@ export function resultPanelFor(result: CommandResponse): ResultPanel {
   if (result.status === 'ok' && result.intent === 'git_status') {
     panel.action = { label: 'Synchronize', line: '/git sync', saveShortcut: true };
   } else if (result.status === 'ok' && result.intent === 'profile') {
-    panel.action = { label: 'Run Dream', line: '/dream 20' };
+    panel.action = { label: 'Run Dream', line: '/dream' };
   }
   return panel;
 }

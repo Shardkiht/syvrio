@@ -21,3 +21,11 @@ class SessionProtectedError(SyvrioError):
 
 class SessionDeletionChanged(SyvrioError):
     """Related pending items changed since the user saw the confirmation."""
+
+
+class ConversationError(SyvrioError):
+    """An expected conversation conflict or rejected submission, independent of transport."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code

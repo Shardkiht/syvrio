@@ -3,7 +3,7 @@ import { attachmentUrl } from '../api/client';
 import type { ChatMessage, Segment } from '../state/chat';
 import { Collapsible } from './Collapsible';
 import { Markdown } from './Markdown';
-import { MessageActions, type MessageActionHandler } from './MessageActions';
+import { MessageActions, type MessageActionHandler, type OpenEditor } from './MessageActions';
 import { Thinking } from './Thinking';
 
 type ToolSegment = Extract<Segment, { kind: 'tool' }>;
@@ -135,13 +135,19 @@ export function MessageList({
   sessionId,
   onToggle,
   onMessageAction,
+  onEdit,
   undoing = false,
+  archived = false,
+  loading = false,
 }: {
   messages: ChatMessage[];
   sessionId: string | null;
   onToggle: (segmentId: string) => void;
   onMessageAction?: MessageActionHandler;
+  onEdit?: OpenEditor;
   undoing?: boolean;
+  archived?: boolean;
+  loading?: boolean;
 }) {
   const latestUser = [...messages].reverse().find((message) => message.role === 'user');
   const ref = useRef<HTMLDivElement>(null);
@@ -200,7 +206,8 @@ export function MessageList({
       data-testid="message-list"
     >
       <div className="messages-content" ref={contentRef}>
-        {messages.length === 0 && (
+        {messages.length === 0 && loading && <p className="history-loading" role="status">Loading conversation…</p>}
+        {messages.length === 0 && !loading && (
           <div className="welcome">
             <img className="welcome-mark" src="/syvrio.svg" alt="" width={54} height={54} />
             <h1>Syvrio</h1>
@@ -214,12 +221,12 @@ export function MessageList({
                 <div className="bubble">{message.content}</div>
                 {sessionId && message.attachments?.map(file =>
                   <a key={file.id} download={file.name}
-                    href={attachmentUrl(sessionId, message.savedId || message.id, file.id)}>
+                    href={attachmentUrl(sessionId, message.savedId || message.id, file.id, archived)}>
                     {file.name}
                   </a>)}
                 {message === latestUser && message.savedId && sessionId && onMessageAction && (
                   <MessageActions key={sessionId + '/' + message.savedId} sessionId={sessionId}
-                    messageId={message.savedId} undoing={undoing} onAction={onMessageAction} />
+                    messageId={message.savedId} undoing={undoing} onAction={onMessageAction} onEdit={onEdit} />
                 )}
               </div>
             );

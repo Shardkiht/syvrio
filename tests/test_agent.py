@@ -150,7 +150,9 @@ def test_close_without_session_is_noop(tmp_path):
 
 
 def test_failed_switch_preserves_exit_distillation(tmp_path):
-    runtime, service = build_runtime(tmp_path, FakeChatModel([AssistantTurn(content="收到")]), extract_on_exit=True)
+    runtime, service = build_runtime(
+        tmp_path, FakeChatModel([AssistantTurn(content="收到")]), extract_on_exit=True
+    )
     queued = []
     runtime.on_distillation = lambda *args: queued.append(args)
     runtime.ask("喜欢合成口味甲")
@@ -278,26 +280,35 @@ def test_turn_undo_restores_vault_files_after_resume(tmp_path, monkeypatch):
     runtime, service = build_runtime(tmp_path, model, max_steps=15)
     old = service.note("合成活动是读书", topic="activities")
     obsolete = service.note("合成计划是骑车", topic="plans")
-    before = {service.store.topic_path(e.topic): service.store.topic_path(e.topic).read_bytes()
-              for e in (old, obsolete)}
+    before = {
+        service.store.topic_path(e.topic): service.store.topic_path(e.topic).read_bytes()
+        for e in (old, obsolete)
+    }
     before[service.store.changes_path] = service.store.changes_path.read_bytes()
     source = tmp_path / "synthetic-input.txt"
     source.write_text("合成进口资料", encoding="utf-8")
     proposal = Candidate(text="合成进口资料", topic="imported")
-    monkeypatch.setattr("syvrio.memory.service.ImportExtractor",
-                        lambda *a, **kw: StaticExtractor(ExtractionResult(memories=[proposal])))
+    monkeypatch.setattr(
+        "syvrio.memory.service.ImportExtractor",
+        lambda *a, **kw: StaticExtractor(ExtractionResult(memories=[proposal])),
+    )
     actions = [
         ("memorize", {"text": "合成新增偏好", "topic": "preferences"}),
         ("correct", {"entry_id": old.id, "text": "合成活动是绘画", "topic": "activities"}),
         ("deprecate", {"entry_id": obsolete.id}),
-        ("create_pending", {"text": "合成进口资料归属待核", "topic": "other", "question": "是谁的？"}),
+        (
+            "create_pending",
+            {"text": "合成进口资料归属待核", "topic": "other", "question": "是谁的？"},
+        ),
         ("import_file", {"path": str(source), "apply": True}),
     ]
     model.turns.extend(reviewed_calls(*actions))
     prompt = f'请处理合成样例并导入 "{source}"'
     runtime.ask(prompt)
     assert service.pending() and service.store.topic_path("imported").is_file()
-    assert service.store.find(old.id).status == service.store.find(obsolete.id).status == "deprecated"
+    assert (
+        service.store.find(old.id).status == service.store.find(obsolete.id).status == "deprecated"
+    )
     reopened = AgentRuntime(service, model, SessionStore(service.paths), config=service.config.chat)
     reopened.resume(runtime.current.id)
     assert reopened.undo() == prompt
@@ -309,8 +320,9 @@ def test_turn_undo_restores_vault_files_after_resume(tmp_path, monkeypatch):
 
 
 def test_turn_undo_leaves_all_files_and_messages_when_a_file_changed(tmp_path):
-    operations = [("memorize", {"text": f"合成资料 {topic}", "topic": topic})
-                  for topic in ("alpha", "beta")]
+    operations = [
+        ("memorize", {"text": f"合成资料 {topic}", "topic": topic}) for topic in ("alpha", "beta")
+    ]
     model = FakeChatModel(reviewed_calls(*operations))
     runtime, service = build_runtime(tmp_path, model, max_steps=6)
     runtime.ask("合成请求")
@@ -330,8 +342,12 @@ def test_turn_undo_rejects_new_inference_source_without_partial_rollback(tmp_pat
     runtime.ask(args["text"])
     source = service.store.entries()[0]
     inf = service.propose_inference("合成推断", [source.id], "samples")
-    paths = [runtime.current.path, service.inferences.path_for(inf.kind, inf.id),
-             service.store.topic_path(source.topic), service.audit.path]
+    paths = [
+        runtime.current.path,
+        service.inferences.path_for(inf.kind, inf.id),
+        service.store.topic_path(source.topic),
+        service.audit.path,
+    ]
     before = {path: path.read_bytes() for path in paths}
     with pytest.raises(TurnUndoError):
         runtime.undo()
@@ -343,7 +359,9 @@ def test_turn_undo_checks_persisted_tail_for_stale_session(tmp_path):
     runtime.ask("first")
     stale = runtime.sessions.load(runtime.current.id)
     target = stale.last_user_message_id()
-    runtime.sessions.append(runtime.current, {"type": "message", "role": "user", "id": "later", "content": "second"})
+    runtime.sessions.append(
+        runtime.current, {"type": "message", "role": "user", "id": "later", "content": "second"}
+    )
     before = runtime.current.path.read_bytes()
     with pytest.raises(TurnUndoError, match="latest turn"):
         runtime.undo(session=stale, message_id=target)
@@ -355,17 +373,20 @@ def test_memorize_tool_writes_with_session_provenance(tmp_path):
     model = FakeChatModel(reviewed_calls(("memorize", args)))
     runtime, service = build_runtime(tmp_path, model)
     runtime.ask(args["text"])
-    entry, = service.store.entries()
+    (entry,) = service.store.entries()
     assert entry.source_session_id == runtime.current.id
     assert entry.source_message_id == runtime.current.last_user_message_id()
     assert service.read_memory_source(entry.id)["message"]["content"] == args["text"]
-    evidence, success = [json.loads(row["content"]) for row in runtime.current.records
-                         if row.get("type") == "tool"]
+    evidence, success = [
+        json.loads(row["content"]) for row in runtime.current.records if row.get("type") == "tool"
+    ]
     assert evidence["status"] == "review_required" and evidence["results"] == []
     assert success["memory"]["id"] == entry.id
 
 
-@pytest.mark.parametrize("change", ["same_batch", "arguments", "concurrent_fact", "pending", "compression"])
+@pytest.mark.parametrize(
+    "change", ["same_batch", "arguments", "concurrent_fact", "pending", "compression"]
+)
 def test_writes_wait_for_the_model_to_review_current_evidence(service, change):
     from syvrio.agent.evidence import RecallContext
     from syvrio.agent.tools import build_tools
@@ -373,7 +394,9 @@ def test_writes_wait_for_the_model_to_review_current_evidence(service, change):
 
     sessions = SessionStore(service.paths)
     session = sessions.create()
-    sessions.append(session, {"type":"message", "id":"user-a", "role":"user", "content":"合成文件"})
+    sessions.append(
+        session, {"type": "message", "id": "user-a", "role": "user", "content": "合成文件"}
+    )
     guard = RecallContext(service)
     tools = build_tools(service, session, evidence=guard)
     pending = change == "pending"
@@ -425,6 +448,27 @@ def test_recall_tool_result_reaches_model(tmp_path):
     assert any("Recalled" in event for event in reply.events)
 
 
+def test_recall_tool_default_and_explicit_limits(service):
+    from syvrio.agent.tools import build_tools
+
+    query = "旅行清单"
+    for number in range(12):
+        service.store.append("travel", f"{query}中的测试项目 {number}")
+    ranked = [entry.id for entry in service.recall(query, limit=12)]
+    assert len(ranked) == 12
+    assert [entry.id for entry in service.recall(query)] == ranked[:10]
+
+    tools = build_tools(service, SessionStore(service.paths).create())
+    schema = next(
+        item["function"] for item in tools.schemas() if item["function"]["name"] == "recall"
+    )
+    assert schema["parameters"]["properties"]["limit"]["default"] == 10
+    for arguments, expected in [({}, 10), ({"limit": 3}, 3), ({"limit": 12}, 12)]:
+        result = tools.execute("recall", {"query": query, **arguments})
+        assert result.ok
+        assert [item["id"] for item in json.loads(result.content)["results"]] == ranked[:expected]
+
+
 def test_reopening_session_with_interrupted_tool_results_does_not_reexecute(tmp_path, monkeypatch):
     candidate = Candidate(text="偏好使用合成测试资料。", topic="preferences")
     args = candidate.model_dump(include={"text", "topic"})
@@ -432,11 +476,13 @@ def test_reopening_session_with_interrupted_tool_results_does_not_reexecute(tmp_
         ToolCall("read", "recall", {"query": "合成档案"}),
         ToolCall("write", "memorize", args),
     ]
-    model = FakeChatModel([
-        AssistantTurn(tool_calls=[ToolCall("prior-review", "memorize", args)]),
-        AssistantTurn(content="Synthetic tool request", tool_calls=calls),
-        AssistantTurn(content="Synthetic resumed reply"),
-    ])
+    model = FakeChatModel(
+        [
+            AssistantTurn(tool_calls=[ToolCall("prior-review", "memorize", args)]),
+            AssistantTurn(content="Synthetic tool request", tool_calls=calls),
+            AssistantTurn(content="Synthetic resumed reply"),
+        ]
+    )
     runtime, service = build_runtime(tmp_path, model)
     runtime.config.auto_recall = 0
     append = runtime.sessions.append
@@ -459,14 +505,19 @@ def test_reopening_session_with_interrupted_tool_results_does_not_reexecute(tmp_
     interrupted = runtime.current
     original = interrupted.path.read_bytes()
     assert [entry.text for entry in service.store.entries()] == [candidate.text]
-    assert [r["tool_call_id"] for r in interrupted.records if r["type"] == "tool"] == ["prior-review", "read"]
+    assert [r["tool_call_id"] for r in interrupted.records if r["type"] == "tool"] == [
+        "prior-review",
+        "read",
+    ]
 
     monkeypatch.setattr(runtime.sessions, "append", append)
     runtime.start()
     runtime.resume(interrupted.id)
     assert runtime.ask("Synthetic next request").content == "Synthetic resumed reply"
     request = model.calls[-1][0]
-    batch = next(i for i, message in enumerate(request) if message.get("content") == "Synthetic tool request")
+    batch = next(
+        i for i, message in enumerate(request) if message.get("content") == "Synthetic tool request"
+    )
     assert [message["tool_call_id"] for message in request[batch + 1 : batch + 3]] == [
         "read",
         "write",
@@ -478,7 +529,10 @@ def test_reopening_session_with_interrupted_tool_results_does_not_reexecute(tmp_
     assert request[batch + 3]["role"] == "user"
     assert writes == [1]
     assert interrupted.path.read_bytes().startswith(original)
-    assert [r["tool_call_id"] for r in runtime.current.records if r["type"] == "tool"] == ["prior-review", "read"]
+    assert [r["tool_call_id"] for r in runtime.current.records if r["type"] == "tool"] == [
+        "prior-review",
+        "read",
+    ]
 
 
 def test_read_topic_tool_result_reaches_model(tmp_path):
@@ -502,9 +556,7 @@ def test_read_topic_tool_result_reaches_model(tmp_path):
     tool_messages = [message for message in second_call_messages if message["role"] == "tool"]
     assert tool_messages and "清淡风味" in tool_messages[0]["content"]
     assert "晚上少量喝茶" in tool_messages[0]["content"]
-    assert any(
-        'Read topic "general/preferences": 2 entries' in event for event in reply.events
-    )
+    assert any('Read topic "general/preferences": 2 entries' in event for event in reply.events)
 
 
 def test_auto_recall_injects_long_term_memory(tmp_path):
@@ -584,8 +636,7 @@ def test_original_short_field_reaches_model_via_prefetch_and_recall_tool(tmp_pat
         def chat(self, messages, tools):
             if not any(message["role"] == "tool" for message in messages):
                 assert any(
-                    name.text in message["content"]
-                    and "<long_term_memory>" in message["content"]
+                    name.text in message["content"] and "<long_term_memory>" in message["content"]
                     for message in messages
                     if message["role"] == "user"
                 )
@@ -732,7 +783,9 @@ def test_retries_transient_model_failure(tmp_path):
 
 
 def test_close_enqueues_once_and_returns_before_extraction(tmp_path):
-    runtime, service = build_runtime(tmp_path, FakeChatModel([AssistantTurn(content="好的。")]), extract_on_exit=True)
+    runtime, service = build_runtime(
+        tmp_path, FakeChatModel([AssistantTurn(content="好的。")]), extract_on_exit=True
+    )
     queued = []
     runtime.on_distillation = lambda *args: queued.append(args)
     runtime.ask("这是一条值得记住的事实")
@@ -774,7 +827,7 @@ def test_apply_model_updates_config_and_runtime(tmp_path, monkeypatch):
     assert "deepseek/deepseek-v4-pro" in message
     assert service.config.llm.model == "deepseek-v4-pro"
     assert runtime.model_label == "deepseek/deepseek-v4-pro"
-    assert "deepseek-v4-pro" in config_path.read_text(encoding="utf-8")
+    assert "deepseek-v4-pro" in config_path.with_name("models.toml").read_text(encoding="utf-8")
 
 
 def test_model_options_lists_current_first_when_api_returns_it(service):
@@ -945,7 +998,9 @@ def test_apply_reasoning_updates_config_hot(tmp_path, monkeypatch, service):
 
     assert "high" in message
     assert service.config.llm.reasoning_effort == "high"
-    assert 'reasoning_effort = "high"' in config_path.read_text(encoding="utf-8")
+    assert 'reasoning_effort = "high"' in config_path.with_name("models.toml").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_reasoning_options_empty_when_unsupported(service, monkeypatch):
@@ -962,9 +1017,9 @@ def test_context_options_and_apply(tmp_path, monkeypatch, service):
     service.config_path = config_path
 
     options = actions.context_options(service)
-    assert options == [100_000, 200_000, 400_000, 600_000]
-    assert "16K" in actions.apply_context(service, 16000)
-    assert service.config.chat.context_window == 16000
+    assert options == [50_000, 100_000, 200_000, 400_000, 600_000]
+    assert "60K" in actions.apply_context(service, 60000)
+    assert service.config.chat.context_window == 60000
     assert (tmp_path / "syvrio.toml").exists()
     assert "at least" in actions.apply_context(service, 1000)
 
@@ -1086,10 +1141,12 @@ def _resident_for_test(runtime, service, monkeypatch, call=None):
 
     owner = BackgroundMemory(service)
     runtime.on_distillation = owner.request_distillation
+
     def extract(_service, _prompt, data, schema):
         if call:
             return call(data, schema)
         return schema(memories=[MemoryDraft(text=data["source_text"], topic="test")])
+
     monkeypatch.setattr(distillation, "ask", extract)
     return owner
 
@@ -1114,6 +1171,7 @@ def _drain(owner, session_id):
 
 def test_resident_discovers_session_that_crashed_before_close(tmp_path, monkeypatch):
     from threading import Event
+
     runtime, service = build_runtime(tmp_path, FakeChatModel([]))
     owner = _resident_for_test(runtime, service, monkeypatch)
     session = runtime.sessions.create()
@@ -1126,6 +1184,7 @@ def test_resident_discovers_session_that_crashed_before_close(tmp_path, monkeypa
 
 def test_catchup_covers_messages_added_after_resume_then_crash(tmp_path, monkeypatch):
     from threading import Event
+
     runtime, service = build_runtime(tmp_path, FakeChatModel([]), extract_on_exit=True)
     owner = _resident_for_test(runtime, service, monkeypatch)
     session = runtime.ensure_session()
@@ -1137,16 +1196,19 @@ def test_catchup_covers_messages_added_after_resume_then_crash(tmp_path, monkeyp
     owner._discover(Event())
     _drain(owner, session.id)
     assert [(f.source_message_id, f.text) for f in service.current_facts()] == [
-        ("first", "第一条事实"), ("second", "第二条事实"),
+        ("first", "第一条事实"),
+        ("second", "第二条事实"),
     ]
 
 
 def test_background_distills_every_chunk_of_a_long_source(tmp_path, monkeypatch):
     runtime, service = build_runtime(tmp_path, FakeChatModel([]), extract_on_exit=True)
     seen = []
+
     def capture(data, schema):
         seen.append(data["source_text"])
         return schema(memories=[])
+
     owner = _resident_for_test(runtime, service, monkeypatch, capture)
     session = runtime.ensure_session()
     text = "整条消息" * 3600
@@ -1161,6 +1223,7 @@ def test_backend_does_not_enqueue_session_without_user_messages(tmp_path, monkey
     from threading import Event
 
     from syvrio.infra.jobs import job_directory
+
     runtime, service = build_runtime(tmp_path, FakeChatModel([]), extract_on_exit=True)
     owner = _resident_for_test(runtime, service, monkeypatch)
     runtime.ensure_session()
@@ -1173,6 +1236,7 @@ def test_close_respects_extract_on_exit_but_allows_background_recovery(tmp_path,
     from threading import Event
 
     from syvrio.infra.jobs import job_path
+
     runtime, service = build_runtime(tmp_path, FakeChatModel([]), extract_on_exit=False)
     owner = _resident_for_test(runtime, service, monkeypatch)
     session = runtime.ensure_session()
@@ -1186,12 +1250,15 @@ def test_close_respects_extract_on_exit_but_allows_background_recovery(tmp_path,
 
 def test_close_enqueue_failure_preserves_messages_for_startup(tmp_path, monkeypatch):
     from threading import Event
+
     runtime, service = build_runtime(tmp_path, FakeChatModel([]), extract_on_exit=True)
     owner = _resident_for_test(runtime, service, monkeypatch)
     session = runtime.ensure_session()
     _user(runtime.sessions, session, "pending", "退出后恢复")
+
     def fail(*args):
         raise OSError("synthetic")
+
     runtime.on_distillation = fail
     runtime.close()
     assert runtime.sessions.load(session.id).needs_consolidation()
@@ -1240,6 +1307,7 @@ def test_streaming_failure_does_not_retry_or_duplicate(tmp_path):
 
 def test_fast_switch_registers_same_durable_job_as_close(tmp_path, monkeypatch):
     from syvrio.infra.jobs import job_path
+
     runtime, service = build_runtime(tmp_path, FakeChatModel([]))
     owner = _resident_for_test(runtime, service, monkeypatch)
     session = runtime.ensure_session()
@@ -1304,11 +1372,197 @@ def test_tool_output_budget_scales_with_context_window(tmp_path, monkeypatch):
     assert captured["budget"] == 50000
 
 
+def schema_cost(runtime, paths=()):
+    from syvrio.agent.tools import build_tools
+    from syvrio.infra.tokens import estimate_tokens
+
+    schemas = build_tools(runtime.service, runtime.ensure_session(), file_paths=paths).schemas()
+    return estimate_tokens(json.dumps(schemas, ensure_ascii=False, separators=(",", ":")))
+
+
+@pytest.mark.parametrize("oversize", ["tools", "text", "system", "image"])
+def test_small_window_rejects_oversized_fixed_input_before_model(tmp_path, monkeypatch, oversize):
+    from io import BytesIO
+
+    from PIL import Image
+
+    from syvrio.infra.attachments import AttachmentBatch
+
+    model = FakeChatModel([])
+    runtime, _ = build_runtime(tmp_path, model)
+    cost = schema_cost(runtime)
+    runtime.config.context_window = (
+        2000 if oversize == "tools" else runtime.config.reserve_output_tokens + cost + 512
+    )
+    runtime.config.auto_recall = 0
+    monkeypatch.setattr(
+        runtime, "_system_prompt", lambda: "系统" * (900 if oversize == "system" else 1)
+    )
+    text = "问题" * (900 if oversize == "text" else 1)
+    attachments = None
+    if oversize == "image":
+        image = BytesIO()
+        Image.new("RGB", (1, 1)).save(image, format="PNG")
+        image.seek(0)
+        attachments = AttachmentBatch.stage(
+            runtime.sessions.attachments_dir, [("sample.png", image)]
+        )
+
+    with pytest.raises(
+        ChatModelError, match=rf"{cost} for tool definitions.*Increase the context window"
+    ):
+        runtime.ask(text, attachments=attachments)
+
+    assert not model.calls
+    assert runtime.sessions.load(runtime.current.id).user_texts() == [text]
+
+
+def test_real_tool_budget_triggers_history_compaction_and_counts_toward_meter(
+    tmp_path, monkeypatch
+):
+    from syvrio.infra.tokens import estimate_messages_tokens
+
+    runtime, _ = build_runtime(tmp_path, FakeChatModel([AssistantTurn(content="完成")]))
+    monkeypatch.setattr(runtime, "_system_prompt", lambda: "系统")
+    cost = schema_cost(runtime)
+    runtime.config.context_window = runtime.config.reserve_output_tokens + cost + 512
+    runtime.config.auto_recall = 0
+    session = runtime.current
+    for index in range(6):
+        _user(runtime.sessions, session, f"u{index}", "合成历史" * 65)
+        runtime.sessions.append(session, {"type": "assistant", "content": "收到"})
+    usage = runtime.context_usage()
+    assert usage > runtime.context.input_budget > usage - cost
+    assert usage == runtime.context.estimate_usage(session, "系统") + cost
+
+    reply = runtime.ask("继续")
+    assert reply.compacted and reply.estimated_tokens <= runtime.context.input_budget
+    sent = runtime.last_plan.messages[:-1]  # omit the final answer appended after dispatch
+    assert reply.estimated_tokens == estimate_messages_tokens(sent) + cost
+
+
+def test_usage_meter_reuses_tool_cost_until_settings_change(tmp_path, monkeypatch):
+    from syvrio.agent import runtime as runtime_module
+
+    runtime, _ = build_runtime(tmp_path, FakeChatModel([]))
+    session = runtime.ensure_session()
+    builds = []
+    original = runtime_module.build_tools
+
+    def count_build(*args, **kwargs):
+        builds.append(1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(runtime_module, "build_tools", count_build)
+    first = runtime.estimate_usage(session)
+    assert runtime.estimate_usage(session) == first
+    assert len(builds) == 1
+    runtime.service.config.search.enabled = False
+    smaller = runtime.estimate_usage(session)
+    assert smaller < first
+    assert runtime.estimate_usage(session) == smaller
+    assert len(builds) == 2
+
+
+def test_small_window_rechecks_tool_followup_before_contacting_model(tmp_path, monkeypatch):
+    path = tmp_path / "sample.txt"
+    path.write_text("合成参考材料" * 700, encoding="utf-8")
+    model = FakeChatModel(
+        [
+            AssistantTurn(
+                tool_calls=[ToolCall(id="c1", name="read_file", arguments={"path": str(path)})]
+            ),
+        ]
+    )
+    runtime, _ = build_runtime(tmp_path, model)
+    runtime.config.context_window = (
+        runtime.config.reserve_output_tokens + schema_cost(runtime, [path]) + 512
+    )
+    runtime.config.auto_recall = 0
+    monkeypatch.setattr(runtime, "_system_prompt", lambda: "系统")
+    with pytest.raises(ChatModelError, match="Increase the context window"):
+        runtime.ask(f'请读取 "{path}"')
+
+    assert len(model.calls) == 1
+    saved = runtime.sessions.load(runtime.current.id).records_after_summary()
+    assert saved[-2]["tool_calls"][0]["id"] == saved[-1]["tool_call_id"] == "c1"
+    assert saved[-1]["ok"] and "合成参考材料" in saved[-1]["content"]
+
+
+def test_small_window_fits_tool_followup_by_shortening_older_result(tmp_path, monkeypatch):
+    from syvrio.infra.tokens import estimate_messages_tokens, estimate_tokens
+
+    oldest = tmp_path / "long.txt"
+    oldest.write_text("合成旧资料" * 350, encoding="utf-8")
+    latest = tmp_path / "short.txt"
+    latest.write_text("近期合成资料", encoding="utf-8")
+    calls = [
+        ToolCall(id=f"c{i}", name="read_file", arguments={"path": str(path)})
+        for i, path in enumerate((oldest, latest, latest))
+    ]
+    sent_sizes = []
+
+    class RecordingModel(FakeChatModel):
+        def chat(self, messages, tools, on_delta=None):
+            sent_sizes.append(
+                estimate_messages_tokens(messages)
+                + estimate_tokens(json.dumps(tools, ensure_ascii=False, separators=(",", ":")))
+            )
+            return super().chat(messages, tools, on_delta)
+
+    runtime, _ = build_runtime(
+        tmp_path,
+        RecordingModel(
+            [
+                AssistantTurn(tool_calls=calls),
+                AssistantTurn(content="已读"),
+            ]
+        ),
+    )
+    runtime.config.context_window = (
+        runtime.config.reserve_output_tokens + schema_cost(runtime, [oldest, latest]) + 1000
+    )
+    runtime.config.auto_recall = 0
+    monkeypatch.setattr(runtime, "_system_prompt", lambda: "系统")
+    reply = runtime.ask(f'请读取 "{oldest}" 和 "{latest}"')
+
+    assert reply.content == "已读" and len(sent_sizes) == 2
+    assert max(sent_sizes) <= runtime.context.input_budget
+    tools = [m for m in runtime.last_plan.messages if m["role"] == "tool"]
+    assert [m["tool_call_id"] for m in tools] == ["c0", "c1", "c2"]
+    assert tools[0]["content"].endswith("（较早工具结果已压缩）")
+    assert all("近期合成资料" in m["content"] for m in tools[1:])
+    saved = next(r for r in runtime.current.records if r.get("tool_call_id") == "c0")
+    assert len(saved["content"]) > len(tools[0]["content"])
+
+
+def test_wrapup_only_charges_for_messages_when_no_tools_are_sent(tmp_path, monkeypatch):
+    path = tmp_path / "sample.txt"
+    path.write_text("合成参考材料" * 220, encoding="utf-8")
+    model = FakeChatModel(
+        [
+            AssistantTurn(
+                tool_calls=[ToolCall(id="c1", name="read_file", arguments={"path": str(path)})]
+            ),
+            AssistantTurn(content="已读"),
+        ]
+    )
+    runtime, _ = build_runtime(tmp_path, model, max_steps=1)
+    runtime.config.auto_recall = 0
+    runtime.config.context_window = (
+        runtime.config.reserve_output_tokens + schema_cost(runtime, [path]) + 512
+    )
+    monkeypatch.setattr(runtime, "_system_prompt", lambda: "系统")
+    assert runtime.ask(f'请读取 "{path}"').content == "已读"
+    assert model.calls[0][1] and model.calls[1][1] == []
+
+
 def test_resident_defers_distillation_until_the_generating_session_is_idle(tmp_path, monkeypatch):
     from threading import Event
 
     from syvrio.background_memory import distillation
     from syvrio.infra.jobs import job_path
+
     runtime, service = build_runtime(tmp_path, FakeChatModel([]))
     owner = _resident_for_test(runtime, service, monkeypatch)
     session = runtime.ensure_session()
@@ -1326,19 +1580,24 @@ def test_failed_compaction_extraction_can_be_resumed_without_losing_progress(tmp
 
     from syvrio.background_memory import distillation
     from syvrio.infra.jobs import job_path
+
     runtime, service = build_runtime(tmp_path, FakeChatModel([]), extract_on_exit=True)
     owner = _resident_for_test(runtime, service, monkeypatch)
     runtime.config.keep_recent_tokens = 100
     session = runtime.ensure_session()
     for n in range(8):
         _user(runtime.sessions, session, str(n), "一条很长的历史。" * 100)
-        runtime.sessions.append(session, {"type":"assistant", "id": f"reply{n}", "content":"收到"})
+        runtime.sessions.append(
+            session, {"type": "assistant", "id": f"reply{n}", "content": "收到"}
+        )
     assert runtime.force_compact()
     path = job_path(service.paths, "distillation", session.id)
     assert path.exists()
     with monkeypatch.context() as patch:
+
         def fail(*args):
             raise TimeoutError
+
         patch.setattr(distillation, "ask", fail)
         with pytest.raises(TimeoutError):
             distillation.process(service, owner.sessions, path, owner.busy, Event())
@@ -1353,6 +1612,7 @@ def test_startup_discovers_all_sessions_without_starving_older_ones(tmp_path, mo
     from threading import Event
 
     from syvrio.infra.jobs import job_directory
+
     runtime, service = build_runtime(tmp_path, FakeChatModel([]))
     owner = _resident_for_test(runtime, service, monkeypatch)
     for n in range(6):
@@ -1543,6 +1803,7 @@ def test_cancel_preserves_partial_and_tool_pairs(tmp_path, monkeypatch, stop_at)
 
 def test_startup_consolidation_isolates_invalid_session(tmp_path, caplog, monkeypatch):
     from threading import Event
+
     runtime, service = build_runtime(tmp_path, FakeChatModel([]))
     owner = _resident_for_test(runtime, service, monkeypatch)
     healthy = runtime.sessions.create()

@@ -6,17 +6,19 @@ import asyncio
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from threading import Event, Thread
 
 import httpx
+import pytest
 
 from syvrio.app.resident_tui import ResidentChatApp
 from syvrio.app.server import build_server
 from syvrio.app.web.backend import WebBackend
 from syvrio.app.web.server import create_app
 from syvrio.backend.client import ResidentClient
-from syvrio.backend.endpoint import client_paths, publish
+from syvrio.backend.endpoint import client_paths, discover, publish
 from syvrio.llm import AssistantTurn
 from syvrio.memory.models import MemoryDraft
 from syvrio.memory.service import MemoryService
@@ -24,56 +26,209 @@ from syvrio.memory.service import MemoryService
 
 def configuration(root: Path) -> Path:
     config = root / "settings.toml"
-    config.write_text(f'vault="{(root / "vault").as_posix()}"\nruntime="{(root / "runtime").as_posix()}"\n'
-                      '[llm]\nprovider="custom"\nmodel="local-model"\nbase_url="http://127.0.0.1:9"\n'
-                      '[retrieval]\nmethod="keyword"\n[search]\nenabled=false\n[git]\nauto_sync=false\n'
-                      '[chat]\nauto_reflect=false\nextract_on_exit=false\nauto_recall=0\n', encoding="utf-8")
+    config.write_text(
+        f'vault="{(root / "vault").as_posix()}"\nruntime="{(root / "runtime").as_posix()}"\n'
+        '[llm]\nprovider="custom"\nmodel="local-model"\nbase_url="http://127.0.0.1:9"\n'
+        '[retrieval]\nmethod="keyword"\n[search]\nenabled=false\n[git]\nauto_sync=false\n'
+        "[chat]\nauto_reflect=false\nextract_on_exit=false\nauto_recall=0\n",
+        encoding="utf-8",
+    )
     return config
 
 
-def test_automatic_process_discovery_cli_mcp_and_vault_ownership(tmp_path, monkeypatch):
-    from fastmcp import Client
-
+@pytest.fixture
+def headless_config(tmp_path, monkeypatch):
+    # Both startup entry points must work when even importing the Web package fails.
+    guard = tmp_path / "headless"
+    guard.mkdir()
+    (guard / "sitecustomize.py").write_text(
+        'import sys\nsys.modules["syvrio.app.web"] = None\n', encoding="utf-8"
+    )
+    monkeypatch.setenv("PYTHONPATH", str(guard), prepend=os.pathsep)
     monkeypatch.setenv("SYVRIO_RUNTIME", str(tmp_path / "runtime"))
     monkeypatch.setenv("SYVRIO_VAULT", str(tmp_path / "vault"))
-    config = configuration(tmp_path)
+    return configuration(tmp_path)
+
+
+def test_foreground_backend_starts_without_the_web_package(headless_config):
+    _, paths = client_paths(headless_config, None)
+    process = subprocess.Popen(
+        [sys.executable, "-m", "syvrio", "backend", "run", "--config", str(headless_config)]
+    )
+    try:
+        deadline = time.monotonic() + 30
+        while not (endpoint := discover(paths)):
+            assert process.poll() is None and time.monotonic() < deadline, (
+                "Foreground backend failed to start"
+            )
+            time.sleep(0.05)
+        client = ResidentClient(headless_config)
+        assert client.base == endpoint[0]
+        client.call("shutdown")
+        assert process.wait(timeout=15) == 0
+        assert discover(paths) is None
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=10)
+
+
+def test_automatic_process_discovery_cli_mcp_and_vault_ownership(tmp_path, headless_config):
+    from fastmcp import Client
+
+    config = headless_config
     first = ResidentClient(config)
     try:
         second = ResidentClient(config)
         assert first.base == second.base and first.view != second.view
         value = first.memorize(MemoryDraft(text="Local test prefers tea", topic="habits"))
         assert second.read_topic("habits")["entries"][0]["id"] == value.id
-        cli = subprocess.run([sys.executable, "-m", "syvrio", "topics", "--config", str(config)],
-                             capture_output=True, encoding="utf-8", timeout=30, env={**os.environ, "PYTHONUTF8": "1"})
+        cli = subprocess.run(
+            [sys.executable, "-m", "syvrio", "topics", "--config", str(config)],
+            capture_output=True,
+            encoding="utf-8",
+            timeout=30,
+            env={**os.environ, "PYTHONUTF8": "1"},
+        )
         assert cli.returncode == 0, cli.stderr
         assert "habits" in cli.stdout
         with httpx.Client(trust_env=False) as http:
             assert http.post(first.base + "/api/resident/status", json={}).status_code == 403
+            assert http.get(first.base + "/").status_code == 404
+            assert http.get(first.base + "/api/health").json()["static_ready"] is False
         from fastapi.testclient import TestClient
 
         from syvrio.app.web.gateway import create_gateway
-        with TestClient(create_gateway(first.base, "127.0.0.1"), base_url="http://127.0.0.1") as web:
+
+        assets = tmp_path / "static"
+        assets.mkdir()
+        with TestClient(
+            create_gateway(first.base, "127.0.0.1", static_dir=assets), base_url="http://127.0.0.1"
+        ) as web:
+            assert web.get("/").json()["error"]["code"] == "assets_missing"
+            assert web.get("/api/health").json()["static_ready"] is False
+            (assets / "index.html").write_text(
+                "<html>Local browser bundle</html>", encoding="utf-8"
+            )
+            (assets / "app.js").write_text("export {}", encoding="utf-8")
+            assert (
+                web.get("/").text
+                == web.get("/sessions/example").text
+                == "<html>Local browser bundle</html>"
+            )
+            assert web.get("/app.js").text == "export {}"
+            assert web.head("/app.js").status_code == 200
+            assert web.get("/app.js", headers={"Host": "untrusted.invalid"}).status_code == 403
+            assert web.get("/api/missing").status_code == 404
+            assert "/api/health" in web.get("/openapi.json").json()["paths"]
+            assert web.get("/api/health").json()["static_ready"] is True
             assert web.get("/api/health").json()["single_client"] is False
-            assert web.post("/api/resident/shutdown", json={}, headers={"X-Syvrio-Token": first.token}).status_code == 404
-            assert web.post("/api/sessions", headers={"Origin": "http://untrusted.invalid"}).status_code == 403
+            assert (
+                web.post(
+                    "/api/resident/shutdown", json={}, headers={"X-Syvrio-Token": first.token}
+                ).status_code
+                == 404
+            )
+            assert (
+                web.post(
+                    "/api/sessions", headers={"Origin": "http://untrusted.invalid"}
+                ).status_code
+                == 403
+            )
+
         async def review():
             async with Client(build_server(service=second)) as mcp:
                 result = await mcp.call_tool("read_topic", {"topic": "habits"})
                 assert result.data["entries"][0]["id"] == value.id
+
         asyncio.run(review())
 
         # A different Runtime, even though it owns a distinct Runtime lock,
         # must still acquire the same OS lock for the physical Vault.
         other = tmp_path / "other-runtime"
         check = subprocess.run(
-            [sys.executable, "-c",
-             "from syvrio.backend.endpoint import client_paths; from syvrio.backend.ownership import BackendLease;"
-             "from pathlib import Path; import sys; _,p=client_paths(Path(sys.argv[1]),None); BackendLease(p).acquire()", str(config)],
-            env={**os.environ, "SYVRIO_RUNTIME": str(other)}, capture_output=True, timeout=30,
+            [
+                sys.executable,
+                "-c",
+                "from syvrio.backend.endpoint import client_paths; from syvrio.backend.ownership import BackendLease;"
+                "from pathlib import Path; import sys; _,p=client_paths(Path(sys.argv[1]),None); BackendLease(p).acquire()",
+                str(config),
+            ],
+            env={**os.environ, "SYVRIO_RUNTIME": str(other)},
+            capture_output=True,
+            timeout=30,
         )
         assert check.returncode != 0 and b"LockTimeout" in check.stderr
     finally:
         first.call("shutdown")
+
+
+def test_terminal_reloads_saved_state_when_a_stream_is_no_longer_available(resident_backend):
+    owner, client = resident_backend
+    sid = owner._sessions.create().id
+
+    async def revisit():
+        ui = ResidentChatApp(client, sid)
+        async with ui.run_test():
+            ui._ask_active = True
+            ui._active_id = 987654
+            await ui._receive({"turn_id": ui._active_id}, ui._version)
+            assert ui.sid == sid and not ui._ask_active and ui._active_id is None
+
+    asyncio.run(revisit())
+
+
+def test_terminal_reconciles_a_lost_switch_reply_without_touching_the_new_draft(
+    resident_backend, monkeypatch
+):
+    from textual.widgets import Input
+
+    owner, client = resident_backend
+    first, other = owner._sessions.create().id, owner._sessions.create().id
+
+    async def revisit():
+        ui = ResidentChatApp(client, first)
+        async with ui.run_test():
+            field = ui.query_one("#input", Input)
+            field.value = "unsent in first"
+            ui._active_id = 91
+            started, release = asyncio.Event(), asyncio.Event()
+            original = ui._request
+
+            async def hold_insert(method, path, **values):
+                if path != "/api/chat/insert":
+                    return await original(method, path, **values)
+                assert values["json"] == {
+                    "turn_id": 91,
+                    "session_id": first,
+                    "message": "unsent in first",
+                }
+                started.set()
+                await release.wait()
+
+            monkeypatch.setattr(ui, "_request", hold_insert)
+            pending = []
+            monkeypatch.setattr(
+                ui, "_run_request", lambda coro: pending.append(asyncio.create_task(coro))
+            )
+            await ui.action_insert_message()
+            await asyncio.wait_for(started.wait(), 2)
+            try:
+                await original("POST", f"/api/sessions/{other}/switch")
+                await ui._poll(force=True)
+                assert ui.sid == other and ui._active_id is None
+                assert field.value == ""
+                field.value = "unsent in first"
+            finally:
+                release.set()
+                await pending[0]
+            assert field.value == "unsent in first"
+            await ui._select(first)
+            assert field.value == ""
+            await ui._select(other)
+            assert field.value == "unsent in first"
+
+    asyncio.run(revisit())
 
 
 class PausingModel:
@@ -95,7 +250,6 @@ class PausingModel:
 
 def test_shared_fifo_replay_disconnect_and_textual_pilot(tmp_path, monkeypatch):
     import socket
-    import time
 
     import uvicorn
 
@@ -118,7 +272,7 @@ def test_shared_fifo_replay_disconnect_and_textual_pilot(tmp_path, monkeypatch):
     try:
         deadline = time.monotonic() + 20
         while not server.started and thread.is_alive() and time.monotonic() < deadline:
-            time.sleep(.05)
+            time.sleep(0.05)
         assert server.started
         publish(paths, port, "local-test-credential")
         alice, bob = ResidentClient(cfg), ResidentClient(cfg)
@@ -134,7 +288,14 @@ def test_shared_fifo_replay_disconnect_and_textual_pilot(tmp_path, monkeypatch):
         assert event["type"] == "start"
         alice.request("POST", "/api/view/disconnect")
         assert [item["turn_id"] for item in bob.request("GET", "/api/chat/queue")["waiting"]] == [
-            second["turn_id"], third["turn_id"]]
+            second["turn_id"],
+            third["turn_id"],
+        ]
+        assert owner.conversation.active_turn_id == first["turn_id"]
+        assert [item.line for item in owner.conversation.queue_snapshot().items] == [
+            "second",
+            "third",
+        ]
         other = ResidentClient(cfg)
         sibling = other.submit("other session", None)
         assert sibling["session_id"] != sid
@@ -156,17 +317,31 @@ def test_shared_fifo_replay_disconnect_and_textual_pilot(tmp_path, monkeypatch):
             ui = ResidentChatApp(ResidentClient(cfg), sid)
             async with ui.run_test() as keyboard:
                 for _ in range(60):
-                    await keyboard.pause(.05)
+                    await keyboard.pause(0.05)
                     if ui._active_id == first["turn_id"]:
                         break
                 assert ui._active_id == first["turn_id"]
                 field = ui.query_one("#input", Input)
+                await ui._select(sibling["session_id"])
+                assert ui.sid == sibling["session_id"] and ui._active_id is None
+                await ui._command("/new")
+                assert ui.sid is None
+                await ui._select(sid)
+                assert ui._active_id == first["turn_id"]
+                field.value = "/context 62000"
+                await keyboard.press("enter")
+                for _ in range(60):
+                    await keyboard.pause(0.05)
+                    if service.config.chat.context_window == 62000:
+                        break
+                assert service.config.chat.context_window == 62000
+                assert ui._active_id == first["turn_id"]
                 field.value = "supplement"
                 await keyboard.press("ctrl+enter")
                 assert await asyncio.to_thread(admitted.wait, 5)
                 model.release.set()
                 for _ in range(60):
-                    await keyboard.pause(.05)
+                    await keyboard.pause(0.05)
                     if not field.value:
                         break
                 assert not field.value
@@ -176,6 +351,7 @@ def test_shared_fifo_replay_disconnect_and_textual_pilot(tmp_path, monkeypatch):
         assert list(bob.events(third["turn_id"]))[-1]["type"] == "done"
         assert model.lines == ["first", "other session", "supplement", "second", "third"]
         assert list(bob.events(first["turn_id"]))[0]["seq"] == 1
+
         async def pilot():
             ui = ResidentChatApp(ResidentClient(cfg), sid)
             async with ui.run_test() as pilot:
@@ -184,15 +360,16 @@ def test_shared_fifo_replay_disconnect_and_textual_pilot(tmp_path, monkeypatch):
                 ui.query_one("#input", Input).value = "/undo"
                 await pilot.press("enter")
                 for _ in range(80):
-                    await pilot.pause(.05)
+                    await pilot.pause(0.05)
                     if ui.query_one("#input", Input).value == "third":
                         break
                 assert ui.query_one("#input", Input).value == "third"
                 ui.query_one("#input", Input).value = "/import"
                 await pilot.press("enter")
                 from syvrio.app.attachment_screen import AttachmentScreen
+
                 for _ in range(50):
-                    await pilot.pause(.05)
+                    await pilot.pause(0.05)
                     if isinstance(ui.screen, AttachmentScreen):
                         break
                 assert isinstance(ui.screen, AttachmentScreen)
@@ -202,13 +379,18 @@ def test_shared_fifo_replay_disconnect_and_textual_pilot(tmp_path, monkeypatch):
                 ui.screen.query_one(TextArea).text = "\n".join(map(str, files))
                 await pilot.click("#attach-selected")
                 for _ in range(60):
-                    await pilot.pause(.05)
+                    await pilot.pause(0.05)
                     if ui._uploads.get(sid):
                         break
                 assert ui._uploads[sid] == tuple(files)
+
         asyncio.run(pilot())
         history = bob.request("GET", f"/api/sessions/{sid}")
-        assert [r["content"] for r in history["items"] if r["role"] == "user"] == ["first", "supplement", "second"]
+        assert [r["content"] for r in history["items"] if r["role"] == "user"] == [
+            "first",
+            "supplement",
+            "second",
+        ]
     finally:
         model.release.set()
         server.should_exit = True

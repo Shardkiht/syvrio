@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from threading import RLock
+
 from ..agent.runtime import AgentRuntime
 from ..infra.search.daemon import ensure_search_daemon
 from ..memory.service import MemoryService
@@ -10,6 +12,7 @@ from .git import GitUseCases
 from .memory import MemoryUseCases
 from .reflection import ReflectionUseCases
 from .settings import SettingsUseCases
+from .turns import TurnRegistry
 
 
 class ApplicationService:
@@ -18,8 +21,17 @@ class ApplicationService:
         runtime: AgentRuntime,
         service: MemoryService,
         background=None,
+        *,
+        registry: TurnRegistry | None = None,
+        settings_lock: RLock | None = None,
     ) -> None:
-        self.conversation = ConversationUseCases(runtime, runtime.sessions)
+        self.conversation = ConversationUseCases(
+            runtime,
+            runtime.sessions,
+            registry=registry,
+            settings_lock=settings_lock,
+            background_job=background.session_job if background else None,
+        )
         self.memory = MemoryUseCases(service)
         self.settings = SettingsUseCases(service, runtime)
         self.reflection = ReflectionUseCases(background)

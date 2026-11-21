@@ -6,6 +6,7 @@ import { SHORTCUT_HELP } from '../state/shortcuts';
 import type { ThemeMode } from '../state/theme';
 import type { CommandResponse, HealthResponse, ModelSearchResponse } from '../types';
 import { ProvidersSection } from './ProvidersSection';
+import { CheckIcon, RefreshIcon, SearchIcon } from './Icons';
 
 type SectionKey = 'model' | 'appearance' | 'thinking' | 'context' | 'providers' | 'about';
 
@@ -18,10 +19,10 @@ const SECTIONS: { key: SectionKey; label: string; description: string }[] = [
   { key: 'about', label: 'About', description: 'Version, status and shortcuts' },
 ];
 
-const THEMES: { key: ThemeMode; label: string; description: string }[] = [
-  { key: 'auto', label: 'Follow system', description: 'Match the browser setting' },
-  { key: 'light', label: 'Light', description: 'Paper background, dark text' },
-  { key: 'dark', label: 'Dark', description: 'Dim background, light text' },
+const THEMES: { key: ThemeMode; label: string }[] = [
+  { key: 'auto', label: 'System' },
+  { key: 'light', label: 'Light' },
+  { key: 'dark', label: 'Dark' },
 ];
 
 interface ThinkState {
@@ -32,6 +33,7 @@ interface ThinkState {
 interface ContextState {
   current: number;
   options: number[];
+  minimum: number;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -53,6 +55,7 @@ function readContext(result: CommandResponse): ContextState | null {
   return {
     current: data.current,
     options: data.options.filter((value): value is number => typeof value === 'number'),
+    minimum: typeof data.minimum === 'number' ? data.minimum : 50_000,
   };
 }
 
@@ -166,18 +169,21 @@ export function SettingsPanel({
     void loadThinking();
   });
   const customContextValue = Number(customContext);
+  const minimumContext = context?.minimum ?? 50_000;
   const validCustomContext = /^\d+$/.test(customContext.trim())
-    && Number.isSafeInteger(customContextValue) && customContextValue >= 2_000;
+    && Number.isSafeInteger(customContextValue) && customContextValue >= minimumContext;
 
   const results = catalog?.query === query ? catalog : null;
   const currentLabel = health ? `${health.provider}/${health.model}` : '(loading)';
 
   return (
-    <CommandDialog title="Settings" className="settings-dialog"
+    <CommandDialog title="Settings" className="settings-dialog" overlayClass="settings-overlay"
       testId="settings-overlay" onClose={onClose}>
         <div className="settings-head">
           <h2 className="confirm-title">Settings</h2>
-          <button type="button" onClick={onClose} aria-label="Close settings">Close</button>
+          <button type="button" className="icon-button" onClick={onClose} aria-label="Close settings" title="Close settings">
+            <span aria-hidden="true">×</span>
+          </button>
         </div>
         <div className="settings-layout">
           <nav className="settings-nav" aria-label="Settings sections">
@@ -187,36 +193,44 @@ export function SettingsPanel({
                 type="button"
                 className={section === item.key ? 'active' : ''}
                 aria-current={section === item.key ? 'page' : undefined}
+                title={item.description}
                 data-testid={`settings-tab-${item.key}`}
                 onClick={() => setSection(item.key)}
               >
-                <span>{item.label}</span>
-                <small>{item.description}</small>
+                {item.label}
               </button>
             ))}
           </nav>
           <div className="settings-content">
             {section === 'appearance' && (
               <div className="settings-section" data-testid="settings-appearance">
-                <div className="settings-section-title">Appearance</div>
-                <p className="settings-hint">
-                  The interface follows your browser unless you pin a theme. The
-                  choice is stored in this browser only.
-                </p>
-                <div className="theme-options" role="radiogroup" aria-label="Colour theme">
+                <div className="settings-section-title">Colour theme</div>
+                <p className="settings-hint">System follows your device. Changes apply to this browser.</p>
+                <div className="setting-options" role="radiogroup" aria-label="Colour theme"
+                  onKeyDown={(event) => {
+                    const step = { ArrowLeft: -1, ArrowUp: -1, ArrowRight: 1, ArrowDown: 1 }[event.key];
+                    if (!step) return;
+                    event.preventDefault();
+                    const choices = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('button'));
+                    const index = choices.indexOf(event.target as HTMLButtonElement);
+                    const next = choices[(index + step + choices.length) % choices.length];
+                    next.focus();
+                    next.click();
+                  }}>
                   {THEMES.map((item) => (
                     <button
                       key={item.key}
                       type="button"
                       role="radio"
                       aria-checked={theme === item.key}
-                      className={theme === item.key ? 'active' : ''}
+                      className="setting-choice"
+                      tabIndex={theme === item.key ? 0 : -1}
                       data-testid={`theme-${item.key}`}
                       onClick={() => onTheme(item.key)}
                     >
                       <span className={`theme-swatch theme-swatch-${item.key}`} aria-hidden="true" />
-                      <span className="theme-label">{item.label}</span>
-                      <small>{item.description}</small>
+                      <span>{item.label}</span>
+                      {theme === item.key && <CheckIcon size={14} />}
                     </button>
                   ))}
                 </div>
@@ -228,69 +242,75 @@ export function SettingsPanel({
                 <p className="settings-hint">
                   Active: <strong data-testid="settings-current-model">{currentLabel}</strong>
                 </p>
-                <div className="providers-actions model-toolbar">
-                  <button
-                    type="button"
-                    disabled={busy || loadingModel}
-                    onClick={() => void loadModel(true)}
-                  >
-                    Refresh model list
-                  </button>
-                  <input
-                    type="search"
-                    className="model-search"
-                    aria-label="Search models by name"
-                    aria-controls="settings-model-list"
-                    placeholder="Search model name"
-                    autoComplete="off"
-                    maxLength={512}
-                    spellCheck={false}
-                    value={modelQuery}
-                    onChange={event => setModelQuery(event.target.value)}
-                  />
-                </div>
-                <div className="option-list" id="settings-model-list" data-testid="settings-models">
-                  {loadingModel && !results && <div className="empty" role="status">Searching models…</div>}
-                  {results?.items.map((item) => (
+                <div className="model-catalog">
+                  <div className="model-toolbar">
+                    <label className="model-search">
+                      <SearchIcon size={16} />
+                      <input
+                        type="search"
+                        aria-label="Search models by name"
+                        aria-controls="settings-model-list"
+                        placeholder="Search models"
+                        autoComplete="off"
+                        maxLength={512}
+                        spellCheck={false}
+                        value={modelQuery}
+                        onChange={event => setModelQuery(event.target.value)}
+                      />
+                    </label>
                     <button
-                      key={`${item.provider}/${item.model}`}
                       type="button"
-                      className={`option-row${item.current ? ' active' : ''}`}
-                      disabled={busy}
-                      aria-pressed={item.current}
-                      data-testid={`model-${item.provider}-${item.model}`}
-                      onClick={() => void run(`/model ${item.provider}/${item.model}`)}
+                      className="icon-button"
+                      aria-label="Refresh model list"
+                      title="Refresh model list"
+                      disabled={busy || loadingModel}
+                      onClick={() => void loadModel(true)}
                     >
-                      <span>{item.label || `${item.provider}/${item.model}`}</span>
-                      <small>{item.current ? 'current' : item.provider}</small>
+                      <RefreshIcon size={17} />
                     </button>
-                  ))}
-                  {!loadingModel && results && results.items.length === 0 && (
-                    <div className="empty" role="status">
-                      {query ? 'No matching models.' : 'No models available.'}
-                    </div>
-                  )}
-                  {results && results.unavailable_providers.length > 0 && (
-                    <p className="settings-hint">Model catalog unavailable for {results.unavailable_providers.join(', ')}.</p>
-                  )}
+                  </div>
+                  <div className="model-choices" id="settings-model-list" data-testid="settings-models">
+                    {loadingModel && !results && <div className="empty" role="status">Searching models…</div>}
+                    {results?.items.map((item) => (
+                      <button
+                        key={`${item.provider}/${item.model}`}
+                        type="button"
+                        className="model-choice"
+                        disabled={busy}
+                        aria-pressed={item.current}
+                        data-testid={`model-${item.provider}-${item.model}`}
+                        onClick={() => void run(`/model ${item.provider}/${item.model}`)}
+                      >
+                        {item.current && <CheckIcon size={15} />}
+                        <span>{item.label || `${item.provider}/${item.model}`}</span>
+                      </button>
+                    ))}
+                    {!loadingModel && results && results.items.length === 0 && (
+                      <div className="empty" role="status">
+                        {query ? 'No matching models.' : 'No models available.'}
+                      </div>
+                    )}
+                    {results && results.unavailable_providers.length > 0 && (
+                      <p className="settings-hint">Model catalog unavailable for {results.unavailable_providers.join(', ')}.</p>
+                    )}
+                  </div>
                 </div>
               </div>
             )}
 
             {section === 'thinking' && (
               <div className="settings-section" data-testid="settings-thinking">
-                <div className="settings-section-title">Thinking</div>
-                <p className="settings-hint">
-                  Reasoning effort for the active model.
-                  {think?.options.includes('') && ' “default” uses the provider setting.'}
-                </p>
-                <div className="option-list">
-                  {!think && <div className="empty">This model exposes no reasoning options.</div>}
+                <div className="settings-section-title">Reasoning effort</div>
+                {think?.options.includes('') && (
+                  <p className="settings-hint">“default” uses the provider setting.</p>
+                )}
+                <div className="setting-options" role="group" aria-label="Reasoning effort">
+                  {!think?.options.length && <p className="settings-hint">This model exposes no reasoning options.</p>}
                   {think?.options.map((value) => (
                     <button
                       key={value || 'default'}
                       type="button"
-                      className={`option-row${think.current === value ? ' active' : ''}`}
+                      className="setting-choice"
                       aria-pressed={think.current === value}
                       disabled={busy}
                       data-testid={`think-${value || 'default'}`}
@@ -298,8 +318,8 @@ export function SettingsPanel({
                         void loadThinking();
                       })}
                     >
+                      {think.current === value && <CheckIcon size={14} />}
                       <span>{value || 'default'}</span>
-                      <small>{think.current === value ? 'current' : ''}</small>
                     </button>
                   ))}
                 </div>
@@ -310,37 +330,41 @@ export function SettingsPanel({
               <div className="settings-section" data-testid="settings-context">
                 <div className="settings-section-title">Context window</div>
                 <p className="settings-hint">
-                  {context && `Current: ${context.current.toLocaleString()} tokens. `}
-                  Larger windows can keep more history. The selected model may cap the budget.
+                  Minimum {minimumContext.toLocaleString()} tokens. Model limits apply.
                 </p>
-                <div className="option-list">
-                  {context && !context.options.length && <p className="settings-hint">Use a custom budget for this model.</p>}
-                  {context?.options.map((value) => (
-                    <button
-                      key={value}
-                      type="button"
-                      className={`option-row${context.current === value ? ' active' : ''}`}
-                      aria-pressed={context.current === value}
-                      disabled={busy}
-                      data-testid={`context-${value}`}
-                      onClick={() => applyContext(value)}
-                    >
-                      <span>{value.toLocaleString()} tokens</span>
-                      <small>{context.current === value ? 'current' : ''}</small>
-                    </button>
-                  ))}
-                </div>
+                {context && context.options.length > 0 && (
+                  <div className="setting-options" role="group" aria-label="Context window presets">
+                    {context.options.map((value) => (
+                      <button
+                        key={value}
+                        type="button"
+                        className="setting-choice"
+                        aria-label={`${value.toLocaleString()} tokens`}
+                        aria-pressed={context.current === value}
+                        disabled={busy}
+                        data-testid={`context-${value}`}
+                        onClick={() => applyContext(value)}
+                      >
+                        {context.current === value && <CheckIcon size={14} />}
+                        <span>{value % 1000 === 0 ? `${value / 1000}k` : value.toLocaleString()}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
                 <form className="context-custom" onSubmit={(event) => {
                   event.preventDefault();
                   if (!busy && validCustomContext) applyContext(customContextValue);
                 }}>
-                  <label className="settings-section-title" htmlFor="custom-context-window">Custom budget</label>
+                  <label htmlFor="custom-context-window">Custom budget</label>
                   <div className="context-custom-controls">
-                    <input id="custom-context-window" type="number" min={2000} step={1} inputMode="numeric"
+                    <input id="custom-context-window" type="number" min={minimumContext} step={1} inputMode="numeric"
                       placeholder="Tokens" disabled={busy} value={customContext}
                       onChange={(event) => setCustomContext(event.target.value)} />
                     <button type="submit" disabled={busy || !validCustomContext}>Apply</button>
                   </div>
+                  {context && !context.options.includes(context.current) && (
+                    <p className="settings-hint">Current: {context.current.toLocaleString()} tokens</p>
+                  )}
                 </form>
               </div>
             )}

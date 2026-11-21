@@ -275,7 +275,7 @@ def test_write_config_roundtrip(tmp_path):
             num_retries=1,
         ),
         chat=ChatConfig(
-            context_window=16000,
+            context_window=65001,
             keep_recent_tokens=3000,
             recall_rewrite=False,
             recall_context_turns=4,
@@ -299,7 +299,7 @@ def test_write_config_roundtrip(tmp_path):
     assert loaded.llm.provider == "siliconflow"
     assert loaded.llm.reasoning_effort == "medium"
     assert loaded.llm.num_retries == 1
-    assert loaded.chat.context_window == 16000
+    assert loaded.chat.context_window == 65001
     assert loaded.chat.recall_rewrite is False
     assert loaded.chat.recall_context_turns == 4
     assert loaded.retrieval.method == "vector"
@@ -308,6 +308,26 @@ def test_write_config_roundtrip(tmp_path):
     assert loaded.retrieval.embedding.api_key_env == "DASHSCOPE_API_KEY"
     assert loaded.vault == config.vault
     assert not (tmp_path / "syvrio.toml.tmp").exists()
+
+
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    [
+        (None, 50_000),
+        (-1, 50_000),
+        (0, 50_000),
+        (4000, 50_000),
+        (49_999, 50_000),
+        (50_000, 50_000),
+        (50_001, 50_001),
+        (120_000, 120_000),
+    ],
+)
+def test_load_context_uses_config_only_above_floor(tmp_path, configured, expected):
+    path = tmp_path / "config.toml"
+    if configured is not None:
+        path.write_text(f"[chat]\ncontext_window = {configured}\n", encoding="utf-8")
+    assert load_config(path).chat.context_window == expected
 
 
 def test_load_config_reports_invalid_toml(tmp_path):
@@ -321,8 +341,7 @@ def test_load_config_reports_invalid_toml(tmp_path):
 def test_load_config_rejects_wrong_types_and_ranges(tmp_path):
     cases = [
         ('[chat]\ncontext_window = "big"\n', "必须是整数"),
-        ("[chat]\ncontext_window = 0\n", "必须大于 0"),
-        ("confidence_threshold = 1.5\n", "必须在 0 到 1 之间"),
+        ("[chat]\ncompact_threshold = 1.5\n", "必须在 0 到 1 之间"),
         ('auto_push = "yes"\n', "必须是布尔值"),
         ("[search]\nproviders = [1, 2]\n", "必须是字符串"),
         ("[search]\nmax_requests = 0\n", "必须大于 0"),
@@ -354,7 +373,7 @@ def test_toml_literal_roundtrips_unicode_and_controls():
 
 
 def test_load_config_defaults_to_hybrid_local(tmp_path):
-    loaded = load_config(tmp_path / "not-exist.toml")
+    loaded = load_config(tmp_path / "config.toml")
 
     assert loaded.retrieval.method == "hybrid"
     assert loaded.retrieval.embedding.backend == "local"
@@ -378,7 +397,7 @@ def test_search_auto_start_defaults_match_example(tmp_path):
     assert SearchConfig().auto_start is True
     assert SearchConfig().engines == ["bing"]
     assert SearchConfig().fetch_timeout == 45.0
-    assert load_config(tmp_path / "missing.toml").search.auto_start is True
+    assert load_config(tmp_path / "config.toml").search.auto_start is True
 
 
 def test_local_provider_without_key_reaches_backend(monkeypatch):
@@ -996,7 +1015,9 @@ def test_search_setup_enables_optional_provider_anonymously(tmp_path, monkeypatc
     assert any("匿名模式" in message for message in result["messages"])
     data = tomllib.loads(config_path.read_text(encoding="utf-8"))
     assert data["search"]["providers"] == ["open_websearch", "anysearch"]
-    assert data["search"]["usage_limits"]["anysearch"] == {"daily": 20, "monthly": 0}
+    assert "anysearch" not in data["search"].get("usage_limits", {})
+    limit = load_config(config_path).search.usage_limits["anysearch"]
+    assert (limit.daily, limit.monthly) == (20, 0)
 
 
 def test_search_setup_configures_searxng_without_key(tmp_path, monkeypatch):
@@ -1025,7 +1046,9 @@ def test_search_setup_configures_searxng_without_key(tmp_path, monkeypatch):
     assert result["search_providers"] == ["open_websearch", "searxng"]
     data = tomllib.loads(config_path.read_text(encoding="utf-8"))
     assert data["search"]["searxng_base_url"] == "http://127.0.0.1:9999"
-    assert data["search"]["usage_limits"]["searxng"] == {"daily": 0, "monthly": 0}
+    assert "searxng" not in data["search"].get("usage_limits", {})
+    limit = load_config(config_path).search.usage_limits["searxng"]
+    assert (limit.daily, limit.monthly) == (0, 0)
     assert any("SearXNG 实例地址" in message for message in result["messages"])
 
 
@@ -1147,7 +1170,7 @@ def test_llm_setup_can_enter_a_model_manually_when_api_discovery_is_unavailable(
             "MY_KEY_ENV",
             "",  # API Key 留空，发现不可用，进入独立的手动输入
             "my-model",
-            16000,  # context（reasoning 因 custom 无参数而跳过）
+            50000,  # context（reasoning 因 custom 无参数而跳过）
             False,  # 不初始化记忆库
         ],
     )
@@ -1224,7 +1247,9 @@ def test_search_setup_uses_exa_monthly_default(tmp_path, monkeypatch):
     import tomllib
 
     data = tomllib.loads(config_path.read_text(encoding="utf-8"))
-    assert data["search"]["usage_limits"]["exa"] == {"daily": 0, "monthly": 1000}
+    assert "exa" not in data["search"].get("usage_limits", {})
+    limit = load_config(config_path).search.usage_limits["exa"]
+    assert (limit.daily, limit.monthly) == (0, 1000)
 
 
 def test_baidu_menu_only_offers_search(monkeypatch, tmp_path):

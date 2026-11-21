@@ -43,6 +43,22 @@ export function PlusIcon(props: IconProps) {
   );
 }
 
+export function ArchiveIcon(props: IconProps) {
+  return <Svg {...props}><path d="M4 8h16v12H4zM3 4h18v4H3zM9 12h6" /></Svg>;
+}
+
+export function SearchIcon(props: IconProps) {
+  return <Svg {...props}><circle cx="10.5" cy="10.5" r="6.5" /><path d="m16 16 4.5 4.5" /></Svg>;
+}
+
+export function RefreshIcon(props: IconProps) {
+  return <Svg {...props}><path d="M20 5v5h-5M19.5 9a8 8 0 1 0 .1 6" /></Svg>;
+}
+
+export function CheckIcon(props: IconProps) {
+  return <Svg {...props}><path d="m5 12 4.5 4.5L19 7" /></Svg>;
+}
+
 export function EditIcon(props: IconProps) {
   return <Svg {...props}><path d="m14.5 5.5 4 4M4 20l4.7-1 12-12a2.8 2.8 0 0 0-4-4l-12 12L4 20Z" /></Svg>;
 }
@@ -68,6 +84,13 @@ export function SettingsIcon(props: IconProps) {
       <circle cx="11" cy="16.5" r="2.2" />
     </Svg>
   );
+}
+
+export function InboxIcon(props: IconProps) {
+  return <Svg {...props}>
+    <path d="m3.5 13.5 3.2-8h10.6l3.2 8V18a1.5 1.5 0 0 1-1.5 1.5H5A1.5 1.5 0 0 1 3.5 18Z" />
+    <path d="M4 13.5h4.5l1.5 3h4l1.5-3H20" />
+  </Svg>;
 }
 
 export function ArrowUpIcon(props: IconProps) {

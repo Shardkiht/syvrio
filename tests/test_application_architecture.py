@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1] / "src" / "syvrio"
-FORBIDDEN_APP = ("textual", "rich", "typer", "syvrio.app")
+FORBIDDEN_APP = ("textual", "rich", "typer", "fastapi", "starlette", "syvrio.app")
 CORE = ("agent", "memory", "retrieval", "llm", "infra")
 
 
@@ -60,6 +60,11 @@ def _violations(paths, forbidden: tuple[str, ...], root: Path = ROOT) -> list[st
 
 def test_application_does_not_import_frontends():
     violations = _violations((ROOT / "application").rglob("*.py"), FORBIDDEN_APP)
+    assert not violations, violations
+
+
+def test_resident_backend_does_not_import_frontends():
+    violations = _violations((ROOT / "backend").rglob("*.py"), ("syvrio.app",))
     assert not violations, violations
 
 

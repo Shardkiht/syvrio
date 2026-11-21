@@ -26,7 +26,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Require an Evo prerelease version
+      - name: Require a stable release version
         run: |
           uv run --frozen python - <<'PYTHON'
           import re
@@ -35,8 +35,8 @@ jobs:
 
           with open("pyproject.toml", "rb") as file:
               version = Version(tomllib.load(file)["project"]["version"])
-          if not re.fullmatch(r"\d+\.\d+\.\d+rc\d+", str(version)):
-              raise SystemExit(f"Evo must use a PyPI prerelease version, such as 0.5.2rc1; got {version}")
+          if not re.fullmatch(r"\d+\.\d+\.\d+", str(version)):
+              raise SystemExit(f"PyPI releases from main require a stable X.Y.Z version; got {version}")
           PYTHON
 
       - name: Enable Corepack

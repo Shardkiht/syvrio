@@ -1,30 +1,31 @@
-# Syvrio Evo 架构设计
+# Syvrio 统一后端架构
 
-- 适用分支：`main`
-- 文档状态：现行技术基准
-- 更新日期：2026-11-16
+适用分支为 `refactor/unified-backend-memory`，更新于 2026-11-21。
 
 ## 分层与运行入口
 
-`app → application → agent / memory → retrieval / llm / infra`。`memory` 装配检索器和模型抽取器。检索层只读记忆条目和存储接口，用于索引构建及命中证据。Web 以 HTTP/SSE 和浏览器状态为边界，TUI 通过 Textual 交互，CLI 与 FastMCP 按各自入口直接复用适用服务。
+Web、TUI、CLI 和 MCP 共用一个持有 Vault 的常驻后端。首个客户端通过 `backend/endpoint.py` 发现或启动后端，后续客户端复用同一进程。`syvrio backend run` 和自动启动都进入 `backend/server.py`，由它打开本地监听并装配共享 API。Web 网关提供页面资源、转发 API 请求和事件流。终端和 MCP 直接连接后端。多个客户端可以同时打开同一会话。
 
 | 位置 | 职责 |
 | --- | --- |
-| `web/`、`app/web/` | React 页面、静态资源、FastAPI 路由、SSE、Host/Origin 检查、Web 会话生命周期 |
-| `app/cli.py`、`app/tui.py`、`app/server.py` | Typer 命令、TUI 与 Vault 互斥入口、FastMCP 工具注册 |
-| `application/` | `ApplicationService` 装配会话、记忆、设置、反思和 Git 用例；命令目录描述入口能力和确认要求 |
-| `agent/` | `AgentRuntime` 编排召回、上下文、流式工具调用、会话记录、Undo 和补沉淀 |
-| `memory/` | Schema V2、存储、抽取与裁决、审核和审计；时间视图、推断事件、反思及画像 |
+| `web/`、`app/web/` | React 页面、静态资源、浏览器 Host/Origin 校验、API 与事件流转发 |
+| `app/cli.py`、`app/resident_tui.py`、`app/server.py` | Typer 命令、Textual 界面、FastMCP 工具注册 |
+| `backend/` | 后端发现、进程独占权、服务装配和资源生命周期 |
+| `backend/api/` | 客户端共享的 HTTP 路由、请求与响应类型、SSE 编码、本机管理接口鉴权 |
+| `application/` | 协调会话、命令、设置和记忆用例，管理视图绑定与每个会话的调度 |
+| `agent/` | 执行一轮模型与工具调用，管理上下文、流式输出及回合记录 |
+| `background_memory/` | 执行会话标题、沉淀、待审上下文补充和 Dream，提交前复查来源和写入条件 |
+| `memory/`、`session/` | 正式记忆、待审核项、推断、会话及其来源和撤销记录 |
 | `retrieval/`、`llm/` | BM25、向量与 RRF；LiteLLM 协议、模型发现、流式聚合和摘要 |
 | `infra/` | 路径、配置、锁、Git、诊断、搜索抓取、PyPI 更新及系统服务切换 |
 
-## 关键数据流
+## 会话调度
 
-1. **对话**：入口校验会话后绑定活动轮次。Runtime 写入用户记录，基于问题选择自动召回和上下文策略，再调用当前模型。选定的只读搜索与抓取工具可以并行；写入工具保持有序。正文、思考、工具和终止状态分别进入事件流。
-2. **会话**：Web 连接关闭时释放订阅，后台继续完成该轮并持久化。重进页面等待原轮次收尾，再从会话历史恢复；主动停止需匹配轮次 ID。会话切换将沉淀交给后台；在模型抽取后、写入前检查会话是否已打开或改动。成功后推进游标，失效或失败保留待处理消息。TUI 与 Web 共用会话用例和按最后有效消息排序的列表；TUI 可排队发送，Web 忙时拒绝第二个聊天请求。
-3. **记忆**：候选经过敏感检测、去重、冲突与置信度裁决。可采信事实写 Markdown；待确认进入 JSONL 队列。修订、状态演化、删除和审计保持来源链。推断保存在独立事件流，依有效来源进入审查和画像。
-4. **召回**：BM25 和可选语义向量经 RRF 合并。关键词侧提供短字段的字面证据；时间、地点和情绪等约束进一步筛选。向量失败时使用可用的关键词结果。网页搜索和抓取在独立路由内处理预算、缓存和供应商退路。
-5. **反思**：`ReflectionEngine` 对已沉淀证据执行有预算的 `profile` 或 `dream` 批次，产生待审查推断和衍生摘要。TUI 负责空闲调度；CLI 和 Web 命令可显式触发。来源变化时，摘要按指纹标记失效并刷新。
+1. 客户端提交消息时，`ConversationDirectory` 将它绑定到该会话已有的实例。两个客户端进入同一会话会取得同一调度器，不同会话可以并行生成。最后一个视图离开时，有活动回合或等待队列的实例继续运行。视图切回该会话会重新绑定到它。
+2. `ConversationScheduler` 在同一把会话锁下决定立即开始、排队或拒绝。`ConversationUseCases` 保存活动回合、等待队列和撤销后的暂停状态。模型、思考和上下文设置在每轮实际开始时固定。
+3. `AgentRuntime` 保存用户输入并执行模型和工具。应用层给事件编号，客户端用回合 ID 和最后读到的序号重连。断开订阅后仍继续生成，相同提交 ID 的重试会复用回执。
+4. 取消只对指定的活动回合生效。编辑重发先预留该会话，让原回合收尾并保存替代消息，然后继续原队列。启动或落盘失败时保留原记录。结束活动回合和启动下一条由同一调度器完成。
+5. 归档前，应用层在会话锁和 Vault 写锁内检查目标会话是否有写入、排队或正在运行的后台任务。只读客户端可释放绑定，整个 `archived/` 排除在检索和后台处理之外。
 
 ## 存储和时间
 
@@ -32,7 +33,8 @@
 | --- | --- |
 | `Vault/memories/<category>/<topic>.md` | 正文、Core、Context、Extensions；事实 ID 稳定 |
 | `Vault/sessions/YYYY/MM/<id>.jsonl` | 追加式会话、工具结果、摘要、撤销与沉淀游标 |
-| `Vault/records/memory/` | 待确认、处理结果、审计和推断记录 |
+| `Vault/memories/pending.md`、`Vault/inferences/` | 待审核候选和分类推断 |
+| `Vault/records/memory/audit.jsonl` | 操作审计 |
 | `Runtime/session-reasoning/<session-id>/<message-id>.json` | 本机推理附件；会话只持有引用标记。旧会话或附件缺失时仍读取正文 |
 | `Runtime/indexes/`、`cache/` | 向量索引、搜索缓存、画像摘要 |
 | `Runtime/state/`、`jobs/`、`logs/` | Vault 绑定、配额、反思状态、后台任务和本地诊断 |
@@ -41,7 +43,7 @@ Vault 与 Runtime 相互独立，Runtime 在 Git 工作树之外。绝对时间�
 
 ## 锁与资源生命周期
 
-- `client.lock` 管理 Web/TUI 的整实例互斥。退出时先协调活动轮、后台补沉淀和正在执行的命令，再释放客户端锁。同步模型调用的等待由供应商超时和重试上限约束。
+- 常驻进程同时持有 Vault 身份锁和 Runtime 实例锁。客户端可并发连接。进程停止时先关闭会话入口并等待写入和后台任务收尾，最后释放所有权。
 - `vault.lock` 保护会话与记忆持久化，`git.lock` 串行 Git 操作。模型抽取在写锁外进行，提交前在锁内复核状态。单文件写入可原子替换，多文件操作依赖现有异常恢复和备份。
 - LiteLLM 请求使用当前显式配置的模型；旧的自动候补路径已移除。流式完成、取消和错误时释放本次请求拥有的连接。外部共享客户端由其所有者管理。
 - API Key 由环境变量或系统凭据提供，模型发现缓存按供应商、端点和凭据隔离。思考回传仅在同一受支持模型路由与协议范围内发生，Runtime 推理附件不进入 Vault Git 或沉淀输入。

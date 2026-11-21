@@ -13,7 +13,7 @@ class ReflectionUseCases:
     def __init__(self, background: BackgroundMemory):
         self.background = background
 
-    def run(self, mode: str, budget: int = 20) -> str:
+    def run(self, mode: str, budget: int | None = None) -> str:
         if mode != "dream":
             raise ValueError("Use /dream to regenerate the complete profile and hypotheses.")
         return self.background.request_dream(budget)

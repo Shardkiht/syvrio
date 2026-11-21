@@ -1,21 +1,25 @@
 import type { SessionInfo } from '../types';
-import { PanelIcon, PlusIcon } from './Icons';
+import { ArchiveIcon, PanelIcon, PlusIcon } from './Icons';
 
 export function Sidebar({
   sessions,
+  replyingSessionIds,
   currentId,
   open,
   onNew,
   onSelect,
-  onDelete,
+  onArchive,
+  onOpenArchive,
   onClose,
 }: {
   sessions: SessionInfo[];
+  replyingSessionIds: ReadonlySet<string>;
   currentId: string | null;
   open: boolean;
   onNew: () => void;
   onSelect: (sessionId: string) => void;
-  onDelete: (session: SessionInfo) => void;
+  onArchive: (session: SessionInfo, trigger: HTMLButtonElement) => void;
+  onOpenArchive: () => void;
   onClose: () => void;
 }) {
   return (
@@ -57,24 +61,29 @@ export function Sidebar({
                 className="session"
                 onClick={() => onSelect(session.id)}
                 data-testid={`session-${session.id}`}
+                aria-current={session.id === currentId ? 'page' : undefined}
                 title={`${session.title} · ${session.messages} messages`}
               >
+                {replyingSessionIds.has(session.id) && (
+                  <span className="session-reply-dot" role="img" aria-label="Generating a reply" title="Generating a reply" />
+                )}
                 <span className="session-title">{session.title}</span>
               </button>
               <button
                 type="button"
                 className="session-delete"
-                onClick={() => onDelete(session)}
-                aria-label={`Delete ${session.title}`}
-                title="Delete session"
-                data-testid={`delete-${session.id}`}
+                aria-haspopup="dialog"
+                onClick={event => onArchive(session, event.currentTarget)}
+                aria-label={`Archive ${session.title}`}
+                title="Move to Archive"
+                data-testid={`archive-${session.id}`}
               >
-                ×
+                <ArchiveIcon size={15} />
               </button>
             </div>
           ))}
         </div>
-
+        <button type="button" className="archive-link" onClick={onOpenArchive}><ArchiveIcon size={16} />Archive</button>
       </aside>
     </>
   );

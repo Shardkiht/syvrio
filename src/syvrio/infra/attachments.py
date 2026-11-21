@@ -63,9 +63,14 @@ class AttachmentBatch:
         try:
             for name, stream in streams:
                 suffix = Path(name).suffix.lower()
-                if (not name or PureWindowsPath(name).name != name or len(name) > 255
-                        or any(ord(c) < 32 for c in name)
-                        or suffix not in SUPPORTED_SUFFIXES and suffix not in IMAGE_TYPES):
+                if (
+                    not name
+                    or PureWindowsPath(name).name != name
+                    or len(name) > 255
+                    or any(ord(c) < 32 for c in name)
+                    or suffix not in SUPPORTED_SUFFIXES
+                    and suffix not in IMAGE_TYPES
+                ):
                     raise DocumentError("Unsupported attachment name or format.")
                 if len(files) >= MAX_FILES:
                     raise DocumentError(f"Attach at most {MAX_FILES} files per message.")
@@ -79,7 +84,9 @@ class AttachmentBatch:
                         size += len(chunk)
                         total += len(chunk)
                         if size > MAX_FILE_BYTES or total > MAX_BATCH_BYTES:
-                            raise DocumentError("Attachment limit is 20 MiB per file and 40 MiB per message.")
+                            raise DocumentError(
+                                "Attachment limit is 20 MiB per file and 40 MiB per message."
+                            )
                         output.write(chunk)
                         digest.update(chunk)
                 if not size:
@@ -88,7 +95,10 @@ class AttachmentBatch:
                 if suffix in IMAGE_TYPES:
                     try:
                         with Image.open(path) as img:
-                            if img.format.lower() != IMAGE_TYPES[suffix] or img.width * img.height > 40_000_000:
+                            if (
+                                img.format.lower() != IMAGE_TYPES[suffix]
+                                or img.width * img.height > 40_000_000
+                            ):
                                 raise DocumentError("Image format or dimensions are unsupported.")
                             img.verify()
                     except (ValueError, OSError, Image.DecompressionBombError) as exc:
@@ -121,23 +131,33 @@ class AttachmentBatch:
         # Position disambiguates two uploaded files with identical display names.
         return {
             f"{index}. {item.name}": self.folder / item.filename
-            for index, item in enumerate(self.files, 1) if not item.media_type.startswith("image/")
+            for index, item in enumerate(self.files, 1)
+            if not item.media_type.startswith("image/")
         }
 
     @classmethod
-    def restore(cls, root: Path, session_id: str, message_id: str, records: list[dict]) -> AttachmentBatch:
+    def restore(
+        cls, root: Path, session_id: str, message_id: str, records: list[dict]
+    ) -> AttachmentBatch:
         folder = _directory(root, session_id, message_id)
         files = []
         for record in records:
             item = Attachment(**record)
-            if not re.fullmatch(r"[a-f0-9]{32}", item.id) or PureWindowsPath(item.name).name != item.name:
+            if (
+                not re.fullmatch(r"[a-f0-9]{32}", item.id)
+                or PureWindowsPath(item.name).name != item.name
+            ):
                 raise DocumentError("Invalid attachment metadata.")
             path = folder / item.filename
             if path.resolve() != path or not path.is_file() or path.stat().st_size != item.size:
-                raise DocumentError("Attachment is missing or changed. Restore the matching attachment archive.")
+                raise DocumentError(
+                    "Attachment is missing or changed. Restore the matching attachment archive."
+                )
             with path.open("rb") as source:
                 if hashlib.file_digest(source, "sha256").hexdigest() != item.sha256:
-                    raise DocumentError("Attachment checksum mismatch. Restore the matching attachment archive.")
+                    raise DocumentError(
+                        "Attachment checksum mismatch. Restore the matching attachment archive."
+                    )
             files.append(item)
         return cls(root, folder, tuple(files))
 
@@ -149,8 +169,13 @@ class AttachmentBatch:
         for item in self.files:
             if item.media_type.startswith("image/"):
                 data = base64.b64encode((self.folder / item.filename).read_bytes()).decode("ascii")
-                parts.extend([
-                    {"type": "text", "text": item.name},
-                    {"type": "image_url", "image_url": {"url": f"data:{item.media_type};base64,{data}"}},
-                ])
+                parts.extend(
+                    [
+                        {"type": "text", "text": item.name},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:{item.media_type};base64,{data}"},
+                        },
+                    ]
+                )
         return parts if len(parts) > 1 else text

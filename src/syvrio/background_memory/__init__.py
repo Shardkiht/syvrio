@@ -11,8 +11,8 @@ from pathlib import Path
 from ..infra.diagnostics import record_event
 from ..infra.jobs import encode_job, job_directory, read_job
 from ..infra.transaction import vault_transaction
-from ..session import SessionStore
-from . import context_fill, distillation
+from ..session import Session, SessionStore
+from . import context_fill, distillation, titles
 from .dream import Dream
 from .schedule import DreamSchedule
 
@@ -22,12 +22,23 @@ class BackgroundMemory:
         self.service = service
         self.sessions = SessionStore(service.paths)
         self.busy = session_busy or (lambda session_id: False)
+        self.live_session: Callable[[str], Session | None] = lambda session_id: None
         self.dream = Dream(service)
         self.schedule = DreamSchedule(service, self.dream)
         self._lock = threading.Lock()
         self._stop: threading.Event | None = None
-        self._signals = {name: threading.Event() for name in ("distillation", "context", "dream")}
+        self._signals = {
+            name: threading.Event() for name in ("distillation", "context", "dream", "title")
+        }
         self._threads: list[threading.Thread] = []
+        # Changed under the Vault write lock, including during admission to a model call.
+        self._working_sessions: dict[str, str] = {}
+
+    def session_job(self, session_id: str) -> str | None:
+        with self.service.write_lock:
+            return next(
+                (lane for lane, sid in self._working_sessions.items() if sid == session_id), None
+            )
 
     def start(self) -> None:
         with self._lock:
@@ -62,10 +73,25 @@ class BackgroundMemory:
         distillation.request(self.sessions, session_id, through)
         self._signals["distillation"].set()
 
-    def request_dream(self, max_requests: int = 20) -> str:
+    def request_dream(self, max_requests: int | None = None) -> str:
         job_id = self.dream.request(max_requests)
         self._signals["dream"].set()
         return job_id
+
+    def request_title(self, session_id: str) -> None:
+        titles.request(self.sessions, session_id)
+        self._signals["title"].set()
+
+    def pending_titles(self) -> set[str]:
+        folder = job_directory(self.service.paths, "title")
+        pending = set()
+        for path in folder.glob("*.json"):
+            try:
+                if job := read_job(path):
+                    pending.add(job["id"])
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                record_event("session.title_failed", exc)
+        return pending
 
     def cancel_dream(self) -> None:
         self.dream.cancel()
@@ -122,11 +148,24 @@ class BackgroundMemory:
                 signal.wait(2.0)
 
     def _step_job(self, lane: str, path: Path, stop: threading.Event) -> bool:
-        with vault_transaction(self.service.paths):
+        with vault_transaction(self.service.paths) as tx:
             job = read_job(path)
             if not job or job.get("retry_at", 0) > time.time():
                 return False
+            if lane == "context":
+                entry = self.service.store.find(job["id"])
+                session_id = entry.source_session_id if entry else None
+            else:
+                session_id = job["id"]
+            if session_id:
+                # Workers open active sessions only. Archive is never scanned for jobs or evidence.
+                if not self.sessions.exists(session_id):
+                    tx.write(path, None)
+                    return True
+                self._working_sessions[lane] = session_id
         try:
+            if lane == "title":
+                return titles.process(self.service, self.sessions, path, stop, self.live_session)
             if lane == "context":
                 context_fill.fill(self.service, path, stop)
                 return True
@@ -144,3 +183,6 @@ class BackgroundMemory:
                     )
                     tx.write(path, encode_job(job))
             return False
+        finally:
+            with self.service.write_lock:
+                self._working_sessions.pop(lane, None)

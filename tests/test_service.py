@@ -150,6 +150,69 @@ def test_init_creates_vault_git_and_readme(tmp_path):
     assert service.history(limit=5)[0]["subject"] == "memory: 初始化记忆库"
 
 
+def test_old_archive_reopens_in_type_directories_and_restores_same_transcript(tmp_path):
+    service = make_service(tmp_path, [])
+    store = SessionStore(service.paths)
+    session = store.create()
+    transcript = session.path.read_bytes()
+    legacy = service.paths.vault_dir / "archive"
+    old_file = legacy / session.path.relative_to(service.paths.vault_dir)
+    old_file.parent.mkdir(parents=True)
+    session.path.rename(old_file)
+    candidate = service.create_pending(draft("Synthetic candidate"), "Which?", [])
+    service.reject(candidate.id)
+    rejected = service.queue.resolved_path.read_bytes()
+    root = service.paths.archived_dir
+    service.queue.resolved_path.rename(root / "pending.md")
+    extra = legacy / "notes" / "other.jsonl"
+    extra.parent.mkdir()
+    extra.write_bytes(b"unrelated")
+
+    for _ in range(2):
+        MemoryService(service.config, extractor=service.extractor)
+        assert not legacy.exists() and not (root / "pending.md").exists()
+        assert (root / "pending" / "rejected.md").read_bytes() == rejected
+        assert (root / "other" / "notes" / "other.jsonl").read_bytes() == b"unrelated"
+        assert (root / session.path.relative_to(service.paths.vault_dir)).read_bytes() == transcript
+        assert [row["id"] for row in store.list(archived=True)] == [session.id]
+        assert not store.exists(session.id)
+    store.set_archived(session.id, False)
+    assert session.path.read_bytes() == transcript
+    store.set_archived(session.id, True)
+    assert store.load(session.id, archived=True).id == session.id
+
+
+def test_archive_migration_collision_leaves_all_sources_intact(tmp_path):
+    service = make_service(tmp_path, [])
+    root = service.paths.archived_dir
+    root.mkdir()
+    (root / "pending.md").write_bytes(b"rejected")
+    legacy = service.paths.vault_dir / "archive" / "sessions" / "2026" / "01"
+    target = root / "sessions" / "2026" / "01"
+    for folder, value in ((legacy, "old"), (target, "new")):
+        folder.mkdir(parents=True)
+        (folder / "same.jsonl").write_text(value)
+    with pytest.raises(ValueError, match="conflict"):
+        MemoryService(service.config, extractor=service.extractor)
+    assert (root / "pending.md").read_bytes() == b"rejected"
+    assert (legacy / "same.jsonl").read_text() == "old"
+    assert (target / "same.jsonl").read_text() == "new"
+
+
+def test_old_turn_undo_uses_migrated_rejection_file(tmp_path):
+    from syvrio.memory.turn_undo import TurnFileJournal
+
+    service = make_service(tmp_path, [])
+    candidate = service.create_pending(draft("Synthetic candidate"), "Which?", [])
+    journal = TurnFileJournal(service.paths, "s-1", "t-1", lambda ids, files: {})
+    with journal.capture():
+        service.reject(candidate.id)
+    data = json.loads(journal.path.read_bytes())
+    data["files"]["archived/pending.md"] = data["files"].pop("archived/pending/rejected.md")
+    journal.path.write_text(json.dumps(data))
+    assert journal.plan()[service.queue.resolved_path] is None
+
+
 def test_reopening_vault_preserves_user_ignore_rules_and_excludes_uploads(tmp_path):
     service = make_service(tmp_path, [])
     vault = service.config.vault
@@ -161,7 +224,7 @@ def test_reopening_vault_preserves_user_ignore_rules_and_excludes_uploads(tmp_pa
     upload.write_bytes(b"private document")
     (vault / "sample.txt").write_bytes(b"ordinary vault file")
     MemoryService(service.config, extractor=service.extractor)
-    expected = prior + b"\r\n/attachments/\r\n"
+    expected = prior + b"\r\n/attachments/\r\n/archived/\r\n"
     assert path.read_bytes() == expected
     service.repo.stage_all()
     staged = service.repo.staged_paths()

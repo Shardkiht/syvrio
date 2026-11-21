@@ -241,6 +241,88 @@ def test_schedule_persists_cadence_and_only_enqueues_work(service, monkeypatch):
     assert read_job(restarted.dream.path)["requests"] == 0
 
 
+def test_disabled_schedule_can_be_enabled_without_a_connected_client(service):
+    owner = BackgroundMemory(service)
+    service.config.chat.auto_reflect = False
+    owner.schedule.tick(100)
+    assert owner.schedule.next_at() is None
+    assert owner.dream.status()["state"] == "idle"
+    service.config.chat.auto_reflect = True
+    owner.schedule.tick(200)
+    assert owner.schedule.next_at() > 200
+    owner.schedule.tick(owner.schedule.next_at())
+    assert owner.dream.status()["state"] == "queued"
+
+
+def test_due_schedule_only_rebuilds_a_published_profile_after_evidence_changes(
+    service, monkeypatch
+):
+    add(service, "First synthetic fact")
+    owner = BackgroundMemory(service)
+    owner.schedule.tick(100)
+    owner.schedule.tick(owner.schedule.next_at())
+    calls = []
+
+    def generate(_, prompt, data, schema):
+        calls.append(prompt)
+        if prompt == dream.PROFILE:
+            return schema(summary="A complete profile")
+        return schema(proposals=[])
+
+    monkeypatch.setattr(dream, "ask", generate)
+    owner.dream.step(Event())
+    assert service.profile.read_text().strip() == "A complete profile"
+    assert calls == [dream.PROFILE]
+    owner.dream.step(Event())
+    old_id = owner.dream.status()["id"]
+    restarted = BackgroundMemory(service)
+    restarted.schedule.tick(restarted.schedule.next_at())
+    assert restarted.dream.status()["state"] == "completed"
+    assert restarted.dream.status()["id"] == old_id
+    assert calls == [dream.PROFILE, dream.INFER]
+    add(service, "Second synthetic fact")
+    restarted.schedule.tick(restarted.schedule.next_at())
+    assert restarted.dream.status()["state"] == "queued"
+    assert restarted.dream.status()["id"] != old_id
+
+
+def test_automatic_dream_retries_from_checkpoint_without_consuming_extra_requests(
+    service, monkeypatch
+):
+    import time
+
+    add(service, "A fact to summarize")
+    owner = BackgroundMemory(service)
+    owner.schedule.tick(100)
+    owner.schedule.tick(owner.schedule.next_at())
+
+    def fail(*args):
+        raise TimeoutError("synthetic timeout")
+
+    monkeypatch.setattr(dream, "ask", fail)
+    owner.start()
+    try:
+        deadline = time.monotonic() + 5
+        while not owner.dream.status().get("failures") and time.monotonic() < deadline:
+            time.sleep(0.02)
+    finally:
+        owner.stop()
+    checkpoint = owner.dream.status()
+    assert checkpoint["failures"] == checkpoint["requests"] == 1
+    assert not service.profile.path.exists()
+
+    restarted = BackgroundMemory(service)
+    assert restarted.dream.status() == checkpoint
+    assert not restarted.dream.due()
+    monkeypatch.setattr(dream, "time", SimpleNamespace(time=lambda: checkpoint["retry_at"] + 1))
+    assert restarted.dream.due()
+    monkeypatch.setattr(dream, "ask", lambda _, prompt, data, schema: schema(summary="Recovered"))
+    restarted.dream.step(Event())
+    assert service.profile.read_text().strip() == "Recovered"
+    assert restarted.dream.status()["requests"] == 2
+    assert restarted.dream.status()["failures"] == 0
+
+
 def test_failed_model_call_and_stale_input_still_consume_budget(service, monkeypatch):
     entry = add(service, "初始事实")
     engine = Dream(service)

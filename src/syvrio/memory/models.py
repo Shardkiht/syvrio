@@ -127,8 +127,10 @@ class MemoryDraft(BaseModel):
     @field_validator("topic")
     @classmethod
     def topic_name(cls, value: str) -> str:
-        if "\\" in value or ":" in value or any(
-            not part or part.startswith(".") for part in value.split("/")
+        if (
+            "\\" in value
+            or ":" in value
+            or any(not part or part.startswith(".") for part in value.split("/"))
         ):
             raise ValueError("Use a topic name or a relative topic such as general/reading.")
         return value
@@ -165,6 +167,7 @@ class MemoryUpdate(BaseModel):
 
 class Candidate(MemoryDraft):
     """A draft returned by document extraction, optionally requiring clarification."""
+
     question: str | None = Field(default=None, min_length=1)
     related_ids: list[str] = Field(default_factory=list)
 
@@ -338,10 +341,14 @@ class Entry(BaseModel):
         topic = self.topic
         if topic.startswith("memories/") and topic.endswith(".md"):
             topic = PurePosixPath(topic.removeprefix("memories/")).with_suffix("").as_posix()
-        return RecallEntry(id=self.id, status=self.status, topic=topic, text=self.text, context=self.context)
+        return RecallEntry(
+            id=self.id, status=self.status, topic=topic, text=self.text, context=self.context
+        )
 
     def as_memory(self) -> MemoryEntry:
-        return MemoryEntry(**self.as_recall().model_dump(), recorded_at=parse_timestamp(self.timestamp))
+        return MemoryEntry(
+            **self.as_recall().model_dump(), recorded_at=parse_timestamp(self.timestamp)
+        )
 
     @property
     def index_text(self) -> str:

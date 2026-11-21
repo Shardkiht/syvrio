@@ -12,6 +12,7 @@ from threading import Event
 from ..infra.jobs import encode_job, job_path, read_job
 from ..infra.tokens import estimate_tokens
 from ..infra.transaction import vault_transaction
+from ..llm.client import effective_context_window
 from ..memory.models import ProfileSummaryResponse, ReflectionResponse
 from ..time import utc_timestamp
 from .model import ask
@@ -82,7 +83,9 @@ class Dream:
             job = read_job(self.path) or {"state": "idle"}
             return {k: v for k, v in job.items() if k not in {"partial", "version"}}
 
-    def request(self, max_requests: int = 20) -> str:
+    def request(self, max_requests: int | None = None) -> str:
+        if max_requests is None:
+            max_requests = self.service.config.chat.default_budget
         if not 0 <= max_requests <= 20:
             raise ValueError("Dream request budget must be between 0 and 20.")
         with vault_transaction(self.paths) as tx:
@@ -129,7 +132,9 @@ class Dream:
             if not job or job["state"] != "queued" or stop.is_set():
                 return
             facts, confirmed, existing, version = _state(self.service)
-            window = self.service.config.chat.context_window
+            window = effective_context_window(
+                self.service.config.llm, self.service.config.chat.context_window
+            )
             model = self.service.config.llm.litellm_model()
             if (job["version"], job.get("window"), job.get("model")) != (version, window, model):
                 job.update(
@@ -184,7 +189,10 @@ class Dream:
             _, _, latest_inferences, latest_version = _state(self.service)
             if (
                 latest_version != version
-                or self.service.config.chat.context_window != window
+                or effective_context_window(
+                    self.service.config.llm, self.service.config.chat.context_window
+                )
+                != window
                 or self.service.config.llm.litellm_model() != model
             ):
                 return

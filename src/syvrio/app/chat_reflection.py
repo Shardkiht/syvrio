@@ -34,7 +34,7 @@ class ChatReflectionMixin:
             self.add_card(f"Dream {status['state']} · {status.get('proposed', 0)} new hypotheses.")
         else:
             try:
-                budget = 20 if argument in {"", "resume"} else int(argument)
+                budget = None if argument in {"", "resume"} else int(argument)
                 job = self.application.reflection.run("dream", budget)
             except ValueError:
                 self.add_card("Usage: /dream [0–20|resume|cancel|status]")

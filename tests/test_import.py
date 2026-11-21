@@ -99,12 +99,18 @@ def test_import_extractor_requires_api_key():
 def test_import_routes_explicit_questions_and_protects_credentials(tmp_path):
     svc = service(tmp_path)
     existing = svc.note("已经存在的记忆", topic="preferences")
-    extractor = _StaticResult([
-        Candidate(text="咖啡偏好清淡风味", topic="preferences"),
-        Candidate(text="当时记录未验证：曾询问茶叶保存", topic="learning", question="是本人要保存茶叶吗？"),
-        Candidate(text="密码是 abcd1234", topic="identity"),
-        Candidate(text=existing.text, topic="preferences"),
-    ])
+    extractor = _StaticResult(
+        [
+            Candidate(text="咖啡偏好清淡风味", topic="preferences"),
+            Candidate(
+                text="当时记录未验证：曾询问茶叶保存",
+                topic="learning",
+                question="是本人要保存茶叶吗？",
+            ),
+            Candidate(text="密码是 abcd1234", topic="identity"),
+            Candidate(text=existing.text, topic="preferences"),
+        ]
+    )
     result = svc.import_text("档案内容", extractor=extractor)
     assert [e.text for e in result.admitted] == ["咖啡偏好清淡风味"]
     assert [p.question for p in result.queued] == ["是本人要保存茶叶吗？"]
@@ -122,16 +128,29 @@ def test_import_text_dry_run_writes_nothing(tmp_path):
 
 def test_import_uses_recalled_facts_and_active_questions_for_semantic_review(tmp_path):
     import json
+
     svc = service(tmp_path)
     old = svc.note("租房预算 4000", topic="housing")
-    existing = svc.create_pending(MemoryDraft(text="租房地点未定", topic="housing"), "在哪租房？", [])
+    existing = svc.create_pending(
+        MemoryDraft(text="租房地点未定", topic="housing"), "在哪租房？", []
+    )
+
     class Review:
         def extract(self, text, context):
             recalled = json.loads(context)
             assert old.id in {r["id"] for r in recalled["memories"]}
             assert existing.id in {r["id"] for r in recalled["pending"]}
-            return ExtractionResult(memories=[Candidate(text="租房预算 5000", topic="housing",
-                                      question="这是否取代原有的预算？", related_ids=[old.id])])
+            return ExtractionResult(
+                memories=[
+                    Candidate(
+                        text="租房预算 5000",
+                        topic="housing",
+                        question="这是否取代原有的预算？",
+                        related_ids=[old.id],
+                    )
+                ]
+            )
+
     result = svc.import_text("租房预算", extractor=Review())
     assert not result.admitted and result.queued[0].related_ids == [old.id]
     assert svc.store.find(old.id).status == "active"

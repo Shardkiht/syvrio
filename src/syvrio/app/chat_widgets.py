@@ -329,7 +329,9 @@ class TranscriptView(VerticalScroll):
                     content += "\n" + ", ".join(names)
                 if stamp:
                     widgets.append(Static(f"You · {stamp}", classes="who-user"))
-                widgets.append(Vertical(Static(content, classes="bubble", markup=False), classes="user-turn"))
+                widgets.append(
+                    Vertical(Static(content, classes="bubble", markup=False), classes="user-turn")
+                )
                 continue
             reasoning = record.get("reasoning") or {}
             if (reasoning.get("text") or "").strip():
@@ -723,7 +725,7 @@ class SessionPickerScreen(ModalScreen):
         ("escape", "cancel", "Cancel"),
         ("down", "focus_list", "Select"),
         ("ctrl+r", "rename_session", "Rename"),
-        Binding("ctrl+d", "delete_session", "Delete", priority=True),
+        Binding("ctrl+d", "delete_session", "Archive", priority=True),
     ]
 
     def __init__(self, rows: list[dict], current_id: str | None, on_result) -> None:
@@ -739,8 +741,8 @@ class SessionPickerScreen(ModalScreen):
             yield Input(placeholder="Search session title or ID…", id="picker-input")
             yield ListView(id="picker-list", classes="thin-scroll")
             with Horizontal(id="session-actions"):
-                yield Button("Delete", id="session-delete")
-            yield Static("Ctrl+R Rename · Ctrl+D Delete · Esc Close", classes="pick-hint")
+                yield Button("Archive", id="session-delete")
+            yield Static("Ctrl+R Rename · Ctrl+D Archive · Esc Close", classes="pick-hint")
 
     def on_mount(self) -> None:
         self._rebuild()

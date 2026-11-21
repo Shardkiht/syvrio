@@ -4,6 +4,7 @@ import {
   commandMessage,
   isCommandLine,
   panelFor,
+  resultPanelFor,
   searchCommands,
   suggestionsFor,
 } from './commands';
@@ -123,6 +124,19 @@ describe('option panels', () => {
     expect(commandMessage(result({ status: 'error', message: 'failed' })))
       .toContain('failed');
   });
+});
+
+it('keeps the published profile intact and displays its generation time locally', () => {
+  const stamp = '2026-11-11T01:05:03+00:00';
+  const body = 'A profile paragraph.\n'.repeat(125) + 'End of profile.';
+  const panel = resultPanelFor(result({
+    command: 'profile', intent: 'profile', message: body,
+    data: { status: 'Last generated ' + stamp, generated_at: stamp },
+  }));
+  expect(panel.message).toMatch(/^Last generated \d{4}-\d{2}-\d{2} /);
+  expect(panel.message.endsWith(body)).toBe(true);
+  expect(panel.message).not.toContain(stamp);
+  expect(panel.action?.line).toBe('/dream');
 });
 
 it('localizes absolute timestamps in the Web Git status command', () => {

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { PendingAction, ReviewPanel } from '../state/commands';
 import { CommandDialog, moveOption } from './CommandUI';
+import { SearchIcon } from './Icons';
 
 const INFERENCE_FILTERS = [
   ['all', 'All'], ['hypothesis', 'Pending'], ['confirmed', 'Confirmed'],
@@ -16,20 +17,26 @@ export function PendingReview({
   onResolve: (action: PendingAction, id: string, text?: string) => Promise<void>;
   onClose: () => void;
 }) {
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [draft, setDraft] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(panel.edit?.id ?? null);
+  const [draft, setDraft] = useState<string | null>(() => panel.edit
+    ? panel.edit.text ?? panel.rows.find(row => row.id === panel.edit?.id)?.text ?? null : null);
   const [action, setAction] = useState<PendingAction | null>(null);
   const [busy, setBusy] = useState(false);
   const [filter, setFilter] = useState(0);
+  const [query, setQuery] = useState('');
   const [error, setError] = useState('');
   const list = useRef<HTMLDivElement>(null);
   const detail = useRef<HTMLDivElement>(null);
   const confirm = useRef<HTMLButtonElement>(null);
   const pending = panel.kind === 'pending';
   const editing = draft !== null;
-  const rows = filter === 0 ? panel.rows : panel.rows.filter((row) => row.status === INFERENCE_FILTERS[filter][0]);
+  const needle = query.trim().toLowerCase();
+  const rows = panel.rows.filter(row =>
+    (!filter || row.status === INFERENCE_FILTERS[filter][0])
+    && (!needle || [row.text, row.topic, row.id, row.question].some(value => value?.toLowerCase().includes(needle))));
   const selected = rows.find((row) => row.id === selectedId);
   const reviewable = selected && (pending || selected.status === 'hypothesis' || selected.status === 'confirmed');
+  const unchanged = pending && action === 'edit' && draft?.trim() === selected?.text.trim();
 
   const chooseFilter = (index: number) => {
     setFilter(index);
@@ -63,8 +70,8 @@ export function PendingReview({
   }
 
   return (
-    <CommandDialog title={panel.title} className="command-panel pending-review"
-      overlayClass="pending-overlay" onClose={() => { if (!busy && !editing && !action) onClose(); }}
+    <CommandDialog title={panel.title} className={`command-panel pending-review${pending ? ' pending-drawer' : ''}`}
+      overlayClass={pending ? 'pending-drawer-overlay' : ''} onClose={() => { if (!busy && !editing && !action) onClose(); }}
       onKeyDown={(event) => {
         if (event.key === 'Escape') {
           event.preventDefault();
@@ -85,7 +92,8 @@ export function PendingReview({
           if (!busy && !action && draft.trim()) setAction('edit');
           return;
         }
-        if (busy || draft !== null || action !== null || event.ctrlKey || event.metaKey || event.altKey) return;
+        if (busy || draft !== null || action !== null || event.target instanceof HTMLInputElement
+          || event.ctrlKey || event.metaKey || event.altKey) return;
         if (!pending && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
           event.preventDefault();
           const step = event.key === 'ArrowLeft' ? -1 : 1;
@@ -113,12 +121,19 @@ export function PendingReview({
               {pending
                 ? (panel.count === 0 ? 'No pending candidates' : `${panel.count} pending`)
                 : (panel.count === 0 ? 'No inferences' : `${panel.count} inferences`)}
-              {panel.count > panel.rows.length && ` · Showing first ${panel.rows.length}`}
             </div>
           </div>
           <button type="button" className="icon-button" aria-label={`Close ${panel.title.toLowerCase()}`}
             disabled={busy} onClick={onClose}>×</button>
         </header>
+        {panel.rows.length > 0 && (
+          <label className="review-search">
+            <SearchIcon size={16} />
+            <input type="search" value={query} aria-label={pending ? 'Search pending' : 'Search inferences'}
+              placeholder={pending ? 'Search pending' : 'Search inferences'} disabled={busy || editing || action !== null}
+              onChange={event => { setQuery(event.target.value); setSelectedId(null); setError(''); }} />
+          </label>
+        )}
         {!pending && panel.rows.length > 0 && (
           <div className="review-filters" role="group" aria-label="Inference status">
             {INFERENCE_FILTERS.map(([key, label], index) => (
@@ -128,9 +143,9 @@ export function PendingReview({
           </div>
         )}
         {panel.rows.length > 0 && (
-          <div className="pending-body">
+          <div className={`pending-body${selected ? ' has-selection' : ''}`}>
             <div className="panel-options pending-list" aria-label={pending ? 'Candidates' : 'Inferences'} role="group" ref={list}>
-              {!rows.length && <p className="pending-meta">No inferences match this status.</p>}
+              {!rows.length && <p className="pending-meta">{needle ? 'No matches.' : 'No inferences match this status.'}</p>}
               {rows.map((row) => (
                 <button type="button" key={row.id} data-row-id={row.id} aria-pressed={row.id === selectedId}
                   disabled={busy || draft !== null || action !== null}
@@ -140,7 +155,7 @@ export function PendingReview({
                 </button>
               ))}
             </div>
-            <div className="pending-detail" ref={detail}>
+            {(!pending || selected) && <div className="pending-detail" ref={detail}>
               {selected ? (
                 <>
                   <div className="pending-meta">{selected.topic}</div>
@@ -155,7 +170,7 @@ export function PendingReview({
                   )}
                 </>
               ) : <p className="pending-meta">Select an item to review.</p>}
-            </div>
+            </div>}
           </div>
         )}
         {error && <div className="provider-error" role="alert">{error}</div>}
@@ -163,16 +178,18 @@ export function PendingReview({
           <div className="pending-footer">
             {action && (
               <div role="status">
-                {action === 'reject' ? 'Reject this item?' : pending ? 'Save this candidate to memory?'
+                {unchanged ? 'No changes. Save the original text to memory?'
+                  : action === 'reject' ? 'Reject this item?' : pending ? 'Save this candidate to memory?'
                   : action === 'edit' ? 'Save the correction as a confirmed inference?' : 'Confirm this inference?'}
               </div>
             )}
             <div className="confirm-actions">
               {action ? (
                 <>
-                  <button type="button" disabled={busy} onClick={() => { setAction(null); setError(''); }}>Back</button>
-                  <button type="button" className="confirm-ok" disabled={busy} ref={confirm}
-                    onClick={() => void resolve()}>{busy ? 'Working…' : 'Confirm'}</button>
+                  <button type="button" disabled={busy} ref={unchanged ? confirm : undefined}
+                    onClick={() => { setAction(null); setError(''); }}>Back</button>
+                  <button type="button" className="confirm-ok" disabled={busy} ref={unchanged ? undefined : confirm}
+                    onClick={() => void resolve()}>{busy ? 'Working…' : unchanged ? 'Save unchanged' : 'Confirm'}</button>
                 </>
               ) : draft !== null ? (
                 <>

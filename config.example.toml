@@ -1,161 +1,19 @@
-# Syvrio configuration example
-# 默认读取顺序：$SYVRIO_CONFIG → ./syvrio.toml → ~/.syvrio/config.toml（旧平台配置文件仍兼容）
-# Unix 为 ~/.config/syvrio/syvrio.toml；Windows 为 %APPDATA%\syvrio\syvrio.toml。
+# Local entry file. Set only values that should override the packaged defaults.
+# Select this file via --config or SYVRIO_CONFIG. Place optional overrides in
+# models.toml ([llm]), chat.toml ([chat]) and memory.toml ([retrieval],
+# [retrieval.embedding], [recall], [distillation], [dream]) beside this file.
+# See src/syvrio/defaults/ for the complete shipped settings.
 #
-# 私有网页客户端不在此文件配置：监听地址由 `syvrio web --host/--port` 控制（默认
-# 127.0.0.1:8765）；`syvrio web --domain syvrio.local` 会写 hosts 映射并放行该域名的
-# Host/Origin，远程 Tailscale 实例可用 `--domain-ip 100.x.y.z --map-only` 只做映射；
-# SYVRIO_WEB_ALLOWED_HOSTS 用于额外可信 Host/Origin 白名单（Tailscale Serve 必填），
-# SYVRIO_WEB_STATIC 仅用于调试时覆盖静态资源目录。详见 docs/web.md。
-
-# 记忆库位置（Markdown + Git）。此处配置的 vault 优先；未配置时用 SYVRIO_VAULT，
-# 再缺省 ~/.syvrio/vault；命令行 --vault 可临时覆盖。
-vault = "~/.syvrio/vault"
-# Runtime 与 Vault 分离，不进入 Git；SYVRIO_RUNTIME 可覆盖。
-runtime = "~/.syvrio/runtime"
-
-# 低于该置信度的候选不直接写入，进入待确认队列。
-confidence_threshold = 0.8
-
-# 提交后是否自动 push（需要已配置 remote）。
-# 仅影响 `syvrio commit`；TUI 的手动/每日同步由下方 [git] 控制。
-auto_push = false
-
-[git]
-# 每日定时 Commit + Push，仅在 TUI 运行时执行；错过的计划在下次启动补执行。
-auto_sync = true
-# 本地时区 HH:MM。有效范围 00:00–23:59。
-sync_time = "03:00"
-# 网络/超时失败后的自动补推间隔（分钟）；认证失败、远程分叉、未配置 remote 不会频繁重试。
-retry_interval_minutes = 30
-
-[llm]
-provider = "deepseek"
-# 任意 OpenAI 兼容接口。DeepSeek 示例：
-base_url = "https://api.deepseek.com/v1"
-model = "deepseek-flash"
-# 只写环境变量名，不写 Key 本身。
-api_key_env = "DEEPSEEK_API_KEY"
-# 支持该参数的模型可选 low / medium / high；留空表示默认
-reasoning_effort = ""
-# 仅 Spark MaaS 使用。可选 enabled / auto / disabled，留空使用供应商默认值。
-spark_thinking = ""
-# 保存各供应商用于模型发现和切换的 Base URL。
-provider_urls = {}
-# 模型选择器维护的最近记录，每项为 [供应商, 模型 ID]。
-recent_models = []
-num_retries = 2
-temperature = 0.1
-timeout = 60.0
-
-# 讯飞 Spark MaaS：将上面 [llm] 的对应字段替换为：
-# provider = "spark"
-# base_url = "https://maas-api.cn-huabei-1.xf-yun.com/v2"
-# model = "spark-x2.6"
-# api_key_env = "SPARK_API_KEY"
-# Spark 由供应商控制采样参数，不发送 temperature / reasoning_effort。
-
-[chat]
-context_window = 100000
-reserve_output_tokens = 1500
-keep_recent_tokens = 6000
-compact_threshold = 0.8
-max_tool_steps = 8
-tool_timeout = 60.0
-auto_recall = 3
-extract_on_exit = true
-auto_reflect = true
-reflect_idle_seconds = 60.0      # 仅用于判断 TUI 是否空闲
-reflect_interval_seconds = 300.0 # 任意两个自动任务之间的最小间隔
-profile_auto_interval_hours = 168.0   # Profile 自动更新周期（7 天）
-profile_min_cooldown_hours = 24.0     # 重要变化提前更新的冷却
-profile_min_changes = 20              # 提前更新参考的变更条数
-dream_auto_interval_hours = 24.0      # Dreaming 自动批次周期
-# 自动召回时参考最近几轮用户消息
-recall_context_turns = 2
-# 允许用 LLM 把追问改写成检索 query（需要 API Key）
-recall_rewrite = true
-
-[retrieval]
-# keyword / vector / hybrid；hybrid 在向量后端不可用时自动回退 keyword
-method = "hybrid"
-
-[retrieval.embedding]
-# local：fastembed 本地离线推理（uv sync --extra local-embed 安装，默认模型约 100MB）
-# api：把记忆文本发给 embedding 供应商换取向量（注意隐私）
-backend = "local"
-model = "BAAI/bge-small-zh-v1.5"
-# backend = "api" 时的示例：
-# provider = "siliconflow"
-# base_url = "https://api.siliconflow.cn/v1"
-# api_key_env = "SILICONFLOW_API_KEY"
-
-[search]
-# 联网搜索开关；关闭时不注册 search 工具，行为与旧版本一致。
-enabled = true
-# 按顺序尝试的 provider，失败或质量不足时自动回退。LLM 可在单次调用中用
-# providers 指定多个来源的优先顺序，并用 strategy 选 auto / compare / strict；
-# 这些只是调度建议，不能绕过启停、额度、请求次数与超时预算。
-# 可选：open_websearch / anysearch / parallel_mcp / searxng / baidu_search /
-# tavily / exa / you / volcengine。
-# anysearch 与 parallel_mcp 不填 Key 也以匿名模式启用；配置 ANYSEARCH_API_KEY /
-# PARALLEL_API_KEY 后自动改用 Bearer 认证。searxng 默认不启用，需显式加入。
-providers = ["open_websearch"]
-# providers = ["parallel_mcp", "anysearch", "searxng", "open_websearch"]
-# 本地 open-websearch daemon 地址。
-base_url = "http://127.0.0.1:3000"
-timeout = 10.0
-max_results = 5
-# 搜索结果缓存秒数；0 表示不缓存。
-cache_ttl = 86400
-# http：调用本地 daemon；mcp：每次搜索启动 npx MCP 进程（Windows 会走 npx.cmd）。
-transport = "http"
-# 打开 TUI 时在后台探测并拉起 HTTP daemon（不阻塞界面）。
-auto_start = true
-# 上游搜索引擎；可选 bing / baidu / sogou / duckduckgo / brave / startpage 等。
-# 中文品牌名被拆词时可改用 ["baidu"]；多引擎会平分结果条数。
-engines = ["bing"]
-# 候补引擎序列：首选引擎空结果、明显跑题或失败时按序自动降级（免费引擎，
-# 仍经 open-websearch）；显式指定 search_engine 时不回退。
-fallback_engines = ["baidu", "duckduckgo", "sogou"]
-# 每次自动搜索最多尝试的上游引擎数（含首选）。
-max_engines = 3
-# 显式 search_engine 数组允许的最大引擎数；0 表示不限制（默认）。
-max_search_engines = 0
-# 一次搜索所有回退共享的超时预算（秒）；超出即停止候补，
-# 单次请求的超时也不会超过剩余预算。
-timeout_budget = 25.0
-# 一次搜索跨所有 provider 共享的请求次数上限；超出即停止请求，
-# 返回当前已获得的最佳候选并附截断提示。
-max_requests = 9
-# AnySearch 的检索区域与语言；匿名和 Key 模式共用。
-anysearch_zone = "cn"
-anysearch_language = "zh-CN"
-# 自托管 SearXNG（无 API Key）：地址按实际部署修改，不默认调用公共实例。
-# 实例须在 settings.yml 的 search.formats 中启用 json，否则 format=json 会返回 403。
-# Windows、WSL 与 Docker 的 127.0.0.1 不一定是同一网络命名空间：
-# Docker 容器内应访问宿主机映射地址，WSL 跨子系统时用宿主/IP 或端口转发。
-searxng_base_url = "http://127.0.0.1:8888"
-searxng_timeout = 10.0
-# 抓取正文的单独超时（秒）；搜索用上面的 timeout。
-fetch_timeout = 45.0
-# 每厂商调用上限（Search/Fetch 共用同一计数池）；按需取消注释并修改。
-# 本地计数不等于服务商实际账单上限；有 Key 的厂商可能另行计费。
-# [search.usage_limits.tavily]
-# daily = 0  # 0 means no local request-count cap
-# monthly = 800
-# [search.usage_limits.anysearch]
-# daily = 20
-# [search.usage_limits.parallel_mcp]
-# daily = 20
-# SearXNG 为自托管实例，默认不限制本地计数；仍受 max_requests 与 timeout_budget 约束。
-# [search.usage_limits.searxng]
-# daily = 0
-# monthly = 0
-
-[fetch]
-# 网页抓取的 provider 顺序，与搜索的 providers 相互独立。
-# 官方厂商（tavily / exa / you / volcengine）配置 Key 并加入此列表后才启用抓取。
-# anysearch / parallel_mcp 加入此列表即可匿名使用，配置对应 Key 后改用 Bearer。
-# 两者与 Search 共用同一 Key 和本地额度；默认不启用。
-providers = ["open_websearch"]
+# vault = "~/my-syvrio-vault"
+# runtime = "~/my-syvrio-runtime"
+# [git]
+# auto_sync = false
+#
+# Optional GitHub-protected ngrok sharing (syvrio web share only):
+# [web_share]
+# domain = "demo.ngrok-free.dev"
+# github_user_id = "12345"
+#
+# Example for a separate memory.toml:
+# [retrieval]
+# default_limit = 15

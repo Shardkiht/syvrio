@@ -39,6 +39,18 @@ describe('chat reducer', () => {
     expect(state.messages[0]).toMatchObject({ role: 'user', content: 'hello' });
   });
 
+  it('merges a replayed question with its history entry when the saved ID arrives late', () => {
+    const row = { role: 'user' as const, content: 'same question', at: '', reasoning: null,
+      tool_calls: [], tool_name: null, tool_ok: null, interrupted: false };
+    const history = loadHistory(initialChatState, {
+      session_id: 's-1', title: '', has_earlier: false, summary: null, current: true,
+      items: [{ ...row, id: 'earlier' }, { ...row, id: 'live' }],
+    });
+    const replay = startTurn(history, row.content, 's-1');
+    const state = reduceChat(replay, event('message_saved', { message_id: 'live' }));
+    expect(state.messages.map(m => m.role === 'user' ? m.savedId : m.role)).toEqual(['earlier', 'live', 'assistant']);
+  });
+
   it('streams content deltas in order and folds thinking when the answer starts', () => {
     let state = startTurn(initialChatState, 'hi', 's-1');
     state = reduceChat(state, event('reasoning_delta', { text: 'line one\n', phase: 1 }));

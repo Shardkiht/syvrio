@@ -46,7 +46,10 @@ class InferenceStore:
     def _paths(self) -> list[Path]:
         if self.root.resolve() != self.root.absolute():
             raise SchemaError("Redirected inferences directory.")
-        return sorted(self.root.rglob("*.md"))
+        paths = sorted(self.root.rglob("*.md"))
+        if any(path.resolve() != path.absolute() for path in paths):
+            raise SchemaError("Redirected inference path.")
+        return paths
 
     def _read(self, path: Path):
         raw = read_utf8(path)

@@ -80,11 +80,13 @@ def test_mapping_can_be_removed_without_touching_other_entries(tmp_path):
     assert remove_hosts_mapping("syvrio.local", path=hosts).changed is False
 
 
-def test_web_map_only_prints_remote_url_without_starting_a_server():
+@pytest.mark.parametrize(("port_args", "expected"), [([], 8746), (["--port", "8765"], 8765)])
+def test_web_map_only_prints_remote_url_without_starting_a_server(monkeypatch, port_args, expected):
     from typer.testing import CliRunner
 
     from syvrio.app.cli import app
 
+    monkeypatch.setenv("SYVRIO_WEB_PORT", "8746")
     result = CliRunner().invoke(
         app,
         [
@@ -95,13 +97,12 @@ def test_web_map_only_prints_remote_url_without_starting_a_server():
             "100.64.0.9",
             "--map-only",
             "--no-hosts",
-            "--port",
-            "8765",
+            *port_args,
         ],
     )
     assert result.exit_code == 0, result.output
     assert "100.64.0.9\tsyvrio.local" in result.output
-    assert "http://syvrio.local:8765/" in result.output
+    assert f"http://syvrio.local:{expected}/" in result.output
 
 
 def test_web_rejects_an_invalid_mapping_ip():

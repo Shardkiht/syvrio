@@ -1,23 +1,35 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { CommandPalette, CommandPanelDialog, CommandResultDialog, ConfirmDialog, SessionCommandDialog } from './components/CommandUI';
-import { Composer } from './components/Composer';
-import { CommandsIcon, PanelIcon, SettingsIcon } from './components/Icons';
+import { Composer, type ComposerDraft } from './components/Composer';
+import { CommandsIcon, InboxIcon, PanelIcon, SettingsIcon } from './components/Icons';
+import { RecoveredEdit } from './components/MessageActions';
 import { MessageList } from './components/MessageList';
 import { PendingReview } from './components/PendingReview';
 import { SettingsPanel } from './components/SettingsPanel';
 import { Sidebar } from './components/Sidebar';
+import { ArchivePanel } from './components/ArchivePanel';
 import { useChat } from './hooks/useChat';
 import { isComposing, matchShortcut } from './state/shortcuts';
 import { applyTheme, readTheme, watchSystemTheme, type ThemeMode } from './state/theme';
+import type { SessionInfo } from './types';
 
 export default function App() {
   const picker = useRef<HTMLInputElement>(null);
+  const drafts = useRef(new Map<string | null, ComposerDraft>());
+  const assignDraft = useCallback((blank: string, id: string) => {
+    const draft = drafts.current.get(blank);
+    if (draft) { drafts.current.set(id, draft); drafts.current.delete(blank); }
+  }, []);
   const openFiles = useCallback(() => picker.current?.click(), []);
   const {
-    chat,
+    chat: boundChat, preview, loadingHistory, sendAfterSelection, composerDraftId,
+    selectionVersion,
+    checkingSelection,
+    deliveries,
     contextUsage,
     compaction,
     sessions,
+    replyingSessionIds,
     health,
     online,
     sidebarOpen,
@@ -31,6 +43,10 @@ export default function App() {
     undoDraft,
     undoing,
     actOnLastMessage,
+    failedEdit,
+    discardFailedEdit,
+    reviseFailedEdit,
+    openMessageEditor,
     acknowledgeDraft,
     stop,
     newSession,
@@ -46,6 +62,8 @@ export default function App() {
     deleteTarget,
     setDeleteTarget,
     requestDeleteSession,
+    archiveSession,
+    refreshSessions,
     confirmDeleteSession,
     settingsOpen,
     setSettingsOpen,
@@ -58,10 +76,11 @@ export default function App() {
     focusComposer,
     toggle,
     dismissError,
-  } = useChat(openFiles);
+  } = useChat(openFiles, assignDraft);
 
+  const chat = preview ?? boundChat;
   const model = health ? `${health.provider}/${health.model}` : 'Loading...';
-  const empty = chat.messages.length === 0;
+  const empty = chat.messages.length === 0 && !loadingHistory;
   const title = sessions.find((session) => session.id === chat.sessionId)?.title || 'New chat';
 
   const [settingsStart, setSettingsStart] = useState<'model' | 'providers'>('model');
@@ -98,7 +117,16 @@ export default function App() {
     };
   }, []);
 
-  const modalOpen = Boolean(paletteOpen || confirm || deleteTarget || settingsOpen || panel);
+  const [archiveOpen, setArchiveOpen] = useState(false);
+  const [archivePrompt, setArchivePrompt] = useState<{ session: SessionInfo; trigger: HTMLButtonElement } | null>(null);
+  const modalOpen = Boolean(archivePrompt || archiveOpen || paletteOpen || confirm || deleteTarget || settingsOpen || panel);
+  const cancelArchive = useCallback(() => {
+    setArchivePrompt(null);
+    const trigger = archivePrompt?.trigger;
+    requestAnimationFrame(() => {
+      if (trigger?.isConnected && document.activeElement === document.body) trigger.focus({ preventScroll: true });
+    });
+  }, [archivePrompt]);
 
   // One global listener; every binding lives in state/shortcuts.ts.
   useEffect(() => {
@@ -106,6 +134,13 @@ export default function App() {
       if (event.defaultPrevented || isComposing(event)) return;
       const action = matchShortcut(event);
       if (!action) return;
+      if (archivePrompt) {
+        if (action === 'escape') {
+          event.preventDefault();
+          cancelArchive();
+        }
+        return;
+      }
       if (action === 'escape') {
         if (handleEscape()) {
           event.preventDefault();
@@ -139,11 +174,11 @@ export default function App() {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [chat.busy, focusComposer, handleEscape, modalOpen, panel, runCommand, setPaletteOpen, setPanel, setSettingsOpen, settingsOpen, stop, toggleSidebar]);
+  }, [archivePrompt, cancelArchive, chat.busy, focusComposer, handleEscape, modalOpen, panel, runCommand, setPaletteOpen, setPanel, setSettingsOpen, settingsOpen, stop, toggleSidebar]);
 
   const closePalette = () => { setPaletteOpen(false); focusComposer(); };
   const closeConfirm = () => { setConfirm(null); focusComposer(); };
-  const closeDelete = () => { setDeleteTarget(null); focusComposer(); };
+  const closeDelete = () => setDeleteTarget(null);
   const closeSettings = () => { setSettingsOpen(false); setSettingsStart('model'); focusComposer(); };
   const closePanel = () => { setPanel(null); focusComposer(); };
 
@@ -152,11 +187,13 @@ export default function App() {
       <div ref={(node) => { node?.toggleAttribute('inert', modalOpen); }} className={`app${sidebarOpen ? '' : ' sidebar-collapsed'}`}>
         <Sidebar
           sessions={sessions}
+          replyingSessionIds={replyingSessionIds}
           currentId={chat.sessionId}
           open={sidebarOpen}
           onNew={() => void newSession()}
           onSelect={(id) => void selectSession(id)}
-          onDelete={requestDeleteSession}
+          onArchive={(session, trigger) => setArchivePrompt({ session, trigger })}
+          onOpenArchive={() => setArchiveOpen(true)}
           onClose={() => setSidebarOpen(false)}
         />
         <main className={`main${empty ? ' is-empty' : ''}`}>
@@ -212,6 +249,10 @@ export default function App() {
                 <span className="dot" />
                 <span className="connection-label">{online ? 'Connected' : 'Offline'}</span>
               </div>
+              <button type="button" className="pending-toggle" aria-haspopup="dialog"
+                aria-label="Open pending review" title="Pending review" onClick={() => void runCommand('/pending')}>
+                <InboxIcon size={18} /><span>Pending</span>
+              </button>
             </div>
           </header>
           {chat.error && (
@@ -221,21 +262,42 @@ export default function App() {
             </div>
           )}
           <div className="thread">
-            <MessageList messages={chat.messages} sessionId={chat.sessionId} onToggle={toggle}
-              undoing={undoing} onMessageAction={actOnLastMessage} />
+            <MessageList messages={chat.messages} sessionId={chat.sessionId} onToggle={toggle} loading={loadingHistory}
+              undoing={checkingSelection || undoing || Boolean(failedEdit)} onMessageAction={checkingSelection ? undefined : actOnLastMessage} onEdit={openMessageEditor} />
+            {!preview && deliveries.items.filter(item => item.error && item.sessionId === chat.sessionId).map(item => (
+              <section key={item.id} className="delivery-notice" aria-label="Unconfirmed delivery">
+                <strong>Delivery needs attention</strong>
+                <p>{item.text}</p>
+                {item.attachments.length > 0 && <small>{item.attachments.map(file => file.name).join(' · ')}</small>}
+                {item.error !== chat.error && <div role="status">{item.error}</div>}
+                <div className="confirm-actions">
+                  <button type="button" onClick={() => deliveries.discard(item.id)}>Dismiss</button>
+                  <button type="button" className="confirm-ok" onClick={() => void deliveries.retry(item)}>Retry delivery</button>
+                </div>
+              </section>
+            ))}
+            {!preview && failedEdit && <RecoveredEdit edit={failedEdit} busy={undoing}
+              onChange={draft => reviseFailedEdit(failedEdit.sessionId, draft)}
+              onRetry={() => void actOnLastMessage(failedEdit.sessionId, failedEdit.messageId, failedEdit.draft)}
+              onDiscard={() => discardFailedEdit(failedEdit.sessionId)} />}
             <Composer
+              key={selectionVersion}
+              sessionId={composerDraftId}
+              drafts={drafts.current}
+              checkingSelection={checkingSelection}
+              onSendAfterSelection={sendAfterSelection}
               pickerRef={picker}
               openFiles={openFiles}
               busy={chat.busy}
               progress={chat.progress}
-              contextUsage={contextUsage}
-              compaction={compaction}
+              contextUsage={preview ? null : contextUsage}
+              compaction={preview ? null : compaction}
               onSend={(text, files) => void send(text, files)}
               onInsert={insert}
-              queued={queued}
-              queuePaused={queuePaused}
+              queued={preview ? [] : queued}
+              queuePaused={!preview && queuePaused}
               onRemoveQueued={removeQueued}
-              undoDraft={undoDraft}
+              undoDraft={preview ? undefined : undoDraft}
               onUndoDraftApplied={() => { if (chat.sessionId !== null) acknowledgeDraft(chat.sessionId); }}
               onStop={() => void stop()}
               catalog={catalog}
@@ -246,7 +308,22 @@ export default function App() {
         </main>
       </div>
 
-      {paletteOpen && !confirm && !deleteTarget && !settingsOpen && (
+      {archivePrompt && (
+        <ConfirmDialog
+          title="Archive conversation?"
+          testId="archive-confirm-overlay"
+          message={`Move “${archivePrompt.session.title}” to Archive? You can restore it later.`}
+          focusCancel
+          confirmLabel="Archive"
+          onCancel={cancelArchive}
+          onConfirm={() => {
+            setArchivePrompt(null);
+            void archiveSession(archivePrompt.session);
+            focusComposer();
+          }}
+        />
+      )}
+      {paletteOpen && !archivePrompt && !confirm && !deleteTarget && !settingsOpen && (
         <CommandPalette
           catalog={catalog}
           onRun={(line) => {
@@ -256,26 +333,24 @@ export default function App() {
           onClose={closePalette}
         />
       )}
-      {confirm && !deleteTarget && !settingsOpen && (
+      {confirm && !archivePrompt && !deleteTarget && !settingsOpen && (
         <ConfirmDialog
           message={confirm.message}
           onConfirm={() => void confirmCommand()}
           onCancel={closeConfirm}
         />
       )}
-      {deleteTarget && !settingsOpen && (
+      {archiveOpen && !archivePrompt && !deleteTarget && <ArchivePanel onClose={() => setArchiveOpen(false)}
+        onRestore={refreshSessions} onDelete={requestDeleteSession} />}
+      {deleteTarget && !archivePrompt && !settingsOpen && (
         <ConfirmDialog
           title="Delete session"
           testId="delete-overlay"
+          focusCancel
           confirmLabel="Delete permanently"
           confirmDisabled={!deleteTarget.preview}
-          message={
-            `Delete session "${deleteTarget.title}" and its uploaded copies from the Vault? This cannot be undone.`
-            + (deleteTarget.current
-              ? '\nThe current session will be replaced by a new empty chat first.'
-              : '')
-          }
-          onConfirm={() => { void confirmDeleteSession(); focusComposer(); }}
+          message={`Permanently delete "${deleteTarget.title}" and its uploaded files from Archive? This cannot be undone.`}
+          onConfirm={() => { void confirmDeleteSession(); }}
           onCancel={closeDelete}
         >
           {deleteTarget.notice && <div role="status">{deleteTarget.notice}</div>}
@@ -288,7 +363,7 @@ export default function App() {
           )}
         </ConfirmDialog>
       )}
-      {settingsOpen && (
+      {settingsOpen && !archivePrompt && (
         <SettingsPanel
           health={health}
           initialSection={settingsStart}
@@ -298,7 +373,7 @@ export default function App() {
           onChanged={() => { void refreshHealth(); }}
         />
       )}
-      {panel && !paletteOpen && !confirm && !deleteTarget && !settingsOpen && ('rows' in panel ? (
+      {panel && !archivePrompt && !paletteOpen && !confirm && !deleteTarget && !settingsOpen && ('rows' in panel ? (
         <PendingReview key={panel.kind} panel={panel}
           onResolve={(action, id, text) => reviewMemory(panel.kind, action, id, text)}
           onClose={closePanel} />

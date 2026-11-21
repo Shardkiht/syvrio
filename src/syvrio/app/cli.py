@@ -26,7 +26,7 @@ from ..infra.gitops import GitError
 from ..memory.extractor import ExtractorError, split_chunks
 from ..memory.models import MemoryContext, MemoryDraft
 from ..memory.service import MemoryService
-from ..session import SessionStore
+from ..session import SESSION_ID_RE, SessionStore
 from .session_ui import print_sessions
 from .tui import run_chat
 from .ui import console, fail, padded, print_hits, styled_table
@@ -108,16 +108,15 @@ def update() -> None:
         record_event("update.failed", exc)
         typer.echo(f"更新失败：{exc}", err=True)
         raise typer.Exit(code=1) from exc
-    missing = [key for key in ("channel", "service") if not config.get(key)]
-    if missing:
-        fail(f"更新配置缺少 {'、'.join(missing)}，请先按 Web 文档配置受管理的服务。")
+    if not config.get("service"):
+        fail("更新配置缺少 service，请先按 Web 文档配置受管理的服务。")
     # Only the config lookup above owns the "missing configuration" wording: a FileNotFoundError
     # raised while updating means a missing executable (uv, previously the service binary), and
     # must not be reported as an unconfigured service.
     try:
         result = apply_update(
             root,
-            config["channel"],
+            config.get("channel", "stable"),
             config["service"],
             config.get("port", 8765),
             config.get("python"),
@@ -177,6 +176,7 @@ def setup(
 
     try:
         from ..backend.endpoint import client_paths
+
         _, paths = client_paths(config, vault)
         with BackendLease(paths):
             result = run_setup(config, vault)
@@ -221,12 +221,53 @@ def chat(
 @app.command("sessions")
 def list_sessions(
     limit: int = typer.Option(20, "--limit", "-n"),
+    archived: bool = typer.Option(False, "--archived", help="列出已归档的会话"),
+    archive: str | None = typer.Option(None, "--archive", metavar="ID", help="将会话移入归档"),
+    restore: str | None = typer.Option(None, "--restore", metavar="ID", help="还原已归档的会话"),
+    purge: str | None = typer.Option(
+        None, "--delete-permanently", metavar="ID", help="确认后永久删除已归档的会话"
+    ),
     config: Path | None = CONFIG_OPTION,
     vault: Path | None = VAULT_OPTION,
 ) -> None:
-    """列出历史会话。"""
+    """列出、归档或还原会话。"""
+    if sum(value is not None for value in (archive, restore, purge)) + archived > 1:
+        raise typer.BadParameter("请只选择一个会话操作。")
+    target = next((value for value in (archive, restore, purge) if value is not None), None)
+    if target is not None and not SESSION_ID_RE.fullmatch(target):
+        raise typer.BadParameter("无效的会话 ID。")
     service = _service(config, vault)
-    print_sessions(service.call("sessions", limit=limit))
+    if target is None:
+        print_sessions(
+            service.call("sessions", limit=limit, archived=True)
+            if archived
+            else service.call("sessions", limit=limit)
+        )
+        return
+    path = f"/api/sessions/{target}"
+    try:
+        if purge is not None:
+            preview = service.request("GET", path + "/deletion-preview")
+            for item in preview["pending"]:
+                typer.echo(f"将同时移除候选 {item['id']}  {item['text']}")
+            if not typer.confirm(f"永久删除已归档的会话 {target} 及其附件？", default=False):
+                return
+            service.request(
+                "DELETE",
+                path,
+                params={
+                    "permanent": True,
+                    "confirmed": True,
+                    "pending_revision": preview["revision"],
+                },
+            )
+            typer.echo(f"已永久删除 {target}")
+        else:
+            operation = "archive" if archive is not None else "restore"
+            service.request("POST", f"{path}/{operation}")
+            typer.echo(f"{'已归档' if archive is not None else '已还原'} {target}")
+    except (KeyError, ValueError) as exc:
+        fail(str(exc), exc=exc)
 
 
 @app.command("note")
@@ -317,7 +358,7 @@ def import_memories(
 @app.command()
 def recall(
     query: str = typer.Argument(..., help="检索关键词"),
-    limit: int = typer.Option(7, "--limit", "-n", min=1, help="最多返回条数"),
+    limit: int | None = typer.Option(None, "--limit", "-n", min=1, help="最多返回条数"),
     date_from: str | None = typer.Option(None, "--from", help="事件起始日期：年、年月或年月日"),
     date_to: str | None = typer.Option(None, "--to", help="事件截止日期"),
     location: str | None = typer.Option(None, "--location", help="明确记载的地点"),
@@ -367,16 +408,18 @@ def profile(
     vault: Path | None = VAULT_OPTION,
 ) -> None:
     """查看最近一次 Dream 生成的画像。"""
-    console.print(_service(config, vault).call("profile") or "暂无画像，可运行 syvrio dream。", markup=False)
+    console.print(
+        _service(config, vault).call("profile") or "暂无画像，可运行 syvrio dream。", markup=False
+    )
 
 
 @app.command("dream")
 def dream(
-    requests: int = typer.Option(1, "--requests", min=0, max=20, help="本次模型请求上限"),
+    requests: int | None = typer.Option(None, "--requests", min=0, max=20, help="本次模型请求上限"),
     config: Path | None = CONFIG_OPTION,
     vault: Path | None = VAULT_OPTION,
 ) -> None:
-    """增量回顾有效事实，生成待审查假设；默认最多一次模型请求。"""
+    """增量回顾有效事实，生成待审查假设；默认使用配置中的请求预算。"""
     job = _service(config, vault).call("dream", max_requests=requests)
     console.print(f"已提交 Dream 任务 {job}", markup=False)
 
@@ -610,8 +653,9 @@ def backend_command(
 
     _, paths = client_paths(config, vault)
     if action == "run":
-        from .web.server import serve_resident
-        serve_resident(paths.config_file, paths.vault_dir)
+        from ..backend.server import serve_resident
+
+        serve_resident(config, paths.vault_dir)
     elif action == "start":
         base, _ = connect(paths)
         typer.echo(f"Running: {base}")
@@ -621,9 +665,13 @@ def backend_command(
     elif action == "stop":
         if found := discover(paths):
             import httpx
+
             with httpx.Client(trust_env=False, timeout=10) as client:
-                response = client.post(found[0] + "/api/resident/shutdown",
-                                       headers={"X-Syvrio-Token": found[1]}, json={})
+                response = client.post(
+                    found[0] + "/api/resident/shutdown",
+                    headers={"X-Syvrio-Token": found[1]},
+                    json={},
+                )
                 response.raise_for_status()
             typer.echo("Shutdown requested.")
         else:
@@ -634,8 +682,15 @@ def backend_command(
 
 @app.command()
 def web(
+    action: str | None = typer.Argument(None, help="share：通过 ngrok 和 GitHub 登录分享 Web"),
+    github_id: str | None = typer.Option(
+        None, "--github-id", help="share：唯一允许的 GitHub 数字账号 ID"
+    ),
+    yes: bool = typer.Option(False, "--yes", help="share：确认开放指定域名，适用于服务启动"),
     host: str = typer.Option("127.0.0.1", "--host", help="监听地址；默认仅 loopback"),
-    port: int = typer.Option(8765, "--port", min=1, max=65535, help="服务端口 / 远程访问端口"),
+    port: int = typer.Option(
+        8765, "--port", envvar="SYVRIO_WEB_PORT", min=1, max=65535, help="服务端口 / 远程访问端口"
+    ),
     domain: str = typer.Option("", "--domain", help="本地域名；写入 hosts 映射并放行 Host/Origin"),
     domain_ip: str = typer.Option(
         "127.0.0.1", "--domain-ip", help="域名映射目标 IP；远程 Tailscale 填 100.x.y.z"
@@ -652,6 +707,18 @@ def web(
     from .web.hosts import ensure_hosts_mapping, normalize_domain, remove_hosts_mapping
     from .web.server import run_server
 
+    if action == "share":
+        from .web.share import start_share
+
+        if host != "127.0.0.1" or map_only or remove_domain or domain_ip != "127.0.0.1":
+            fail("web share 仅使用 127.0.0.1 网关，无需 hosts 映射。")
+        try:
+            start_share(port, domain, github_id, yes, config, vault)
+        except SyvrioError as exc:
+            fail(str(exc), exc=exc)
+        return
+    if action is not None or github_id is not None or yes:
+        fail("使用 syvrio web 或 syvrio web share --help。")
     domains: list[str] = []
     if domain.strip() or map_only or remove_domain:
         try:

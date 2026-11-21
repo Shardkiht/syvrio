@@ -49,6 +49,8 @@ def _expected_config_path(tmp_path: Path) -> Path:
 def test_default_paths_are_syvrio(monkeypatch, tmp_path: Path):
     monkeypatch.delenv("SYVRIO_CONFIG", raising=False)
     monkeypatch.delenv("SYVRIO_VAULT", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     _isolate_config_dir(monkeypatch, tmp_path)
     monkeypatch.chdir(tmp_path)

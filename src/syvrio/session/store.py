@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import secrets
 import shutil
+from collections import OrderedDict
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
+from copy import deepcopy
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +22,41 @@ from ..infra.secrets import redact_secrets
 from ..time import parse_timestamp, serialize_timestamp, timestamp_calendar_date, utc_now
 from .model import Session, now_iso
 from .query import SessionQuery
+
+type _FileVersion = tuple[int, int, int, int, int]
+
+
+def _version(stat: os.stat_result) -> _FileVersion:
+    return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+
+
+def _reasoning_versions(folder: Path) -> dict[str, _FileVersion]:
+    if folder.resolve() != folder:
+        raise ValueError("Redirected local reasoning directory.")
+    try:
+        with os.scandir(folder) as entries:
+            return {
+                entry.name: _version(entry.stat(follow_symlinks=False))
+                for entry in entries
+                if entry.name.endswith(".json")
+            }
+    except FileNotFoundError:
+        return {}
+
+
+class HistoryRevision:
+    """Identity for cached projections; pure close markers preserve it."""
+
+
+@dataclass(frozen=True)
+class SessionSnapshot:
+    """A read-only journal revision shared by readers. Runtime takes a detached copy."""
+
+    session: Session
+    version: _FileVersion
+    # None means the transcript references no local reasoning at all.
+    reasoning: dict[str, _FileVersion] | None
+    history_revision: HistoryRevision = field(default_factory=HistoryRevision)
 
 
 def _sidecar_directory(path: Path) -> Path:
@@ -82,6 +121,37 @@ class SessionStore(SessionQuery):
         self._lock = vault_write_lock(paths)
         self._turn_undo_root = paths.runtime_dir.resolve() / TURN_UNDO_DIR
         self._sidecar_roots = (self.attachments_dir, self._reasoning_root, self._turn_undo_root)
+        self._snapshots: OrderedDict[Path, SessionSnapshot] = OrderedDict()
+
+    def load_snapshot(self, session_id: str) -> Session:
+        """Return a detached copy that Runtime can append to or undo."""
+        return deepcopy(self.read_snapshot(session_id).session)
+
+    def read_snapshot(self, session_id: str) -> SessionSnapshot:
+        """Verify the saved revision and share its records across read-only projections."""
+        with self._lock:
+            path = self._path(session_id)
+            try:
+                version = _version(path.stat())
+            except FileNotFoundError as exc:
+                raise KeyError(f"会话不存在：{session_id}") from exc
+            cached = self._snapshots.get(path)
+            try:
+                reasoning = None
+                if cached is None or cached.version != version or cached.reasoning is not None:
+                    reasoning = _reasoning_versions(self._reasoning_root / session_id)
+            except (OSError, ValueError, RuntimeError):
+                # The normal reader skips individual unavailable/redirected sidecars.
+                return SessionSnapshot(self._load_path(path, include_reasoning=True), version, None)
+            if cached is None or cached.version != version or cached.reasoning != reasoning:
+                session = self._load_path(path, include_reasoning=True)
+                has_reasoning = any(item.get("reasoning_local") is True for item in session.records)
+                cached = SessionSnapshot(session, version, reasoning if has_reasoning else None)
+                self._snapshots[path] = cached
+                if len(self._snapshots) > 8:
+                    self._snapshots.popitem(last=False)
+            self._snapshots.move_to_end(path)
+            return cached
 
     def create(self) -> Session:
         stamp = utc_now()
@@ -95,7 +165,10 @@ class SessionStore(SessionQuery):
             known = {item.stem for item in self._files()}
             # Exclusive creation also protects the collision window between processes.
             while True:
-                if session_id in known:
+                if (
+                    session_id in known
+                    or (self.archive_root / path.relative_to(self.root)).exists()
+                ):
                     session_id = f"s-{stamp:%Y%m%d-%H%M%S}-{secrets.token_hex(2)}"
                     path = archive / f"{session_id}.jsonl"
                     continue
@@ -123,7 +196,7 @@ class SessionStore(SessionQuery):
                     continue
                 for item in pending.iterdir():
                     staged = _sidecar_directory(item)
-                    if self.exists(item.name):
+                    if self.exists(item.name) or self.exists(item.name, archived=True):
                         original = _sidecar_directory(root / item.name)
                         if original.exists():
                             raise ValueError("Cannot restore over an existing session directory.")
@@ -141,10 +214,27 @@ class SessionStore(SessionQuery):
         _stamp_event(record)
         # 损坏尾行原样保留：只追加换行和恢复标记，后续加载据此跳过该行。
         with self._lock:
+            if not session.path.resolve().is_relative_to(self.root):
+                raise ValueError("Only active sessions can be modified.")
+            cached = None
             with session.path.open("r+b") as handle:
+                if (
+                    record.keys() == {"type", "at"}
+                    and record["type"] == "closed"
+                    and session.damaged_tail_line is None
+                ):
+                    previous = self._snapshots.get(session.path)
+                    if (
+                        previous is not None
+                        and previous.session.damaged_tail_line is None
+                        and previous.version == _version(os.fstat(handle.fileno()))
+                    ):
+                        cached = previous
                 if reasoning:
                     attachment = self._reasoning_path(session.id, record["id"])
-                    atomic_write(attachment, json.dumps(reasoning, ensure_ascii=False).encode("utf-8"))
+                    atomic_write(
+                        attachment, json.dumps(reasoning, ensure_ascii=False).encode("utf-8")
+                    )
                     record["reasoning_local"] = True
                 handle.seek(0, 2)
                 if handle.tell():
@@ -161,25 +251,33 @@ class SessionStore(SessionQuery):
                     session.records.append(recovery)
                     session.damaged_tail_line = None
                 handle.write((json.dumps(record, ensure_ascii=False) + "\n").encode("utf-8"))
+                if cached is not None:
+                    handle.flush()
+                    version = _version(os.fstat(handle.fileno()))
+            if cached is not None:
+                # Keep the saved close event for Runtime, while the visible history is identical.
+                saved = replace(cached.session, records=[*cached.session.records, record.copy()])
+                self._snapshots[session.path] = replace(cached, session=saved, version=version)
             if reasoning:
                 record["reasoning"] = reasoning
             session.records.append(record)
         return record
 
-    def append_event_transactionally(self, session: Session, event: dict) -> None:
-        """Append an event under the caller's WAL without mutating its in-memory Session."""
+    def append_event_transactionally(self, session: Session, event: dict, *following: dict) -> None:
+        """Publish related events in a single file replacement under the caller's transaction."""
         from ..infra.transaction import vault_transaction
 
         with vault_transaction(self.paths) as tx:
             current = self.load(session.id, include_reasoning=False)
-            record = _redact_record(event)
-            _stamp_event(record)
             records = []
             if current.damaged_tail_line is not None:
-                records.append({
-                    "type": "recovery", "ignored_line": current.damaged_tail_line, "at": now_iso()
-                })
-            records.append(record)
+                records.append(
+                    {"type": "recovery", "ignored_line": current.damaged_tail_line, "at": now_iso()}
+                )
+            for raw in (event, *following):
+                record = _redact_record(raw)
+                _stamp_event(record)
+                records.append(record)
             prefix = b""
             with current.path.open("rb") as file:
                 if file.seek(0, 2):
@@ -201,17 +299,46 @@ class SessionStore(SessionQuery):
             self.append_event_transactionally(current, {"type": "distilled", "up_to": message_id})
 
     def rename(self, session: Session, title: str) -> None:
-        self.append(session, {"type": "title", "title": title.strip()[:80]})
+        from ..infra.jobs import job_path
+        from ..infra.transaction import vault_transaction
 
-    def delete(self, session_id: str) -> bool:
+        with vault_transaction(self.paths) as tx:
+            self.append(session, {"type": "title", "title": title.strip()[:80]})
+            pending = job_path(self.paths, "title", session.id)
+            if pending.exists():
+                tx.write(pending, None)
+
+    def set_archived(self, session_id: str, archived: bool) -> None:
+        """Move only the transcript. Source IDs and all original sidecars stay intact."""
         with self._lock:
-            path = self._path(session_id)
+            source = self._path(session_id, archived=not archived)
+            existing = self._path(session_id, archived=archived)
+            if not source.exists():
+                if existing.exists():
+                    return
+                raise KeyError(session_id)
+            root, destination = (
+                (self.root, self.archive_root) if archived else (self.archive_root, self.root)
+            )
+            target = destination / source.relative_to(root)
+            if existing.exists() or target.exists() or target.resolve() != target:
+                raise ValueError("Session archive destination is occupied or redirected.")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            source.rename(target)
+            self._snapshots.pop(source, None)
+            self._listing_cache.pop(session_id, None)
+            self._undistilled_cache.pop(session_id, None)
+
+    def delete(self, session_id: str, *, archived: bool = False) -> bool:
+        with self._lock:
+            path = self._path(session_id, archived=archived)
             if not path.exists():
                 return False
             with ExitStack() as sidecars:
                 for root in self._sidecar_roots:
                     sidecars.enter_context(_stage_sidecars(root, session_id))
                 path.unlink()
+            self._snapshots.pop(path, None)
             self._listing_cache.pop(session_id, None)
             self._undistilled_cache.pop(session_id, None)
         return True

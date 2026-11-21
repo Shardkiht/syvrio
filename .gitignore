@@ -12,6 +12,12 @@ dist/
 build/
 *.egg-info/
 syvrio.toml
+/config.toml
+/models.toml
+/chat.toml
+/memory.toml
+.syvrio-config.lock
+.syvrio-config-transaction.json
 demo_vault/
 .env
 .env.*

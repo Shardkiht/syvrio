@@ -1,0 +1,7 @@
+[chat]
+context_window = 50000
+reserve_output_tokens = 1500
+keep_recent_tokens = 6000
+compact_threshold = 0.8
+max_tool_steps = 8
+tool_timeout = 60.0

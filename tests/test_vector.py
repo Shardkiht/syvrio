@@ -494,9 +494,9 @@ def test_init_vault_preserves_user_gitignore_without_final_newline(tmp_path):
 
     service.init_vault()
 
-    assert gitignore.read_bytes() == b"*.log\n/attachments/\n"
+    assert gitignore.read_bytes() == b"*.log\n/attachments/\n/archived/\n"
     service.init_vault()
-    assert gitignore.read_bytes() == b"*.log\n/attachments/\n"
+    assert gitignore.read_bytes() == b"*.log\n/attachments/\n/archived/\n"
 
 
 def test_sync_refuses_duplicate_entry_ids_across_topics(tmp_path):

@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
 import { Markdown } from './components/Markdown';
 import type { CommandInfo, CommandResponse, HistoryResponse, StreamEvent } from './types';
+import { sessionHistory, switchResponse } from './test/sessionHistory';
 
 const encoder = new TextEncoder();
 
@@ -100,7 +101,10 @@ function installFetch(overrides: Record<string, (init?: RequestInit) => Response
     const method = init?.method ?? 'GET';
     calls.push(`${method} ${url}`);
     const key = url.split('?')[0];
-    if (key === '/api/chat' && url.endsWith('receipt=1') && overrides[key]) {
+    if ((url !== key || key === '/api/chat/queue') && overrides[`${method} ${url}`]) {
+      return overrides[`${method} ${url}`](init);
+    }
+    if (key === '/api/chat' && new URLSearchParams(url.split('?')[1]).get('receipt') === '1' && overrides[key]) {
       const body = JSON.parse(String(init?.body));
       session = body.session_id ?? 's-1';
       const receipt = { turn_id: jobs.size + 1, session_id: session as string, text: body.message };
@@ -201,6 +205,35 @@ afterEach(() => {
 });
 
 describe('Web client interactions', () => {
+  it('marks all replying chats in the sidebar, including a new chat from another view', async () => {
+    let replying: string[] = [];
+    let rows = SESSIONS;
+    let selected: string | null = null;
+    const idle = { ...SESSIONS[0], id: 's-idle', title: 'Quiet chat' };
+    installFetch({
+      'GET /api/sessions': () => json({ items: [...rows, idle] }),
+      'GET /api/chat/queue': () => json({ session_id: selected, active: null, waiting: [], paused: false,
+        revision: 0, replying_session_ids: replying }),
+      '/api/sessions/s-idle/switch': () => { selected = idle.id; return json(switchResponse(sessionHistory(selected))); },
+    });
+    render(<App />);
+    await ready();
+    const dot = (id: string) => within(screen.getByTestId('session-' + id)).queryByRole('img', { name: 'Generating a reply' });
+    expect(dot('s-1')).toBeNull();
+    rows = [...SESSIONS, { ...SESSIONS[0], id: 's-2', title: 'Other chat' }];
+    replying = ['s-1', 's-2'];
+    await waitFor(() => { expect(dot('s-1')).toBeTruthy(); expect(dot('s-2')).toBeTruthy(); }, { timeout: 2500 });
+    fireEvent.click(screen.getByTestId('session-s-idle'));
+    await waitFor(() => expect(screen.getByTestId('session-s-idle').getAttribute('aria-current')).toBe('page'));
+    expect(dot('s-idle')).toBeNull();
+    expect(dot('s-1')).toBeTruthy();
+    replying = ['s-2'];
+    await waitFor(() => expect(dot('s-1')).toBeNull(), { timeout: 2500 });
+    expect(dot('s-2')).toBeTruthy();
+    replying = [];
+    await waitFor(() => expect(dot('s-2')).toBeNull(), { timeout: 2500 });
+  });
+
   it('shows context usage next to Send and updates it when a session opens', async () => {
     const current = SESSIONS[0];
     const seen: (string | null)[] = [];
@@ -215,26 +248,30 @@ describe('Web client interactions', () => {
           seen.push(id);
           return json({ session_id: id, used: id ? 2400 : 0, limit: 4000, compact_threshold: .8 });
         }
-        case '/api/sessions/s-1/switch': return json({ session_id: current.id, title: current.title });
-        case '/api/sessions/s-1': return json({ session_id: current.id, items: [], title: current.title });
+        case '/api/sessions/s-1/switch': return json(switchResponse(sessionHistory(current.id)));
         default: return json({}, 404);
       }
     });
     render(<App />);
-    const empty = await screen.findByRole('button', { name: /Context estimate: 0 \/ 4,000 tokens/ });
-    expect(empty.textContent).toBe('0%');
+    const empty = await screen.findByRole('button', { name: 'Context estimate: 0 / 4,000 tokens (0%)' });
+    expect(empty.textContent).toBe('0');
     expect(empty.getAttribute('data-wave')).toBe('still');
     expect(empty.parentElement?.nextElementSibling).toBe(screen.getByRole('button', { name: 'Send' }));
     fireEvent.click(screen.getByTestId('session-s-1'));
-    const dial = await screen.findByRole('button', { name: /Context estimate: 2,400 \/ 4,000 tokens/ });
-    expect(dial.textContent).toBe('60%');
+    const dial = await screen.findByRole('button', { name: 'Context estimate: 2,400 / 4,000 tokens (60%)' });
+    expect(dial.textContent).toBe('2.4k');
+    expect(dial.querySelector('small')?.textContent).toBe('k');
+    expect(dial.querySelector('circle')?.getAttribute('stroke-width')).toBe('2');
     expect(dial.getAttribute('data-wave')).toBe('moving');
     fireEvent.click(dial);
     expect(dial.getAttribute('aria-expanded')).toBe('true');
+    expect(dial.parentElement?.querySelector('.context-detail')?.textContent).toContain('2,400 / 4,000 tokens (60%)');
+    fireEvent.blur(dial);
+    expect(dial.getAttribute('aria-expanded')).toBe('false');
     expect(seen).toEqual([null, current.id]);
   });
 
-  it('starts the context wave at 10% used', async () => {
+  it('shows small token counts and starts the context wave at 10% used', async () => {
     const sessions = [
       { ...SESSIONS[0], id: 's-10', title: 'Ten percent' },
       { ...SESSIONS[0], id: 's-9', title: 'Nine percent' },
@@ -254,10 +291,8 @@ describe('Web client interactions', () => {
             compact_threshold: .8,
           });
         }
-        case '/api/sessions/s-10/switch': return json({ session_id: 's-10', title: 'Ten percent' });
-        case '/api/sessions/s-10': return json({ session_id: 's-10', items: [], title: 'Ten percent' });
-        case '/api/sessions/s-9/switch': return json({ session_id: 's-9', title: 'Nine percent' });
-        case '/api/sessions/s-9': return json({ session_id: 's-9', items: [], title: 'Nine percent' });
+        case '/api/sessions/s-10/switch': return json(switchResponse(sessionHistory('s-10')));
+        case '/api/sessions/s-9/switch': return json(switchResponse(sessionHistory('s-9')));
         default: return json({}, 404);
       }
     });
@@ -266,13 +301,12 @@ describe('Web client interactions', () => {
 
     fireEvent.click(screen.getByTestId('session-s-10'));
     const ten = await screen.findByRole('button', { name: /Context estimate: 400 \/ 4,000 tokens/ });
-    expect(ten.textContent).toBe('10%');
+    expect(ten.textContent).toBe('400');
     expect(ten.getAttribute('data-wave')).toBe('moving');
 
-    // 低于阈值保持静止，避免空会话刚有内容就出现动效。
     fireEvent.click(screen.getByTestId('session-s-9'));
     const nine = await screen.findByRole('button', { name: /Context estimate: 360 \/ 4,000 tokens/ });
-    expect(nine.textContent).toBe('9%');
+    expect(nine.textContent).toBe('360');
     expect(nine.getAttribute('data-wave')).toBe('still');
   });
 
@@ -562,26 +596,17 @@ describe('Web client interactions', () => {
     await waitFor(() => expect(sent).toEqual(['original question', 'edited question', 'queued question']));
   });
 
-  it('targets only the saved latest message, keeps cancelled edits, and resends after Undo', async () => {
+  it('targets only the saved latest message, keeps cancelled edits, and replaces it in one request', async () => {
     let sends = 0;
-    let undos = 0;
     const history = {
       session_id: 's-1', title: 'Repeated messages', current: true, has_earlier: false, summary: null,
       items: ['m-first', 'm-latest'].map((id) => ({ id, role: 'user', content: 'old', at: '' })),
     };
-    installFetch({
-      '/api/sessions/s-1/switch': () => json({ session_id: 's-1', title: 'Repeated messages' }),
+    const calls = installFetch({
+      '/api/sessions/s-1/switch': () => json({ session_id: history.session_id, title: history.title, history_version: 'v1', history }),
       '/api/sessions/s-1': () => json({ ...history, items: sends ? [history.items[0], { ...history.items[1], id: 'm-new', content: 'revised' },
-        { ...history.items[1], id: 'a-new', role: 'assistant', content: 'answer' }] : history.items.slice(0, undos ? 1 : 2) }),
+        { ...history.items[1], id: 'a-new', role: 'assistant', content: 'answer', tool_calls: [] }] : history.items }),
       '/api/sessions/s-1/messages/m-latest/draft': () => json({ text: 'old', attachments: [] }),
-      'POST /api/commands': (init) => {
-        expect(JSON.parse(String(init?.body))).toMatchObject({
-          line: '/undo', session_id: 's-1', expected_message_id: 'm-latest',
-        });
-        undos++;
-        return json(commandResult({ command: 'undo', intent: 'undo', session_id: 's-1',
-          refresh_history: true, data: { restored: 'old' } }));
-      },
       '/api/chat': (init) => {
         expect(JSON.parse(String(init?.body)).message).toBe('revised');
         sends++;
@@ -600,12 +625,13 @@ describe('Web client interactions', () => {
     const editor = await screen.findByRole('textbox', { name: 'Edit last message' });
     fireEvent.change(editor, { target: { value: 'cancelled' } });
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
-    expect(undos).toBe(0);
+    expect(sends).toBe(0);
     fireEvent.click(screen.getByRole('button', { name: 'Edit and resend last message' }));
     fireEvent.change(await screen.findByRole('textbox', { name: 'Edit last message' }), { target: { value: 'revised' } });
     fireEvent.click(screen.getByRole('button', { name: 'Resend' }));
     await waitFor(() => expect(sends).toBe(1));
-    expect(undos).toBe(1);
+    expect(calls).toContain('POST /api/chat?receipt=1&replace=m-latest');
+    expect(calls).not.toContain('POST /api/commands');
     await screen.findByText('answer');
     expect(screen.getAllByText('old')).toHaveLength(1);
   });
@@ -620,15 +646,15 @@ describe('Web client interactions', () => {
           tool_calls: [], tool_name: null, tool_ok: null, interrupted: false },
       ],
     };
-    installFetch({
-      '/api/sessions/s-1/switch': () => json({ session_id: 's-1', title: 'Earlier chat' }),
-      '/api/sessions/s-1': () => json(history),
+    const calls = installFetch({
+      'POST /api/sessions/s-1/switch?include_history=true': () => json(switchResponse(history)),
     });
     render(<App />);
     await ready();
     fireEvent.click(screen.getByTestId('session-s-1'));
     await waitFor(() => expect(screen.getByTestId('message-list').textContent).toContain('earlier question'));
     expect(screen.getByTestId('message-list').textContent).toContain('earlier answer');
+    expect(calls.filter(call => call.includes('/api/sessions/s-1'))).toEqual(['POST /api/sessions/s-1/switch?include_history=true']);
   });
 
   it('shows a browser-safe error when the request fails', async () => {
@@ -702,6 +728,57 @@ describe('Web client interactions', () => {
 });
 
 describe('Slash commands and shortcuts', () => {
+  it('opens pending from the top bar and only saves unchanged text after an explicit choice', async () => {
+    const row = { id: 'p-review', topic: 'work', question: 'Keep it?', text: 'Full text\nSecond line' };
+    const pending = (rows: typeof row[], extra = {}) => commandResult({
+      command: 'pending', intent: 'pending', data: { kind: 'pending', rows, count: rows.length, ...extra },
+    });
+    const spy = spyCommands(body => body.line === '/pending' ? pending([row])
+      : body.confirmed ? pending([]) : pending([row], { edit_id: row.id }));
+    installFetch(spy.overrides);
+    render(<App />);
+    await ready();
+    fireEvent.click(screen.getByRole('button', { name: 'Open pending review' }));
+    const drawer = await screen.findByRole('dialog', { name: 'Pending review' });
+    expect(drawer.classList.contains('pending-drawer')).toBe(true);
+    fireEvent.click(within(drawer).getByRole('button', { name: 'Close pending review' }));
+    send('/pending edit p-review');
+    const dialog = within(await screen.findByRole('dialog', { name: 'Pending review' }));
+    expect((dialog.getByRole('textbox', { name: 'Edit candidate' }) as HTMLTextAreaElement).value).toBe(row.text);
+    fireEvent.click(dialog.getByRole('button', { name: 'Save and approve' }));
+    expect(dialog.getByText('No changes. Save the original text to memory?')).toBeTruthy();
+    expect(document.activeElement).toBe(dialog.getByRole('button', { name: 'Back' }));
+    fireEvent.click(dialog.getByRole('button', { name: 'Back' }));
+    expect(spy.confirmed).toEqual([false, false]);
+    fireEvent.click(dialog.getByRole('button', { name: 'Save and approve' }));
+    fireEvent.click(dialog.getByRole('button', { name: 'Save unchanged' }));
+    expect(await dialog.findByText('No pending candidates')).toBeTruthy();
+    expect(spy.confirmed).toEqual([false, false, true]);
+  });
+
+  it('combines inference status and search over the full list', async () => {
+    const rows = Array.from({ length: 26 }, (_, i) => ({
+      id: `inf-${i}`, topic: 'profile', status: i < 24 ? 'confirmed' : 'hypothesis', text: `Synthetic row ${i}`,
+    }));
+    const spy = spyCommands(() => commandResult({ command: 'inferences', intent: 'inferences',
+      data: { kind: 'inferences', rows, count: rows.length } }));
+    installFetch(spy.overrides);
+    render(<App />);
+    await ready();
+    send('/inferences');
+    const dialog = within(await screen.findByRole('dialog', { name: 'Inference review' }));
+    const list = within(dialog.getByRole('group', { name: 'Inferences' }));
+    expect(list.getAllByRole('button')).toHaveLength(26);
+    fireEvent.click(dialog.getByRole('button', { name: 'Pending' }));
+    expect(list.getAllByRole('button')).toHaveLength(2);
+    const search = dialog.getByRole('searchbox', { name: 'Search inferences' });
+    fireEvent.change(search, { target: { value: 'INF-25' } });
+    expect(list.getAllByRole('button')).toHaveLength(1);
+    expect(list.getByRole('button', { name: /Synthetic row 25/ })).toBeTruthy();
+    fireEvent.change(search, { target: { value: 'missing' } });
+    expect(list.getByText('No matches.')).toBeTruthy();
+  });
+
   it('selects a pending candidate once, edits it, and refreshes after confirmed writes', async () => {
     const first = { id: 'p-1', text: 'First candidate\nSecond line', topic: 'food', question: 'Check the wording' };
     const second = { id: 'p-2', text: 'Another candidate', topic: 'food', question: '' };
@@ -863,7 +940,7 @@ describe('Slash commands and shortcuts', () => {
     const dialog = await screen.findByRole('dialog', { name: '/model' });
     expect(dialog.textContent).toContain('ran /model refresh');
     expect(screen.getByTestId('message-list').textContent).not.toContain('ran /model refresh');
-    expect(calls.some((entry) => entry.includes('/api/chat'))).toBe(false);
+    expect(calls.some((entry) => entry.split('?')[0] === 'POST /api/chat')).toBe(false);
     expect(input.value).toBe('');
   });
 
@@ -918,7 +995,7 @@ describe('Slash commands and shortcuts', () => {
     await waitFor(() => expect(spy.lines).toEqual(['/nope']));
     expect(await screen.findByRole('dialog', { name: 'Unknown command' })).toBeTruthy();
     expect(screen.getByTestId('message-list').textContent).not.toContain('Unknown command');
-    expect(calls.some((entry) => entry.includes('/api/chat'))).toBe(false);
+    expect(calls.some((entry) => entry.split('?')[0] === 'POST /api/chat')).toBe(false);
   });
 
   it('opens the native multiple-file picker directly from the import command', async () => {
@@ -1108,44 +1185,132 @@ describe('Slash commands and shortcuts', () => {
   });
 });
 
-describe('Session deletion', () => {
-  it('asks for confirmation and leaves the session untouched on cancel', async () => {
-    const calls = installFetch({ '/api/sessions': () => json({ items: SESSIONS }) });
+describe('Session archive', () => {
+  const archiveList = 'GET /api/sessions?archived=true&limit=500';
+  const archivedHistory = { session_id: 's-1', title: 'Earlier chat', items: [], current: false,
+    has_earlier: false, summary: null };
+  const archiveReads = {
+    [archiveList]: () => json({ items: SESSIONS }),
+    'GET /api/sessions/s-1?archived=true': () => json(archivedHistory),
+  };
+  async function askToArchive(id: string) {
+    fireEvent.click(await screen.findByTestId('archive-' + id));
+    return within(await screen.findByTestId('archive-confirm-overlay'))
+      .getByRole('alertdialog', { name: 'Archive conversation?' });
+  }
+  async function openArchivedChat() {
+    fireEvent.click(screen.getByRole('button', { name: 'Archive' }));
+    const dialog = within(await screen.findByRole('dialog', { name: 'Archive' }));
+    fireEvent.click(await dialog.findByRole('button', { name: 'Earlier chat' }));
+    return dialog;
+  }
+  async function openPurge() {
+    const dialog = await openArchivedChat();
+    fireEvent.click(dialog.getByRole('button', { name: 'Delete permanently…' }));
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Delete permanently' }) as HTMLButtonElement).disabled).toBe(false));
+  }
+
+  it.each(['Cancel', 'Escape', 'window Escape'])('keeps a conversation on the sidebar when archive is dismissed with %s', async action => {
+    const calls = installFetch();
     render(<App />);
     await ready();
-
-    const button = screen.getByTestId('delete-s-1');
-    expect(button.getAttribute('aria-label')).toContain('Earlier chat');
-    fireEvent.click(button);
-    expect(screen.getByTestId('delete-overlay')).toBeTruthy();
-    expect(screen.getByTestId('confirm-message').textContent).toContain('This cannot be undone');
-
-    await waitFor(() => expect((screen.getByRole('button', { name: 'Delete permanently' }) as HTMLButtonElement).disabled).toBe(false));
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
-    expect(screen.queryByTestId('delete-overlay')).toBeNull();
-    expect(calls.some((call) => call.startsWith('DELETE '))).toBe(false);
+    const dialog = await askToArchive('s-1');
+    const cancel = within(dialog).getByRole('button', { name: 'Cancel' });
+    expect(document.activeElement).toBe(cancel);
+    expect(dialog.textContent).toContain('Earlier chat');
+    expect(calls).not.toContain('POST /api/sessions/s-1/archive');
+    if (action === 'Cancel') fireEvent.click(cancel);
+    else fireEvent.keyDown(action === 'window Escape' ? window : cancel, { key: 'Escape' });
+    expect(screen.queryByRole('alertdialog')).toBeNull();
     expect(screen.getByTestId('session-s-1')).toBeTruthy();
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId('archive-s-1')));
+    expect(calls.some(call => call.endsWith('/archive'))).toBe(false);
   });
 
-  it('deletes after confirmation and refreshes the sidebar', async () => {
-    let deleted = false;
+  it('archives the requested sidebar row once and restores its history', async () => {
+    let archived = false;
+    const other = { ...SESSIONS[0], id: 's-2', title: 'Current conversation' };
     const calls = installFetch({
-      '/api/sessions': () => json({ items: deleted ? [] : SESSIONS }),
-      'DELETE /api/sessions/s-1': () => {
-        deleted = true;
-        return json({ session_id: 's-1', deleted: true });
-      },
+      ...archiveReads,
+      '/api/sessions': () => json({ items: archived ? [other] : [...SESSIONS, other] }),
+      '/api/sessions/s-2/switch': () => json(switchResponse(sessionHistory(other.id, 'Keep this conversation open'))),
+      'POST /api/sessions/s-1/archive': () => { archived = true; return json({ archived }); },
+      'POST /api/sessions/s-1/restore': () => { archived = false; return json({ archived }); },
+    });
+    const fetchResponse = globalThis.fetch;
+    let finishSwitch!: () => void;
+    const switching = new Promise<void>(resolve => { finishSwitch = resolve; });
+    vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
+      const response = await fetchResponse(url, init);
+      if (url.includes('/s-2/switch')) await switching;
+      return response;
     });
     render(<App />);
     await ready();
-
-    fireEvent.click(screen.getByTestId('delete-s-1'));
-    await waitFor(() => expect((screen.getByRole('button', { name: 'Delete permanently' }) as HTMLButtonElement).disabled).toBe(false));
-    fireEvent.click(screen.getByRole('button', { name: 'Delete permanently' }));
-    await waitFor(() =>
-      expect(calls).toContain('DELETE /api/sessions/s-1?confirmed=true'));
+    expect(calls).not.toContain(archiveList);
+    fireEvent.click(screen.getByTestId('session-s-2'));
+    const confirm = await askToArchive('s-1');
+    finishSwitch();
+    await screen.findByText('Keep this conversation open');
+    expect(confirm.textContent).toContain(SESSIONS[0].title);
+    expect(calls.some(call => call.endsWith('/archive'))).toBe(false);
+    const archive = within(confirm).getByRole('button', { name: 'Archive' });
+    fireEvent.click(archive);
+    fireEvent.click(archive);
     await waitFor(() => expect(screen.queryByTestId('session-s-1')).toBeNull());
-    expect(screen.queryByTestId('delete-overlay')).toBeNull();
+    expect(calls.filter(call => call.endsWith('/archive'))).toEqual(['POST /api/sessions/s-1/archive']);
+    expect(screen.getByTestId('session-s-2').getAttribute('aria-current')).toBe('page');
+    expect(screen.getByText('Keep this conversation open')).toBeTruthy();
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    const dialog = await openArchivedChat();
+    expect(calls).toContain('GET /api/sessions/s-1?archived=true');
+    fireEvent.click(dialog.getByRole('button', { name: 'Restore to chats' }));
+    await waitFor(() => expect(screen.getByTestId('session-s-1')).toBeTruthy());
+    expect(calls.some(call => call.startsWith('DELETE '))).toBe(false);
+  });
+
+  it('requires an explicit choice to permanently delete and keeps the archive on cancel', async () => {
+    const calls = installFetch(archiveReads);
+    render(<App />);
+    await ready();
+    await openPurge();
+    const dialog = screen.getByRole('alertdialog');
+    expect(document.activeElement).toBe(within(dialog).getByRole('button', { name: 'Cancel' }));
+    fireEvent.keyDown(dialog, { key: 'Enter' });
+    expect(screen.getByRole('alertdialog')).toBe(dialog);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    await within(await screen.findByRole('dialog', { name: 'Archive' })).findByText('Earlier chat');
+    expect(calls.some(call => call.startsWith('DELETE '))).toBe(false);
+  });
+
+  it('keeps unsent text and attachments with the conversation where they were entered', async () => {
+    const other = { ...SESSIONS[0], id: 's-2', title: 'Second chat' };
+    installFetch({
+      '/api/sessions': () => json({ items: [...SESSIONS, other] }),
+      ...Object.fromEntries(['s-1', 's-2'].map(id => [
+        '/api/sessions/' + id + '/switch', () => json(switchResponse(sessionHistory(id))),
+      ])),
+    });
+    render(<App />);
+    const select = async (id: string) => {
+      const button = await screen.findByTestId('session-' + id);
+      fireEvent.click(button);
+      await waitFor(() => expect(button.getAttribute('aria-current')).toBe('page'));
+    };
+    const box = () => screen.getByRole('textbox', { name: 'Message' }) as HTMLTextAreaElement;
+    await select('s-1');
+    fireEvent.change(box(), { target: { value: 'Unsent in first chat' } });
+    fireEvent.change(screen.getByLabelText('Select attachments'), { target: { files: [new File(['first'], 'first.txt')] } });
+    await select('s-2');
+    expect(box().value).toBe('');
+    expect(screen.queryByLabelText('Remove first.txt')).toBeNull();
+    fireEvent.change(box(), { target: { value: 'Unsent in second chat' } });
+    await select('s-1');
+    expect(box().value).toBe('Unsent in first chat');
+    expect(screen.getByLabelText('Remove first.txt')).toBeTruthy();
+    await select('s-2');
+    expect(box().value).toBe('Unsent in second chat');
   });
 
   it('opens the empty view on New chat without writing a session', async () => {
@@ -1162,54 +1327,44 @@ describe('Session deletion', () => {
     expect(document.querySelectorAll('.session-row').length).toBe(SESSIONS.length);
   });
 
-  it('detaches the current session into a new chat before deleting it', async () => {
-    const current = { ...SESSIONS[0], id: 's-cur', title: 'Current chat', current: true };
-    const history = {
-      session_id: 's-cur', title: 'Current chat', items: [], current: true,
-      has_earlier: false, summary: null,
-    };
-    const calls = installFetch({
-      '/api/sessions': () => json({ items: [current] }),
-      'POST /api/sessions': () => json({ session_id: null, title: '', draft: true }),
-      '/api/sessions/s-cur': () => json(history),
-      'DELETE /api/sessions/s-cur': () => json({ session_id: 's-cur', deleted: true }),
+  it('preserves the local draft when another tab archives the open conversation', async () => {
+    let moved = false;
+    installFetch({
+      'GET /api/chat/queue': () => json({ active: null, waiting: [], paused: false, revision: 0,
+        session_id: moved ? null : 's-1', archived_session_id: moved ? 's-1' : undefined }),
+      '/api/sessions': () => json({ items: moved ? [] : [{ ...SESSIONS[0], current: true }] }),
+      'GET /api/sessions/s-1': () => json({ ...archivedHistory, current: true }),
     });
     render(<App />);
     await ready();
-
-    fireEvent.click(screen.getByTestId('delete-s-cur'));
-    expect(screen.getByTestId('confirm-message').textContent).toContain('new empty chat');
-    await waitFor(() => expect((screen.getByRole('button', { name: 'Delete permanently' }) as HTMLButtonElement).disabled).toBe(false));
-    fireEvent.click(screen.getByRole('button', { name: 'Delete permanently' }));
-    await waitFor(() => expect(calls).toContain('DELETE /api/sessions/s-cur?confirmed=true'));
-    expect(calls.indexOf('POST /api/sessions')).toBeGreaterThan(-1);
-    expect(calls.indexOf('POST /api/sessions')).toBeLessThan(
-      calls.indexOf('DELETE /api/sessions/s-cur?confirmed=true'));
+    await waitFor(() => expect(screen.getByTestId('session-s-1').getAttribute('aria-current')).toBeTruthy());
+    const input = screen.getByTestId('composer-input') as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: 'Keep my unfinished message' } });
+    moved = true;
+    await screen.findByText('This conversation was moved to Archive.', {}, { timeout: 5500 });
+    expect(input.value).toBe('Keep my unfinished message');
+    expect(screen.queryByTestId('session-s-1')).toBeNull();
   });
 
-  it('reports a refused deletion without disabling the composer', async () => {
+  it('reports an active writer and leaves the conversation usable', async () => {
     installFetch({
-      'DELETE /api/sessions/s-1': () => json(
-        { error: { code: 'session_protected', message: 'Cannot delete the current session; use /new first.' } },
-        409,
-      ),
+      'POST /api/sessions/s-1/archive': () => json(
+        { error: { code: 'session_protected', message: 'A background title task is running.' } }, 409),
     });
     render(<App />);
     await ready();
-
-    fireEvent.click(screen.getByTestId('delete-s-1'));
-    await waitFor(() => expect((screen.getByRole('button', { name: 'Delete permanently' }) as HTMLButtonElement).disabled).toBe(false));
-    fireEvent.click(screen.getByRole('button', { name: 'Delete permanently' }));
-    await waitFor(() =>
-      expect(screen.getByTestId('message-list').textContent).toContain('Cannot delete the current session'));
-    expect(screen.queryByTestId('delete-overlay')).toBeNull();
-    expect(screen.getByTestId('composer-input')).toBeTruthy();
+    const dialog = await askToArchive('s-1');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Archive' }));
+    await screen.findByText('A background title task is running.');
+    expect(screen.getByTestId('session-s-1')).toBeTruthy();
+    expect((screen.getByTestId('composer-input') as HTMLTextAreaElement).disabled).toBe(false);
   });
 
   it('lists related pending text and asks again when another client changes it', async () => {
     let previews = 0;
     let deletions = 0;
     const calls = installFetch({
+      ...archiveReads,
       '/api/sessions/s-1/deletion-preview': () => {
         previews++;
         return json({ pending: [{ id: 'p1', text: previews === 1 ? 'First draft' : 'Updated draft' }], revision: 'r' + previews });
@@ -1220,14 +1375,14 @@ describe('Session deletion', () => {
     });
     render(<App />);
     await ready();
-    fireEvent.click(screen.getByTestId('delete-s-1'));
+    await openPurge();
     await screen.findByText('First draft');
     fireEvent.click(screen.getByRole('button', { name: 'Delete permanently' }));
     await screen.findByText('Updated draft');
     expect(deletions).toBe(1);
     expect(screen.getByText('Review the updated list.')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Delete permanently' }));
-    await waitFor(() => expect(calls).toContain('DELETE /api/sessions/s-1?confirmed=true&pending_revision=r2'));
+    await waitFor(() => expect(calls).toContain('DELETE /api/sessions/s-1?permanent=true&confirmed=true&pending_revision=r2'));
   });
 });
 

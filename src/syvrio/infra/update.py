@@ -17,7 +17,7 @@ from ..errors import SyvrioError
 from .locking import VaultLock
 
 PYPI = "https://pypi.org/pypi/syvrio/json"
-# Syvrio publishes three-part versions and uses rcN for the Evo channel.
+# Recognize legacy installed candidates when upgrading to the stable release.
 VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)(?:rc(\d+))?")
 # The managed unit stops itself with TimeoutStopSec=5min; out-wait it before judging a stop failed.
 STOP_TIMEOUT = 360
@@ -45,16 +45,13 @@ def select_release(releases: dict, current: str, channel: str) -> tuple[str, dic
     if installed is None:
         raise ValueError(f"Unsupported installed version: {current}")
     if channel not in {"stable", "evo"}:
-        raise ValueError("Update channel must be stable or evo.")
+        raise UpdateError("config", "Use the stable PyPI channel or omit channel.")
     candidates = []
     for version, files in releases.items():
         order = key(version)
-        if order is None or (order[-1] >= 0) != (channel == "evo"):
+        if order is None or order[-1] != -1:
             continue
-        if order[:3] < installed[:3] or (
-            order[:3] == installed[:3]
-            and (installed[-1] == -1 or (order[-1] >= 0 and order[-1] <= installed[-1]))
-        ):
+        if order[:3] < installed[:3] or (order[:3] == installed[:3] and installed[-1] == -1):
             continue
         filename = f"syvrio-{version}-py3-none-any.whl"
         for file in files:
@@ -386,7 +383,7 @@ def update(
         response.raise_for_status()
         release = select_release(response.json()["releases"], installed, channel)
         if release is None:
-            return f"Syvrio {installed} is up to date ({channel})."
+            return f"Syvrio {installed} is up to date."
         version, wheel = release
         # Built and verified while the old service keeps serving.
         new = _install(pypi, root, version, wheel, python, uv)
@@ -476,4 +473,4 @@ def update(
                 # environment is unreachable and safe to remove.
                 discard_install()
                 raise ValueError(f"Update failed; restored Syvrio {installed}.") from error
-    return f"Updated Syvrio {installed} → {version} ({channel})."
+    return f"Updated Syvrio {installed} → {version}."

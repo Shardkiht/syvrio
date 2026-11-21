@@ -7,13 +7,13 @@ Web、Textual TUI、CLI 和 MCP 连接到同一常驻后端。每个会话有独
 TUI / CLI / MCP ──┴─ 常驻后端 → 会话 / 记忆 / 模型
 ```
 
-浏览器使用 REST 和 SSE。网关沿用 Host 和 Origin 检查，并阻止访问仅供本机程序使用的管理接口。常驻后端只监听本机地址。首次连接会自动启动，退出客户端后继续运行。使用 `syvrio backend status` 查看状态，`syvrio backend stop` 安全停止。
+Web 网关直接提供页面和静态资源，通过 REST 和 SSE 转发 API 请求与事件。网关检查 Host 和 Origin，并阻止访问仅供本机程序使用的管理接口。常驻后端独立装配共享 API，只监听本机地址。首次连接会自动启动，退出客户端后继续运行。使用 `syvrio backend status` 查看状态，`syvrio backend stop` 安全停止。
 
 ## 开发与运行
 
 PyPI wheel 已包含 Web 静态资源，安装并运行 `syvrio setup` 后，用 `syvrio web` 启动，浏览器打开 `http://127.0.0.1:8765/`。
 
-从 Evo 源码运行需要 Python 3.12+、uv、Node.js 和 Corepack。首次使用先运行 `uv run syvrio setup`。
+从源码运行需要 Python 3.12+、uv、Node.js 和 Corepack。首次使用先运行 `uv run syvrio setup`。
 
 ```bash
 uv sync
@@ -21,7 +21,7 @@ uv run python scripts/build_web.py
 uv run syvrio web
 ```
 
-前后端联调时，可跳过静态构建。先在仓库根目录运行 `uv run syvrio web`，再用另一个终端启动 Vite：
+前后端联调时，可跳过静态构建。先在仓库根目录运行 `uv run syvrio web --port 8746`，再用另一个终端启动 Vite：
 
 ```bash
 cd web
@@ -29,7 +29,7 @@ corepack pnpm install --frozen-lockfile
 corepack pnpm dev
 ```
 
-打开 Vite 提示的地址（默认 `http://localhost:5173/`）；`/api` 会代理到 `127.0.0.1:8765`。未暂存静态资源时，直接访问后端根路径会返回 `503 assets_missing`，API 仍可用。
+开发和静态预览共用 `http://127.0.0.1:7987/`，`/api` 转发到 `127.0.0.1:8746`。这两个端口分别对应电话键盘上的 SYVR 和 VRIO。端口占用时启动会报错退出。环境变量 `SYVRIO_WEB_PORT` 可设置 Web 网关的默认端口，命令行 `--port` 优先。未暂存静态资源时，访问网关根路径会返回 `503 assets_missing`，网关的 `/api/health` 返回 `static_ready: false`。API 和终端仍可使用。
 
 ### 本地域名映射（浏览器只输域名）
 
@@ -81,17 +81,19 @@ uv run python scripts/build_web.py --wheel dist/*.whl  # 校验实际 wheel 内�
 | GET | `/api/context-usage?session_id=<id>` | 会话上下文估算、配置上限与压缩阈值；省略 ID 表示空白草稿 |
 | GET | `/api/sessions?limit=100` | 会话列表 |
 | POST | `/api/sessions` | 回到新对话首页（返回 `draft=true`、`session_id=null`，不写文件；首条消息才创建会话） |
-| POST | `/api/sessions/{id}/switch` | 切换/恢复会话 |
+| POST | `/api/sessions/{id}/switch` | 切换或恢复会话。传 `include_history=true` 时同时返回 `history_version`。首次请求或 `known_version` 与当前版本不同时，`history` 含目标会话的正文；版本一致时为 `null` |
 | GET | `/api/sessions/{id}/deletion-preview` | 读取随会话移除的待确认内容及本次清单版本 |
-| DELETE | `/api/sessions/{id}?confirmed=true` | 确认删除，存在相关候选时通过 `pending_revision` 提交已查看的版本 |
-| GET | `/api/sessions/{id}?limit=300` | 最近的结构化历史；可读取本机 Runtime 思考附件，默认折叠 |
+| POST | `/api/sessions/{id}/archive`、`/api/sessions/{id}/restore` | 归档或还原。普通 `DELETE /api/sessions/{id}` 也执行归档 |
+| GET | `/api/sessions?archived=true`、`/api/sessions/{id}?archived=true` | 人工浏览归档列表和原始会话。列表可用 `limit`、`offset` 翻页，下载归档附件同样需要 `archived=true` |
+| DELETE | `/api/sessions/{id}?permanent=true&confirmed=true` | 仅可永久删除已归档会话，存在相关候选时提交已查看的 `pending_revision` |
+| GET | `/api/sessions/{id}?limit=300` | 最近的结构化历史，思考正文默认折叠。读取活动会话的默认 300 条窗口时可传 `include_version=true`，从响应头 `X-Syvrio-History-Version` 取得下次切换可用的版本 |
 | GET | `/api/sessions/{id}/messages/{message_id}/draft` | 读取最近回合的原文及附件清单供编辑；消息已变更时返回 409 |
 | GET | `/api/settings/providers` | 供应商、端点和配置状态；不返回已保存的 Key |
 | POST | `/api/settings/providers/{provider}` | 添加、更新或删除凭据，以及修改端点 |
 | GET | `/api/commands` | 共享命令目录（名称、用法、能力标记、子命令、快捷键） |
 | POST | `/api/commands` | 执行斜杠命令，返回结构化结果，不经过 LLM |
 | POST | `/api/chat?receipt=1` | 将消息放入当前会话队列，返回 202 和回合 ID。省略参数时直接返回该回合的 SSE 流 |
-| GET | `/api/chat/queue` | 查询本会话的活动回合、等候消息、暂停状态及修订号 |
+| GET | `/api/chat/queue` | 查询本会话的活动回合、队列、暂停状态和修订号，以及正在回复的会话 ID 列表 `replying_session_ids` |
 | DELETE | `/api/chat/queue/{turn_id}` | 移除尚未开始的排队消息 |
 | GET | `/api/chat/turns/{turn_id}?after=<seq>` | 订阅回合更新，从指定序号后重放已发出的事件 |
 | POST | `/api/chat/attachments` | 发送带附件的消息；同样支持 `?receipt=1`。使用 multipart 表单，可重复提交 `files`，可选字段为 `message` 和 `session_id` |
@@ -101,9 +103,15 @@ uv run python scripts/build_web.py --wheel dist/*.whl  # 校验实际 wheel 内�
 
 Web、TUI 与 CLI 共用 `SessionStore.list()`：在应用列表条数上限前，按最后一条有效消息的时间倒序。撤销后的消息不计入排序；改名、摘要和沉淀记录不会把旧会话顶到前面。没有有效消息时使用创建时间。
 
-侧栏每条会话在悬停或键盘聚焦时显示删除按钮，移动端常显。删除确认框列出引用该会话的活动待确认内容。确认时服务端复核会话、队列、正式记忆来源及清单版本。仍有正式记忆引用时拒绝删除，已弃用记忆的来源也受保护。候选有变化时，显示新清单并重新确认。检查通过后一起移除相关候选、会话记录、该会话上传到 Vault 的副本、思考附件和撤销日志。删除当前会话时 Web 先切换到空白对话。会话记录删除失败会恢复相关候选与附件。
+首轮完整问答结束后，后台模型会概括话题，生成与对话语言一致的短标题。页面在标题就绪后更新侧栏和顶部标题。手动命名的会话始终采用你指定的标题。
 
-最近一条已保存用户消息提供撤销和编辑重发按钮。编辑中的文本和附件选择在点击重发后才生效。两个按钮均调用 `POST /api/commands`，提交 `/undo`、`session_id` 和 `expected_message_id`。如果另一页面已发送新消息，后端拒绝撤销旧目标。成功重发时，修改后的消息优先于该会话中已有的排队消息。
+点击侧栏的归档按钮会显示目标会话标题，默认选中取消。确认后会话移入 Archive。用户可在侧栏底部打开 Archive，查看原始消息、下载附件或还原。目标会话正在写入、消息排队或运行标题、沉淀、上下文补全任务时，服务会说明原因。只读标签页可以同时打开；归档后这些标签页回到空白会话并保留尚未发送的输入。
+
+永久删除需在 Archive 中打开目标会话，查看将被移除的活动候选，再手动确认。候选有变化会要求再次确认。正式记忆引用来源时会阻止永久删除，包括已弃用的记忆。删除成功后移除会话、其候选、上传副本、思考附件和撤销日志。
+
+最近一条已保存用户消息提供撤销和编辑重发按钮。撤销通过 `POST /api/commands` 提交 `/undo`、`session_id` 和 `expected_message_id`。编辑重发通过 `POST /api/chat?receipt=1&replace=<原消息 ID>` 提交修改稿，有附件时使用同参数的 `/api/chat/attachments`。后端校验正文与上传，若原回复还在生成，会先停止并保存已收到的部分。替代消息与原回合的撤回在同一次写入中生效，成功后才返回回执并继续生成。替代回合优先于已有排队消息。后台启动、附件保存或会话写入失败会返回 `503 edit_not_sent`。原问答、原附件和工具写入的记忆仍可读取，可以在原会话修改草稿并重试。若只丢失了回执，重试同一修改稿可以取回近期回执，回执过期后仍会核对原消息 ID。
+
+编辑时的首次修改即保存在本标签页的会话存储，有附件时先将文件副本保存到 IndexedDB。编辑期间如果另一客户端发送新消息，可取回原草稿和附件。未修改的编辑器在刷新后自动关闭，取消编辑会清理副本。提交的修改稿携带独立的回执标识。刷新后可在原会话取回草稿，只有点击重试才会提交。成功、丢弃草稿或删除会话会清除本地副本，浏览器在后续附件写入或清理时回收超过七天的文件副本。若浏览器禁止存储，页面会提示保留当前标签页。
 
 FastAPI 自动提供 `/openapi.json` 与 `/docs`。
 
@@ -140,7 +148,7 @@ FastAPI 自动提供 `/openapi.json` 与 `/docs`。
 
 - `/import` 与输入框附件按钮打开同一个本地多文件选择器。可选择文档和图片，取消不会改变草稿。选好的附件在按发送后才交给当前会话。命令不接受服务器路径。
 - `/git` 显示同步状态，`/git sync` 二次确认后执行同步。`/pending approve|reject|edit <id>` 和 `/inferences confirm|reject|correct <id>` 可从 Web 审查记录。
-- `/pending` 每条候选只列一次。选中后查看完整正文、主题、待澄清问题和相关记忆 ID，可编辑多行内容、批准或拒绝；提交前需确认。写入成功原位刷新列表，失败时可重试且保留编辑内容。编辑表单通过命令请求的 `pending_text` 字段发送正文，独立于斜杠命令的长度上限。
+- 顶栏右侧的 Pending 与 `/pending` 打开同一待审侧栏，可滚动并按正文、主题或 ID 搜索。选中后可查看问题和关联记忆、编辑多行正文、批准或拒绝。`/pending edit <id>` 直接打开完整原文，保留原文时需单独确认。表单通过 `pending_text` 提交，写入失败保留编辑内容。
 - `/profile` 展示最近生成的画像。`/dream <n>` 提交带有请求预算的后台回顾，`/dream status|cancel|resume` 查询、取消或继续。关闭客户端后，定时任务继续由常驻后端调度。
 - 输入 `/undo` 或点击最近一条用户消息上的撤销按钮，会立即发出取消信号。已经开始的写工具先安全收尾，再撤销该回合的对话和有日志的本地文件写入。撤销成功后回填原文，暂停队列直到下一次主动发送。已有输入草稿时，等清空后再回填。受影响的文件后来被改动时，整次撤销会被拒绝。
 - 未识别的 `/` 命令返回 `unknown` 并提示 `/help`；前端把所有 `/` 行发往 `/api/commands`，后端 `/api/chat` 也会拒绝斜杠开头的消息（`422 command_required`），双重保证不会误发给 LLM。
@@ -148,7 +156,7 @@ FastAPI 自动提供 `/openapi.json` 与 `/docs`。
 
 ### 生成期间的命令
 
-Web 单 Turn 模型下，`CommandUseCases.BUSY_READ_ONLY` 与 `BUSY_NO_ARGUMENT` 明确哪些命令可在生成中执行：只读命令（`/help`、`/status`、`/summary`、`/topics`、`/pending`、`/inferences`、`/profile`、`/dream`、`/git`）以及不带参数的 `/model`、`/think`、`/context`。`/undo` 在生成中额外承担取消当前 Turn 的语义。该集合除 `/undo` 外保持为 TUI `SAFE_COMMANDS` 的子集，并有测试断言，避免两个客户端语义分歧。其余命令返回明确的 `busy`，输入框不会因此被永久禁用。
+生成中的会话仍可使用只读命令，例如 `/help`、`/status`、`/topics` 和 `/pending`。用 `/model <厂商>/<模型>`、`/think <档位>` 和 `/context <token 数>` 可以保存随后回合使用的设置，同一回合的模型请求和工具续请求共用开始时的设置。各会话都在新回合实际开始时读取最新值。`/undo` 可打断当前回合，`/model refresh` 和 `/compact` 等操作仍须等待生成结束。
 
 ### 输入与补全
 
@@ -157,7 +165,7 @@ Web 单 Turn 模型下，`CommandUseCases.BUSY_READ_ONLY` 与 `BUSY_NO_ARGUMENT`
 - 中文输入法组字状态（`isComposing`、`keyCode 229`、`Process` / `Unidentified`）不会触发 `Enter`、`Tab` 或任何全局快捷键。
 - 斜杠命令的结果与错误在站内弹窗显示。状态、摘要和主题等使用可滚动的结果窗口；`/sessions` 用弹窗浏览和切换会话，`/help` 打开命令面板，`/rename` 可在弹窗直接编辑标题。
 - `/model`、`/think`、`/context` 打开选项弹窗。选择后在弹窗显示设置结果，模型变更后刷新顶栏。
-- `/pending` 与 `/inferences` 共用列表和详情布局。审核按钮与键盘操作触发同样的确认流程，提交失败保留草稿。`/git` 可通过弹窗请求同步。
+- `/inferences` 在完整的可滚动列表上结合状态与关键词搜索。审核按钮与键盘操作触发相同的确认流程。`/git` 可通过弹窗请求同步。
 - 模型目录是**进程内缓存**（`llm/client.py` 的 `_MODEL_CACHE`），Web 进程刚启动、或供应商未暴露 `/models` 时可能为空。此时 `/model` 仍列出当前配置模型并明确提示，不会输出空白列表；`/model refresh` 会真正向已配置供应商发起一次有界拉取（单供应商 5 秒超时），拉不到时说明原因而不是谎称「需要本地终端」。缓存为空时仍可用 `/model <当前provider>/<模型ID>` 按 ID 切换，未知供应商仍拒绝。
 - 命令面板（`Ctrl+Shift+P` / `Alt+P`，或顶栏 `Commands` 按钮）复用同一目录与分发逻辑：搜索、方向键、Enter 执行、Escape 关闭并恢复输入框焦点，同时列出快捷键和浏览器保留键说明。
 
@@ -167,10 +175,10 @@ Web 单 Turn 模型下，`CommandUseCases.BUSY_READ_ONLY` 与 `BUSY_NO_ARGUMENT`
 
 | 分区 | 数据来源 | 说明 |
 | --- | --- | --- |
-| Model | `GET /api/settings/models?q=…`、`/model <provider>/<model>` | 刷新按钮右侧可按名称搜索所有已配置厂商的可用目录。首次自动获取，手动刷新可重新拉取。点选结果才切换 |
+| Model | `GET /api/settings/models?q=…`、`/model <provider>/<model>` | 可在模型列表上方按名称搜索所有已配置厂商的目录。首次自动获取，右侧的刷新按钮可重新拉取。点选结果才切换 |
 | Appearance | 浏览器 `localStorage` | 默认跟随系统 / 浏览器明暗主题，也可固定亮色或暗色；只保存在当前浏览器 |
 | Thinking | `/think` | 优先读取模型目录为当前模型公布的档位，缺少有效档位或查询失败时采用预设。`auto` 置顶，`default` 表示使用供应商默认设置 |
-| Context | `/context` | 默认 100K，提供 100K、200K、400K、600K 预设和自定义 token 数；受模型上限约束 |
+| Context | `/context` | 最小和默认值为 50,000 tokens。可选 50K、100K、200K、400K、600K 或输入自定义值。旧配置低于下限时按 50K 读取。更大的值按原值保存，实际请求受当前模型容量限制。 |
 | Providers | `GET/POST /api/settings/providers/{provider}` | 添加/更新 Key、修改 Base URL、删除供应商、自定义模型；**保存的 Key 永不回传浏览器** |
 | About | `/api/health` | 版本、当前 provider/model、是否生成中、单客户端锁、静态资源状态与快捷键 |
 
@@ -178,14 +186,16 @@ Web 单 Turn 模型下，`CommandUseCases.BUSY_READ_ONLY` 与 `BUSY_NO_ARGUMENT`
 
 ### 上下文占用
 
-发送键左侧的水球显示当前会话的 token 占比估算。悬停或点按可查看估算用量和模型的配置上限，达到压缩阈值时水球高亮。水波在占用 ≥10% 且 ≤85% 时流动（低于 10% 时保持静止，避免刚有内容就出现动效）；系统开启减少动态效果时也保持静止。 自动压缩开始时显示压缩状态，摘要保存成功后按重新估算的用量降低水位。手动执行 `/compact` 也会显示状态；没有可压缩的历史时不会显示成功动画。Web 复用 TUI 的历史上下文估算，估算不触发模型请求，也不计入尚未发送的输入或本轮临时召回内容。
+发送键左侧的水球用水位表示上下文占用比例，中央常显估算的已用 token 数，例如 `850` 或 `3.2k`。鼠标移入、键盘聚焦或触屏点按时，详情显示精确到整数的估算用量、上限与百分比。达到压缩阈值会出现提示。占用介于 10% 到 85% 时水波流动，系统开启减少动态效果时保持静止。自动压缩开始时显示压缩状态，摘要保存后按重新估算的用量降低水位。手动执行 `/compact` 也会显示状态。Web 与 TUI 共用历史上下文估算，计算时无需调用模型，统计范围为已保存的会话内容。
 
 ### 主题、侧栏与消息滚动
 
 - 服务端保存用户消息后，Web 立即刷新会话顺序，模型回复期间无需刷新网页。排序使用最后一条有效用户消息的时间。
+- 正在回复的会话标题左侧显示呼吸小点。切到其他会话后仍可看到哪些回复正在生成，回合结束时小点自动消失。系统开启减少动态效果时，小点保持静止。
 
 - 界面使用同一套 CSS 变量生成亮色与暗色主题。默认 `Follow system` 响应 `prefers-color-scheme` 的实时变化，也可在 Appearance 中固定 Light / Dark；选择只写入当前浏览器的 `syvrio.theme`，移动端地址栏 `theme-color` 同步切换。显式主题在样式加载前恢复，避免刷新时黑白闪烁。
 - 桌面端点击侧栏头部的面板图标会收起整列（`display: none`，宽度让给对话区），顶栏左侧同一图标或 `Ctrl+B` / `Alt+B` 重新展开；桌面选择保存在 `syvrio.sidebar`。手机端仍使用默认收起的抽屉与蒙层，跨断点时自动折叠。
+- 点击侧栏会话后，选中项和标题立即更新。网页先展示本标签页缓存的历史，首次打开时显示加载状态。一次切换请求同时确认目标和历史版本，正文发生变化时随响应更新。切换到已有会话时可以编辑草稿并提前点击发送；后台确认目标后才提交，改选或切换失败时草稿留在原目标会话。快速连续切换时，页面只显示最后选中的会话。
 - 恢复或切换会话时，消息区在绘制前以 `instant` 直接定位到最新一条，不播放从顶部滑到底部的长动画；同一会话的流式更新保留平滑跟随，用户向上翻阅后暂停跟随，回到底部附近后恢复。
 - 展开的思考面板同样是固定高度的独立滚动区：流式期间跟随最新一行，用户向上翻阅后停止跟随、回到底部附近恢复；已结束的思考从顶部开始阅读。
 
@@ -211,7 +221,11 @@ Web 单 Turn 模型下，`CommandUseCases.BUSY_READ_ONLY` 与 `BUSY_NO_ARGUMENT`
 ## 跨客户端会话与并发
 
 - Web、TUI、CLI、MCP 可以同时连接。每个网页标签页和终端独立选择会话，打开同一会话时共享正在生成的回复、等待队列及保存的历史。不同会话能同时生成。
+- 回复过程中可以点击其他会话、选择 New chat 或输入 `/new`。原会话继续生成并处理自己的队列。切回时先载入历史，再接上活动回合。网页输入框里尚未发送的文字和附件在当前标签页内按会话保留。
 - 普通发送进入服务端队列，按接收顺序逐条执行。关闭页面、终端或 SSE 连接后，已接收的消息继续执行。网页刷新后从后端读取队列及当前回复。
+- 发送和附件上传等候回执时，客户端用同一个提交编号补发。服务端将编号与原会话、正文和附件绑定。已经收到的请求返回原回合；网页掉线后可根据回合编号和事件序号继续读。刷新时若回复恰好结束，网页直接加载已保存的会话。
+- 模型在生成中失败时，会话历史保留已收到的正文、思考和失败原因。失败原因仅供客户端展示。撤销该回合时，它随对应消息一起撤销。
+- 归档以目标会话当前的实际写入和后台任务为准。空闲的只读视图可以立即释放，也可以在归档页面恢复会话。
 - Ctrl+Enter 或 **Insert** 在模型请求期间申请补充。工具运行时拒绝插入。已接收的补充仅在模型响应完整结束、相关工具结果写入后加入上下文；超过预算或回合状态变化时保留草稿。
 - 通过 `/undo` 打断当前回合，按会话及目标消息 ID 核对后撤销本地写入并回填原文。其他会话已修改相关文件或添加引用时，后端拒绝整次撤销。排队消息暂停，用户下一次主动发送后继续。
 - 同一 Vault 在本机只能由一个常驻后端写入，即使使用不同的 Runtime 目录也一样。关闭后端会等待后台工作停止，再释放所有权。
@@ -272,6 +286,20 @@ sudo systemctl stop syvrio-web
 - 无人值守（用户未登录）：需用任务计划程序以「不管用户是否登录都要运行」和最高权限启动 `wsl.exe -d <发行版> --exec /bin/true` 保持实例存活。该方式仍受 WSL VM 生命周期影响，不能等同于 Windows 服务。
 - `wsl --shutdown`、`wsl --terminate <发行版>`、Windows 重启都会停止服务；Windows 睡眠/休眠期间 WSL 虚拟机会暂停或被回收，唤醒后需重新检查 `systemctl status syvrio-web`。
 - localhost 转发验证：WSL 内 `curl -fsS http://127.0.0.1:8765/api/health`；Windows PowerShell `curl.exe http://127.0.0.1:8765/api/health` 应返回同一结果。WSL2 默认开启 `localhostForwarding`，若不通再检查 `C:\Users\<用户>\.wslconfig`。
+
+## ngrok
+
+PyPI wheel 包含分享命令及网页资源。先在运行 Syvrio 的同一系统、同一用户下安装 ngrok v3 并配置其 authtoken；已有可用的 ngrok 配置可直接复用。ngrok 安装和账号注册见[官方指引](https://ngrok.com/download)。使用 ngrok 分配的主机名，以及 GitHub 公开接口 `https://api.github.com/users/<用户名>` 返回的数字 `id`。
+
+```sh
+syvrio web share --domain demo.ngrok-free.dev --github-id 12345
+```
+
+确认后在本地 `config.toml` 的 `[web_share]` 下保存 `domain` 和字符串 `github_user_id`。以后只需 `syvrio web share`。改绑账号时再次指定参数并确认。CLI 只向本次分享的 Web 网关加入该可信域名，不修改系统 hosts。端口沿用 `--port` 或 `SYVRIO_WEB_PORT`，默认 8765。启动前先停掉占用同一端口的旧 Web 服务及占用该网址的旧隧道。
+
+ngrok 校验 GitHub 账号的数字 ID，邮箱可以隐藏。手机和电脑使用同一个 HTTPS 地址。验收时用无痕窗口分别打开首页和 `/api/sessions`，两者都应先跳转至 GitHub。授权账号登录后应可打开会话，其他账号应收到 403。Ctrl+C 或停止 Web 服务会同时结束随它启动的 ngrok 子进程。
+
+使用 PyPI 自更新部署时，可在已配置以上设置后，将现有用户服务的 Web 启动命令设为 `%h/.syvrio/update/current web share --yes`（使用包装脚本加载凭据的部署，保留原来的环境加载步骤）。`--yes` 代表同意使用已指定的公开入口。服务的 PATH 需要包含 ngrok 可执行文件。安装包更新后仍读取同一份本地设置。外部网址、账号和令牌均由部署方提供。
 
 ## Tailscale Serve（仅 tailnet，不启用 Funnel）
 
@@ -360,7 +388,6 @@ WantedBy=default.target
 创建 `~/.syvrio/update/config.toml`：
 
 ```toml
-channel = "evo"
 service = "syvrio-web.service"
 port = 8765
 # 可选：显式指定本地解释器；默认用当前版本 venv 的基础解释器
@@ -369,7 +396,7 @@ port = 8765
 # uv = "/home/<user>/.local/bin/uv"
 ```
 
-`stable` 只选正式版，`evo` 只选形如 `0.5.2rc1` 的候选版。更新不会降级。首次切换到 Evo 时，初始安装版本必须低于目标预发布版本。服务正常启动以后，停用旧的源码拉取任务，定时任务只运行 `syvrio update`。定时任务的 PATH 须包含 `syvrio`，并可访问对应的用户 systemd 实例；`uv` 须位于 PATH，或在 `config.toml` 中配置绝对路径。未配置且 PATH 里没有 `uv` 时，更新器在下载前就报错，不会走到一半才失败。更新命令应在 Web unit 外运行。
+更新器只选择 PyPI 上更新的正式版，忽略已撤回的包和历史候选版。新版兼容旧配置中的 `channel = "evo"`。仍在用旧版更新器时，先把旧更新配置改为 `channel = "stable"`，完成旧 Vault 的备份和格式迁移后再升级。服务正常启动以后，停用旧的源码拉取任务，定时任务只运行 `syvrio update`。定时任务的 PATH 须包含 `syvrio`，并可访问对应的用户 systemd 实例；`uv` 须位于 PATH，或在 `config.toml` 中配置绝对路径。未配置且 PATH 里没有 `uv` 时，更新器在下载前就报错，不会走到一半才失败。更新命令应在 Web unit 外运行。
 
 如果 `uv` 只通过开发环境的 `env.sh` 注入 PATH，注意 `wsl.exe -d <发行版> -- bash -s` 这类非登录、非交互 shell 不读 `.bashrc` / `.profile`，此时要么 `bash -lc 'syvrio update'`、要么先 `source <env.sh>`，要么在 `config.toml` 里写死 `uv` 的绝对路径。
 

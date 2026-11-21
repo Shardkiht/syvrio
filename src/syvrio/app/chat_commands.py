@@ -402,12 +402,6 @@ class ChatCommandsMixin:
         self._end_navigation()
         self._drain_pending_intent()
 
-
-
-
-
-
-
     # ---------- 设置类选择器（逻辑在 application/settings.py） ----------
 
     def _open_models(self, refresh: bool = False) -> None:
@@ -656,8 +650,11 @@ class ChatCommandsMixin:
 
     def _pick_reasoning(self) -> None:
         self.run_worker(
-            self._load_reasoning_picker, group="thinking-picker", exclusive=True,
-            thread=True, exit_on_error=False,
+            self._load_reasoning_picker,
+            group="thinking-picker",
+            exclusive=True,
+            thread=True,
+            exit_on_error=False,
         )
 
     def _load_reasoning_picker(self) -> None:

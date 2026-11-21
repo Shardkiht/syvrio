@@ -98,7 +98,9 @@ def grounded_context(context: MemoryContext | None, *sources: str) -> MemoryCont
     if context is None or context.emotion is None:
         return context
     words = context.emotion.model_dump(exclude_none=True)
-    quoted = {phase: value for phase, value in words.items() if any(value in source for source in sources)}
+    quoted = {
+        phase: value for phase, value in words.items() if any(value in source for source in sources)
+    }
     if quoted == words:
         return context
     emotion = MemoryEmotion.model_validate(quoted) if quoted else None
@@ -110,6 +112,7 @@ def _keep_quoted_emotions(result: ExtractionResult, source: str) -> ExtractionRe
     for candidate in result.memories:
         candidate.context = grounded_context(candidate.context, source)
     return result
+
 
 class LLMExtractor:
     def __init__(self, config: LLMConfig):
@@ -229,7 +232,9 @@ class ImportExtractor:
             if self.topics
             else ""
         )
-        user_content = f"现有事实与待审项（仅作参照）：\n{context}\n\n待整理内容：\n{text}{topic_hint}"
+        user_content = (
+            f"现有事实与待审项（仅作参照）：\n{context}\n\n待整理内容：\n{text}{topic_hint}"
+        )
         feedback = ""
         for _ in range(self.max_attempts):
             content = (

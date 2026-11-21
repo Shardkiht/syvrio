@@ -27,6 +27,10 @@ class SyvrioPaths:
     runtime_dir: Path
     config_file: Path | None = None
 
+    def __post_init__(self) -> None:
+        # The configured Vault root may be an alias. Check its children against the physical root.
+        object.__setattr__(self, "vault_dir", self.vault_dir.expanduser().resolve())
+
     @property
     def config_dir(self) -> Path:
         return self.config_file.parent if self.config_file else syvrio_home()
@@ -38,6 +42,14 @@ class SyvrioPaths:
     @property
     def sessions_dir(self) -> Path:
         return self.vault_dir / "sessions"
+
+    @property
+    def archived_dir(self) -> Path:
+        return self.vault_dir / "archived"
+
+    @property
+    def archived_sessions_dir(self) -> Path:
+        return self.archived_dir / "sessions"
 
     @property
     def attachments_dir(self) -> Path:

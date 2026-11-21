@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from dataclasses import dataclass
 from pathlib import Path
+from uuid import uuid4
 
+import httpx
 from textual.app import App
 from textual.binding import Binding
 from textual.events import Mount, Unmount
@@ -21,14 +25,25 @@ from .thinking_panel import ThinkingPanel
 from .tui_commands import ResidentCommands
 
 
+@dataclass
+class UnsentMessage:
+    id: str
+    session_id: str | None
+    text: str
+    files: tuple[Path, ...]
+    reconnect: bool = False
+
+
 class ResidentChatApp(ResidentCommands, ChatViewMixin, App):
     TITLE = "Syvrio — Personal Memory"
     CSS = APP_CSS
     BINDINGS = [
         Binding("ctrl+p", "model_providers", "Manage providers", priority=True, show=False),
-        ("ctrl+q", "quit", "Quit"), ("ctrl+b", "toggle_sidebar", "Toggle sidebar"),
+        ("ctrl+q", "quit", "Quit"),
+        ("ctrl+b", "toggle_sidebar", "Toggle sidebar"),
         ("ctrl+o", "attach_files", "Attach files"),
         Binding("ctrl+enter", "insert_message", "Insert message", priority=True, show=False),
+        Binding("ctrl+r", "retry_delivery", "Retry delivery", priority=True, show=False),
     ]
 
     def __init__(self, client: ResidentClient, resume: str | None = None):
@@ -47,8 +62,12 @@ class ResidentChatApp(ResidentCommands, ChatViewMixin, App):
         self._stream_flush_scheduled = False
         self._revision: int | None = None
         self._uploads: dict[str | None, tuple[Path, ...]] = {}
+        self._drafts: dict[str | None, str] = {}
         self._refresh = asyncio.Lock()
         self._submitting = asyncio.Lock()
+        self._unsent: list[UnsentMessage] = []
+        self._offline = False
+        self._review_locks = {name: asyncio.Lock() for name in ("pending", "inferences")}
 
     async def on_mount(self, event: Mount):
         self._set_sidebar_visible(False)
@@ -78,6 +97,7 @@ class ResidentChatApp(ResidentCommands, ChatViewMixin, App):
                 await coroutine
             except Exception as exc:
                 self.notify(str(exc), severity="error")
+
         self.run_worker(run(), exit_on_error=False)
 
     async def _poll(self, force=False):
@@ -87,35 +107,57 @@ class ResidentChatApp(ResidentCommands, ChatViewMixin, App):
             version = self._version
             try:
                 state, health, listing = await asyncio.gather(
-                    self._request("GET", "/api/chat/queue"), self._request("GET", "/api/health"),
+                    self._request("GET", "/api/chat/queue"),
+                    self._request("GET", "/api/health"),
                     self._request("GET", "/api/sessions"),
                 )
-                if version != self._version:
+                if version != self._version or (not force and self._submitting.locked()):
                     return
-                self.sid = state["session_id"]
-                self._model_status.update(f'{health["provider"]}/{health["model"]}')
+                archived = self.sid is not None and state.get("archived_session_id") == self.sid
+                if self.sid != state["session_id"]:
+                    self._bind(state["session_id"], keep_input=archived)
+                    version = self._version
+                self._model_status.update(f"{health['provider']}/{health['model']}")
                 if listing["items"] != self._sessions:
                     self._sessions = listing["items"]
                     view = self.query_one("#sessions", ListView)
                     await view.clear()
                     for row in self._sessions:
-                        item = SessionItem({**row, "meta": f'{row["messages"]} msgs'})
+                        item = SessionItem({**row, "meta": f"{row['messages']} msgs"})
                         item.set_class(row["id"] == self.sid, "current")
                         await view.append(item)
                 waiting = state["waiting"]
                 queue = self.query_one("#send-queue", Static)
-                queue.update(" · ".join(item["text"] for item in waiting))
-                queue.display = bool(waiting)
+                failed = [item for item in self._unsent if item.session_id == self.sid]
+                lines = [item["text"] for item in waiting]
+                lines.extend(
+                    f"Delivery unconfirmed (Ctrl+R to retry): {item.text}" for item in failed
+                )
+                queue.update("\n".join(lines))
+                queue.display = bool(lines)
                 active = state["active"]
                 changed = self._revision != state["revision"]
                 self._revision = state["revision"]
                 if active and (self._active_id != active["turn_id"] or self._stream is None):
                     await self._watch(active)
-                elif not active and self._active_id is None and (changed or force):
+                elif not active and self._active_id is None and (changed or force or archived):
                     await self._history()
+                    if archived:
+                        self.add_card("This conversation was moved to Archive.", "Archive")
                 self._ask_active = bool(active) or self._active_id is not None
-                self.query_one("#status", Static).update("Queued" if waiting else "Generating" if active else "")
+                self.query_one("#status", Static).update(
+                    "Queued" if waiting else "Generating" if active else ""
+                )
+                if self._offline:
+                    self._offline = False
+                    for item in failed:
+                        if item.reconnect:
+                            self._run_request(
+                                self._send(item.text, item.files, version, retry=item)
+                            )
             except Exception as exc:
+                if isinstance(exc, httpx.TransportError):
+                    self._offline = True
                 self.query_one("#status", Static).update(str(exc))
 
     async def _history(self, before: str | None = None):
@@ -137,11 +179,19 @@ class ResidentChatApp(ResidentCommands, ChatViewMixin, App):
                 self.add_user_turn("\n".join([text, *names]), stamp)
             elif item["role"] == "assistant":
                 if block := item.get("reasoning"):
-                    self._chat().mount(ThinkingPanel(block["text"], record_id=item["id"], seconds=block.get("seconds")))
+                    self._chat().mount(
+                        ThinkingPanel(
+                            block["text"], record_id=item["id"], seconds=block.get("seconds")
+                        )
+                    )
                 if text:
                     self.add_assistant_turn(text, stamp)
             elif item["role"] == "tool":
-                self._chat().mount(Static(f'{item["tool_name"]} · {text}', classes="event-card", markup=False))
+                self._chat().mount(
+                    Static(f"{item['tool_name']} · {text}", classes="event-card", markup=False)
+                )
+            elif item["role"] == "error":
+                self.add_card(text, "Reply failed")
             elif text:
                 self.add_card(text, "Summary")
 
@@ -158,7 +208,9 @@ class ResidentChatApp(ResidentCommands, ChatViewMixin, App):
         self._stream_buffer = ""
         self._stream_widget = None
         self._thinking_widget = None
-        self._stream = self.run_worker(self._receive(turn, version), group="turn-stream", exclusive=True, exit_on_error=False)
+        self._stream = self.run_worker(
+            self._receive(turn, version), group="turn-stream", exclusive=True, exit_on_error=False
+        )
 
     async def _receive(self, turn, version):
         latest = 0
@@ -171,6 +223,9 @@ class ResidentChatApp(ResidentCommands, ChatViewMixin, App):
                         continue
                     latest = event["seq"]
                     self._show_event(event)
+                break
+            except KeyError:
+                # A restarted resident can serve the saved history after its event stream expires.
                 break
             except ValueError as exc:
                 self.notify(str(exc), severity="error")
@@ -199,14 +254,18 @@ class ResidentChatApp(ResidentCommands, ChatViewMixin, App):
             if kind == "reasoning_delta":
                 self._thinking_widget.append(text)
             else:
-                self._thinking_widget.finish(text, f'{event["turn_id"]}-{event["phase"]}', event.get("seconds"))
+                self._thinking_widget.finish(
+                    text, f"{event['turn_id']}-{event['phase']}", event.get("seconds")
+                )
                 self._thinking_widget = None
         elif kind == "message_inserted":
             self.add_user_turn(text)
             self._stream_widget = None
             self._stream_buffer = ""
         elif kind in ("event", "tool_start", "tool_end"):
-            self._chat().mount(Static(text or event.get("name", ""), classes="event-card", markup=False))
+            self._chat().mount(
+                Static(text or event.get("name", ""), classes="event-card", markup=False)
+            )
             self._stream_widget = None
             self._stream_buffer = ""
         elif kind == "failed":
@@ -220,6 +279,7 @@ class ResidentChatApp(ResidentCommands, ChatViewMixin, App):
             if paths:
                 self._uploads[self.sid] = paths
                 self.notify(" · ".join(path.name for path in paths))
+
         self.push_screen(AttachmentScreen(), selected)
 
     def on_input_submitted(self, event: Input.Submitted):
@@ -243,17 +303,30 @@ class ResidentChatApp(ResidentCommands, ChatViewMixin, App):
         self._uploads.pop(self.sid, None)
         self._run_request(self._send(text or "Analyze the attached files.", files, self._version))
 
-    async def _send(self, text, files, version):
+    def action_retry_delivery(self) -> None:
+        item = next((row for row in self._unsent if row.session_id == self.sid), None)
+        if item:
+            self._run_request(self._send(item.text, item.files, self._version, retry=item))
+
+    async def _send(self, text, files, version, *, retry: UnsentMessage | None = None):
         async with self._submitting:
             if version != self._version:
                 return
+            if retry is not None and retry not in self._unsent:
+                return
+            item = retry or UnsentMessage(uuid4().hex, self.sid, text, files)
             try:
-                receipt = await asyncio.to_thread(self.client.submit, text, self.sid, files)
-            except Exception:
-                if version == self._version:
-                    self._uploads[self.sid] = files
-                    self.query_one("#input", BarInput).value = text
+                receipt = await asyncio.to_thread(
+                    self.client.submit, text, item.session_id, files, submission_id=item.id
+                )
+            except Exception as exc:
+                item.reconnect = isinstance(exc, (httpx.TransportError, json.JSONDecodeError))
+                if item not in self._unsent:
+                    self._unsent.append(item)
+                self.notify("Message retained. Press Ctrl+R to retry delivery.", severity="warning")
                 raise
+            if item in self._unsent:
+                self._unsent.remove(item)
             if version == self._version:
                 self.sid = receipt["session_id"]
                 await self._poll(force=True)
@@ -269,15 +342,26 @@ class ResidentChatApp(ResidentCommands, ChatViewMixin, App):
         text = widget.value.strip()
         if not text:
             return
+        sid, turn_id = self.sid, self._active_id
+
         async def insert():
-            await self._request("POST", "/api/chat/insert", json={"turn_id": self._active_id, "session_id": self.sid, "message": text})
-            if widget.value.strip() == text:
+            await self._request(
+                "POST",
+                "/api/chat/insert",
+                json={"turn_id": turn_id, "session_id": sid, "message": text},
+            )
+            if self.sid == sid and widget.value.strip() == text:
                 widget.value = ""
+            elif self.sid != sid and self._drafts.get(sid, "").strip() == text:
+                self._drafts.pop(sid)
+
         self._run_request(insert())
 
     def _stop_generation(self):
         if self._active_id:
-            self._run_request(self._request("POST", "/api/chat/cancel", json={"turn_id": self._active_id}))
+            self._run_request(
+                self._request("POST", "/api/chat/cancel", json={"turn_id": self._active_id})
+            )
 
     def _new_session(self):
         self._submit_command("/new")
@@ -289,10 +373,24 @@ class ResidentChatApp(ResidentCommands, ChatViewMixin, App):
     async def _select(self, sid):
         if not sid:
             return
-        await self._request("POST", f"/api/sessions/{sid}/switch")
+        async with self._submitting:
+            await self._request("POST", f"/api/sessions/{sid}/switch")
+            self._bind(sid)
+            await self._poll(force=True)
+
+    def _bind(self, sid: str | None, *, keep_input: bool = False) -> None:
+        if sid != self.sid:
+            field = self.query_one("#input", BarInput)
+            if keep_input:
+                if files := self._uploads.pop(self.sid, ()):
+                    self._uploads[sid] = files
+            else:
+                if field.value:
+                    self._drafts[self.sid] = field.value
+                field.value = self._drafts.pop(sid, "")
+                field.cursor_position = len(field.value)
         self._detach()
         self.sid = sid
-        await self._poll(force=True)
 
     def _detach(self):
         self._version += 1

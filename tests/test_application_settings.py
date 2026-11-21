@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import tomllib
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
+from types import SimpleNamespace
 
 import pytest
 
@@ -14,6 +16,7 @@ from syvrio.application.settings import SettingsUseCases
 from syvrio.infra.config import Config, LLMConfig, RetrievalConfig, load_config
 from syvrio.infra.providers import PRESETS
 from syvrio.llm import fetch_provider_models
+from syvrio.llm.client import effective_context_window
 from syvrio.memory.service import MemoryService
 
 pytestmark = pytest.mark.config
@@ -99,6 +102,51 @@ def test_provider_options_mark_configured_and_current(tmp_path, monkeypatch):
     assert deepseek.current is True
 
 
+@pytest.mark.parametrize("provider", ["custom", "spark"])
+def test_active_endpoint_is_used_by_chat_and_survives_restart(tmp_path, monkeypatch, provider):
+    from syvrio.llm import LiteLLMChatModel
+
+    service, runtime, settings = build(tmp_path)
+    service.config_path = tmp_path / "config.toml"
+    old, new = "https://old.example.invalid/v1", "https://new.example.invalid/v1"
+    config = LLMConfig(provider=provider, base_url=old, api_key_env="SYNTHETIC_ENDPOINT_TEST_KEY")
+    service.config.llm = config
+    monkeypatch.setenv(config.api_key_env, "synthetic-key")
+    requests = []
+
+    def completion(**request):
+        requests.append(request["api_base"])
+        return [{"choices": [{"delta": {"content": "ok"}}]}]
+
+    monkeypatch.setattr(
+        "syvrio.llm.client._litellm", lambda: SimpleNamespace(completion=completion)
+    )
+    running = LiteLLMChatModel(config)
+    assert settings.set_provider_endpoint(provider, new + "/").ok
+    assert runtime.reloads == 1
+    with service.config_path.with_name("models.toml").open("rb") as handle:
+        written = tomllib.load(handle)["llm"]
+    assert written["base_url"] == written["provider_urls"][provider] == new
+    saved = load_config(service.config_path).llm
+    assert settings.provider_endpoint(provider) == new
+    assert saved.base_url == saved.provider_urls[provider] == new
+    assert saved.api_key_env == config.api_key_env
+    for model in (running, LiteLLMChatModel(service.config.llm), LiteLLMChatModel(saved)):
+        reply = model.chat([{"role": "user", "content": "test"}], [], on_delta=lambda _: None)
+        assert reply.content == "ok"
+    assert requests == [old, new, new]
+
+
+def test_older_config_uses_saved_provider_endpoint_for_chat(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text(
+        '[llm]\nprovider = "custom"\nbase_url = "https://old.example.invalid/v1"\n'
+        'provider_urls = { custom = "https://new.example.invalid/v1" }\n',
+        encoding="utf-8",
+    )
+    assert load_config(path).llm.base_url == "https://new.example.invalid/v1"
+
+
 def test_update_provider_key_keyring_failure_is_reported(tmp_path, monkeypatch):
     service, runtime, settings = build(tmp_path)
     monkeypatch.setattr(settings_module, "save_api_key", lambda env, key: False)
@@ -131,6 +179,29 @@ def test_apply_model_reloads_runtime_and_persists(tmp_path):
     assert service.config_path.exists()
 
 
+def test_failed_save_keeps_the_current_model_and_context(tmp_path, monkeypatch):
+    service, runtime, settings = build(tmp_path)
+    service.config_path = tmp_path / "config.toml"
+    current = service.config.llm
+    window = service.config.chat.context_window
+    monkeypatch.setattr(settings_module, "model_metadata", lambda *_: {})
+
+    def fail_write(path, config):
+        raise OSError("write failed")
+
+    monkeypatch.setattr(settings_module, "write_config", fail_write)
+    with pytest.raises(OSError, match="write failed"):
+        settings.apply_model("deepseek", "new-model")
+    with pytest.raises(OSError, match="write failed"):
+        settings.apply_context(75_000)
+    for provider in (current.provider, "spark"):
+        with pytest.raises(OSError, match="write failed"):
+            settings.set_provider_endpoint(provider, "https://new.example.invalid/v1")
+    assert service.config.llm is current
+    assert service.config.chat.context_window == window
+    assert runtime.reloads == 0
+
+
 def test_switch_model_preserves_chat_configuration(tmp_path, monkeypatch):
     from dataclasses import replace
 
@@ -141,11 +212,6 @@ def test_switch_model_preserves_chat_configuration(tmp_path, monkeypatch):
     chat = replace(
         service.config.chat,
         auto_reflect=False,
-        reflect_idle_seconds=91,
-        reflect_interval_seconds=301,
-        profile_auto_interval_hours=171,
-        profile_min_cooldown_hours=28,
-        profile_min_changes=21,
         dream_auto_interval_hours=25,
     )
     service.config.chat = chat
@@ -202,37 +268,41 @@ def test_apply_model_without_key_does_not_switch(tmp_path):
     assert runtime.reloads == 0
 
 
-def test_apply_model_caps_context_to_model_limit(tmp_path, monkeypatch):
+def test_switching_to_a_small_model_preserves_preferred_context(tmp_path, monkeypatch):
     service, runtime, settings = build(tmp_path)
     service.config.chat.context_window = 64_000
     monkeypatch.setattr(settings_module, "model_metadata", lambda *_: {"max_input_tokens": 8000})
+    monkeypatch.setattr("syvrio.llm.client.model_metadata", lambda *_: {"max_input_tokens": 8000})
 
     result = settings.apply_model("deepseek", "deepseek-v4-pro")
 
     assert result.ok is True
-    assert service.config.chat.context_window == 8000
+    assert settings.context_window == 64_000
+    assert effective_context_window(service.config.llm, settings.context_window) == 8_000
 
 
 def test_context_options_and_apply_limits(tmp_path, monkeypatch):
     service, runtime, settings = build(tmp_path)
     monkeypatch.setattr(settings_module, "model_metadata", lambda *_: {"max_input_tokens": 32_000})
-    assert settings.context_options() == []
+    assert settings.context_options() == [50_000]
 
-    invalid = settings.apply_context(1000)
-    assert invalid.ok is False and "2000" in invalid.message
+    invalid = settings.apply_context(49_999)
+    assert invalid.ok is False and "50,000" in invalid.message
+    assert settings.apply_context(50_000).ok
 
     capped = settings.apply_context(64_000)
     assert capped.ok is True
-    assert service.config.chat.context_window == 32_000
+    assert service.config.chat.context_window == 64_000
+    assert "32K" in capped.message
 
 
 def test_context_presets_skip_model_overflow_without_promoting_custom_values(tmp_path, monkeypatch):
     service, runtime, settings = build(tmp_path)
     service.config.chat.context_window = 250_000
     monkeypatch.setattr(settings_module, "model_metadata", lambda *_: {"max_input_tokens": 500_000})
-    assert settings.context_options() == [100_000, 200_000, 400_000]
+    assert settings.context_options() == [50_000, 100_000, 200_000, 400_000]
     monkeypatch.setattr(settings_module, "model_metadata", lambda *_: {})
-    assert settings.context_options() == [100_000, 200_000, 400_000, 600_000]
+    assert settings.context_options() == [50_000, 100_000, 200_000, 400_000, 600_000]
 
 
 def test_reasoning_options_follow_model_support(tmp_path, monkeypatch):
@@ -261,10 +331,21 @@ def test_thinking_levels_use_provider_model_metadata_before_presets(tmp_path, mo
 
         def do_GET(self):
             requests.append(self.path)
-            body = json.dumps({"object": "list", "data": [
-                {"object": "model", "id": model, "created": 0, "owned_by": "fixture", **fields}
-                for model, fields in rows
-            ]}).encode()
+            body = json.dumps(
+                {
+                    "object": "list",
+                    "data": [
+                        {
+                            "object": "model",
+                            "id": model,
+                            "created": 0,
+                            "owned_by": "fixture",
+                            **fields,
+                        }
+                        for model, fields in rows
+                    ],
+                }
+            ).encode()
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
@@ -276,8 +357,12 @@ def test_thinking_levels_use_provider_model_metadata_before_presets(tmp_path, mo
         worker.start()
         try:
             monkeypatch.setenv("SYVRIO_TEST_CATALOG_KEY", "fixture")
-            llm = LLMConfig(provider="custom", model="deep-model", api_key_env="SYVRIO_TEST_CATALOG_KEY",
-                            base_url=f"http://127.0.0.1:{server.server_port}/v1")
+            llm = LLMConfig(
+                provider="custom",
+                model="deep-model",
+                api_key_env="SYVRIO_TEST_CATALOG_KEY",
+                base_url=f"http://127.0.0.1:{server.server_port}/v1",
+            )
             service.config.llm = llm
             monkeypatch.setattr(settings_module, "supported_params", lambda _: ())
             with ThreadPoolExecutor(max_workers=2) as pool:
@@ -291,15 +376,27 @@ def test_thinking_levels_use_provider_model_metadata_before_presets(tmp_path, mo
             assert service.config.llm.reasoning_effort == "max"
             service.config.llm.model = "router-model"
             assert [value for value, _ in settings.reasoning_options()] == ["", "high", "xhigh"]
-            monkeypatch.setattr(settings_module, "supported_params", lambda _: ("reasoning_effort",))
+            monkeypatch.setattr(
+                settings_module, "supported_params", lambda _: ("reasoning_effort",)
+            )
             for model in ("no-metadata", "invalid", "unlisted"):
                 service.config.llm.model = model
-                assert [value for value, _ in settings.reasoning_options()] == ["", "low", "medium", "high"]
+                assert [value for value, _ in settings.reasoning_options()] == [
+                    "",
+                    "low",
+                    "medium",
+                    "high",
+                ]
             assert requests == ["/v1/models"]
             status = 503
             assert fetch_provider_models(llm, refresh=True) == []
             service.config.llm.model = "deep-model"
-            assert [value for value, _ in settings.reasoning_options()] == ["", "low", "medium", "high"]
+            assert [value for value, _ in settings.reasoning_options()] == [
+                "",
+                "low",
+                "medium",
+                "high",
+            ]
             assert requests == ["/v1/models"] * 2
         finally:
             server.shutdown()

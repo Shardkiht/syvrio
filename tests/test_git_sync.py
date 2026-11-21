@@ -56,6 +56,37 @@ def make_service(tmp_path: Path, *, auto_sync: bool = True) -> MemoryService:
     return service
 
 
+def test_vault_git_never_stages_or_summarizes_archived_data(tmp_path):
+    service = make_service(tmp_path)
+    repo, vault = service.repo, service.paths.vault_dir
+    store = SessionStore(service.paths)
+    session = store.create()
+    marker = "quartz archive only text"
+    store.append(session, {"type": "message", "role": "user", "content": marker})
+    repo.stage_all()
+    assert repo.commit("Save active session")
+    store.set_archived(session.id, True)
+    extra = vault / "archived" / "misc" / "credentials.txt"
+    extra.parent.mkdir()
+    extra.write_text(marker)
+    assert not repo.sensitive_paths()
+    repo.stage_all()
+    assert all(not path.startswith("archived/") for path in repo.staged_paths())
+    assert marker not in repo.staged_diff()
+    assert repo.commit("Archive conversation")
+    assert not repo.has_changes()
+
+    _git("add", "-f", "archived/misc/credentials.txt", cwd=vault)
+    (vault / "active.txt").write_text("active")
+    with pytest.raises(GitError, match="Archive changes"):
+        with repo.stage_checked():
+            pytest.fail("A managed commit cannot consume a manually staged archive")
+    assert _git("diff", "--cached", "--name-only", cwd=vault).stdout.splitlines() == [
+        "archived/misc/credentials.txt"
+    ]
+    assert marker not in repo.staged_diff()
+
+
 def add_remote(service: MemoryService, tmp_path: Path, *, upstream: bool = True) -> Path:
     remote = tmp_path / "remote.git"
     _git("init", "--bare", str(remote))
@@ -308,6 +339,10 @@ def test_symlinked_vault_path_is_recognized(tmp_path):
 
     assert service.repo.is_repo
     assert (real / ".git").exists()
+    fact = service.note("Synthetic reading preference", topic="general/preferences")
+    assert (real / "memories" / "general" / "preferences.md").is_file()
+    assert service.read_topic("preferences")["entries"][0]["id"] == fact.id
+    assert make_uninitialized_service(real).store.find(fact.id).text == fact.text
 
 
 def test_vault_inside_parent_repository_is_not_reused(tmp_path):
@@ -1036,7 +1071,8 @@ def test_git_config_load_validate_and_example(tmp_path):
     example = tmp_path / "example.toml"
     write_example_config(example, tmp_path / "vault")
     text = example.read_text(encoding="utf-8")
-    assert "[git]" in text and "sync_time" in text
+    assert "[git]" not in text
+    assert load_config(example).git.sync_time == "03:00"
     assert load_config(example).git.auto_sync is True
 
     from syvrio.infra.providers import write_config

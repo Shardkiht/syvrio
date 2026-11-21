@@ -1,4 +1,5 @@
 """Bind a proposed write to the facts actually reviewed in a later model request."""
+
 from __future__ import annotations
 
 import hashlib
@@ -54,26 +55,44 @@ class RecallContext:
         self.reviewed = None
 
     def run(
-        self, operation: str, payload: dict, query: str, write: Callable[[], dict],
-        *, target_id: str | None = None, include_pending: bool = False,
-        related_ids: tuple[str, ...] = (), additional_queries: tuple[str, ...] = (),
+        self,
+        operation: str,
+        payload: dict,
+        query: str,
+        write: Callable[[], dict],
+        *,
+        target_id: str | None = None,
+        include_pending: bool = False,
+        related_ids: tuple[str, ...] = (),
+        additional_queries: tuple[str, ...] = (),
     ) -> dict:
-        token = hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+        token = hashlib.sha256(
+            json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()
+        ).hexdigest()
         service = self.service
         with vault_transaction(service.paths):
             version = service.evidence_version(include_pending=include_pending)
             prior = self.reviewed
-            if (prior is not None and prior.operation == operation and prior.target_id == target_id
-                and prior.payload_hash == token and prior.version == version
-                and prior.generation == self.generation and prior.model_round < self.model_round):
+            if (
+                prior is not None
+                and prior.operation == operation
+                and prior.target_id == target_id
+                and prior.payload_hash == token
+                and prior.version == version
+                and prior.generation == self.generation
+                and prior.model_round < self.model_round
+            ):
                 self.reviewed = None
                 return write()
         self.reviewed = None
         # Network embeddings must not hold the Vault write lock. Register evidence only
         # if both the search and the directly referenced records came from the same version.
         for _ in range(3):
-            facts = [item for question in dict.fromkeys((query, *additional_queries))
-                     for item in service.recall(question)]
+            facts = [
+                item
+                for question in dict.fromkeys((query, *additional_queries))
+                for item in service.recall(question)
+            ]
             with vault_transaction(service.paths):
                 now = service.evidence_version(include_pending=include_pending)
                 if now != version:

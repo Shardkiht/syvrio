@@ -2,17 +2,16 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from itertools import count
 from threading import Event, RLock
 from typing import Callable
 
 from ..agent.context import CompactionPhase
 from ..agent.insertion import InsertionRequest, TurnInsertion
-from ..agent.runtime import AgentRuntime
-from ..errors import SessionProtectedError
+from ..agent.runtime import AgentRuntime, TurnSettings
+from ..errors import ConversationError, SessionProtectedError
 from ..infra.attachments import AttachmentBatch
 from ..infra.diagnostics import record_event
+from ..infra.secrets import redact_secrets
 from ..llm import ChatModelError, GenerationCancelled
 from ..memory.models import PendingItem
 from ..memory.turn_undo import TurnUndoError
@@ -26,12 +25,10 @@ from .contracts import (
     TurnResult,
     UndoOutcome,
 )
+from .scheduling import ConversationScheduler
+from .turns import ConversationTurn, TurnRegistry
 
-_TURN_IDS = count(1)
-
-
-def next_turn_id() -> int:
-    return next(_TURN_IDS)
+QueuedLine = ConversationTurn
 
 
 SAFE_COMMANDS = frozenset(
@@ -59,26 +56,27 @@ SAFE_COMMANDS = frozenset(
 )
 
 
-@dataclass
-class QueuedLine:
-    session_id: str
-    line: str
-    attachments: AttachmentBatch | None = None
-
-
 class ConversationUseCases:
-    """单一模型请求 + 全局 FIFO；请求与会话绑定，不依赖当前 Screen。"""
+    """Own the queue and active turn of one conversation, independent of its clients."""
 
-    def __init__(self, runtime: AgentRuntime, sessions: SessionStore) -> None:
+    def __init__(
+        self,
+        runtime: AgentRuntime,
+        sessions: SessionStore,
+        *,
+        registry: TurnRegistry | None = None,
+        settings_lock: RLock | None = None,
+        background_job: Callable[[str], str | None] | None = None,
+    ) -> None:
         self.runtime = runtime
         self.sessions = sessions
+        self._background_job = background_job
         self._lock = RLock()
         self._navigation_busy = False
-        self._ask_active = False
-        self._ask_in_flight: str | None = None
         self._ask_user_message_id: str | None = None
-        self._active_turn_id: int | None = None
+        self.active_turn: ConversationTurn | None = None
         self._cancel: Event | None = None
+        self._turn_settings: TurnSettings | None = None
         self._insertion: TurnInsertion | None = None
         self._undo_requested = False
         self._undo_target_session_id: str | None = None
@@ -89,12 +87,13 @@ class ConversationUseCases:
         self.pending_new = False
         self.pending_switch: str | None = None
         self.pending_command: QueuedLine | None = None
+        self.scheduling = ConversationScheduler(self, self._lock, registry, settings_lock)
 
     # ---------- 状态查询 ----------
 
     @property
     def busy(self) -> bool:
-        return self._navigation_busy or self._ask_active
+        return self._navigation_busy or self.ask_active
 
     @property
     def navigation_busy(self) -> bool:
@@ -102,15 +101,17 @@ class ConversationUseCases:
 
     @property
     def ask_active(self) -> bool:
-        return self._ask_active
+        return self.active_turn is not None
 
     @property
     def active_turn_id(self) -> int | None:
-        return self._active_turn_id
+        turn = self.active_turn
+        return turn.turn_id if turn else None
 
     @property
     def ask_in_flight(self) -> str | None:
-        return self._ask_in_flight
+        turn = self.active_turn
+        return turn.session_id if turn else None
 
     @property
     def ask_user_message_id(self) -> str | None:
@@ -187,7 +188,9 @@ class ConversationUseCases:
 
     # ---------- 提交路由 ----------
 
-    def submit_during_ask(self, line: str, attachments: AttachmentBatch | None = None) -> Submission:
+    def submit_during_ask(
+        self, line: str, attachments: AttachmentBatch | None = None
+    ) -> Submission:
         command = line.split(" ", 1)[0].lower() if line.startswith("/") else ""
         if command == "/undo":
             return self.request_undo()
@@ -283,19 +286,30 @@ class ConversationUseCases:
 
     def request_cancel(self) -> bool:
         with self._lock:
-            if not self._ask_active or self._cancel is None:
+            if not self.ask_active or self._cancel is None:
                 return False
             self._cancel.set()
             return True
 
-    def begin_turn(self, session_id: str | None = None, *, turn_id: int | None = None) -> Event:
+    def begin_turn(
+        self,
+        session_id: str | None = None,
+        *,
+        turn: ConversationTurn | None = None,
+        turn_id: int | None = None,
+    ) -> Event:
         token = Event()
         with self._lock:
-            self._active_turn_id = next_turn_id() if turn_id is None else turn_id
+            self._turn_settings = self.runtime.turn_settings()
+            if turn is None:
+                turn = (
+                    ConversationTurn(session_id, "")
+                    if turn_id is None
+                    else ConversationTurn(session_id, "", turn_id=turn_id)
+                )
+            self.active_turn = turn
             self._cancel = token
             self._insertion = TurnInsertion()
-            self._ask_active = True
-            self._ask_in_flight = session_id
             self._ask_user_message_id = None
             self._undo_requested = False
             self._undo_expected_message_id = None
@@ -309,7 +323,7 @@ class ConversationUseCases:
             return None
         with self._lock:
             if (
-                self._active_turn_id != turn_id
+                self.active_turn_id != turn_id
                 or self._insertion is None
                 or self._cancel is None
                 or self._cancel.is_set()
@@ -319,29 +333,31 @@ class ConversationUseCases:
 
     def bind_session(self, session: Session) -> None:
         with self._lock:
-            if self._ask_active and self._ask_in_flight is None:
-                self._ask_in_flight = session.id
+            if self.active_turn and self.active_turn.session_id is None:
+                self.active_turn.session_id = session.id
 
     def bind_session_id(self, session_id: str) -> None:
         with self._lock:
-            if self._ask_active and self._ask_in_flight is None:
-                self._ask_in_flight = session_id
+            if self.active_turn and self.active_turn.session_id is None:
+                self.active_turn.session_id = session_id
 
     def bind_user_message(self, message_id: str) -> None:
         with self._lock:
-            if self._ask_active:
+            if self.ask_active:
                 self._ask_user_message_id = message_id
 
     def request_undo(self, expected_message_id: str | None = None) -> Submission:
         with self._lock:
-            if not self._ask_active:
+            if not self.ask_active:
                 return Submission("undo_now")
             if expected_message_id is not None and expected_message_id != self._ask_user_message_id:
-                raise TurnUndoError("This message is no longer the latest. Refresh the conversation.")
+                raise TurnUndoError(
+                    "This message is no longer the latest. Refresh the conversation."
+                )
             if self._undo_requested:
                 return Submission("undo_busy", message="Undo already in progress.")
             self._undo_requested = True
-            self._undo_target_session_id = self._ask_in_flight
+            self._undo_target_session_id = self.ask_in_flight
             self._undo_target_message_id = self._ask_user_message_id
             self._undo_expected_message_id = expected_message_id
             if self._cancel is not None:
@@ -360,10 +376,14 @@ class ConversationUseCases:
         cancel: Event,
         session_id: str | None = None,
         attachments: AttachmentBatch | None = None,
+        *,
+        replace_message_id: str | None = None,
     ) -> TurnResult:
         bound = {"session_id": session_id, "user_message_id": None}
 
-        def on_session(session: Session) -> None:
+        def on_session(opened: Session) -> None:
+            nonlocal session
+            session = opened
             bound["session_id"] = session.id
             self.bind_session(session)
             if callbacks.on_session is not None:
@@ -388,8 +408,9 @@ class ConversationUseCases:
         error = None
         exception = None
         with self._lock:
-            turn_id = self._active_turn_id
+            turn_id = self.active_turn_id
             insertion = self._insertion
+            settings = self._turn_settings
         if turn_id is None:
             record_event("turn.unbound", RuntimeError("run_turn without begin_turn"))
             return TurnResult(status="failed", error="No active turn", turn_id=None)
@@ -402,7 +423,13 @@ class ConversationUseCases:
             reply = self.runtime.ask(
                 line,
                 session=session,
+                turn_settings=settings,
                 **({"attachments": attachments} if attachments else {}),
+                **(
+                    {"replace_message_id": replace_message_id}
+                    if replace_message_id is not None
+                    else {}
+                ),
                 on_session=on_session,
                 on_user_message=on_user_message,
                 on_event=callbacks.on_event,
@@ -420,17 +447,32 @@ class ConversationUseCases:
             status = "cancelled"
         except ChatModelError as exc:
             status = "failed"
-            error = str(exc)
+            error = redact_secrets(str(exc))[:2000]
             exception = exc
             record_event("chat.failed", exc)
         except Exception as exc:
             status = "failed"
-            error = f"Request failed: {exc}"
+            error = redact_secrets(f"Request failed: {exc}")[:2000]
             exception = exc
             record_event("chat.failed", exc)
         finally:
             if insertion is not None:
                 insertion.settle()
+
+        if status == "failed" and session is not None and bound["user_message_id"]:
+            try:
+                mid = bound["user_message_id"]
+                self.sessions.append(
+                    session,
+                    {
+                        "type": "turn_failed",
+                        "id": f"failure-{mid}",
+                        "message_id": mid,
+                        "content": error or "Request failed.",
+                    },
+                )
+            except OSError as exc:
+                record_event("chat.history_write_failed", exc)
 
         undo = None
         if self.undo_requested:
@@ -453,13 +495,12 @@ class ConversationUseCases:
         if turn_id is None:
             return False
         with self._lock:
-            if self._active_turn_id != turn_id:
+            if self.active_turn_id != turn_id:
                 return False
-            self._ask_active = False
-            self._ask_in_flight = None
             self._ask_user_message_id = None
-            self._active_turn_id = None
+            self.active_turn = None
             self._cancel = None
+            self._turn_settings = None
             if self._insertion is not None:
                 self._insertion.settle()
                 self._insertion = None
@@ -472,7 +513,7 @@ class ConversationUseCases:
         error: str | None = None,
     ) -> UndoOutcome:
         with self._lock:
-            target_sid = self._undo_target_session_id or session_id or self._ask_in_flight
+            target_sid = self._undo_target_session_id or session_id or self.ask_in_flight
             target_mid = user_message_id or self._undo_target_message_id
             expected = self._undo_expected_message_id
         restored: str | None = None
@@ -483,7 +524,9 @@ class ConversationUseCases:
                 # 始终从磁盘加载目标会话：后台 Worker 的写入可能晚于切回时
                 # 载入的内存对象，直接用当前对象会看不到刚追加的用户消息。
                 target_session = self.sessions.load(target_sid)
-                restored = self.runtime.undo(target_session, message_id=target_mid, expected_latest=expected)
+                restored = self.runtime.undo(
+                    target_session, message_id=target_mid, expected_latest=expected
+                )
             except Exception as exc:
                 failed = True
                 record_event("undo.failed", exc)
@@ -508,9 +551,25 @@ class ConversationUseCases:
         )
 
     def undo_current(self, expected_message_id: str | None = None) -> str | None:
-        return self.runtime.undo(expected_latest=expected_message_id) if self.runtime.has_session else None
+        return (
+            self.runtime.undo(expected_latest=expected_message_id)
+            if self.runtime.has_session
+            else None
+        )
 
     # ---------- 会话生命周期 ----------
+
+    def navigate(self, session_id: str | None) -> SwitchResult:
+        with self.scheduling.operation("new" if session_id is None else "switch"):
+            if session_id is not None and not self.session_exists(session_id):
+                raise ConversationError("session_not_found", "Session not found.")
+            try:
+                return self.switch(session_id)
+            except (KeyError, OSError, ValueError) as exc:
+                record_event("web.switch_failed", exc)
+                raise ConversationError(
+                    "session_unreadable", "Session could not be restored."
+                ) from exc
 
     def switch(self, session_id: str | None) -> SwitchResult:
         stats: dict = {}
@@ -531,16 +590,40 @@ class ConversationUseCases:
         else:
             self.sessions.rename(self.sessions.load(session_id), title)
 
-    def delete_guard(self, session_id: str) -> tuple[bool, str | None]:
-        """Keep live sessions and the original evidence of any saved fact."""
-        if self.runtime.has_session and session_id == self.runtime.current.id:
-            return False, "Cannot delete the current session; use /new first."
+    def archive_guard(self, session_id: str) -> tuple[bool, str | None]:
         if (
             (self.pending_command and self.pending_command.session_id == session_id)
-            or session_id == self._ask_in_flight
+            or self.scheduling.session_busy(session_id)
             or any(item.session_id == session_id for item in self.queue)
         ):
             return False, "Session is generating or has queued tasks; try again later."
+        if self._background_job and (job := self._background_job(session_id)):
+            return (
+                False,
+                f"A background {job} task is running for this conversation. Try again when it finishes.",
+            )
+        return True, None
+
+    def archive_session(self, session_id: str) -> None:
+        self.set_archived(session_id, True)
+
+    def set_archived(self, session_id: str, archived: bool) -> None:
+        with self._lock, self.runtime.service.write_lock:
+            allowed, reason = self.archive_guard(session_id)
+            if not allowed:
+                raise SessionProtectedError(reason)
+            self.sessions.set_archived(session_id, archived)
+            if archived and self.current_id == session_id:
+                # The transcript has moved. Closing it would request distillation.
+                self.runtime.start()
+                self.scheduling.history_changed()
+
+    def delete_guard(self, session_id: str) -> tuple[bool, str | None]:
+        if self.current_id == session_id:
+            return False, "Archive the conversation before permanently deleting it."
+        allowed, reason = self.archive_guard(session_id)
+        if not allowed:
+            return False, reason
         return self._source_guard(session_id)
 
     def _source_guard(self, session_id: str) -> tuple[bool, str | None]:
@@ -550,12 +633,17 @@ class ConversationUseCases:
             record_event("session.sources_unavailable", exc)
             return False, "Could not verify saved memory sources. The session was kept."
         if reference:
-            return False, f"Saved memory {reference} cites this session. Its original messages must be kept."
+            return (
+                False,
+                f"Saved memory {reference} cites this session. Its original messages must be kept.",
+            )
         return True, None
 
-    def deletion_preview(self, session_id: str) -> tuple[list[PendingItem], str]:
+    def deletion_preview(
+        self, session_id: str, *, archived: bool = False
+    ) -> tuple[list[PendingItem], str]:
         with self.runtime.service.write_lock:
-            if not self.sessions.exists(session_id):
+            if not self.sessions.exists(session_id, archived=archived):
                 raise KeyError(session_id)
             allowed, reason = self._source_guard(session_id)
             if not allowed:
@@ -564,13 +652,17 @@ class ConversationUseCases:
 
     def delete_session(self, session_id: str, pending_revision: str = "") -> bool:
         with self.runtime.service.write_lock:
-            if not self.sessions.exists(session_id):
+            if not self.sessions.exists(session_id, archived=True):
+                if self.sessions.exists(session_id):
+                    raise SessionProtectedError(
+                        "Archive the conversation before permanently deleting it."
+                    )
                 return False
             allowed, reason = self.delete_guard(session_id)
             if not allowed:
                 raise SessionProtectedError(reason)
             with self.runtime.service.queue.removing_with_session(session_id, pending_revision):
-                return self.sessions.delete(session_id)
+                return self.sessions.delete(session_id, archived=True)
 
     def session_exists(self, session_id: str) -> bool:
         return self.sessions.exists(session_id)
@@ -601,7 +693,13 @@ class ConversationUseCases:
         return self.runtime.context_usage()
 
     def estimate_usage(self, session: Session) -> int:
-        return self.runtime.context.estimate_usage(session, self.runtime._system_prompt())
+        return self.runtime.estimate_usage(session)
+
+    def context_limit(self, session_id: str | None) -> int:
+        with self._lock:
+            if session_id and self.ask_in_flight == session_id and self._turn_settings:
+                return self._turn_settings.context.config.context_window
+        return self.runtime.turn_settings().context.config.context_window
 
     def compact_threshold(self) -> float:
         return self.runtime.config.compact_threshold

@@ -59,7 +59,9 @@ def test_import_is_preview_by_default_and_reports_remaining_chunks(service, tmp_
     monkeypatch.setattr(service, "prepare_import", prepare)
     sessions = SessionStore(service.paths)
     session = sessions.create()
-    sessions.append(session, {"type": "message", "role": "user", "content": "请导入附件", "id": "m-file"})
+    sessions.append(
+        session, {"type": "message", "role": "user", "content": "请导入附件", "id": "m-file"}
+    )
     evidence = RecallContext(service)
     handler = file_handlers(service, [path], evidence=evidence, session=session)["import_file"]
     args = {"path": str(path)}

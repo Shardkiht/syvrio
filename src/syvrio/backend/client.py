@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from contextlib import ExitStack
 from dataclasses import asdict
 from pathlib import Path
@@ -22,8 +23,12 @@ class ResidentClient:
         self.view = uuid4().hex
 
     def _http(self):
-        return httpx.Client(base_url=self.base, trust_env=False, timeout=httpx.Timeout(None, connect=5),
-                            headers={"X-Syvrio-Token": self.token, "X-Syvrio-View": self.view})
+        return httpx.Client(
+            base_url=self.base,
+            trust_env=False,
+            timeout=httpx.Timeout(None, connect=5),
+            headers={"X-Syvrio-Token": self.token, "X-Syvrio-View": self.view},
+        )
 
     @staticmethod
     def _check(response):
@@ -46,18 +51,40 @@ class ResidentClient:
     def call(self, name: str, **kwargs):
         return self.request("POST", f"/api/resident/{name}", json=kwargs)
 
-    def submit(self, message: str, session_id: str | None, files: tuple[Path, ...] = ()):
+    def submit(
+        self,
+        message: str,
+        session_id: str | None,
+        files: tuple[Path, ...] = (),
+        *,
+        submission_id: str | None = None,
+    ):
+        delivery = submission_id or uuid4().hex
+        try:
+            return self._submit(message, session_id, files, delivery)
+        except (httpx.TransportError, json.JSONDecodeError):
+            time.sleep(0.35)
+            return self._submit(message, session_id, files, delivery)
+
+    def _submit(self, message: str, session_id: str | None, files: tuple[Path, ...], delivery: str):
+        fields = {"message": message, "submission_id": delivery}
+        if session_id:
+            fields["session_id"] = session_id
         if not files:
-            return self.request("POST", "/api/chat?receipt=1", json={"message": message, "session_id": session_id})
+            return self.request("POST", "/api/chat?receipt=1", json=fields)
         with ExitStack() as opened:
-            uploads = [("files", (path.name, opened.enter_context(path.open("rb")))) for path in files]
-            fields = {"message": message}
-            if session_id:
-                fields["session_id"] = session_id
-            return self.request("POST", "/api/chat/attachments?receipt=1", data=fields, files=uploads)
+            uploads = [
+                ("files", (path.name, opened.enter_context(path.open("rb")))) for path in files
+            ]
+            return self.request(
+                "POST", "/api/chat/attachments?receipt=1", data=fields, files=uploads
+            )
 
     def events(self, turn_id: int, after: int = 0):
-        with self._http() as client, client.stream("GET", f"/api/chat/turns/{turn_id}", params={"after": after}) as stream:
+        with (
+            self._http() as client,
+            client.stream("GET", f"/api/chat/turns/{turn_id}", params={"after": after}) as stream,
+        ):
             if not stream.is_success:
                 stream.read()
                 self._check(stream)
@@ -68,8 +95,12 @@ class ResidentClient:
     async def aevents(self, turn_id: int, after: int = 0):
         headers = {"X-Syvrio-View": self.view, "X-Syvrio-Token": self.token}
         try:
-            async with httpx.AsyncClient(base_url=self.base, trust_env=False, headers=headers, timeout=None) as client:
-                async with client.stream("GET", f"/api/chat/turns/{turn_id}", params={"after": after}) as stream:
+            async with httpx.AsyncClient(
+                base_url=self.base, trust_env=False, headers=headers, timeout=None
+            ) as client:
+                async with client.stream(
+                    "GET", f"/api/chat/turns/{turn_id}", params={"after": after}
+                ) as stream:
                     if not stream.is_success:
                         await stream.aread()
                         self._check(stream)
@@ -80,33 +111,52 @@ class ResidentClient:
             raise OSError("Connection to the resident was interrupted.") from exc
 
     def memorize(self, draft: MemoryDraft):
-        return Entry.model_validate(self.call("memorize", draft=draft.model_dump(exclude_none=True)))
+        return Entry.model_validate(
+            self.call("memorize", draft=draft.model_dump(exclude_none=True))
+        )
 
     def import_text(self, text, source, dry_run, *, extractor=None):
         if extractor is not None:
             raise ValueError("Document extraction is performed by the resident backend.")
         data = self.call("import_text", text=text, source=source, dry_run=dry_run)
-        return MemorizeResult([Entry.model_validate(e) for e in data["admitted"]],
-                              [PendingItem.model_validate(e) for e in data["queued"]], data["duplicates"], data["blocked"])
+        return MemorizeResult(
+            [Entry.model_validate(e) for e in data["admitted"]],
+            [PendingItem.model_validate(e) for e in data["queued"]],
+            data["duplicates"],
+            data["blocked"],
+        )
 
-    def recall(self, query: str, limit: int = 7, **filters):
-        return [RecallEntry.model_validate(item) for item in self.call("recall", query=query, limit=limit, **filters)]
+    def recall(self, query: str, limit: int | None = None, **filters):
+        return [
+            RecallEntry.model_validate(item)
+            for item in self.call("recall", query=query, limit=limit, **filters)
+        ]
 
     def read_topic(self, topic):
         return self.call("read_topic", topic=topic)
 
     def correct(self, entry_id, draft):
-        return Entry.model_validate(self.call("correct", entry_id=entry_id, draft=draft.model_dump(exclude_none=True)))
+        return Entry.model_validate(
+            self.call("correct", entry_id=entry_id, draft=draft.model_dump(exclude_none=True))
+        )
 
     def transition(self, entry_id, draft, previous_valid_to=None):
-        return Entry.model_validate(self.call("transition", entry_id=entry_id, draft=draft.model_dump(exclude_none=True),
-                                             previous_valid_to=previous_valid_to))
+        return Entry.model_validate(
+            self.call(
+                "transition",
+                entry_id=entry_id,
+                draft=draft.model_dump(exclude_none=True),
+                previous_valid_to=previous_valid_to,
+            )
+        )
 
     def deprecate(self, entry_id):
         return Entry.model_validate(self.call("deprecate", entry_id=entry_id))
 
     def review_inference(self, item_id, action, text=None):
-        return Inference.model_validate(self.call("review_inference", inference_id=item_id, action=action, text=text))
+        return Inference.model_validate(
+            self.call("review_inference", inference_id=item_id, action=action, text=text)
+        )
 
     def list_inferences(self):
         return [Inference.model_validate(i) for i in self.call("inferences")]

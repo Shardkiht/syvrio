@@ -7,6 +7,7 @@ import { ArrowUpIcon, PlusIcon, StopIcon } from './Icons';
 
 /** Starter commands shown under the home composer, in display order. */
 const STARTER_COMMANDS = ['model', 'status', 'help', 'sessions'];
+const compactTokens = new Intl.NumberFormat('en', { notation: 'compact' });
 
 const COMPACTION_LABEL = {
   running: 'Compressing context…',
@@ -18,11 +19,14 @@ function ContextMeter({ usage, compaction }: { usage: ContextUsage | null; compa
   const [open, setOpen] = useState(false);
   const ratio = usage && usage.limit > 0 ? usage.used / usage.limit : 0;
   const percent = Math.min(100, ratio * 100);
-  const label = usage ? (percent > 0 && percent < 1 ? '<1%' : `${Math.floor(percent)}%`) : '—';
+  const share = percent > 0 && percent < 1 ? '<1%' : `${Math.floor(percent)}%`;
+  const parts = usage ? compactTokens.formatToParts(usage.used) : [];
+  const amount = usage ? parts.filter(part => part.type !== 'compact').map(part => part.value).join('') : '—';
+  const unit = parts.find(part => part.type === 'compact')?.value.toLowerCase();
   const nearLimit = usage !== null && ratio >= usage.compact_threshold;
   const waveCeiling = compaction === 'running' ? 99 : 85;
   const detail = usage
-    ? `${usage.used.toLocaleString()} / ${usage.limit.toLocaleString()} tokens`
+    ? `${usage.used.toLocaleString()} / ${usage.limit.toLocaleString()} tokens (${share})`
     : 'Estimate unavailable';
   return (
     <div className={`context-meter${open ? ' expanded' : ''}`} data-compaction={compaction ?? undefined}>
@@ -39,7 +43,12 @@ function ContextMeter({ usage, compaction }: { usage: ContextUsage | null; compa
           event.stopPropagation();
           setOpen(false);
         }}>
-        <span className="context-value">{label}</span>
+        <svg className="context-ring" viewBox="0 0 32 32" fill="none" aria-hidden="true" focusable="false">
+          <circle cx="16" cy="16" r="15" stroke="currentColor" strokeWidth="2" />
+        </svg>
+        <span className="context-value" aria-hidden="true">
+          {amount}{unit && <small>{unit}</small>}
+        </span>
       </button>
       <div className="context-detail" aria-hidden="true">
         <strong>{compaction ? COMPACTION_LABEL[compaction] : 'Context estimate'}</strong>
@@ -51,8 +60,14 @@ function ContextMeter({ usage, compaction }: { usage: ContextUsage | null; compa
   );
 }
 
+export type ComposerDraft = { text: string; files: File[] };
+
 export function Composer({
+  sessionId = null,
+  drafts,
   busy,
+  checkingSelection = false,
+  onSendAfterSelection,
   progress,
   contextUsage = null,
   compaction = null,
@@ -70,7 +85,11 @@ export function Composer({
   focusSignal = 0,
   hero = false,
 }: {
+  sessionId?: string | null;
+  drafts?: Map<string | null, ComposerDraft>;
   busy: boolean;
+  checkingSelection?: boolean;
+  onSendAfterSelection?: (text: string, files: readonly File[], handedOff: () => void) => Promise<void>;
   progress: string;
   contextUsage?: ContextUsage | null;
   compaction?: CompactionPhase | null;
@@ -89,12 +108,24 @@ export function Composer({
   /** Centred home layout: narrower card plus a row of starter commands. */
   hero?: boolean;
 }) {
-  const [value, setValue] = useState('');
-  const [files, setFiles] = useState<File[]>([]);
+  const [value, setValue] = useState(() => drafts?.get(sessionId)?.text ?? '');
+  const [files, setFiles] = useState<File[]>(() => drafts?.get(sessionId)?.files ?? []);
+  const previousId = useRef(sessionId);
+  useLayoutEffect(() => {
+    if (!drafts) return;
+    // The same composer stays mounted when its first send gets a session ID,
+    // or when an archive moves its unfinished input back to the empty view.
+    if (previousId.current !== sessionId) drafts.delete(previousId.current);
+    previousId.current = sessionId;
+    if (value || files.length) drafts.set(sessionId, { text: value, files });
+    else drafts.delete(sessionId);
+  }, [drafts, files, sessionId, value]);
   const [fileError, setFileError] = useState('');
   const localPicker = useRef<HTMLInputElement>(null);
   const picker = pickerRef ?? localPicker;
   const [inserting, setInserting] = useState<string | null>(null);
+  const deferredSend = useRef(false);
+  const [waitingToSend, setWaitingToSend] = useState(false);
   const [index, setIndex] = useState(0);
   const [dismissed, setDismissed] = useState(false);
   const ref = useRef<HTMLTextAreaElement>(null);
@@ -156,9 +187,28 @@ export function Composer({
   };
 
   const submit = () => {
+    if (deferredSend.current) return;
     const text = value.trim() || (files.length ? 'Analyze the attached files.' : '');
     if (!text) return;
     if (text === inserting) return;
+    if (checkingSelection) {
+      if (!onSendAfterSelection || isCommandLine(text)) return;
+      deferredSend.current = true;
+      setWaitingToSend(true);
+      let handedOff = false;
+      const release = () => { deferredSend.current = false; setWaitingToSend(false); };
+      void onSendAfterSelection(text, files, () => {
+        handedOff = true;
+        drafts?.delete(sessionId);
+        setValue('');
+        setFiles([]);
+        setFileError('');
+        release();
+      }).finally(() => {
+        if (!handedOff) release(); // A failed or superseded bind leaves this draft intact.
+      });
+      return;
+    }
     if (files.length && !isCommandLine(text)) {
       onSend(text, files);
       setFiles([]);
@@ -170,6 +220,7 @@ export function Composer({
   };
 
   const insert = async () => {
+    if (checkingSelection) return;
     if (files.length) {
       setFileError('Press Enter to send these attachments with the next message.');
       return;
@@ -187,6 +238,11 @@ export function Composer({
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     // A Chinese/Japanese IME composition must never trigger shortcuts.
     if (isComposing(event)) return;
+    if (checkingSelection && event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      if (!event.ctrlKey && !event.metaKey) submit();
+      return;
+    }
     if (event.key === 'Enter' && event.ctrlKey && !event.shiftKey && !isCommandLine(value)) {
       event.preventDefault();
       if (busy) void insert();
@@ -244,6 +300,9 @@ export function Composer({
     ref.current?.focus();
   };
 
+  const hasDraft = Boolean(value.trim() || files.length);
+  const commandDraft = isCommandLine(value);
+
   return (
     <div className={`composer${hero ? ' composer-hero' : ''}`}>
       {busy && <div className="progress" data-testid="progress">{progress || 'Working...'}</div>}
@@ -254,7 +313,7 @@ export function Composer({
             {queued.map((text, index) => (
               <li key={index}>
                 <span title={text}>{text}</span>
-                <button type="button" aria-label={`Remove queued message ${index + 1}`}
+                <button type="button" disabled={checkingSelection} aria-label={`Remove queued message ${index + 1}`}
                   onClick={() => onRemoveQueued?.(index)}>×</button>
               </li>
             ))}
@@ -269,7 +328,7 @@ export function Composer({
           onPick={applyCompletion}
         />
         <div className="composer-card">
-          <input ref={picker} type="file" multiple hidden aria-label="Select attachments"
+          <input ref={picker} type="file" multiple hidden disabled={waitingToSend} aria-label="Select attachments"
             accept=".md,.markdown,.txt,.text,.log,.json,.jsonl,.ndjson,.csv,.tsv,.yaml,.yml,.xml,.pdf,.docx,.xlsx,.xls,.pptx,.html,.htm,.epub,.msg,.ipynb,.png,.jpg,.jpeg,.webp,.gif"
             onChange={event => {
               const next = [...files, ...Array.from(event.target.files ?? [])];
@@ -281,13 +340,14 @@ export function Composer({
             }} />
           {files.length > 0 && <div className="attachment-list" aria-label="Attachments">
             {files.map((file, i) => <button type="button" key={i}
-              aria-label={`Remove ${file.name}`}
+              disabled={waitingToSend} aria-label={`Remove ${file.name}`}
               onClick={() => setFiles(files.filter((_, index) => index !== i))}>{file.name} ×</button>)}
           </div>}
           {fileError && <div role="alert">{fileError}</div>}
           <textarea
             ref={ref}
             value={value}
+            readOnly={waitingToSend}
             rows={3}
             aria-label="Message"
             data-testid="composer-input"
@@ -301,42 +361,31 @@ export function Composer({
           />
           <div className="composer-bar">
             <button type="button" className="icon-button composer-attach"
-              aria-label="Attach files" title="Attach files" onClick={openFiles ?? (() => picker.current?.click())}>
+              disabled={waitingToSend} aria-label="Attach files" title="Attach files" onClick={openFiles ?? (() => picker.current?.click())}>
               <PlusIcon size={18} />
             </button>
             <div className="composer-actions">
-              {busy && isCommandLine(value) && (
-                <button type="button" className="send run-command" onClick={submit}>Run</button>
+              {busy && commandDraft && (
+                <button type="button" className="composer-secondary" disabled={checkingSelection} onClick={submit}>Run</button>
+              )}
+              {busy && hasDraft && !commandDraft && (
+                <>
+                  {onInsert && !files.length && (
+                    <button type="button" className="composer-secondary" onClick={() => void insert()}
+                      title="Insert at the next safe boundary (Ctrl+Enter)"
+                      disabled={checkingSelection || inserting !== null}>{inserting ? 'Waiting…' : 'Insert'}</button>
+                  )}
+                  <button type="button" className="composer-secondary" onClick={submit}
+                    disabled={checkingSelection || inserting === value.trim()} aria-label="Queue message"
+                    title="Send after the current reply (Enter)">Queue</button>
+                </>
               )}
               <ContextMeter usage={contextUsage} compaction={compaction} />
-              {busy ? (
-                <>
-                  {!isCommandLine(value) && (
-                    <>
-                      <button type="button" className="send run-command" onClick={() => void insert()}
-                        title="Insert at the next safe boundary (Ctrl+Enter)"
-                        disabled={!value.trim() || inserting !== null}>{inserting ? 'Waiting…' : 'Insert'}</button>
-                      <button type="button" className="send" onClick={submit}
-                        disabled={(!value.trim() && !files.length) || inserting === value.trim()} aria-label="Queue message">
-                        <ArrowUpIcon size={23} />
-                      </button>
-                    </>
-                  )}
-                  <button type="button" className="stop" onClick={onStop} aria-label="Stop">
-                    <StopIcon size={20} />
-                  </button>
-                </>
-              ) : (
-                <button
-                  type="button"
-                  className="send"
-                  onClick={submit}
-                  disabled={!value.trim() && !files.length}
-                  aria-label="Send"
-                >
-                  <ArrowUpIcon size={23} />
-                </button>
-              )}
+              <button type="button" className={busy ? 'stop' : 'send'} onClick={busy ? onStop : submit}
+                disabled={waitingToSend || (checkingSelection && (!onSendAfterSelection || busy || commandDraft)) || (!busy && !hasDraft)}
+                aria-label={busy ? 'Stop' : 'Send'} title={busy ? 'Stop generating' : 'Send'}>
+                {busy ? <StopIcon size={20} /> : <ArrowUpIcon size={23} />}
+              </button>
             </div>
           </div>
         </div>
@@ -350,7 +399,7 @@ export function Composer({
           ))}
         </div>
       )}
-      <div className="composer-hint">Enter to send or queue · Ctrl+Enter to insert · Shift+Enter for a new line</div>
+      <div className="composer-hint">{waitingToSend ? 'Waiting to send…' : checkingSelection ? 'Confirming current chat…' : 'Enter to send or queue · Ctrl+Enter to insert · Shift+Enter for a new line'}</div>
     </div>
   );
 }

@@ -94,6 +94,7 @@ def isolate_user_config(monkeypatch, tmp_path, tmp_path_factory):
     起因：源码回退（突变验证）等场景下，写配置可能落到 default_config_path()，
     曾把 pytest 临时 vault 写进用户真实 config.toml。环境变量是最后一道闸。
     """
+    (tmp_path / "config.toml").touch()
     monkeypatch.setenv("SYVRIO_CONFIG", str(tmp_path / "config.toml"))
     monkeypatch.setenv("SYVRIO_VAULT", str(tmp_path / "default-vault"))
     monkeypatch.setenv("SYVRIO_RUNTIME", str(tmp_path_factory.mktemp("runtime")))
@@ -130,6 +131,52 @@ def config(tmp_path):
 @pytest.fixture
 def service(config):
     return MemoryService(config)
+
+
+@pytest.fixture
+def resident_backend(service):
+    """Run the terminal's normal HTTP client against a temporary resident."""
+    import secrets
+    import socket
+    import threading
+    import time
+    from uuid import uuid4
+
+    import uvicorn
+
+    from syvrio.app.web.backend import WebBackend
+    from syvrio.app.web.server import create_app
+    from syvrio.backend.client import ResidentClient
+
+    service.config.search.auto_start = False
+    service.config.git.auto_sync = False
+    service.init_vault()
+    owner = WebBackend(service=service)
+    token = secrets.token_urlsafe(24)
+    api = create_app(owner, resident_token=token)
+    server = uvicorn.Server(uvicorn.Config(api, access_log=False, log_level="error"))
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        sock.listen()
+        base = f"http://127.0.0.1:{sock.getsockname()[1]}"
+
+        class Client(ResidentClient):
+            def __init__(self):
+                self.config, self.paths = service.config, service.paths
+                self.base, self.token, self.view = base, token, uuid4().hex
+
+        thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True)
+        thread.start()
+        try:
+            deadline = time.monotonic() + 10
+            while not server.started and thread.is_alive() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert server.started
+            yield owner, Client()
+        finally:
+            server.should_exit = True
+            thread.join(15)
+            assert not thread.is_alive()
 
 
 def extractor(*candidates: Candidate) -> StaticExtractor:

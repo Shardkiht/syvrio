@@ -14,6 +14,7 @@ from textual.widgets import Button, OptionList, Static, TextArea
 from textual.widgets.option_list import Option
 
 from ..memory.models import PendingItem
+from .chat_widgets import PickScreen
 
 
 def _option(item: PendingItem) -> Option:
@@ -35,11 +36,18 @@ class PendingScreen(ModalScreen):
     ]
 
     def __init__(
-        self, items: list[PendingItem], on_action: Callable[[str, str, str | None], None]
+        self,
+        items: list[PendingItem],
+        on_action: Callable[[str, str, str | None], None],
+        *,
+        edit_id: str | None = None,
+        edit_text: str | None = None,
     ) -> None:
         super().__init__()
         self._items = items
         self._on_action = on_action
+        self._edit_id = edit_id
+        self._edit_text = edit_text
         self._editing = False
         self._busy = False
 
@@ -72,6 +80,15 @@ class PendingScreen(ModalScreen):
 
     def on_mount(self) -> None:
         self.set_items(self._items)
+        if self._edit_id:
+            self.open_edit(self._edit_id, self._edit_text)
+
+    def open_edit(self, item_id: str, text: str | None) -> None:
+        listing = self.query_one(OptionList)
+        listing.highlighted = listing.get_option_index(item_id)
+        self.action_edit()
+        if text is not None:
+            self.query_one(TextArea).load_text(text)
 
     def on_resize(self) -> None:
         narrow = self.size.width < 92
@@ -100,7 +117,9 @@ class PendingScreen(ModalScreen):
     def _show_detail(self) -> None:
         item = self._current()
         self.query_one("#pending-topic", Static).update(item.topic)
-        self.query_one("#pending-reason", Static).update("\n".join(filter(None, (item.question, ", ".join(item.related_ids)))))
+        self.query_one("#pending-reason", Static).update(
+            "\n".join(filter(None, (item.question, ", ".join(item.related_ids))))
+        )
         self.query_one("#pending-text", Static).update(item.text)
         self.query_one("#pending-detail-body", VerticalScroll).scroll_home(
             animate=False, immediate=True
@@ -136,10 +155,19 @@ class PendingScreen(ModalScreen):
     def action_save(self) -> None:
         if self._editing and not self._busy:
             draft = self.query_one(TextArea).text.strip()
-            if draft:
-                self._submit("approve", draft)
-            else:
+            if not draft:
                 self.show_error("Enter text before saving.")
+            elif draft == self._current().text.strip():
+                self.app.push_screen(
+                    PickScreen(
+                        "No changes. Save the original text to memory?",
+                        [("Back to editing", False), ("Save unchanged", True)],
+                        lambda save: save and self._submit("approve", draft),
+                        detail=draft,
+                    )
+                )
+            else:
+                self._submit("approve", draft)
 
     def _submit(self, action: str, text: str | None = None) -> None:
         item = self._current()
