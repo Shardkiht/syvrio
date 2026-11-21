@@ -155,6 +155,8 @@ def test_escape_cancels_questionary_prompt():
 
 
 def test_init_note_recall_commit(tmp_path):
+    from syvrio.infra.config import load_config, write_config
+
     config = tmp_path / "syvrio.toml"
     vault = tmp_path / "vault"
 
@@ -162,6 +164,11 @@ def test_init_note_recall_commit(tmp_path):
     assert result.exit_code == 0, result.output
     assert config.exists()
     assert (vault / ".git").is_dir()
+
+    # The manual commit must own this change even when the daily sync is due.
+    settings = load_config(config)
+    settings.git.auto_sync = False
+    write_config(config, settings)
 
     result = invoke(
         [
