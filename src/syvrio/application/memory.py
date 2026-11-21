@@ -52,7 +52,9 @@ class MemoryUseCases:
         feedback = {
             "confirm": "Confirmed.",
             "reject": "Rejected.",
-            "correct": "Edit saved as a new pending hypothesis.",
+            "correct": "Edit saved as a confirmed inference."
+            if updated.id != item_id
+            else "No changes.",
         }.get(action)
         return InferenceReview(
             items,
@@ -186,7 +188,9 @@ class MemoryUseCases:
             return ProfileSnapshot(body="Run /dream to generate a profile.", status="Not generated")
         return ProfileSnapshot(
             body=summary.text,
-            status=f"Last generated {summary.generated_at}" if summary.generated_at else "Generated profile",
+            status=f"Last generated {summary.generated_at}"
+            if summary.generated_at
+            else "Generated profile",
             generated_at=summary.generated_at,
             fact_count=summary.fact_count,
             unique_count=summary.unique_count,

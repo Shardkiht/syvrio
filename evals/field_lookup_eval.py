@@ -59,7 +59,10 @@ def seed(vault: Path) -> None:
             ]
         )
         records = [
-            render_record(Core(id=ident, status="active", text=text), extensions=[("recorded_at", "2024-01-01T00:00:00Z")])
+            render_record(
+                Core(id=ident, status="active", text=text),
+                extensions=[("recorded_at", "2024-01-01T00:00:00Z")],
+            )
             for ident, text in rows
         ]
         (topics / f"{group:02}.md").write_text(

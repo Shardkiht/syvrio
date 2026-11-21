@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SettingsPanel } from './SettingsPanel';
 import type { CommandResponse } from '../types';
@@ -18,13 +18,14 @@ const commandResult = (patch: Partial<CommandResponse>): CommandResponse => ({
 });
 
 /** Serve the four read commands plus provider actions; record every line. */
-function installFetch() {
+function installFetch(initialBudget = 100000) {
   const lines: string[] = [];
   vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
     const method = init?.method ?? 'GET';
     if (url.startsWith('/api/settings/models?')) {
-      const query = new URLSearchParams(url.split('?')[1]).get('q') ?? '';
-      lines.push('search:' + query);
+      const params = new URLSearchParams(url.split('?')[1]);
+      const query = params.get('q') ?? '';
+      lines.push((params.get('refresh') === 'true' ? 'refresh:' : 'search:') + query);
       const rows = [
         { provider: 'deepseek', model: 'deepseek-flash', label: 'deepseek/deepseek-flash', current: true },
         { provider: 'deepseek', model: 'deepseek-pro', label: 'deepseek/deepseek-pro', current: false },
@@ -50,7 +51,7 @@ function installFetch() {
       }
       if (body.line === '/context') {
         return json(commandResult({
-          command: 'context', data: { current: 100000, options: [100000, 200000, 400000, 600000] },
+          command: 'context', data: { current: initialBudget, options: [100000, 200000, 400000, 600000] },
         }));
       }
       return json(commandResult({ command: 'model', intent: 'model', message: `applied ${body.line}` }));
@@ -63,18 +64,23 @@ function installFetch() {
 afterEach(() => vi.unstubAllGlobals());
 
 describe('settings panel', () => {
-  it('searches the full catalog beside refresh without submitting typed model IDs', async () => {
+  it('searches and refreshes the filtered catalog without submitting typed model IDs', async () => {
     const lines = installFetch();
     render(<SettingsPanel health={HEALTH} theme="auto" onTheme={() => {}} onClose={() => {}} onChanged={() => {}} />);
     await screen.findByTestId('model-deepseek-deepseek-pro');
     const search = screen.getByRole('searchbox', { name: 'Search models by name' });
-    expect(search.previousElementSibling).toBe(screen.getByRole('button', { name: 'Refresh model list' }));
+    const refresh = screen.getByRole('button', { name: 'Refresh model list' });
+    expect(refresh.title).toBe('Refresh model list');
+    expect(search.compareDocumentPosition(refresh) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.queryByText('Switch by model ID')).toBeNull();
     expect(screen.queryByRole('button', { name: 'Apply' })).toBeNull();
     fireEvent.change(search, { target: { value: '  PRO  ' } });
     expect(screen.queryByTestId('model-deepseek-deepseek-flash')).toBeNull();
     expect(await screen.findByTestId('model-deepseek-deepseek-pro')).toBeTruthy();
     expect(lines).toContain('search:PRO');
+    fireEvent.click(refresh);
+    await waitFor(() => expect(lines).toContain('refresh:PRO'));
+    expect((search as HTMLInputElement).value).toBe('  PRO  ');
     fireEvent.change(search, { target: { value: 'distant' } });
     expect(await screen.findByTestId('model-other-distant')).toBeTruthy();
     fireEvent.change(search, { target: { value: 'unknown-model' } });
@@ -86,58 +92,65 @@ describe('settings panel', () => {
     await waitFor(() => expect(lines).toContain('/model deepseek/deepseek-flash'));
   });
 
-  it('lists models and switches through the shared /model command', async () => {
+  it('lists models and switches through /model during a reply', async () => {
     const lines = installFetch();
     const onChanged = vi.fn();
     render(
-      <SettingsPanel health={HEALTH} theme="auto" onTheme={() => {}} onClose={() => {}} onChanged={onChanged} />,
+      <SettingsPanel health={{ ...HEALTH, busy: true }} theme="auto" onTheme={() => {}} onClose={() => {}} onChanged={onChanged} />,
     );
 
     await waitFor(() => expect(screen.getByTestId('settings-models').textContent).toContain('deepseek-pro'));
     expect(screen.getByTestId('settings-current-model').textContent).toBe('deepseek/deepseek-flash');
 
-    fireEvent.click(screen.getByTestId('model-deepseek-deepseek-pro'));
+    expect(screen.getByRole('button', { name: 'deepseek/deepseek-flash', pressed: true })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'deepseek/deepseek-pro', pressed: false }));
     await waitFor(() => expect(lines).toContain('/model deepseek/deepseek-pro'));
     expect(await screen.findByText('applied /model deepseek/deepseek-pro')).toBeTruthy();
     expect(onChanged).toHaveBeenCalled();
   });
 
-  it('shows reasoning options and applies one', async () => {
+  it('shows reasoning options and applies one during a reply', async () => {
     const lines = installFetch();
     render(
-      <SettingsPanel health={HEALTH} theme="auto" onTheme={() => {}} onClose={() => {}} onChanged={() => {}} />,
+      <SettingsPanel health={{ ...HEALTH, busy: true }} theme="auto" onTheme={() => {}} onClose={() => {}} onChanged={() => {}} />,
     );
     fireEvent.click(screen.getByTestId('settings-tab-thinking'));
     await screen.findByTestId('think-auto');
-    const options = screen.getByTestId('settings-thinking').querySelectorAll('.option-row');
-    expect(Array.from(options, (button) => button.querySelector('span')?.textContent))
+    expect(screen.getByText('“default” uses the provider setting.')).toBeTruthy();
+    const options = within(screen.getByRole('group', { name: 'Reasoning effort' })).getAllByRole('button');
+    expect(options.map(button => button.textContent))
       .toEqual(['auto', 'default', 'low', 'medium', 'high']);
     expect(screen.getByTestId('think-high').getAttribute('aria-pressed')).toBe('true');
     fireEvent.click(screen.getByTestId('think-high'));
     await waitFor(() => expect(lines).toContain('/think high'));
   });
 
-  it('applies a context window choice', async () => {
+  it('applies a context window choice during a reply', async () => {
     const lines = installFetch();
     render(
-      <SettingsPanel health={HEALTH} theme="auto" onTheme={() => {}} onClose={() => {}} onChanged={() => {}} />,
+      <SettingsPanel health={{ ...HEALTH, busy: true }} theme="auto" onTheme={() => {}} onClose={() => {}} onChanged={() => {}} />,
     );
     fireEvent.click(screen.getByTestId('settings-tab-context'));
-    await waitFor(() => expect(screen.getByTestId('context-200000')).toBeTruthy());
-    fireEvent.click(screen.getByTestId('context-200000'));
+    const current = await screen.findByRole('button', { name: '100,000 tokens', pressed: true });
+    expect(current.textContent).toBe('100k');
+    fireEvent.click(screen.getByRole('button', { name: '200,000 tokens', pressed: false }));
     await waitFor(() => expect(lines).toContain('/context 200000'));
   });
 
   it('submits a custom budget as an integer token count', async () => {
-    const lines = installFetch();
+    const lines = installFetch(55000);
     render(
       <SettingsPanel health={HEALTH} theme="auto" onTheme={() => {}} onClose={() => {}}
         onChanged={() => {}} initialSection="context" />,
     );
     const input = screen.getByRole('spinbutton', { name: 'Custom budget' });
+    expect(await screen.findByText('Current: 55,000 tokens')).toBeTruthy();
+    expect(within(screen.getByRole('group', { name: 'Context window presets' })).queryByRole('button', { pressed: true })).toBeNull();
     const apply = screen.getByRole('button', { name: 'Apply' }) as HTMLButtonElement;
-    fireEvent.change(input, { target: { value: '1000' } });
+    fireEvent.change(input, { target: { value: '49999' } });
     expect(apply.disabled).toBe(true);
+    fireEvent.change(input, { target: { value: '50000' } });
+    expect(apply.disabled).toBe(false);
     fireEvent.change(input, { target: { value: '275000' } });
     expect(apply.disabled).toBe(false);
     fireEvent.click(apply);
@@ -167,10 +180,14 @@ describe('settings panel', () => {
 
       />,
     );
+    await screen.findByTestId('model-deepseek-deepseek-pro');
     fireEvent.click(screen.getByTestId('settings-tab-appearance'));
-    expect(screen.getByTestId('theme-auto').getAttribute('aria-checked')).toBe('true');
-    fireEvent.click(screen.getByTestId('theme-dark'));
+    const system = screen.getByRole('radio', { name: 'System', checked: true });
+    fireEvent.keyDown(system, { key: 'ArrowLeft' });
     expect(onTheme).toHaveBeenCalledWith('dark');
+    expect(document.activeElement).toBe(screen.getByRole('radio', { name: 'Dark' }));
+    fireEvent.click(screen.getByRole('radio', { name: 'Light' }));
+    expect(onTheme).toHaveBeenCalledWith('light');
   });
 
   it('reports the build info without exposing any secret', async () => {
@@ -178,6 +195,7 @@ describe('settings panel', () => {
     render(
       <SettingsPanel health={HEALTH} theme="auto" onTheme={() => {}} onClose={() => {}} onChanged={() => {}} />,
     );
+    await screen.findByTestId('model-deepseek-deepseek-pro');
     fireEvent.click(screen.getByTestId('settings-tab-about'));
     const about = screen.getByTestId('settings-about');
     expect(about.textContent).toContain('0.4.0.dev0');

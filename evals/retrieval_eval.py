@@ -89,8 +89,10 @@ def main() -> None:
         for index, item in enumerate(corpus):
             key = f"fixture-{index}"
             ids.append(key)
-            record = render_record(Core(id=key, status="active", text=item["text"]),
-                                   extensions=[("recorded_at", "2024-01-01T00:00:00Z")])
+            record = render_record(
+                Core(id=key, status="active", text=item["text"]),
+                extensions=[("recorded_at", "2024-01-01T00:00:00Z")],
+            )
             by_topic.setdefault(item["category"], []).append(record)
         for category, records in by_topic.items():
             path = service.store.topic_path(category)

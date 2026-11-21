@@ -12,7 +12,7 @@ from ..infra.attachments import AttachmentBatch
 from ..infra.config import ChatConfig, Config, load_config
 from ..infra.documents import document_paths
 from ..infra.latency import TurnLatency, elapsed_ms, track_turn
-from ..infra.tokens import estimate_messages_tokens, truncate_to_tokens
+from ..infra.tokens import estimate_messages_tokens, estimate_tokens, truncate_to_tokens
 from ..infra.transaction import vault_transaction
 from ..llm import (
     AssistantTurn,
@@ -26,12 +26,13 @@ from ..llm import (
     ToolCall,
     Usage,
 )
+from ..llm.client import effective_context_window
 from ..memory.detect import redact_secrets
 from ..memory.extractor import LLMExtractor
 from ..memory.service import MemoryService, load_persona
 from ..memory.turn_undo import TurnFileJournal, TurnUndoError
 from ..session import Session, SessionStore, new_message_id
-from .context import CompactionPhase, ContextManager, record_to_message
+from .context import CompactionPhase, ContextManager, estimate_tool_tokens, record_to_message
 from .evidence import RecallContext
 from .insertion import TurnInsertion
 from .prompts import build_system_prompt
@@ -107,6 +108,13 @@ class AgentReply:
     estimated_tokens: int = 0
 
 
+@dataclass(frozen=True)
+class TurnSettings:
+    model: ChatModel
+    context: ContextManager
+    recall_queries: RecallQueryBuilder
+
+
 class AgentRuntime:
     def __init__(
         self,
@@ -119,6 +127,7 @@ class AgentRuntime:
     ):
         self.service = service
         self.model = model
+        self.model_config = service.config.llm
         self.sessions = sessions
         self.sessions.recover_deletions()
         self.config = config or service.config.chat
@@ -126,8 +135,10 @@ class AgentRuntime:
             service.config.llm,
             rewrite=self.config.recall_rewrite,
             context_turns=self.config.recall_context_turns,
+            rewrite_timeout=self.config.rewrite_timeout,
         )
         self.on_distillation: Callable[[str, str | None], None] | None = None
+        self.on_title_needed: Callable[[str], None] | None = None
         self.summarizer = summarizer or OpenAISummarizer(service.config.llm)
         self.context = ContextManager(
             self.config,
@@ -138,6 +149,7 @@ class AgentRuntime:
         self.session: Session | None = None
         self.last_plan = None
         self.last_plan_session: str | None = None
+        self._meter_tools: tuple[tuple[dict, dict], int] | None = None
         self._closed = False
         # 请求进行中的会话与被延迟打关闭标记的会话（切换不阻塞生成）。
         self._active_ask: Session | None = None
@@ -150,6 +162,12 @@ class AgentRuntime:
         self.last_plan = None
         self.last_plan_session = None
         self._closed = False
+
+    def turn_settings(self) -> TurnSettings:
+        context = copy(self.context)
+        window = effective_context_window(self.service.config.llm, self.config.context_window)
+        context.config = replace(self.config, context_window=window)
+        return TurnSettings(self.model, context, self.recall_queries)
 
     def ensure_session(self) -> Session:
         if self.session is None:
@@ -169,7 +187,7 @@ class AgentRuntime:
             session = (
                 active
                 if active is not None and active.id == session_id
-                else self.sessions.load(session_id)
+                else self.sessions.load_snapshot(session_id)
             )
             if close_current:
                 self.close(distill=False)
@@ -194,12 +212,14 @@ class AgentRuntime:
         self.service.config.chat = config.chat
         self.service.extractor = LLMExtractor(config.llm)
         self.model = LiteLLMChatModel(config.llm)
+        self.model_config = config.llm
         self.summarizer = LLMSummarizer(config.llm)
         self.config = config.chat
         self.recall_queries = RecallQueryBuilder(
             config.llm,
             rewrite=config.chat.recall_rewrite,
             context_turns=config.chat.recall_context_turns,
+            rewrite_timeout=config.chat.rewrite_timeout,
         )
         self.context.config = config.chat
         self.context.summarizer = self.summarizer
@@ -219,7 +239,9 @@ class AgentRuntime:
         text: str,
         *,
         session: Session | None = None,
+        turn_settings: TurnSettings | None = None,
         attachments: AttachmentBatch | None = None,
+        replace_message_id: str | None = None,
         on_session: Callable[[Session], None] | None = None,
         on_user_message: Callable[[str], None] | None = None,
         on_event: Callable[[str], None] | None = None,
@@ -240,6 +262,7 @@ class AgentRuntime:
         text = redact_secrets(text.strip())
         if not text:
             raise ValueError("消息为空。")
+        settings = turn_settings or self.turn_settings()
         with self.service.write_lock:
             if session is None:
                 session = self.ensure_session()
@@ -263,6 +286,8 @@ class AgentRuntime:
                     insertion,
                     on_inserted,
                     attachments,
+                    settings=settings,
+                    replace_message_id=replace_message_id,
                 )
         except GenerationCancelled as exc:
             partial = getattr(exc, "partial_content", "")
@@ -301,12 +326,12 @@ class AgentRuntime:
         insertion: TurnInsertion | None = None,
         on_inserted: Callable[[str, str], None] | None = None,
         attachments: AttachmentBatch | None = None,
+        *,
+        settings: TurnSettings,
+        replace_message_id: str | None = None,
     ) -> AgentReply:
-        # Settings can change while this turn waits on a model or tool.
-        model = self.model
-        context = copy(self.context)
-        config = context.config = replace(self.config)
-        recall_queries = self.recall_queries
+        model, context, recall_queries = settings.model, settings.context, settings.recall_queries
+        config = context.config
 
         def progress(phase: str) -> None:
             if cancel is not None and cancel.is_set():
@@ -317,13 +342,18 @@ class AgentRuntime:
                 raise GenerationCancelled("Stopped by user")
 
         message_id = new_message_id()
-        journal = TurnFileJournal(self.service.paths, session.id, message_id, self.service.memory_references)
+        journal = TurnFileJournal(
+            self.service.paths, session.id, message_id, self.service.memory_references
+        )
         record = {"type": "message", "id": message_id, "role": "user", "content": text}
         if attachments:
             attachments.bind(session.id, message_id)
             record["attachments"] = [asdict(item) for item in attachments.files]
         try:
-            self.sessions.append(session, record)
+            if replace_message_id is None:
+                self.sessions.append(session, record)
+            else:
+                self.undo(session, expected_latest=replace_message_id, replacement=record)
         except BaseException:
             if attachments:
                 attachments.discard()
@@ -344,13 +374,28 @@ class AgentRuntime:
             raise GenerationCancelled("Stopped by user")
         started = time.monotonic()
         latency.event("context.started")
+        paths = (
+            attachments.documents()
+            if attachments
+            else document_paths(text)
+            if self.allow_local_paths
+            else []
+        )
+        evidence = RecallContext(self.service)
+        tools = build_tools(
+            self.service, session, timeout=config.tool_timeout, file_paths=paths, evidence=evidence
+        )
+        schema_tokens = estimate_tool_tokens(tools.schemas())
+        if not paths:
+            self._meter_tools = self._tool_settings(), schema_tokens
         plan = context.prepare(
             session,
             self._system_prompt(),
-            text,
+            attachments.model_content(text) if attachments else text,
             current_id=message_id,
             memory_context=memory_context,
             on_compaction=on_compaction,
+            tool_tokens=schema_tokens,
         )
         latency.event(
             "context.finished",
@@ -358,7 +403,12 @@ class AgentRuntime:
             estimated_tokens=plan.estimated_tokens,
             compacted=plan.compacted,
         )
-        self.last_plan = plan
+        # Keep the attachment files on disk, not their base64 payload in the cached plan.
+        self.last_plan = (
+            replace(plan, messages=[*plan.messages[:-1], {"role": "user", "content": text}])
+            if attachments
+            else plan
+        )
         self.last_plan_session = session.id
         events: list[str] = []
 
@@ -370,13 +420,7 @@ class AgentRuntime:
 
         for event in recall_events + plan.events:
             emit(event)
-        paths = attachments.documents() if attachments else document_paths(text) if self.allow_local_paths else []
-        evidence = RecallContext(self.service)
-        tools = build_tools(self.service, session, timeout=config.tool_timeout,
-                            file_paths=paths, evidence=evidence)
         messages = plan.messages
-        if attachments:
-            messages = [*messages[:-1], {**messages[-1], "content": attachments.model_content(messages[-1]["content"])}]
         usage = Usage()
         steps = 0
         final = ""
@@ -384,6 +428,20 @@ class AgentRuntime:
         needs_wrap_up = True
 
         def request_model(schemas: list[dict]) -> AssistantTurn:
+            schema_tokens = estimate_tool_tokens(schemas)
+            used = schema_tokens + estimate_messages_tokens(messages)
+            if used > context.input_budget:
+                tool_tokens = sum(
+                    estimate_tokens(message["content"])
+                    for message in messages
+                    if message["role"] == "tool"
+                )
+                tool_budget = max(0, tool_tokens - (used - context.input_budget))
+                if compact_tool_outputs(messages, max_tokens=tool_budget):
+                    evidence.invalidate()
+                context.check_input_budget(
+                    schema_tokens + estimate_messages_tokens(messages), schema_tokens
+                )
             evidence.begin_model_request()
             with latency.model_step() as started:
                 try:
@@ -398,12 +456,13 @@ class AgentRuntime:
                 except GenerationCancelled:
                     raise
                 except ChatModelError as exc:
-                    if reasoning := getattr(exc, "partial_reasoning", ""):
+                    reasoning = getattr(exc, "partial_reasoning", "")
+                    partial = getattr(exc, "partial_content", "")
+                    if reasoning or partial:
                         self._append_assistant(
                             session,
                             AssistantTurn(
-                                content=getattr(exc, "partial_content", "")
-                                + "\n\n*(generation interrupted)*",
+                                content=partial + "\n\n*(generation interrupted)*",
                                 reasoning_content=reasoning,
                             ),
                             on_thinking,
@@ -427,7 +486,19 @@ class AgentRuntime:
                 return False
             supplement = redact_secrets(pending.text)
             candidate = {"role": "user", "content": supplement}
-            if estimate_messages_tokens([*messages, candidate]) > context.input_budget:
+            # The new input authorizes only file paths supplied with that input.
+            next_tools = build_tools(
+                self.service,
+                session,
+                timeout=config.tool_timeout,
+                file_paths=document_paths(supplement) if self.allow_local_paths else [],
+                evidence=evidence,
+            )
+            next_schemas = next_tools.schemas() if steps < config.max_tool_steps else []
+            used = estimate_messages_tokens([*messages, candidate]) + estimate_tool_tokens(
+                next_schemas
+            )
+            if used > context.input_budget:
                 insertion.settle()
                 return False
             text = supplement
@@ -440,11 +511,7 @@ class AgentRuntime:
             if on_inserted is not None:
                 on_inserted(message["id"], text)
             evidence.invalidate()
-            # A new user message authorizes only the file paths it explicitly supplies.
-            tools = build_tools(
-                self.service, session, timeout=config.tool_timeout,
-                file_paths=document_paths(text) if self.allow_local_paths else [], evidence=evidence,
-            )
+            tools = next_tools
             return True
 
         while steps < config.max_tool_steps:
@@ -478,7 +545,11 @@ class AgentRuntime:
                 complete_evidence = call.name in {"recall", "read_topic", "read_memory_source"} or (
                     outcome.data and outcome.data.get("status") == "review_required"
                 )
-                content = outcome.content if complete_evidence else truncate_to_tokens(outcome.content, 2000)
+                content = (
+                    outcome.content
+                    if complete_evidence
+                    else truncate_to_tokens(outcome.content, 2000)
+                )
                 self.sessions.append(
                     session,
                     {
@@ -489,11 +560,7 @@ class AgentRuntime:
                         "ok": outcome.ok,
                         "duration_ms": outcome.duration_ms,
                         "content": content,
-                        **(
-                            {"turn_undo_recorded": True}
-                            if journal.has_effects()
-                            else {}
-                        ),
+                        **({"turn_undo_recorded": True} if journal.has_effects() else {}),
                     },
                 )
                 messages.append({"role": "tool", "tool_call_id": call.id, "content": content})
@@ -522,10 +589,22 @@ class AgentRuntime:
             usage.add(turn.usage)
             steps += 1
             self._append_assistant(session, turn, on_thinking)
-            final = turn.content or "(no answer generated)"
+            final = turn.content
             if needs_wrap_up:
                 emit("Tool-step limit reached; forced wrap-up")
 
+        if not final.strip():
+            raise ChatModelError(
+                "The model returned no visible answer. Retry or select another model."
+            )
+
+        if self.on_title_needed is not None and not session.saved_title():
+            try:
+                self.on_title_needed(session.id)
+            except Exception as exc:
+                from ..infra.diagnostics import record_event
+
+                record_event("session.title_failed", exc)
         return AgentReply(
             content=final,
             events=events,
@@ -545,7 +624,7 @@ class AgentRuntime:
     ) -> list[str]:
         if self.session is None:
             return ["This session has no records to compact."]
-        plan = self.context.prepare(
+        plan = self.turn_settings().context.prepare(
             self.current,
             self._system_prompt(),
             "",
@@ -607,7 +686,21 @@ class AgentRuntime:
         """当前会话的上下文占用；无会话或尚未发送消息时为 0。"""
         if self.session is None:
             return 0
-        return self.context.estimate_usage(self.session, self._system_prompt())
+        return self.estimate_usage(self.session)
+
+    def estimate_usage(self, session: Session) -> int:
+        # Attachments and file tools are scoped to a single input. An idle
+        # session's meter estimates its next ordinary request.
+        settings = self._tool_settings()
+        cached = self._meter_tools
+        if cached is None or cached[0] != settings:
+            tools = build_tools(self.service, session, timeout=self.config.tool_timeout)
+            cached = self._meter_tools = settings, estimate_tool_tokens(tools.schemas())
+        return self.context.estimate_usage(session, self._system_prompt(), cached[1])
+
+    def _tool_settings(self) -> tuple[dict, dict]:
+        config = self.service.config
+        return asdict(config.search), asdict(config.fetch)
 
     def rename(self, title: str) -> None:
         self.sessions.rename(self.current, title)
@@ -618,22 +711,27 @@ class AgentRuntime:
         message_id: str | None = None,
         *,
         expected_latest: str | None = None,
+        replacement: dict | None = None,
     ) -> str | None:
         """撤销指定会话的一轮用户消息；默认当前会话最后一条用户消息。
 
-        传入 message_id 时只撤销该条，避免生成期间切换会话后误伤其他回合。
+        传入 message_id 时校验该条消息所属回合。编辑重发时在同一事务中保存替代消息。
         """
         with self.service.write_lock:
             target_session = session or self.current
             # Recheck the persisted tail while holding the same lock as append and rollback.
             live = self.sessions.load(target_session.id)
             if expected_latest is not None and live.last_user_message_id() != expected_latest:
-                raise TurnUndoError("This message is no longer the latest. Refresh the conversation.")
+                raise TurnUndoError(
+                    "This message is no longer the latest. Refresh the conversation."
+                )
             target_session.records = live.records
             target_session.damaged_tail_line = live.damaged_tail_line
-            return self._undo_locked(target_session, message_id)
+            return self._undo_locked(target_session, message_id, replacement)
 
-    def _undo_locked(self, target_session: Session, message_id: str | None) -> str | None:
+    def _undo_locked(
+        self, target_session: Session, message_id: str | None, replacement: dict | None
+    ) -> str | None:
         records = target_session.active_records()
         if message_id:
             target = next(
@@ -661,8 +759,12 @@ class AgentRuntime:
         if not any(record.get("id") == target["id"] for record in inputs):
             raise TurnUndoError("Only the latest turn can be undone.")
         root_id = inputs[0]["id"]
-        event = {"type": "undo", "id": new_message_id(), "message_id": root_id}
-        journal = TurnFileJournal(self.service.paths, target_session.id, root_id, self.service.memory_references)
+        events = [{"type": "undo", "id": new_message_id(), "message_id": root_id}]
+        if replacement is not None:
+            events.append(replacement)
+        journal = TurnFileJournal(
+            self.service.paths, target_session.id, root_id, self.service.memory_references
+        )
         with self.service.write_lock:
             first = records.index(inputs[0])
             if not journal.path.is_file() and any(
@@ -676,10 +778,14 @@ class AgentRuntime:
                 for path, original in files.items():
                     transaction.write(path, original)
                 if files:
-                    self.service.audit.write("undo_tool_writes", session=target_session.id,
-                                             message=root_id, paths=len(files))
-                self.sessions.append_event_transactionally(target_session, event)
-            live = self.sessions.load(target_session.id)
+                    self.service.audit.write(
+                        "undo_tool_writes",
+                        session=target_session.id,
+                        message=root_id,
+                        paths=len(files),
+                    )
+                self.sessions.append_event_transactionally(target_session, *events)
+                live = self.sessions.load(target_session.id)
             target_session.records = live.records
             target_session.damaged_tail_line = live.damaged_tail_line
         if self.session is not None and target_session.id == self.session.id:
@@ -710,11 +816,15 @@ class AgentRuntime:
         if not should_auto_recall(text, recent):
             return ""
         field = direct_recall_field(text)
-        recall = None if field and self.service.current_field(field) else recall_queries.build(text, recent)
+        recall = (
+            None
+            if field and self.service.current_field(field)
+            else recall_queries.build(text, recent)
+        )
         query = recall.text if recall else field
         limit = config.auto_recall
         if recall and (recall.cue or recall.rewrite_timed_out):
-            limit = max(limit, 7)
+            limit = max(limit, config.cue_limit)
         if recall and recall.original and recall.original != query:
             hits = self.service.recall(query, limit, original_query=recall.original)
         else:

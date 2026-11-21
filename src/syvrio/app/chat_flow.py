@@ -191,11 +191,17 @@ class ChatFlowMixin:
         self.refresh_pending()
         self.update_status()
 
-    def _start_ask(self, line: str, session_id: str | None = None, attachments: AttachmentBatch | None = None) -> None:
+    def _start_ask(
+        self, line: str, session_id: str | None = None, attachments: AttachmentBatch | None = None
+    ) -> None:
         stamp = format_local_timestamp(utc_timestamp(), "%H:%M")
         # 用户气泡只渲染进它所属会话的视图；后台任务不串入当前视图。
         if session_id is None or self.application.conversation.current_id == session_id:
-            label = line if not attachments else line + "\n" + ", ".join(item.name for item in attachments.files)
+            label = (
+                line
+                if not attachments
+                else line + "\n" + ", ".join(item.name for item in attachments.files)
+            )
             self.add_user_turn(label, stamp)
         else:
             self.notify("Running queued task in background session")
@@ -295,7 +301,9 @@ class ChatFlowMixin:
                 self._bind_ask_user_message, message_id
             ),
         )
-        result = self.application.conversation.run_turn(line, callbacks, token, session_id, attachments)
+        result = self.application.conversation.run_turn(
+            line, callbacks, token, session_id, attachments
+        )
         if result.status == "undo":
             self._ui(self._finish_on_ui, result.turn_id, self._apply_undo_outcome, result.undo)
             return

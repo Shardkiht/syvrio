@@ -1,25 +1,36 @@
 from __future__ import annotations
 
-import json
 import math
 import os
 import re
 import sys
-import tomllib
 from collections.abc import Callable
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
-from ..errors import SyvrioError
+from .config_files import (
+    MEMORY_SECTIONS,
+    ConfigError,
+    ConfigFiles,
+    file_for,
+    merge,
+    package_defaults,
+    sparse,
+)
+from .config_files import (
+    toml_literal as toml_literal,
+)
 from .paths import SyvrioPaths, runtime_path, syvrio_home
 
-DEFAULT_BASE_URL = "https://api.deepseek.com/v1"
-DEFAULT_MODEL = "deepseek-flash"
-DEFAULT_API_KEY_ENV = "DEEPSEEK_API_KEY"
-CONTEXT_WINDOW_PRESETS = (100_000, 200_000, 400_000, 600_000)
-DEFAULT_CONTEXT_WINDOW = CONTEXT_WINDOW_PRESETS[0]
-DEFAULT_EMBEDDING_MODEL = "BAAI/bge-small-zh-v1.5"
-DEFAULT_EMBEDDING_BASE_URL = "https://api.siliconflow.cn/v1"
+DEFAULTS = package_defaults()
+DEFAULT_BASE_URL = DEFAULTS["llm"]["base_url"]
+DEFAULT_MODEL = DEFAULTS["llm"]["model"]
+DEFAULT_API_KEY_ENV = DEFAULTS["llm"]["api_key_env"]
+MIN_CONTEXT_WINDOW = 50_000
+CONTEXT_WINDOW_PRESETS = (MIN_CONTEXT_WINDOW, 100_000, 200_000, 400_000, 600_000)
+DEFAULT_CONTEXT_WINDOW = DEFAULTS["chat"]["context_window"]
+DEFAULT_EMBEDDING_MODEL = DEFAULTS["retrieval"]["embedding"]["model"]
+DEFAULT_EMBEDDING_BASE_URL = DEFAULTS["retrieval"]["embedding"]["base_url"]
 SPARK_THINKING_MODES = ("auto", "disabled", "enabled")
 CONFIG_FILENAME = "syvrio.toml"
 RECENT_MODEL_LIMIT = 5
@@ -48,29 +59,23 @@ def _stored_key(env_name: str) -> str | None:
         return None
 
 
-class ConfigError(SyvrioError, ValueError):
-    """配置读取、TOML 语法或字段校验失败；消息可直接展示给用户。"""
-
-
-def toml_literal(value: str | list[str] | list[tuple[str, str]]) -> str:
-    """序列化 TOML 字符串和数组，保留 Unicode 标量。"""
-    # ASCII 模式会把非 BMP 字符拆成 TOML 不接受的代理对；DEL 也必须转义。
-    return json.dumps(value, ensure_ascii=False).replace("\x7f", "\\u007f")
-
-
 @dataclass(slots=True)
 class LLMConfig:
-    provider: str = "deepseek"
-    base_url: str = DEFAULT_BASE_URL
-    model: str = DEFAULT_MODEL
-    api_key_env: str = DEFAULT_API_KEY_ENV
-    reasoning_effort: str | None = None
-    num_retries: int = 2
-    temperature: float = 0.1
-    timeout: float = 60.0
-    spark_thinking: str = ""
-    provider_urls: dict[str, str] = field(default_factory=dict)
-    recent_models: list[tuple[str, str]] = field(default_factory=list)
+    provider: str = DEFAULTS["llm"]["provider"]
+    base_url: str = DEFAULTS["llm"]["base_url"]
+    model: str = DEFAULTS["llm"]["model"]
+    api_key_env: str = DEFAULTS["llm"]["api_key_env"]
+    reasoning_effort: str | None = DEFAULTS["llm"]["reasoning_effort"] or None
+    num_retries: int = DEFAULTS["llm"]["num_retries"]
+    temperature: float = DEFAULTS["llm"]["temperature"]
+    timeout: float = DEFAULTS["llm"]["timeout"]
+    spark_thinking: str = DEFAULTS["llm"]["spark_thinking"]
+    provider_urls: dict[str, str] = field(
+        default_factory=lambda: dict(DEFAULTS["llm"]["provider_urls"])
+    )
+    recent_models: list[tuple[str, str]] = field(
+        default_factory=lambda: list(DEFAULTS["llm"]["recent_models"])
+    )
 
     def recent_model_ids(self) -> list[tuple[str, str]]:
         models = [(self.provider, self.model), *self.recent_models]
@@ -109,77 +114,78 @@ class LLMConfig:
 
 @dataclass(slots=True)
 class ChatConfig:
-    context_window: int = DEFAULT_CONTEXT_WINDOW
-    reserve_output_tokens: int = 1500
-    keep_recent_tokens: int = 6000
-    compact_threshold: float = 0.8
-    max_tool_steps: int = 8
-    tool_timeout: float = 60.0
-    auto_recall: int = 3
-    recall_rewrite: bool = True
-    recall_context_turns: int = 2
-    auto_reflect: bool = True
-    reflect_idle_seconds: float = 60.0
-    # 任意两个自动回顾之间的最小间隔；自动任务本身按天/周周期调度。
-    reflect_interval_seconds: float = 300.0
-    profile_auto_interval_hours: float = 168.0
-    profile_min_cooldown_hours: float = 24.0
-    profile_min_changes: int = 20
-    dream_auto_interval_hours: float = 24.0
-    extract_on_exit: bool = True
+    context_window: int = DEFAULTS["chat"]["context_window"]
+    reserve_output_tokens: int = DEFAULTS["chat"]["reserve_output_tokens"]
+    keep_recent_tokens: int = DEFAULTS["chat"]["keep_recent_tokens"]
+    compact_threshold: float = DEFAULTS["chat"]["compact_threshold"]
+    max_tool_steps: int = DEFAULTS["chat"]["max_tool_steps"]
+    tool_timeout: float = DEFAULTS["chat"]["tool_timeout"]
+    auto_recall: int = DEFAULTS["recall"]["auto_recall"]
+    recall_rewrite: bool = DEFAULTS["recall"]["recall_rewrite"]
+    recall_context_turns: int = DEFAULTS["recall"]["recall_context_turns"]
+    auto_reflect: bool = DEFAULTS["dream"]["auto_reflect"]
+    dream_auto_interval_hours: float = DEFAULTS["dream"]["dream_auto_interval_hours"]
+    extract_on_exit: bool = DEFAULTS["distillation"]["extract_on_exit"]
+    cue_limit: int = DEFAULTS["recall"]["cue_limit"]
+    rewrite_timeout: float = DEFAULTS["recall"]["rewrite_timeout"]
+    recall_limit: int = DEFAULTS["distillation"]["recall_limit"]
+    default_budget: int = DEFAULTS["dream"]["default_budget"]
 
 
 @dataclass(slots=True)
 class GitConfig:
-    auto_sync: bool = True
-    sync_time: str = "03:00"
-    retry_interval_minutes: int = 30
+    auto_sync: bool = DEFAULTS["git"]["auto_sync"]
+    sync_time: str = DEFAULTS["git"]["sync_time"]
+    retry_interval_minutes: int = DEFAULTS["git"]["retry_interval_minutes"]
 
 
 @dataclass(slots=True)
 class EmbeddingConfig:
-    backend: str = "local"  # local：fastembed 离线推理；api：embedding 供应商
-    model: str = DEFAULT_EMBEDDING_MODEL
-    provider: str = "siliconflow"
-    base_url: str = DEFAULT_EMBEDDING_BASE_URL
-    api_key_env: str = "SILICONFLOW_API_KEY"
+    backend: str = DEFAULTS["retrieval"]["embedding"]["backend"]
+    model: str = DEFAULTS["retrieval"]["embedding"]["model"]
+    provider: str = DEFAULTS["retrieval"]["embedding"]["provider"]
+    base_url: str = DEFAULTS["retrieval"]["embedding"]["base_url"]
+    api_key_env: str = DEFAULTS["retrieval"]["embedding"]["api_key_env"]
 
 
 @dataclass(slots=True)
 class RetrievalConfig:
-    method: str = "hybrid"  # keyword / vector / hybrid
+    default_limit: int = DEFAULTS["retrieval"]["default_limit"]
+    method: str = DEFAULTS["retrieval"]["method"]
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
 
 
 @dataclass(slots=True)
 class SearchConfig:
-    enabled: bool = True
-    providers: list[str] = field(default_factory=lambda: ["open_websearch"])
-    base_url: str = "http://127.0.0.1:3000"
-    timeout: float = 10.0
-    max_results: int = 5
-    cache_ttl: int = 86400
-    transport: str = "http"  # http / mcp
-    auto_start: bool = True  # 打开 TUI 时后台预热 HTTP daemon
+    enabled: bool = DEFAULTS["search"]["enabled"]
+    providers: list[str] = field(default_factory=lambda: list(DEFAULTS["search"]["providers"]))
+    base_url: str = DEFAULTS["search"]["base_url"]
+    timeout: float = DEFAULTS["search"]["timeout"]
+    max_results: int = DEFAULTS["search"]["max_results"]
+    cache_ttl: int = DEFAULTS["search"]["cache_ttl"]
+    transport: str = DEFAULTS["search"]["transport"]
+    auto_start: bool = DEFAULTS["search"]["auto_start"]
     # 上游搜索引擎；空列表表示沿用 daemon 的 DEFAULT_SEARCH_ENGINE（默认 bing）。
-    engines: list[str] = field(default_factory=lambda: ["bing"])
-    fetch_timeout: float = 45.0  # 抓取正文单独超时，秒
+    engines: list[str] = field(default_factory=lambda: list(DEFAULTS["search"]["engines"]))
+    fetch_timeout: float = DEFAULTS["search"]["fetch_timeout"]
     # 首选引擎空结果或失败时的免费候补引擎序列（仍经 open-websearch）。
-    fallback_engines: list[str] = field(default_factory=lambda: ["baidu", "duckduckgo", "sogou"])
+    fallback_engines: list[str] = field(
+        default_factory=lambda: list(DEFAULTS["search"]["fallback_engines"])
+    )
     # 每次自动搜索最多尝试的上游引擎数（含首选）；显式指定引擎时不回退。
-    max_engines: int = 3
+    max_engines: int = DEFAULTS["search"]["max_engines"]
     # 显式 search_engine 数组允许的最大引擎数；0 表示不限制。
-    max_search_engines: int = 0
+    max_search_engines: int = DEFAULTS["search"]["max_search_engines"]
     # 一次搜索所有引擎回退共享的超时预算，秒；超出即停止候补。
-    timeout_budget: float = 25.0
+    timeout_budget: float = DEFAULTS["search"]["timeout_budget"]
     # 一次搜索跨所有 provider 共享的请求次数上限；超出即返回当前最佳候选。
-    max_requests: int = 9
+    max_requests: int = DEFAULTS["search"]["max_requests"]
     # AnySearch 的检索区域与语言；匿名和 Key 模式共用。
-    anysearch_zone: str = "cn"
-    anysearch_language: str = "zh-CN"
+    anysearch_zone: str = DEFAULTS["search"]["anysearch_zone"]
+    anysearch_language: str = DEFAULTS["search"]["anysearch_language"]
     # 自托管 SearXNG 实例；与 open-websearch 的 base_url 相互独立。
-    searxng_base_url: str = "http://127.0.0.1:8888"
-    searxng_timeout: float = 10.0
+    searxng_base_url: str = DEFAULTS["search"]["searxng_base_url"]
+    searxng_timeout: float = DEFAULTS["search"]["searxng_timeout"]
     # 每厂商调用上限（Search/Fetch 共池）；键为 provider 名。
     usage_limits: dict[str, UsageLimit] = field(default_factory=lambda: default_usage_limits())
 
@@ -208,17 +214,8 @@ class UsageLimit:
 
 
 DEFAULT_USAGE_LIMITS = {
-    "baidu_search": (50, 0),
-    "tavily": (0, 800),
-    "exa": (0, 1000),
-    "you": (0, 1500),
-    "volcengine": (0, 450),
-    "open_websearch": (0, 0),
-    # 匿名服务也可用；本地默认仅作请求量保护，不代表服务商额度。
-    "anysearch": (20, 0),
-    "parallel_mcp": (20, 0),
-    # 自托管实例默认不限制本地计数，实际调用仍受全局请求/超时预算约束。
-    "searxng": (0, 0),
+    name: (limit["daily"], limit["monthly"])
+    for name, limit in DEFAULTS["search"]["usage_limits"].items()
 }
 
 
@@ -232,7 +229,13 @@ def default_usage_limits() -> dict[str, UsageLimit]:
 @dataclass(slots=True)
 class FetchConfig:
     # 网页抓取的 provider 顺序；与 search.providers 相互独立。
-    providers: list[str] = field(default_factory=lambda: ["open_websearch"])
+    providers: list[str] = field(default_factory=lambda: list(DEFAULTS["fetch"]["providers"]))
+
+
+@dataclass(slots=True)
+class WebShareConfig:
+    domain: str = DEFAULTS["web_share"]["domain"]
+    github_user_id: str = DEFAULTS["web_share"]["github_user_id"]
 
 
 @dataclass(slots=True)
@@ -244,9 +247,10 @@ class Config:
     retrieval: RetrievalConfig = field(default_factory=RetrievalConfig)
     search: SearchConfig = field(default_factory=SearchConfig)
     fetch: FetchConfig = field(default_factory=FetchConfig)
-    confidence_threshold: float = 0.8
-    auto_push: bool = False
-    runtime: str = ""
+    auto_push: bool = DEFAULTS["auto_push"]
+    runtime: str = DEFAULTS["runtime"]
+    web_share: WebShareConfig = field(default_factory=WebShareConfig, kw_only=True)
+    _baseline: dict | None = field(default=None, repr=False, compare=False, kw_only=True)
 
     def paths(self, config_file: Path | None = None) -> SyvrioPaths:
         return SyvrioPaths(
@@ -280,7 +284,7 @@ def default_vault_path() -> Path:
     env_vault = os.environ.get("SYVRIO_VAULT")
     if env_vault:
         return Path(env_vault).expanduser()
-    return syvrio_home() / "vault"
+    return Path(DEFAULTS["vault"]).expanduser()
 
 
 def infer_provider(base_url: str) -> str:
@@ -366,7 +370,7 @@ def _validate_range(
 
 
 def _validate_config(data: dict) -> None:
-    _validate_types(data, asdict(Config(vault=Path("."))))
+    _validate_types(data, DEFAULTS)
     if any(
         not isinstance(url, str) or not url.strip()
         for url in data.get("llm", {}).get("provider_urls", {}).values()
@@ -376,14 +380,14 @@ def _validate_config(data: dict) -> None:
         raise ConfigError("配置字段 llm.spark_thinking 必须为空或为 enabled、auto、disabled。")
     for name in (
         "llm.timeout",
-        "chat.context_window",
         "chat.max_tool_steps",
         "chat.tool_timeout",
         "search.timeout",
         "search.max_results",
         "search.fetch_timeout",
-        "chat.reflect_idle_seconds",
-        "chat.reflect_interval_seconds",
+        "recall.rewrite_timeout",
+        "retrieval.default_limit",
+        "distillation.recall_limit",
         "search.max_engines",
         "search.timeout_budget",
         "search.max_requests",
@@ -395,15 +399,17 @@ def _validate_config(data: dict) -> None:
         "llm.temperature",
         "chat.reserve_output_tokens",
         "chat.keep_recent_tokens",
-        "chat.auto_recall",
-        "chat.recall_context_turns",
+        "recall.auto_recall",
+        "recall.recall_context_turns",
         "search.cache_ttl",
         "search.max_search_engines",
-        "chat.reflect_request_budget",
+        "recall.cue_limit",
+        "dream.default_budget",
     ):
         _validate_range(data, name)
-    for name in ("confidence_threshold", "chat.compact_threshold"):
-        _validate_range(data, name, unit_interval=True)
+    _validate_range(data, "chat.compact_threshold", unit_interval=True)
+    if data.get("dream", {}).get("default_budget", 0) > 20:
+        raise ConfigError("dream.default_budget 必须在 0 到 20 之间。")
     git_raw = data.get("git", {})
     if isinstance(git_raw, dict) and "sync_time" in git_raw:
         value = git_raw["sync_time"]
@@ -411,263 +417,158 @@ def _validate_config(data: dict) -> None:
             raise ConfigError("配置字段 git.sync_time 必须是 HH:MM（24 小时制）。")
 
 
-def load_config(path: Path | str | None = None) -> Config:
-    config_path = Path(path).expanduser() if path else default_config_path()
-    data: dict = {}
-    if config_path.exists():
+def _settings_data(config: Config) -> dict:
+    data = {
+        name: asdict(getattr(config, name))
+        for name in ("llm", "chat", "git", "search", "fetch", "retrieval", "web_share")
+    }
+    data.update(vault=config.vault.as_posix(), runtime=config.runtime, auto_push=config.auto_push)
+    llm = data["llm"]
+    llm["reasoning_effort"] = llm["reasoning_effort"] or ""
+    llm["recent_models"] = [list(pair) for pair in llm["recent_models"]]
+    for section, names in MEMORY_SECTIONS.items():
+        data[section] = {name: data["chat"].pop(name) for name in names}
+    data["search"]["usage_limits"] = {
+        key: {"daily": value.daily, "monthly": value.monthly}
+        for key, value in config.search.usage_limits.items()
+    }
+    return data
+
+
+def _options(cls, data: dict) -> dict:
+    return {f.name: data[f.name] for f in fields(cls) if f.name in data}
+
+
+def _build(overrides: dict, defaults: dict, paths: ConfigFiles) -> Config:
+    for key, value in overrides.items():
         try:
-            data = tomllib.loads(config_path.read_text(encoding="utf-8"))
-        except tomllib.TOMLDecodeError as exc:
-            raise ConfigError(f"配置文件 TOML 语法错误：{exc}") from exc
-        except (OSError, UnicodeError) as exc:
-            raise ConfigError(f"无法读取配置文件 {config_path}：{exc}") from exc
-    _validate_config(data)
-
-    # 配置里的 vault 优先；SYVRIO_VAULT 只在未配置时提供默认（也是测试隔离闸）。
-    vault_raw = data.get("vault") or str(default_vault_path())
-    llm_raw = data.get("llm", {})
-    base_url = llm_raw.get("base_url", DEFAULT_BASE_URL)
-    llm = LLMConfig(
-        provider=str(llm_raw.get("provider") or infer_provider(base_url)),
-        base_url=base_url,
-        model=llm_raw.get("model", DEFAULT_MODEL),
-        api_key_env=llm_raw.get("api_key_env", DEFAULT_API_KEY_ENV),
-        reasoning_effort=(str(llm_raw.get("reasoning_effort") or "").strip() or None),
-        num_retries=int(llm_raw.get("num_retries", 2)),
-        temperature=float(llm_raw.get("temperature", 0.1)),
-        timeout=float(llm_raw.get("timeout", 60.0)),
-        spark_thinking=llm_raw.get("spark_thinking", ""),
-        provider_urls=dict(llm_raw.get("provider_urls", {})),
-        recent_models=[(provider, model) for provider, model in llm_raw.get("recent_models", [])],
+            _validate_config({key: value})
+        except ConfigError as exc:
+            raise ConfigError(f"{paths.paths[file_for(key)]} ({key}): {exc}") from exc
+    data = merge(defaults, overrides)
+    llm = _options(LLMConfig, data["llm"])
+    llm["base_url"] = llm["provider_urls"].get(llm["provider"], llm["base_url"])
+    llm["reasoning_effort"] = llm["reasoning_effort"].strip() or None
+    llm["recent_models"] = [tuple(pair) for pair in llm["recent_models"]]
+    chat = dict(data["chat"])
+    for section in MEMORY_SECTIONS:
+        chat.update(data[section])
+    chat["context_window"] = max(MIN_CONTEXT_WINDOW, chat["context_window"])
+    retrieval = _options(RetrievalConfig, data["retrieval"])
+    retrieval["embedding"] = EmbeddingConfig(**_options(EmbeddingConfig, retrieval["embedding"]))
+    search = _options(SearchConfig, data["search"])
+    for key in ("engines", "fallback_engines", "providers"):
+        values = [s for s in search[key] if s.strip()]
+        if key != "providers":
+            values = list(dict.fromkeys(s.strip() for s in values))
+        search[key] = values or defaults["search"][key]
+    limits = {}
+    configured_limits = overrides.get("search", {}).get("usage_limits", {})
+    for key, values in search["usage_limits"].items():
+        saved = configured_limits.get(key, {})
+        if (
+            isinstance(saved, dict)
+            and "max_calls" in saved
+            and not {"daily", "monthly"}.intersection(saved)
+        ):
+            values = saved
+        if not isinstance(values, dict):
+            raise ConfigError(
+                f"{paths.paths['config.toml']}: search.usage_limits.{key} must be a table"
+            )
+        item = UsageLimit(**_options(UsageLimit, values))
+        if any(type(n) is not int or n < 0 for n in (item.daily, item.monthly)):
+            raise ConfigError(
+                f"{paths.paths['config.toml']}: search.usage_limits.{key} must use nonnegative integers"
+            )
+        limits[key] = item
+    search["usage_limits"] = limits
+    config = Config(
+        vault=Path(
+            overrides.get("vault") or os.environ.get("SYVRIO_VAULT") or defaults["vault"]
+        ).expanduser(),
+        runtime=data["runtime"],
+        auto_push=data["auto_push"],
+        llm=LLMConfig(**llm),
+        chat=ChatConfig(**_options(ChatConfig, chat)),
+        git=GitConfig(**_options(GitConfig, data["git"])),
+        retrieval=RetrievalConfig(**retrieval),
+        search=SearchConfig(**search),
+        web_share=WebShareConfig(**_options(WebShareConfig, data["web_share"])),
+        fetch=FetchConfig(providers=[p for p in data["fetch"]["providers"] if p.strip()]),
     )
-    chat_raw = data.get("chat", {})
-    chat = ChatConfig(
-        context_window=int(chat_raw.get("context_window", DEFAULT_CONTEXT_WINDOW)),
-        reserve_output_tokens=int(chat_raw.get("reserve_output_tokens", 1500)),
-        keep_recent_tokens=int(chat_raw.get("keep_recent_tokens", 6000)),
-        compact_threshold=float(chat_raw.get("compact_threshold", 0.8)),
-        max_tool_steps=int(chat_raw.get("max_tool_steps", 8)),
-        tool_timeout=float(chat_raw.get("tool_timeout", 60.0)),
-        auto_recall=int(chat_raw.get("auto_recall", 3)),
-        recall_rewrite=bool(chat_raw.get("recall_rewrite", True)),
-        recall_context_turns=int(chat_raw.get("recall_context_turns", 2)),
-        auto_reflect=bool(chat_raw.get("auto_reflect", True)),
-        reflect_idle_seconds=float(chat_raw.get("reflect_idle_seconds", 60.0)),
-        reflect_interval_seconds=float(chat_raw.get("reflect_interval_seconds", 300.0)),
-        profile_auto_interval_hours=float(chat_raw.get("profile_auto_interval_hours", 168.0)),
-        profile_min_cooldown_hours=float(chat_raw.get("profile_min_cooldown_hours", 24.0)),
-        profile_min_changes=int(chat_raw.get("profile_min_changes", 20)),
-        dream_auto_interval_hours=float(chat_raw.get("dream_auto_interval_hours", 24.0)),
-        extract_on_exit=bool(chat_raw.get("extract_on_exit", True)),
-    )
-    git_raw = data.get("git", {})
-    git = GitConfig(
-        auto_sync=bool(git_raw.get("auto_sync", True)),
-        sync_time=str(git_raw.get("sync_time", "03:00")),
-        retry_interval_minutes=int(git_raw.get("retry_interval_minutes", 30)),
-    )
-    retrieval_raw = data.get("retrieval", {})
-    embedding_raw = retrieval_raw.get("embedding", {})
-    retrieval = RetrievalConfig(
-        method=str(retrieval_raw.get("method", "hybrid")),
-        embedding=EmbeddingConfig(
-            backend=str(embedding_raw.get("backend", "local")),
-            model=str(embedding_raw.get("model", DEFAULT_EMBEDDING_MODEL)),
-            provider=str(embedding_raw.get("provider", "siliconflow")),
-            base_url=str(embedding_raw.get("base_url", DEFAULT_EMBEDDING_BASE_URL)),
-            api_key_env=str(embedding_raw.get("api_key_env", "SILICONFLOW_API_KEY")),
-        ),
-    )
-    search_raw = data.get("search", {})
-    usage_limits = default_usage_limits()
-    usage_raw = search_raw.get("usage_limits", {})
-    if isinstance(usage_raw, dict):
-        for name, item in usage_raw.items():
-            if not isinstance(item, dict):
-                continue
-            if "daily" in item or "monthly" in item:
-                default = usage_limits.get(name, UsageLimit())
-                try:
-                    daily = int(item.get("daily", default.daily))
-                    monthly = int(item.get("monthly", default.monthly))
-                except (TypeError, ValueError) as exc:
-                    raise ConfigError("usage limits must be nonnegative integers") from exc
-                if daily < 0 or monthly < 0:
-                    raise ConfigError("usage limits must be nonnegative integers")
-                usage_limits[str(name)] = UsageLimit(daily=daily, monthly=monthly)
-            elif "max_calls" in item:
-                period = str(item.get("period", "daily"))
-                if period not in ("daily", "monthly"):
-                    period = "daily"
-                try:
-                    count = max(0, int(item["max_calls"]))
-                except (TypeError, ValueError):
-                    count = 0
-                usage_limits[str(name)] = UsageLimit(period=period, max_calls=count)
-    providers = search_raw.get("providers", ["open_websearch"])
-    if not isinstance(providers, list):
-        providers = ["open_websearch"]
-    engines_raw = search_raw.get("engines", ["bing"])
-    if not isinstance(engines_raw, list):
-        engines_raw = ["bing"]
-    engines = list(
-        dict.fromkeys(str(item).strip() for item in engines_raw if str(item).strip())
-    ) or ["bing"]
-    fallback_raw = search_raw.get("fallback_engines", ["baidu", "duckduckgo", "sogou"])
-    if not isinstance(fallback_raw, list):
-        fallback_raw = ["baidu", "duckduckgo", "sogou"]
-    fallback_engines = list(
-        dict.fromkeys(str(item).strip() for item in fallback_raw if str(item).strip())
-    ) or ["baidu", "duckduckgo", "sogou"]
-    search = SearchConfig(
-        enabled=bool(search_raw.get("enabled", True)),
-        providers=[str(item) for item in providers if str(item).strip()] or ["open_websearch"],
-        base_url=str(search_raw.get("base_url", "http://127.0.0.1:3000")),
-        timeout=float(search_raw.get("timeout", 10.0)),
-        max_results=int(search_raw.get("max_results", 5)),
-        cache_ttl=int(search_raw.get("cache_ttl", 86400)),
-        transport=str(search_raw.get("transport", "http")),
-        auto_start=bool(search_raw.get("auto_start", True)),
-        engines=engines,
-        fetch_timeout=float(search_raw.get("fetch_timeout", 45.0)),
-        fallback_engines=fallback_engines,
-        max_engines=max(1, int(search_raw.get("max_engines", 3))),
-        max_search_engines=max(0, int(search_raw.get("max_search_engines", 0))),
-        timeout_budget=float(search_raw.get("timeout_budget", 25.0)),
-        max_requests=int(search_raw.get("max_requests", 9)),
-        anysearch_zone=str(search_raw.get("anysearch_zone", "cn")),
-        anysearch_language=str(search_raw.get("anysearch_language", "zh-CN")),
-        searxng_base_url=str(search_raw.get("searxng_base_url", "http://127.0.0.1:8888")),
-        searxng_timeout=float(search_raw.get("searxng_timeout", 10.0)),
-        usage_limits=usage_limits,
-    )
-    fetch_raw = data.get("fetch", {})
-    fetch_providers = fetch_raw.get("providers", ["open_websearch"])
-    if not isinstance(fetch_providers, list):
-        fetch_providers = ["open_websearch"]
-    fetch = FetchConfig(providers=[str(item) for item in fetch_providers if str(item).strip()])
-    return Config(
-        vault=Path(vault_raw).expanduser(),
-        llm=llm,
-        chat=chat,
-        git=git,
-        retrieval=retrieval,
-        search=search,
-        fetch=fetch,
-        confidence_threshold=float(data.get("confidence_threshold", 0.8)),
-        auto_push=bool(data.get("auto_push", False)),
-        runtime=data.get("runtime", ""),
-    )
+    config._baseline = _settings_data(config)
+    return config
 
 
-def usage_limits_toml(limits: dict[str, "UsageLimit"]) -> str:
-    """把 usage_limits 序列化成 TOML 段；空配置返回空串。"""
-    parts = []
-    for name, limit in limits.items():
-        parts.append(
-            f"\n[search.usage_limits.{name}]\ndaily = {limit.daily}\nmonthly = {limit.monthly}\n"
+def load_config(path: Path | str | None = None) -> Config:
+    entry = Path(path).expanduser() if path else default_config_path()
+    layout = ConfigFiles(entry)
+    defaults = package_defaults()
+    required = path is not None or bool(os.environ.get("SYVRIO_CONFIG"))
+    if required and not entry.exists() and not layout.journal.exists():
+        raise ConfigError(f"指定的入口配置文件不存在：{entry}")
+    with layout.lock:
+        overrides, legacy = layout.read()
+        if required and not entry.exists():
+            raise ConfigError(f"指定的入口配置文件不存在：{entry}")
+        if legacy:
+            llm = overrides.get("llm")
+            if (
+                isinstance(llm, dict)
+                and "base_url" in llm
+                and "provider" not in llm
+                and isinstance(llm["base_url"], str)
+            ):
+                llm["provider"] = infer_provider(llm["base_url"])
+        config = _build(overrides, defaults, layout)
+        if legacy:
+            if "context_window" in overrides.get("chat", {}):
+                overrides["chat"]["context_window"] = config.chat.context_window
+            migrated = sparse(overrides, defaults)
+            if "vault" in overrides:
+                migrated["vault"] = overrides["vault"]
+            layout.write(migrated, initialize=True)
+        return config
+
+
+def _apply_changes(local: dict, before: dict, after: dict, defaults: dict) -> None:
+    """Update only fields edited by this caller, leaving concurrent independent edits intact."""
+    for key in before.keys() | after.keys():
+        if key in before and key in after and before[key] == after[key]:
+            continue
+        value = after.get(key)
+        if isinstance(value, dict) and isinstance(before.get(key), dict):
+            child = local.setdefault(key, {})
+            _apply_changes(child, before[key], value, defaults.get(key, {}))
+            if not child:
+                local.pop(key, None)
+        elif key not in after or value == defaults.get(key):
+            local.pop(key, None)
+        else:
+            local[key] = value
+
+
+def write_config(path: Path, config: Config) -> None:
+    layout = ConfigFiles(path)
+    defaults = package_defaults()
+    current = _settings_data(config)
+    with layout.lock:
+        local, legacy = layout.read()
+        if config._baseline is None:
+            before = _settings_data(_build(local, defaults, layout))
+            _apply_changes(local, before, current, defaults)
+            local["vault"] = config.vault.as_posix()
+        else:
+            if not path.exists():
+                raise ConfigError(f"指定的入口配置文件不存在：{path}")
+            _apply_changes(local, config._baseline, current, defaults)
+        _build(local, defaults, layout)
+        layout.write(
+            sparse(local, defaults) if legacy else local, initialize=legacy or not path.exists()
         )
-    return "".join(parts)
+    config._baseline = current
 
 
 def write_example_config(path: Path, vault: Path) -> None:
-    content = f"""# Syvrio 配置
-vault = {toml_literal(vault.as_posix())}
-runtime = "~/.syvrio/runtime"
-
-confidence_threshold = 0.8
-auto_push = false
-
-[git]
-# 每日定时 Commit + Push，仅在 TUI 运行时执行；错过的计划在下次启动补执行。
-auto_sync = true
-sync_time = {toml_literal("03:00")}
-retry_interval_minutes = 30
-
-[llm]
-provider = {toml_literal("deepseek")}
-base_url = {toml_literal(DEFAULT_BASE_URL)}
-model = {toml_literal(DEFAULT_MODEL)}
-api_key_env = {toml_literal(DEFAULT_API_KEY_ENV)}
-reasoning_effort = {toml_literal("")}
-spark_thinking = {toml_literal("")}
-provider_urls = {{}}
-recent_models = []
-num_retries = 2
-temperature = 0.1
-timeout = 60.0
-
-[chat]
-context_window = {DEFAULT_CONTEXT_WINDOW}
-reserve_output_tokens = 1500
-keep_recent_tokens = 6000
-compact_threshold = 0.8
-max_tool_steps = 8
-tool_timeout = 60.0
-auto_recall = 3
-recall_rewrite = true
-recall_context_turns = 2
-auto_reflect = true
-reflect_idle_seconds = 60.0
-reflect_interval_seconds = 300.0
-profile_auto_interval_hours = 168.0
-profile_min_cooldown_hours = 24.0
-profile_min_changes = 20
-dream_auto_interval_hours = 24.0
-extract_on_exit = true
-
-[retrieval]
-# keyword / vector / hybrid；hybrid 在向量后端不可用时自动回退 keyword
-method = {toml_literal("hybrid")}
-
-[retrieval.embedding]
-# local：fastembed 本地离线推理（uv sync --extra local-embed 安装）
-# api：把记忆文本发给 embedding 供应商换取向量（注意隐私）
-backend = {toml_literal("local")}
-model = {toml_literal(DEFAULT_EMBEDDING_MODEL)}
-# backend = "api" 时的示例：
-# provider = {toml_literal("siliconflow")}
-# base_url = {toml_literal(DEFAULT_EMBEDDING_BASE_URL)}
-# api_key_env = {toml_literal("SILICONFLOW_API_KEY")}
-
-[search]
-enabled = true
-providers = {toml_literal(["open_websearch"])}
-base_url = {toml_literal("http://127.0.0.1:3000")}
-timeout = 10.0
-max_results = 5
-cache_ttl = 86400
-# http：调用本地 daemon；mcp：每次搜索启动 npx MCP 进程
-transport = {toml_literal("http")}
-# 打开 TUI 时后台探测并拉起 HTTP daemon，不阻塞界面
-auto_start = true
-# 上游搜索引擎：bing / baidu / sogou / duckduckgo / brave / startpage 等
-engines = {toml_literal(["bing"])}
-# 抓取正文的单独超时（秒），比搜索慢
-fetch_timeout = 45.0
-# 一次搜索跨所有 provider 共享的请求次数上限；超出即返回当前最佳候选。
-max_requests = 9
-# AnySearch 的检索区域与语言；匿名和 Key 模式共用。
-anysearch_zone = "cn"
-anysearch_language = "zh-CN"
-# 自托管 SearXNG：需显式加入 providers；实例须启用 format=json。
-searxng_base_url = "http://127.0.0.1:8888"
-searxng_timeout = 10.0
-# 每厂商调用上限（Search/Fetch 共用同一计数池）；按需取消注释并修改。
-# 本地计数不等于服务商实际账单上限。
-# [search.usage_limits.tavily]
-# daily = 0  # 0 means no local request-count cap
-# monthly = 800
-# [search.usage_limits.anysearch]
-# daily = 20
-# [search.usage_limits.parallel_mcp]
-# daily = 20
-
-[fetch]
-# 网页抓取的 provider 顺序；与搜索的 providers 相互独立。
-providers = {toml_literal(["open_websearch"])}
-"""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(content, encoding="utf-8")
-    os.replace(tmp, path)
+    write_config(path, Config(vault=vault))

@@ -13,6 +13,14 @@ from ..time import format_local_timestamp, parse_timestamp, serialize_timestamp
 
 LOCAL_TIMEOUT = 15.0
 PUSH_TIMEOUT = 120.0
+# Keep the root directory name a glob. Git add treats a literal "archived/"
+# prefix as an explicitly requested ignored directory and exits with an error.
+ACTIVE_VAULT_PATHS = [
+    "--",
+    ".",
+    ":(top,glob,exclude)[a]rchived/**",
+    ":(top,glob,exclude)[a]rchive/**",
+]
 
 SENSITIVE_PATTERNS = (
     ".env",
@@ -28,6 +36,10 @@ SENSITIVE_PATTERNS = (
     "credentials*",
     "syvrio.toml",
     "config.toml",
+    "models.toml",
+    "chat.toml",
+    "memory.toml",
+    ".syvrio-config-transaction.json",
 )
 
 _AUTH_MARKERS = (
@@ -197,11 +209,13 @@ class GitRepo:
         return args
 
     def status_short(self) -> str:
-        return self._run(["status", "--short"]).stdout
+        return self._run(["status", "--short", *ACTIVE_VAULT_PATHS]).stdout
 
     def status_paths(self) -> list[str]:
         """工作区变更路径（含未跟踪文件）；重命名取新路径。"""
-        completed = self._run(["status", "--porcelain", "--untracked-files=all"])
+        completed = self._run(
+            ["status", "--porcelain", "--untracked-files=all", *ACTIVE_VAULT_PATHS]
+        )
         paths: list[str] = []
         for line in completed.stdout.splitlines():
             if len(line) < 4:
@@ -217,7 +231,7 @@ class GitRepo:
 
     def staged_paths(self) -> list[str]:
         """已进入索引的路径；`-z` 避免 Git 对空格/非 ASCII 路径加引号或转义。"""
-        completed = self._run(["diff", "--cached", "--name-only", "-z"])
+        completed = self._run(["diff", "--cached", "--name-only", "-z", *ACTIVE_VAULT_PATHS])
         return [item for item in completed.stdout.split("\x00") if item]
 
     @staticmethod
@@ -246,7 +260,7 @@ class GitRepo:
         return self._sensitive_in([*self.status_paths(), *self.staged_paths()])
 
     def has_staged(self) -> bool:
-        completed = self._run(["diff", "--cached", "--quiet"])
+        completed = self._run(["diff", "--cached", "--quiet", *ACTIVE_VAULT_PATHS])
         return completed.returncode == 1
 
     def has_changes(self) -> bool:
@@ -254,7 +268,7 @@ class GitRepo:
 
     def stage_all(self) -> None:
         self._require_own_repo()
-        self._run(["add", "-A"], check=True)
+        self._run(["add", "-A", *ACTIVE_VAULT_PATHS], check=True)
 
     def _index_path(self) -> Path:
         result = self._run(
@@ -306,15 +320,18 @@ class GitRepo:
             self._refuse_staged_sensitive()
             yield
         except GitError as exc:
-            if exc.kind == "sensitive":
+            if exc.kind in ("sensitive", "archive_staged"):
                 self._restore_index(index, previous, staged)
             raise
 
     def staged_stat(self) -> str:
-        return self._run(["diff", "--cached", "--stat"]).stdout
+        return self._run(["diff", "--cached", "--stat", *ACTIVE_VAULT_PATHS]).stdout
 
     def staged_diff(self, max_chars: int = 24000) -> str:
-        diff = self._run(["diff", "--cached", "--unified=1"]).stdout
+        # A moved transcript's deletion would otherwise send its old text to the model.
+        diff = self._run(
+            ["diff", "--cached", "--irreversible-delete", "--unified=1", *ACTIVE_VAULT_PATHS]
+        ).stdout
         return diff[:max_chars]
 
     def commit(self, message: str) -> str | None:
@@ -330,6 +347,12 @@ class GitRepo:
         return self._run(["rev-parse", "--short", "HEAD"]).stdout.strip()
 
     def _refuse_staged_sensitive(self) -> None:
+        # A manually staged archive must stay in the user's index without joining a managed commit.
+        if self._run(["diff", "--cached", "--quiet", "--", "archived", "archive"]).returncode == 1:
+            raise GitError(
+                "Archive changes are already staged. Finish that Git operation first.",
+                kind="archive_staged",
+            )
         sensitive = self.sensitive_staged_paths()
         if sensitive:
             paths = "、".join(sensitive[:5])

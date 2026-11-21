@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
 import threading
 
 import pytest
 
+from syvrio.agent.context import ContextManager
 from syvrio.agent.runtime import AgentRuntime
 from syvrio.agent.session import SessionStore
+from syvrio.application.channels import ConversationDirectory
 from syvrio.application.contracts import TurnCallbacks
 from syvrio.application.conversation import ConversationUseCases
+from syvrio.application.service import ApplicationService
 from syvrio.errors import SessionProtectedError
 from syvrio.infra.config import ChatConfig, Config, LLMConfig, RetrievalConfig
 from syvrio.llm import AssistantTurn
@@ -94,6 +98,91 @@ def test_turn_streams_in_order_and_binds_session(tmp_path):
     assert conv.end_turn(result.turn_id) is True
     assert conv.ask_active is False
     assert runtime.sessions.load(session.id).user_texts() == ["hello"]
+
+
+@pytest.mark.parametrize("fail_queued_start", [False, True])
+def test_application_owns_admitted_turns_across_views(tmp_path, monkeypatch, fail_queued_start):
+    runtime, _ = build(tmp_path, [])
+    runtime.model = GatedModel([AssistantTurn(content="answer") for _ in range(3)])
+    owner = ApplicationService(runtime, runtime.service)
+    scheduling = owner.conversation.scheduling
+
+    def new_channel():
+        sibling = AgentRuntime(runtime.service, runtime.model, runtime.sessions)
+        sibling.start()
+        return ApplicationService(
+            sibling,
+            runtime.service,
+            registry=scheduling.registry,
+            settings_lock=scheduling.settings_lock,
+        )
+
+    directory = ConversationDirectory(owner, new_channel)
+    channel, first = directory.submit("alice", "first", None)
+    sid = first.session_id
+    try:
+        assert runtime.model.entered.wait(5)
+        assert directory.select("bob", sid).id == sid
+        assert directory.channel("bob") is channel is owner
+        _, second = directory.submit("bob", "second", sid)
+        _, third = directory.submit("alice", "third", sid)
+        assert owner.conversation.active_turn is first
+        assert scheduling.registry.get(second.turn_id, sid) is second
+        assert owner.conversation.queue == [second, third]
+        assert [item.line for item in owner.conversation.queue_snapshot().items] == [
+            "second",
+            "third",
+        ]
+        assert not scheduling.cancel(second.turn_id)
+        directory.disconnect("alice")
+        assert directory.queue_state("bob")["active"]["turn_id"] == first.turn_id
+        if fail_queued_start:
+            start = threading.Thread.start
+
+            def fail_second(thread):
+                if thread.name == f"syvrio-turn-{second.turn_id}":
+                    raise RuntimeError("synthetic startup failure")
+                start(thread)
+
+            monkeypatch.setattr(threading.Thread, "start", fail_second)
+    finally:
+        runtime.model.release.set()
+    assert third.finished.wait(5)
+    assert scheduling.activity() == (False, None)
+    assert owner.conversation.queue_snapshot().count == 0
+
+    async def replay(turn):
+        return [event async for event in turn.events() if event is not None]
+
+    events = asyncio.run(replay(second))
+    assert [event.seq for event in events] == list(range(1, len(events) + 1))
+    assert events[-1].type == ("failed" if fail_queued_start else "done")
+    expected = ["first", "third"] if fail_queued_start else ["first", "second", "third"]
+    assert runtime.sessions.load(sid).user_texts() == expected
+
+
+def test_turn_settings_are_fixed_before_the_worker_starts(tmp_path, monkeypatch):
+    runtime, conv = build(tmp_path, [AssistantTurn(content="original model")])
+    budgets = []
+    prepare = ContextManager.prepare
+
+    def record_budget(manager, *args, **kwargs):
+        budgets.append(manager.config.context_window)
+        return prepare(manager, *args, **kwargs)
+
+    monkeypatch.setattr(ContextManager, "prepare", record_budget)
+    first = conv.begin_turn()
+    runtime.model = FakeModel([AssistantTurn(content="new model")])
+    runtime.config.context_window = 16000
+    original = conv.run_turn("first", TurnCallbacks(), first)
+    assert original.content == "original model"
+    assert conv.end_turn(original.turn_id)
+
+    second = conv.begin_turn()
+    updated = conv.run_turn("second", TurnCallbacks(), second)
+    assert updated.content == "new model"
+    assert conv.end_turn(updated.turn_id)
+    assert budgets == [32000, 16000]
 
 
 def test_fifo_queue_keeps_submit_order_and_session(tmp_path):
@@ -210,7 +299,8 @@ def test_delete_guard_protects_current_and_queued_sessions(tmp_path):
     other = runtime.sessions.create()
 
     allowed, reason = conv.delete_guard(current.id)
-    assert not allowed and "current" in reason
+    assert not allowed and "Archive" in reason
+    assert conv.archive_guard(current.id) == (True, None)
     allowed, reason = conv.delete_guard(other.id)
     assert allowed
 
@@ -223,10 +313,14 @@ def test_delete_guard_protects_current_and_queued_sessions(tmp_path):
 def test_refuses_session_delete_if_memory_was_written_during_confirmation(tmp_path, status):
     runtime, conv = build(tmp_path, [])
     target = runtime.sessions.create()
-    runtime.sessions.append(target, {"type": "message", "id": "m-source", "role": "user",
-                                     "content": "The original source"})
+    runtime.sessions.append(
+        target,
+        {"type": "message", "id": "m-source", "role": "user", "content": "The original source"},
+    )
     assert conv.delete_guard(target.id) == (True, None)
-    original = target.path.read_bytes()
+    conv.archive_session(target.id)
+    archived = runtime.sessions.load(target.id, archived=True).path
+    original = archived.read_bytes()
     with runtime.service.write_lock:
         fact = runtime.service.store.append(
             "personal", "Saved fact", extra={"session_id": target.id, "message_id": "m-source"}
@@ -234,7 +328,7 @@ def test_refuses_session_delete_if_memory_was_written_during_confirmation(tmp_pa
         runtime.service.store.set_status(fact.id, status)
     with pytest.raises(SessionProtectedError, match=fact.id):
         conv.delete_session(target.id)
-    assert target.path.read_bytes() == original
+    assert archived.read_bytes() == original
 
 
 def test_session_switch_new_resume_and_rename(tmp_path):

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import subprocess
 import threading
@@ -16,6 +17,7 @@ from syvrio.app.chat_input import BarInput
 from syvrio.app.chat_widgets import SidebarToggle
 from syvrio.app.command_catalog import SLASH_COMMANDS
 from syvrio.app.git_screen import GitConfirmScreen, GitScreen
+from syvrio.app.resident_tui import ResidentChatApp
 from syvrio.infra.config import (
     ChatConfig,
     Config,
@@ -72,7 +74,9 @@ async def test_attach_multiple_files_from_composer(tmp_path):
         await app.workers.wait_for_complete()
         await pilot.pause()
         stored = app.sessions.load(app.runtime.current.id)
-        assert [item["name"] for item in stored.messages[0]["attachments"]] == [p.name for p in docs]
+        assert [item["name"] for item in stored.messages[0]["attachments"]] == [
+            p.name for p in docs
+        ]
         assert app.sessions.verify_attachments() == (2, [])
 
 
@@ -83,7 +87,7 @@ async def test_inference_review_uses_worker_and_keeps_facts_separate(tmp_path):
 
     app = build_app(tmp_path, [])
     source = app.service.note("合成阅读偏好")
-    item = app.service.propose_inference("可能喜欢安静活动", [source.id])
+    item = app.service.propose_inference("可能喜欢安静活动", [source.id], kind="profile")
     async with app.run_test() as pilot:
         await asyncio.wait_for(app.workers.wait_for_complete(), timeout=30)
         app._command("/inferences")
@@ -121,10 +125,23 @@ async def _finish_inference_worker(app, pilot):
     await pilot.pause()
 
 
-async def test_inference_screen_empty_state(tmp_path):
-    app = build_app(tmp_path, [])
+async def _open_resident_inferences(app, pilot):
+    from syvrio.app.inference_screen import InferenceScreen
+
+    app.query_one("#input", Input).value = "/inferences"
+    await pilot.press("enter")
+    await _finish_inference_worker(app, pilot)
+    assert isinstance(app.screen, InferenceScreen)
+    return app.screen
+
+
+async def test_inference_screen_empty_state(resident_backend):
+    from syvrio.app.resident_tui import ResidentChatApp
+
+    _, client = resident_backend
+    app = ResidentChatApp(client)
     async with app.run_test(size=(100, 30)) as pilot:
-        screen = await _open_inferences(app, pilot)
+        screen = await _open_resident_inferences(app, pilot)
         assert screen.query_one("#inference-empty").display
         assert not screen.query_one("#inference-body").display
         assert not screen.query_one("#inference-actions").display
@@ -139,7 +156,7 @@ async def test_inference_screen_single_pending_confirm_refreshes_in_place(tmp_pa
 
     app = build_app(tmp_path, [])
     source = app.service.note("合成事实：喜欢安静活动")
-    item = app.service.propose_inference("可能喜欢安静活动", [source.id])
+    item = app.service.propose_inference("可能喜欢安静活动", [source.id], kind="profile")
     async with app.run_test(size=(120, 36)) as pilot:
         screen = await _open_inferences(app, pilot)
         assert screen._filter == "hypothesis"
@@ -172,7 +189,7 @@ async def test_inference_screen_single_pending_confirm_refreshes_in_place(tmp_pa
 async def test_inference_screen_edit_labels_and_shortcut_letters_in_editor(tmp_path):
     app = build_app(tmp_path, [])
     source = app.service.note("合成事实")
-    app.service.propose_inference("可能喜欢安静活动", [source.id])
+    app.service.propose_inference("可能喜欢安静活动", [source.id], kind="profile")
     async with app.run_test(size=(100, 30)) as pilot:
         screen = await _open_inferences(app, pilot)
         assert str(screen.query_one("#inference-correct", Button).label) == "Edit"
@@ -190,86 +207,108 @@ async def test_inference_screen_edit_labels_and_shortcut_letters_in_editor(tmp_p
         assert str(screen.query_one("#inference-hint").render()) == "Ctrl+S Save · Esc Cancel"
 
 
-async def test_inference_sources_use_one_fact_scan(tmp_path, monkeypatch):
-    app = build_app(tmp_path, [])
-    sources = [app.service.note(f"合成来源 {index}") for index in range(3)]
+async def test_inference_sources_use_one_fact_scan(service, resident_backend, monkeypatch):
+    from syvrio.app.resident_tui import ResidentChatApp
+
+    _, client = resident_backend
+    app = ResidentChatApp(client)
+    sources = [service.note(f"合成来源 {index}") for index in range(3)]
     for index in range(6):
-        app.service.propose_inference(f"合成推断 {index}", [sources[index % 3].id])
-    items = app.service.list_inferences()
-    monkeypatch.setattr(app.service, "list_inferences", lambda: items)
+        service.propose_inference(f"合成推断 {index}", [sources[index % 3].id], kind="profile")
     calls = []
-    entries = app.service.store.entries
+    entries = service.store.entries
 
     def counted_entries(*args, **kwargs):
         calls.append(kwargs)
         return entries(*args, **kwargs)
 
-    monkeypatch.setattr(app.service.store, "entries", counted_entries)
-    monkeypatch.setattr(
-        app.service.store, "find", lambda *_: pytest.fail("来源不得逐个 find 全库扫描")
-    )
+    monkeypatch.setattr(service.store, "entries", counted_entries)
+    monkeypatch.setattr(service.store, "find", lambda *_: pytest.fail("来源不得逐个 find 全库扫描"))
     async with app.run_test(size=(100, 30)) as pilot:
         await app.workers.wait_for_complete()
         before = len(calls)
-        screen = await _open_inferences(app, pilot)
+        screen = await _open_resident_inferences(app, pilot)
         assert len(calls) - before == 1
         assert calls[-1] == {"include_inactive": True}
-        assert "合成来源 0" in str(screen.query_one("#inference-detail-sources").render())
+        source_text = {entry.id: entry.text for entry in sources}
+        selected = screen._current()
+        assert source_text[selected.source_ids[0]] in str(
+            screen.query_one("#inference-detail-sources").render()
+        )
 
 
-async def test_inference_edit_failure_preserves_draft_and_retries(tmp_path, monkeypatch):
-    app = build_app(tmp_path, [])
-    source = app.service.note("合成事实")
-    item = app.service.propose_inference("原始假设", [source.id])
-    original_review = app.service.review_inference
+async def test_inference_edit_failure_preserves_draft_and_retries(
+    service, resident_backend, monkeypatch
+):
+    from syvrio.app.resident_tui import ResidentChatApp
 
-    def fail(*args, **kwargs):
-        raise ValueError("合成保存失败")
+    _, client = resident_backend
+    app = ResidentChatApp(client)
+    source = service.note("合成事实")
+    item = service.propose_inference("原始假设", [source.id], kind="profile")
+    request = client.request
 
-    monkeypatch.setattr(app.service, "review_inference", fail)
+    def fail_save(method, path, **kwargs):
+        if method == "POST" and path == "/api/commands":
+            raise OSError("Synthetic save failure")
+        return request(method, path, **kwargs)
+
     async with app.run_test(size=(100, 30)) as pilot:
-        screen = await _open_inferences(app, pilot)
+        screen = await _open_resident_inferences(app, pilot)
         await pilot.press("e")
         await pilot.pause()
         revised = "修改后的完整草稿\nSecond line with C R E letters."
         editor = screen.query_one("#inference-editor")
         editor.load_text(revised)
+        monkeypatch.setattr(client, "request", fail_save)
         await pilot.press("ctrl+s")
         await _finish_inference_worker(app, pilot)
         assert screen._editing and editor.display
         assert editor.text == revised
         assert editor.has_focus
-        assert "合成保存失败" in str(screen.query_one("#inference-message").render())
+        assert "Synthetic save failure" in str(screen.query_one("#inference-message").render())
         assert not screen.query_one("#inference-save", Button).disabled
+        assert service.list_inferences() == [item]
 
-        monkeypatch.setattr(app.service, "review_inference", original_review)
+        monkeypatch.setattr(client, "request", request)
         await pilot.press("ctrl+s")
         await _finish_inference_worker(app, pilot)
         assert not screen._editing
         assert screen._current().id != item.id
         assert screen._current().text == revised
-        assert "Edit saved as a new pending hypothesis." in str(
+        assert screen._filter == "confirmed"
+        assert "Edit saved as a confirmed inference." in str(
             screen.query_one("#inference-message").render()
         )
 
 
 async def test_inference_screen_filters_and_readonly_states(tmp_path):
+    from syvrio.memory.models import MemoryDraft
+
     app = build_app(tmp_path, [])
     source = app.service.note("合成事实：偏好简洁工具")
-    pending = app.service.propose_inference("待审查假设", [source.id])
-    confirmed = app.service.propose_inference("已确认假设", [source.id])
+    pending = app.service.propose_inference("待审查假设", [source.id], kind="profile")
+    confirmed = app.service.propose_inference("已确认假设", [source.id], kind="profile")
     app.service.review_inference(confirmed.id, "confirm")
-    rejected = app.service.propose_inference("已拒绝假设", [source.id])
+    rejected = app.service.propose_inference("已拒绝假设", [source.id], kind="profile")
     app.service.review_inference(rejected.id, "reject")
     superseded_source = app.service.note("将被更正的事实")
-    superseded = app.service.propose_inference("将失效的假设", [superseded_source.id])
-    app.service.correct(superseded_source.id, "更正后的事实")
+    retained = app.service.propose_inference(
+        "来源会被更正的假设", [superseded_source.id], kind="profile"
+    )
+    app.service.correct(
+        superseded_source.id, MemoryDraft(text="更正后的事实", topic="uncategorized")
+    )
 
     async with app.run_test(size=(120, 36)) as pilot:
         screen = await _open_inferences(app, pilot)
         filters = str(screen.query_one("#inference-filters").render())
-        for text in ("All 4", "Pending 1", "Confirmed 1", "Rejected 1", "Invalidated 1"):
+        for text in ("All 4", "Pending 2", "Confirmed 1", "Deprecated 1"):
             assert text in filters
+        from textual.widgets import OptionList
+
+        listing = screen.query_one("#inference-list", OptionList)
+        assert {option.id for option in listing.options} == {pending.id, retained.id}
 
         await pilot.press("right")  # Pending → Confirmed
         await pilot.pause()
@@ -278,23 +317,15 @@ async def test_inference_screen_filters_and_readonly_states(tmp_path):
         assert screen.query_one("#inference-confirm", Button).disabled
         assert not screen.query_one("#inference-reject", Button).disabled
 
-        await pilot.press("right")  # Confirmed → Rejected
+        await pilot.press("right")  # Confirmed → Deprecated
         await pilot.pause()
         assert screen._current().id == rejected.id
         assert all(button.disabled for button in screen.query("#inference-actions Button"))
         assert "Read-only record" in str(screen.query_one("#inference-detail-sources").render())
 
-        await pilot.press("right")  # Rejected → Invalidated
-        await pilot.pause()
-        assert screen._current().id == superseded.id
-        assert all(button.disabled for button in screen.query("#inference-actions Button"))
-
-        await pilot.press("right")  # Invalidated → All
+        await pilot.press("right")  # Deprecated → All
         await pilot.pause()
         assert screen._filter == "all"
-        from textual.widgets import OptionList
-
-        listing = screen.query_one("#inference-list", OptionList)
         assert len(listing.options) == 4
         assert pending.id in {option.id for option in listing.options}
 
@@ -310,7 +341,7 @@ async def test_inference_screen_long_text_and_long_source_ids(tmp_path):
         "[/x] 可能在做长期项目时偏好先搭建可验证的最小闭环，再逐步扩展功能；面对不确定需求时倾向先确认边界。"
         * 4
     )
-    app.service.propose_inference(long_text, [source.id])
+    app.service.propose_inference(long_text, [source.id], kind="profile")
     async with app.run_test(size=(120, 36)) as pilot:
         screen = await _open_inferences(app, pilot)
         assert str(screen.query_one("#inference-detail-text").render()) == long_text
@@ -347,15 +378,18 @@ async def test_inference_screen_long_text_and_long_source_ids(tmp_path):
         assert "Source unavailable" in sources
 
 
-async def test_inference_screen_reject_and_correct_full_text(tmp_path):
-    app = build_app(tmp_path, [])
-    source = app.service.note("合成事实：先确认边界")
-    item = app.service.propose_inference("可能偏好先确认需求边界", [source.id])
+async def test_inference_screen_reject_and_correct_full_text(service, resident_backend):
+    from syvrio.app.resident_tui import ResidentChatApp
+
+    _, client = resident_backend
+    app = ResidentChatApp(client)
+    source = service.note("合成事实：先确认边界")
+    item = service.propose_inference("可能偏好先确认需求边界", [source.id], kind="profile")
     async with app.run_test(size=(120, 36)) as pilot:
-        screen = await _open_inferences(app, pilot)
+        screen = await _open_resident_inferences(app, pilot)
         await pilot.press("r")
         await _finish_inference_worker(app, pilot)
-        assert app.service.list_inferences()[0].status == "rejected"
+        assert service.list_inferences()[0].status == "deprecated"
 
         screen._set_filter("all")
         await pilot.pause()
@@ -369,11 +403,9 @@ async def test_inference_screen_reject_and_correct_full_text(tmp_path):
         # 已拒绝不可再操作。
         assert all(button.disabled for button in screen.query("#inference-actions Button"))
 
-        editable = app.service.propose_inference("可能偏好分阶段交付", [source.id])
-        app._run_inference_review()  # 新推断经 worker 重新加载，界面内刷新
-        await _finish_inference_worker(app, pilot)
-        screen._set_filter("hypothesis")
-        await pilot.pause()
+        editable = service.propose_inference("可能偏好分阶段交付", [source.id], kind="profile")
+        await pilot.press("escape")
+        screen = await _open_resident_inferences(app, pilot)
         assert screen._current().id == editable.id
         await pilot.press("e")
         await pilot.pause()
@@ -385,11 +417,13 @@ async def test_inference_screen_reject_and_correct_full_text(tmp_path):
         editor.load_text(revised)
         await pilot.press("ctrl+s")
         await _finish_inference_worker(app, pilot)
-        records = {record.id: record for record in app.service.list_inferences()}
-        assert records[editable.id].status == "superseded"
+        records = {record.id: record for record in service.list_inferences()}
+        assert records[editable.id].status == "deprecated"
+        assert records[editable.id].text == editable.text
         current = screen._current()
         assert current is not None and current.id != editable.id
-        assert current.status == "hypothesis"
+        assert current.status == "confirmed"
+        assert current.source_ids == editable.source_ids
         assert current.text == revised  # 完整多行原文保留
         assert str(screen.query_one("#inference-detail-text").render()) == revised
         assert not screen._editing
@@ -400,7 +434,7 @@ async def test_inference_screen_correct_escape_cancels_then_closes(tmp_path):
 
     app = build_app(tmp_path, [])
     source = app.service.note("合成事实")
-    item = app.service.propose_inference("可能喜欢安静活动", [source.id])
+    item = app.service.propose_inference("可能喜欢安静活动", [source.id], kind="profile")
     async with app.run_test(size=(120, 36)) as pilot:
         screen = await _open_inferences(app, pilot)
         await pilot.press("e")
@@ -423,7 +457,7 @@ async def test_inference_screen_action_failure_keeps_screen_usable(tmp_path, mon
 
     app = build_app(tmp_path, [])
     source = app.service.note("合成事实")
-    app.service.propose_inference("可能喜欢安静活动", [source.id])
+    app.service.propose_inference("可能喜欢安静活动", [source.id], kind="profile")
 
     def fail(*args, **kwargs):
         raise ValueError("合成推断写入失败")
@@ -446,7 +480,9 @@ async def test_inference_screen_list_and_detail_scroll(tmp_path):
     app = build_app(tmp_path, [])
     source = app.service.note("合成事实")
     for index in range(12):
-        app.service.propose_inference(f"第{index}条待审查推断。" + "补充说明" * 80, [source.id])
+        app.service.propose_inference(
+            f"第{index}条待审查推断。" + "补充说明" * 80, [source.id], kind="profile"
+        )
     async with app.run_test(size=(100, 26)) as pilot:
         from textual.widgets import OptionList
 
@@ -457,7 +493,7 @@ async def test_inference_screen_list_and_detail_scroll(tmp_path):
         await pilot.pause()
         listing.scroll_end(animate=False)
         await pilot.pause()
-        assert screen._current().text.startswith("第11条")
+        assert screen._current().id == listing.options[11].id
         assert listing.scroll_y > 0  # 列表内部滚动，不撑破卡片
         detail = screen.query_one("#inference-detail-body")
         detail.scroll_end(animate=False)
@@ -476,7 +512,7 @@ async def test_inference_screen_reopen_and_responsive_layout(tmp_path):
     ):
         app = build_app(tmp_path / f"{size[0]}x{size[1]}", [])
         source = app.service.note("合成事实")
-        app.service.propose_inference("可能喜欢安静活动", [source.id])
+        app.service.propose_inference("可能喜欢安静活动", [source.id], kind="profile")
         async with app.run_test(size=size) as pilot:
             screen = await _open_inferences(app, pilot)
             assert screen.query_one("#inference-body").styles.layout.name == layout
@@ -504,9 +540,9 @@ async def test_inference_sync_updates_options_in_place(tmp_path):
 
     app = build_app(tmp_path, [])
     source = app.service.note("合成事实")
-    entries = [
-        app.service.propose_inference(f"合成假设 {index}", [source.id]) for index in range(5)
-    ]
+    for index in range(5):
+        app.service.propose_inference(f"合成假设 {index}", [source.id], kind="profile")
+    entries = app.service.list_inferences()
     sources = {source.id: source.text}
     async with app.run_test(size=(120, 36)) as pilot:
         screen = await _open_inferences(app, pilot)
@@ -548,174 +584,134 @@ async def test_inference_review_error_releases_input(tmp_path, monkeypatch):
         assert not app.query_one("#input", Input).disabled
 
 
-async def test_dream_background_allows_session_switch_and_cancellation(tmp_path, monkeypatch):
-    import asyncio
-    import threading
+async def test_dream_background_allows_session_switch_and_cancellation(
+    resident_backend, service, monkeypatch
+):
+    from syvrio.background_memory import dream
 
-    from syvrio.memory.models import ReflectionProposal
-
-    app = build_app(tmp_path, [])
-    source = app.service.note("合成回顾来源", topic="preferences")
+    owner, client = resident_backend
+    service.note("Synthetic source", topic="preferences")
+    other = owner._sessions.create()
     started, release = threading.Event(), threading.Event()
 
-    def model(mode, entries):
+    def generate(_, prompt, data, schema):
         started.set()
-        assert release.wait(10)
-        return [ReflectionProposal(text="可能偏好合成活动", source_ids=[source.id])]
+        assert release.wait(8)
+        return schema(summary="Cancelled summary")
 
-    monkeypatch.setattr(app.service.reflection, "_model", model)
+    monkeypatch.setattr(dream, "ask", generate)
+    app = ResidentChatApp(client)
     async with app.run_test() as pilot:
-        await asyncio.wait_for(app.workers.wait_for_complete(), timeout=30)
-        app._command("/dream 1")
         try:
-            assert await asyncio.to_thread(started.wait, 5)
-            assert not app.busy
+            await app._command("/dream 1", confirmed=True)
+            assert await asyncio.to_thread(started.wait, 15)
             assert not app.query_one("#input", Input).disabled
-            app._command("/new")
-            async with asyncio.timeout(5):
-                while app.busy:
-                    await pilot.pause()
-            app._command("/dream cancel")
+            await app._select(other.id)
+            assert app.sid == other.id
+            await app._command("/dream cancel")
+            assert owner._background.dream_status()["state"] == "cancelled"
         finally:
             release.set()
-        await asyncio.wait_for(app.workers.wait_for_complete(), timeout=30)
-        assert not app._reflection_pending
-        assert not app.service.inferences.all()
-
-
-async def test_profile_view_does_not_invoke_model(tmp_path, monkeypatch):
-    import asyncio
-
-    from syvrio.app.chat_widgets import ProfileScreen
-
-    app = build_app(tmp_path, [])
-    app.service.note("合成偏好", topic="preferences")
-    app.service.reflection.run(
-        "profile", 1, refresh_summary=True, summary_model=lambda payload: "缓存中的画像正文"
-    )
-    monkeypatch.setattr(
-        app.service.reflection, "_model", lambda *_: pytest.fail("查看不应调用模型")
-    )
-    monkeypatch.setattr(
-        app.service.reflection, "profile", lambda: pytest.fail("查看不得全量遍历画像")
-    )
-    async with app.run_test() as pilot:
-        app._command("/profile")
-        await asyncio.wait_for(app.workers.wait_for_complete(), timeout=30)
         await pilot.pause()
-        assert not app.busy
+    assert not service.profile.path.exists()
+    assert not service.list_inferences()
+
+
+async def test_profile_view_does_not_invoke_model(resident_backend, service, monkeypatch):
+    from syvrio.app.chat_widgets import ProfileScreen
+    from syvrio.background_memory import dream
+
+    owner, client = resident_backend
+    service.note("Synthetic preference", topic="preferences")
+    monkeypatch.setattr(
+        dream, "ask", lambda _, prompt, data, schema: schema(summary="Published profile")
+    )
+    # Stop at the boundary between publishing the profile and generating hypotheses.
+    owner._background.request_dream(1)
+    async with asyncio.timeout(8):
+        while owner._background.dream_status()["state"] != "paused":
+            await asyncio.sleep(0.02)
+    monkeypatch.setattr(dream, "ask", lambda *_: pytest.fail("Viewing a profile called a model"))
+    monkeypatch.setattr(
+        service, "current_facts", lambda: pytest.fail("Viewing a profile scanned facts")
+    )
+    app = ResidentChatApp(client)
+    async with app.run_test() as pilot:
+        await app._command("/profile")
+        await pilot.pause()
         assert isinstance(app.screen, ProfileScreen)
-        assert "缓存中的画像正文" in str(app.screen.query_one("#profile-text", Static).content)
+        assert str(app.screen.query_one("#profile-text", Static).content) == "Published profile"
         assert str(app.screen.query_one("#profile-title").render()) == "User Profile"
         assert str(app.screen.query_one("#profile-subtitle").render()) == "Personal memory overview"
-        assert str(app.screen.query_one("#profile-status").render()) == "Up to date"
+        assert "Last generated" in str(app.screen.query_one("#profile-status").render())
         metadata = str(app.screen.query_one("#profile-meta").render())
         assert "Generated " in metadata and "Facts 1" in metadata and "Unique 1" in metadata
-        assert (
-            str(app.screen.query_one("#profile-hint").render())
-            == "↑↓ Scroll · PgUp/PgDn Page · Esc Close"
-        )
+        hint = str(app.screen.query_one("#profile-hint").render())
+        assert hint == "↑↓ Scroll · PgUp/PgDn Page · Esc Close"
         await pilot.press("escape")
-        await pilot.pause()
         assert not isinstance(app.screen, ProfileScreen)
         assert app.query_one("#input", Input).has_focus
 
 
-async def test_profile_view_shows_empty_state_without_cache(tmp_path):
-    import asyncio
-
+async def test_profile_view_shows_empty_state_without_cache(resident_backend):
     from syvrio.app.chat_widgets import ProfileScreen
 
-    app = build_app(tmp_path, [])
+    _, client = resident_backend
+    app = ResidentChatApp(client)
     async with app.run_test() as pilot:
-        app._command("/profile")
-        await asyncio.wait_for(app.workers.wait_for_complete(), timeout=30)
+        await app._command("/profile")
         await pilot.pause()
         assert isinstance(app.screen, ProfileScreen)
-        assert "No profile summary yet" in str(
-            app.screen.query_one("#profile-text", Static).content
-        )
+        assert "Run /dream" in str(app.screen.query_one("#profile-text", Static).content)
         assert str(app.screen.query_one("#profile-status").render()) == "Not generated"
         assert not app.screen.query_one("#profile-meta").display
         await pilot.press("escape")
-        await pilot.pause()
-
-
-async def test_profile_view_marks_outdated_summary(tmp_path):
-    import asyncio
-
-    from syvrio.app.chat_widgets import ProfileScreen
-
-    app = build_app(tmp_path, [])
-    app.service.note("合成早期偏好", topic="preferences")
-    app.service.reflection.run(
-        "profile", 1, refresh_summary=True, summary_model=lambda payload: "旧画像"
-    )
-    path = app.service.store.topic_path("preferences")
-    path.write_text(
-        path.read_text(encoding="utf-8").replace("合成早期偏好", "合成后期偏好"), encoding="utf-8"
-    )
-    async with app.run_test() as pilot:
-        app._command("/profile")
-        await asyncio.wait_for(app.workers.wait_for_complete(), timeout=30)
-        await pilot.pause()
-        assert isinstance(app.screen, ProfileScreen)
-        assert "旧画像" in str(app.screen.query_one("#profile-text", Static).content)
-        assert "Outdated" in str(app.screen.query_one("#profile-status", Static).content)
-        await pilot.press("escape")
-        await pilot.pause()
-
-
-async def test_profile_view_reports_cache_read_failure(tmp_path, monkeypatch):
-    import asyncio
-
-    from syvrio.app.chat_widgets import ProfileScreen
-
-    app = build_app(tmp_path, [])
-    monkeypatch.setattr(
-        app.service.reflection,
-        "profile_summary",
-        lambda: (_ for _ in ()).throw(OSError("合成缓存故障")),
-    )
-    async with app.run_test(size=(80, 24)) as pilot:
-        app._command("/profile")
-        await asyncio.wait_for(app.workers.wait_for_complete(), timeout=30)
-        await pilot.pause()
-        assert isinstance(app.screen, ProfileScreen)
-        assert str(app.screen.query_one("#profile-status").render()) == "Cache unavailable"
-        assert "Could not read" in str(app.screen.query_one("#profile-text").content)
-        assert not app.screen.query_one("#profile-meta").display
-        await pilot.press("escape")
-        await pilot.pause()
         assert app.query_one("#input", Input).has_focus
 
 
-async def test_profile_long_mixed_text_scrolls_and_resizes(tmp_path):
-    import asyncio
-
+async def test_profile_view_keeps_published_summary_until_dream_runs(resident_backend, service):
     from syvrio.app.chat_widgets import ProfileScreen
 
-    app = build_app(tmp_path, [])
-    app.service.note("合成偏好", topic="preferences")
-    paragraphs = [
-        "日常阅读偏好清淡、简洁且可验证的信息组织方式，保留自然段落与适当留白。" * 12,
-        "For technical work, prefer small iterations, explicit evidence, Python 3.12 and Textual interfaces."
-        * 8,
-        "中英文与数字混排时保持完整语义，例如 120×36、80×24，以及 API、JSON、Markdown 等术语。"
-        * 12,
-        "最后一段用于验证滚动到底部后正文仍然完整，标题与底部快捷键提示不会随正文移动。" * 12,
-    ]
-    summary_text = "\n\n".join(paragraphs)
-    app.service.reflection.run(
-        "profile", 1, refresh_summary=True, summary_model=lambda payload: "短摘要"
+    _, client = resident_backend
+    service.profile.path.write_text("Previous profile", encoding="utf-8")
+    service.note("Subsequent fact", topic="preferences")
+    app = ResidentChatApp(client)
+    async with app.run_test() as pilot:
+        await app._command("/profile")
+        await pilot.pause()
+        assert isinstance(app.screen, ProfileScreen)
+        assert str(app.screen.query_one("#profile-text", Static).content) == "Previous profile"
+        assert str(app.screen.query_one("#profile-status", Static).content) == "Generated profile"
+        assert not app.screen.query_one("#profile-meta").display
+
+
+async def test_profile_view_reports_read_failure(resident_backend, service, monkeypatch):
+    _, client = resident_backend
+    service.profile.path.write_bytes(b"\xff")
+    app = ResidentChatApp(client)
+    notifications = []
+    monkeypatch.setattr(app, "notify", lambda message, **kwargs: notifications.append(message))
+    async with app.run_test() as pilot:
+        await app._command("/profile")
+        await pilot.pause()
+        assert notifications == ["Could not read the published profile."]
+        assert app.query_one("#input", Input).has_focus
+        assert service.profile.path.read_bytes() == b"\xff"
+
+
+async def test_profile_long_mixed_text_scrolls_and_resizes(resident_backend, service):
+    from syvrio.app.chat_widgets import ProfileScreen
+
+    _, client = resident_backend
+    summary_text = "\n\n".join(
+        f"Section {n} · 长段落用于验证滚动后正文完整、标题和底部提示保持可见。" * 3
+        for n in range(40)
     )
-    cache_path = app.service.reflection.summary_path
-    cached = json.loads(cache_path.read_text(encoding="utf-8"))
-    cached["text"] = summary_text
-    cache_path.write_text(json.dumps(cached, ensure_ascii=False), encoding="utf-8")
+    assert len(summary_text) > 2000
+    service.profile.path.write_text(summary_text, encoding="utf-8")
+    app = ResidentChatApp(client)
     async with app.run_test(size=(120, 36)) as pilot:
-        app._command("/profile")
-        await asyncio.wait_for(app.workers.wait_for_complete(), timeout=30)
+        await app._command("/profile")
         await pilot.pause()
         screen = app.screen
         assert isinstance(screen, ProfileScreen)
@@ -729,87 +725,67 @@ async def test_profile_long_mixed_text_scrolls_and_resizes(tmp_path):
             assert card.x >= 0 and card.y >= 0 and card.bottom <= height
             assert screen.query_one("#profile-title").region.bottom <= body.region.y
             hint = screen.query_one("#profile-hint").region
-            assert body.region.bottom <= hint.y
-            assert hint.bottom <= card.bottom
+            assert body.region.bottom <= hint.y and hint.bottom <= card.bottom
             body.scroll_end(animate=False)
             await pilot.pause()
             assert body.scroll_y > 0
             assert screen.query_one("#profile-hint").region == hint
             await pilot.press("pageup")
-            await pilot.pause()
-            assert body.scroll_y >= 0
-
         await pilot.press("escape")
-        await pilot.pause()
         assert app.query_one("#input", Input).has_focus
-        app._command("/profile")
-        await asyncio.wait_for(app.workers.wait_for_complete(), timeout=30)
+        await app._command("/profile")
         await pilot.pause()
-        assert isinstance(app.screen, ProfileScreen)
         assert str(app.screen.query_one("#profile-text").content) == summary_text
 
 
-async def test_profile_refresh_updates_cache_in_background(tmp_path, monkeypatch):
-    import asyncio
+async def test_dream_publishes_profile_in_background(resident_backend, service, monkeypatch):
+    from syvrio.background_memory import dream
 
-    app = build_app(tmp_path, [])
-    app.service.note("合成偏好", topic="preferences")
+    owner, client = resident_backend
+    service.note("Synthetic preference", topic="preferences")
     monkeypatch.setattr(
-        app.service.reflection, "_summary_model", lambda payload: "刷新后的画像摘要"
+        dream, "ask", lambda _, prompt, data, schema: schema(summary="Updated profile")
     )
-    monkeypatch.setattr(app.service.reflection, "_model", lambda *_: [])
+    app = ResidentChatApp(client)
     async with app.run_test() as pilot:
-        app._command("/profile refresh 1")
-        await asyncio.wait_for(app.workers.wait_for_complete(), timeout=30)
-        await pilot.pause()
-        assert not app.busy
+        await app._command("/dream 1", confirmed=True)
+        async with asyncio.timeout(8):
+            while not service.profile.path.exists():
+                await pilot.pause(0.05)
         assert not app.query_one("#input", Input).disabled
-        assert app.service.reflection.profile_summary().text == "刷新后的画像摘要"
+        assert service.profile.read_text().strip() == "Updated profile"
         cards = [str(card.content) for card in app.query(".card")]
-        assert any("Profile summary: updated" in text for text in cards)
+        assert any("Dream submitted" in text for text in cards)
+        assert owner._background.dream_status()["phase"] == "hypotheses"
 
 
-async def test_profile_refresh_does_not_block_chat_while_running(tmp_path, monkeypatch):
-    import asyncio
+async def test_profile_remains_readable_while_dream_runs(resident_backend, service, monkeypatch):
+    from syvrio.background_memory import dream
 
-    app = build_app(tmp_path, [])
-    app.service.note("合成偏好", topic="preferences")
+    _, client = resident_backend
+    service.note("Synthetic preference", topic="preferences")
+    service.profile.path.write_text("Current profile", encoding="utf-8")
     started, release = threading.Event(), threading.Event()
 
-    def slow_summary(payload):
+    def slow_summary(_, prompt, data, schema):
         started.set()
-        assert release.wait(10)
-        return "慢速画像摘要"
+        assert release.wait(8)
+        return schema(summary="Next profile")
 
-    monkeypatch.setattr(app.service.reflection, "_summary_model", slow_summary)
-    try:
-        async with app.run_test() as pilot:
-            app._command("/profile refresh 1")
+    monkeypatch.setattr(dream, "ask", slow_summary)
+    app = ResidentChatApp(client)
+    async with app.run_test() as pilot:
+        try:
+            await app._command("/dream 1", confirmed=True)
             assert await asyncio.to_thread(started.wait, 5)
-            assert not app.busy
             assert not app.query_one("#input", Input).disabled
-            app._command("/profile")
-            for _ in range(100):
-                await pilot.pause()
-                if app.screen.query("#profile-text"):
-                    break
-            # 摘要生成中仍可打开当前缓存视图（此时应显示空状态）。
-            assert "No profile summary yet" in str(
-                app.screen.query_one("#profile-text", Static).content
-            )
+            await app._command("/profile")
+            await pilot.pause()
+            assert str(app.screen.query_one("#profile-text", Static).content) == "Current profile"
             await pilot.press("escape")
+            assert app.query_one("#input", Input).has_focus
+        finally:
             release.set()
-            await asyncio.wait_for(app.workers.wait_for_complete(), timeout=30)
-    finally:
-        release.set()
-
-
-
-
-
-
-
-
 
 
 def build_app(tmp_path, turns, extract_on_exit=False, search=None, git=None):
@@ -1081,20 +1057,23 @@ async def test_assistant_markdown_can_be_selected_and_copied(tmp_path, restored)
         assert not reply.query("*")
 
 
-async def test_resume_session_does_not_show_success_notification(tmp_path, monkeypatch):
-    app = build_app(tmp_path, [])
-    # 只观察恢复动作；启动补记线程可能稍后发出独立的自动提交通知。
-    monkeypatch.setattr(app, "_run_catchup", lambda: None)
-    session = app.sessions.create()
-    app.sessions.append(session, {"type": "assistant", "content": "合成历史回复"})
-    async with app.run_test(size=(120, 40)) as pilot:
-        notifications = []
-        monkeypatch.setattr(app, "notify", lambda message, **kwargs: notifications.append(message))
-        app._switch_session(session.id)
-        await _wait_reply(app, pilot)
-        assert app.runtime.current.id == session.id
-        assert not notifications
-        assert not app.query_one("#input", Input).disabled
+async def test_resume_session_does_not_show_success_notification(resident_backend, monkeypatch):
+    from textual.selection import SELECT_ALL
+
+    from syvrio.app.resident_tui import ResidentChatApp
+
+    owner, client = resident_backend
+    session = owner._sessions.create()
+    owner._sessions.append(session, {"type": "assistant", "content": "A previous reply"})
+    app = ResidentChatApp(client)
+    async with app.run_test() as pilot:
+        notices = []
+        monkeypatch.setattr(app, "notify", lambda message, **kwargs: notices.append(message))
+        await app._select(session.id)
+        await pilot.pause()
+        assert app.sid == session.id
+        assert "A previous reply" in app.query_one(".reply").get_selection(SELECT_ALL)[0]
+        assert not notices and not app.query_one("#input", Input).disabled
 
 
 async def test_reply_selection_tracks_stream_updates_and_resize(tmp_path):
@@ -1169,7 +1148,8 @@ async def test_context_estimation_uses_worker_cache_and_rejects_stale_results(
     calls = []
     main_thread = threading.get_ident()
 
-    def estimate(snapshot, prompt):
+    def estimate(snapshot, prompt, tool_tokens):
+        assert tool_tokens > 0
         calls.append(threading.get_ident())
         entered.set()
         assert release.wait(5)
@@ -1306,10 +1286,10 @@ async def test_tab_completes_highlighted_command_without_executing(tmp_path, mon
 @pytest.mark.parametrize(
     ("partial", "completed"),
     [
-        ("/profile r", "/profile refresh"),
+        ("/dream r", "/dream resume"),
         ("/model re", "/model refresh"),
         ("/dream ca", "/dream cancel"),
-        ("/profile refresh 3", "/profile refresh 3"),
+        ("/dream 3", "/dream 3"),
         ("/rename my notes", "/rename my notes"),
         ("ordinary text", "ordinary text"),
     ],
@@ -1331,13 +1311,13 @@ async def test_tab_completes_command_then_subcommand(tmp_path, monkeypatch):
     monkeypatch.setattr(app, "_command", commands.append)
     async with app.run_test() as pilot:
         widget = app.query_one("#input", Input)
-        await pilot.press("slash", "p", "r", "o", "tab")
-        assert widget.value == "/profile "
+        await pilot.press("slash", "m", "o", "d", "tab")
+        assert widget.value == "/model "
         await pilot.press("tab")
-        assert widget.value == "/profile refresh"
+        assert widget.value == "/model refresh"
         assert not commands
         await pilot.press("enter")
-        assert commands == ["/profile refresh"]
+        assert commands == ["/model refresh"]
 
 
 @pytest.mark.parametrize("prefix", ["/", "/rename"])
@@ -2244,33 +2224,33 @@ async def test_compact_failure_releases_busy(tmp_path):
         assert "Compaction failed" in str(app.query(".card")[-1].render())
 
 
-async def test_session_switch_failure_releases_busy(tmp_path):
-    # 回归：resume 抛异常（会话文件损坏等）时同样不能卡死输入框。
-    app = build_app(tmp_path, [])
-    app.runtime.config.extract_on_exit = True
-    session = app.runtime.ensure_session()
-    app.runtime.sessions.append(
-        session,
-        {"type": "message", "id": new_message_id(), "role": "user", "content": "合成陈述"},
-    )
-    async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
+async def test_session_switch_failure_releases_busy(resident_backend, monkeypatch):
+    from textual.selection import SELECT_ALL
 
-        def boom(session_id, **kwargs):
-            raise KeyError("会话不存在：s-xxx")
+    from syvrio.app.resident_tui import ResidentChatApp
 
-        app.runtime.resume = boom
-        app._switch_session("s-20260101-000000-dead")
-        for _ in range(100):
-            await pilot.pause()
-            if not app.busy:
+    owner, client = resident_backend
+    original = owner._sessions.create()
+    owner._runtime.model = FakeChatModel([AssistantTurn(content="still available")])
+    app = ResidentChatApp(client, original.id)
+    async with app.run_test() as pilot:
+        notices = []
+        monkeypatch.setattr(app, "notify", lambda message, **kwargs: notices.append(message))
+        app._run_request(app._select("s-20260101-000000-dead"))
+        await app.workers.wait_for_complete()
+        assert any("Session not found" in message for message in notices)
+        assert app.sid == original.id and not app.query_one("#input", Input).disabled
+        app.query_one("#input", Input).value = "after failed switch"
+        await pilot.press("enter")
+        for _ in range(80):
+            await pilot.pause(0.05)
+            if any(
+                "still available" in widget.get_selection(SELECT_ALL)[0]
+                for widget in app.query(".reply")
+            ):
                 break
-        assert app.busy is False
-        assert app.query_one("#input", Input).disabled is False
-        assert "Session switch failed" in str(app.query(".card")[-1].render())
-        assert app.runtime.current is session
-        app.runtime.close()
-        assert any(record.get("type") == "distilled" for record in session.records)
+        assert owner._sessions.load(original.id).user_texts() == ["after failed switch"]
+        assert "still available" in app.query_one(".reply").get_selection(SELECT_ALL)[0]
 
 
 async def test_resuming_torn_session_shows_recovery_notice_and_continues(tmp_path):
@@ -2345,7 +2325,7 @@ async def test_session_switch_updates_sidebar_without_reload(tmp_path, monkeypat
         assert [item.row["id"] for item in current] == [ids[0]]
 
 
-async def test_delete_session_uses_captured_row(tmp_path):
+async def test_archive_uses_captured_row(tmp_path):
     # 回归：确认弹窗期间列表被刷新时，仍删除弹窗捕获的那条会话（不读高亮项）。
     app = build_app(tmp_path, [])
     async with app.run_test(size=(120, 40)) as pilot:
@@ -2374,8 +2354,8 @@ async def test_delete_session_uses_captured_row(tmp_path):
         await pilot.pause()
         # 模态打开期间模拟列表刷新（如后台回复完成后的 refresh_sessions）。
         app.refresh_sessions()
-        # 默认第一项是 Cancel；显式选择 Delete permanently 才执行。
-        assert "cannot be undone" in str(app.screen.query_one(".pick-title").render())
+        # 默认第一项是 Cancel；显式选择 Archive 才执行。
+        assert "to Archive" in str(app.screen.query_one(".pick-title").render())
         app.screen.query_one("#pick-list").index = 1
         await pilot.press("enter")
         for _ in range(100):
@@ -2383,7 +2363,7 @@ async def test_delete_session_uses_captured_row(tmp_path):
             if not store.exists(row["id"]):
                 break
 
-        assert not store.exists(session.id)
+        assert not store.exists(session.id) and store.exists(session.id, archived=True)
         assert store.exists(survivor.id)
         from syvrio.app.chat_widgets import SessionItem
 
@@ -2397,8 +2377,8 @@ async def test_delete_session_uses_captured_row(tmp_path):
         assert remaining == [survivor.id]
 
 
-async def test_delete_confirmation_rechecks_current_session(tmp_path):
-    # 回归：弹窗期间目标变成当前会话时，确认也不能删除它。
+async def test_archive_confirmation_allows_idle_current_session(tmp_path):
+    # 回归：弹窗期间目标变为当前只读会话，仍可归档。
     app = build_app(tmp_path, [])
     store = app.sessions
     session = store.create()
@@ -2417,7 +2397,7 @@ async def test_delete_confirmation_rechecks_current_session(tmp_path):
         app._delete_session_result(row, True)
         await pilot.pause()
 
-        assert store.exists(session.id)
+        assert store.exists(session.id, archived=True) and not store.exists(session.id)
 
 
 async def test_session_delete_failure_keeps_file_and_ui_usable(tmp_path, monkeypatch):
@@ -2428,15 +2408,15 @@ async def test_session_delete_failure_keeps_file_and_ui_usable(tmp_path, monkeyp
     monkeypatch.setattr(app, "notify", lambda message, **kwargs: notifications.append(message))
     monkeypatch.setattr(
         app.sessions,
-        "delete",
+        "set_archived",
         lambda *_: (_ for _ in ()).throw(OSError("synthetic delete failure")),
     )
     async with app.run_test(size=(80, 24)) as pilot:
         app._delete_session_result(row, True)
         await pilot.pause()
         assert app.sessions.exists(session.id)
-        assert any("Session could not be deleted" in message for message in notifications)
-        assert "Session deleted." not in notifications
+        assert any("Session could not be archived" in message for message in notifications)
+        assert "Session archived." not in notifications
         assert not app.query_one("#input", Input).disabled
 
 
@@ -2723,18 +2703,21 @@ async def test_session_picker_escape_and_arrow_navigation_with_rail(tmp_path):
         assert app.query_one("#input", Input).has_focus
 
 
-async def test_startup_commits_dirty_vault_without_crashed_sessions(tmp_path):
-    # 回归：没有漏沉淀会话时，启动检查仍应提交未保存的 vault 变更。
-    import asyncio
+def test_startup_commits_dirty_vault_without_crashed_sessions(service):
+    from syvrio.app.web.backend import WebBackend
 
-    app = build_app(tmp_path, [])
-    app.service.note("启动前未提交的变更", topic="misc")
-    async with app.run_test(size=(120, 40)) as pilot:
-        # 先等待启动 worker 完成，再验证落盘结果，避免 Git 用时随负载波动。
-        await asyncio.wait_for(app.workers.wait_for_complete(), timeout=30)
-        await pilot.pause()
-        assert app.busy is False
-        assert not app.service.repo.has_changes()
+    service.config.git.auto_sync = False
+    service.config.search.auto_start = False
+    service.init_vault()
+    service.note("Uncommitted synthetic fact", topic="misc")
+    assert service.repo.has_changes()
+    owner = WebBackend(service=service)
+    owner.startup()
+    try:
+        assert not owner.health().busy
+        assert not service.repo.has_changes()
+    finally:
+        owner.shutdown()
 
 
 async def test_chat_scrollbar_is_thin(tmp_path):
@@ -2795,24 +2778,61 @@ async def test_input_cursor_is_vertical_bar(tmp_path):
         assert "│" not in widget.render_line(0).text
 
 
-async def test_auto_start_warms_search_in_background(tmp_path, monkeypatch):
+def test_auto_start_warms_search_in_background(service, monkeypatch):
+    from syvrio.app.web.backend import WebBackend
+
+    started, release = threading.Event(), threading.Event()
     calls = []
+
+    def warm(base_url):
+        calls.append(base_url)
+        started.set()
+        assert release.wait(8)
+        return "running"
+
+    service.config.search = SearchConfig(enabled=True, auto_start=True)
+    service.config.git.auto_sync = False
+    monkeypatch.setattr("syvrio.application.service.ensure_search_daemon", warm)
+    owner = WebBackend(service=service)
+    owner.startup()
+    try:
+        assert started.wait(5)
+        assert not owner.health().busy
+        other = owner._sessions.create()
+        assert owner.switch_session(other.id).session_id == other.id
+        assert calls == [service.config.search.base_url]
+    finally:
+        release.set()
+        owner.shutdown()
+
+
+def test_search_warmup_thread_unavailable_keeps_backend_usable(service, monkeypatch):
+    from syvrio.app.web.backend import WebBackend
+
+    original_start = threading.Thread.start
+    errors = []
+
+    def start(thread):
+        if thread.name == "syvrio-search-warmup":
+            raise RuntimeError("unavailable")
+        original_start(thread)
+
+    service.config.git.auto_sync = False
+    monkeypatch.setattr(threading.Thread, "start", start)
     monkeypatch.setattr(
-        "syvrio.application.service.ensure_search_daemon",
-        lambda base_url: calls.append(base_url) or "running",
+        "syvrio.backend.channel.record_event", lambda event, exc: errors.append(event)
     )
-    app = build_app(
-        tmp_path,
-        [],
-        search=SearchConfig(enabled=True, auto_start=True),
-    )
-    async with app.run_test(size=(120, 40)) as pilot:
-        for _ in range(100):
-            await pilot.pause()
-            if calls:
-                break
-        assert calls == ["http://127.0.0.1:3000"]
-        assert app.busy is False
+    owner = WebBackend(service=service)
+    owner.startup()
+    try:
+        assert not owner.health().busy
+        assert errors == ["backend.startup_hook_failed"]
+    finally:
+        owner.shutdown()
+    # A clean successor can acquire the same Vault and Runtime.
+    successor = WebBackend(service=service)
+    successor.startup()
+    successor.shutdown()
 
 
 async def test_new_session_click_queues_while_busy(tmp_path):
@@ -2836,60 +2856,155 @@ async def test_new_session_click_queues_while_busy(tmp_path):
         assert app.busy is False
 
 
-async def test_startup_catchup_shows_card_for_crashed_session(tmp_path):
-    # 回归：启动检查发现异常终止的会话时，补记并显示卡片；无欠账时保持沉默。
-    import asyncio
+async def test_startup_catchup_advances_crashed_session_cursor(service, monkeypatch):
+    from syvrio.app.web.backend import WebBackend
+    from syvrio.background_memory import distillation
 
-    app = build_app(tmp_path, [AssistantTurn(content="好")], extract_on_exit=True)
-    crashed = app.sessions.create()
-    app.sessions.append(
-        crashed,
-        {"type": "message", "id": new_message_id(), "role": "user", "content": "中断前说的话"},
+    service.config.git.auto_sync = False
+    service.config.search.auto_start = False
+    service.init_vault()
+    sessions = SessionStore(service.paths)
+    crashed = sessions.create()
+    message_id = new_message_id()
+    sessions.append(
+        crashed, {"type": "message", "id": message_id, "role": "user", "content": "Synthetic fact"}
     )
-    async with app.run_test(size=(120, 40)) as pilot:
-        await asyncio.wait_for(app.workers.wait_for_complete(), timeout=30)
-        await pilot.pause()
-        assert app.busy is False
-        assert app.query_one("#input", Input).disabled is False
-        cards = [str(widget.render()) for widget in app.query(".card")]
-        assert any("Consolidated 1 unfinished session(s)" in card for card in cards)
-        assert app.runtime.consolidate_pending()["scanned"] == 0  # 已标记，不会重复
+    calls = []
+
+    def extract(*_):
+        calls.append(message_id)
+        return distillation.Result(memories=[])
+
+    monkeypatch.setattr(distillation, "ask", extract)
+    owner = WebBackend(service=service)
+    owner.startup()
+    try:
+        async with asyncio.timeout(8):
+            while sessions.load(crashed.id).undistilled_messages():
+                await asyncio.sleep(0.02)
+        assert not owner.health().busy
+        assert not sessions.unconsolidated(limit=10)
+        assert calls == [message_id]
+    finally:
+        owner.shutdown()
+
+
+async def _open_resident_pending(app, pilot, line="/pending"):
+    from syvrio.app.pending_screen import PendingScreen
+
+    app.query_one("#input", Input).value = line
+    await pilot.press("enter")
+    await app.workers.wait_for_complete()
+    await pilot.pause()
+    assert isinstance(app.screen, PendingScreen)
+    return app.screen
+
+
+async def test_pending_direct_edit_opens_full_text_and_confirms_unchanged(
+    service, resident_backend
+):
+    from textual.widgets import TextArea
+
+    from syvrio.app.chat_widgets import PickScreen
+    from syvrio.memory.models import MemoryDraft
+
+    app = ResidentChatApp(resident_backend[1])
+    service.create_pending(MemoryDraft(text="Another candidate", topic="review"), "Keep it?", [])
+    item = service.create_pending(
+        MemoryDraft(text="Original text\nSecond line", topic="review"), "Keep it?", []
+    )
+    async with app.run_test() as pilot:
+        screen = await _open_resident_pending(app, pilot, f"/pending edit {item.id}")
+        assert screen.query_one(TextArea).text == item.text
+        await pilot.press("ctrl+s")
+        assert isinstance(app.screen, PickScreen)
+        assert app.screen.query_one("#pick-detail-text", Static).content == item.text
+        await pilot.press("escape")
+        assert app.screen is screen and service.queue.get(item.id) == item
+        await pilot.press("ctrl+s", "down", "enter")
+        await app.workers.wait_for_complete()
+        assert service.queue.get(item.id) is None
+        assert [entry.text for entry in service.current_facts()] == [item.text]
+
+
+@pytest.mark.parametrize("accepted_first", [False, True])
+async def test_resident_redelivery_preserves_next_draft_and_sends_once(
+    resident_backend, monkeypatch, accepted_first
+):
+    import httpx
+
+    _, client = resident_backend
+    original = client._submit
+    entered, release = threading.Event(), threading.Event()
+    attempts = []
+
+    def disconnect(message, sid, files, delivery):
+        attempts.append(delivery)
+        if len(attempts) == 1:
+            if accepted_first:
+                original(message, sid, files, delivery)
+            entered.set()
+            assert release.wait(5)
+        if len(attempts) <= 2:
+            raise httpx.ReadError("Synthetic connection loss")
+        return original(message, sid, files, delivery)
+
+    monkeypatch.setattr(client, "_submit", disconnect)
+    app = ResidentChatApp(client)
+    async with app.run_test() as pilot:
+        widget = app.query_one("#input", Input)
+        widget.value = "First message"
+        await pilot.press("enter")
+        try:
+            assert await asyncio.to_thread(entered.wait, 5)
+            widget.value = "New unsent draft"
+        finally:
+            release.set()
+        await app.workers.wait_for_complete()
+        assert app._unsent and widget.value == "New unsent draft"
+        await pilot.press("ctrl+r")
+        await app.workers.wait_for_complete()
+        rows = client.request("GET", f"/api/sessions/{app.sid}")["items"]
+        assert [row["content"] for row in rows if row["role"] == "user"] == ["First message"]
+        assert len(attempts) == 3 and len(set(attempts)) == 1
+        assert widget.value == "New unsent draft" and not app._unsent
 
 
 @pytest.mark.parametrize("action", ["approve", "reject"])
-async def test_pending_decision_keeps_tui_responsive(tmp_path, monkeypatch, action):
-    from syvrio.app.pending_screen import PendingScreen
-    from syvrio.memory.models import Candidate, PendingItem
+async def test_pending_decision_keeps_tui_responsive(
+    service, resident_backend, monkeypatch, action
+):
+    from syvrio.app.chat_widgets import PickScreen
+    from syvrio.app.resident_tui import ResidentChatApp
+    from syvrio.memory.models import MemoryDraft
 
-    app = build_app(tmp_path, [])
+    _, client = resident_backend
+    app = ResidentChatApp(client)
+    related = service.add(MemoryDraft(text="An existing preference", topic="preferences"))
     item, remaining = [
-        PendingItem.from_candidate(
-            Candidate(text=text, topic="preferences", confidence=0.5), "chat", "low confidence"
+        service.create_pending(
+            MemoryDraft(text=text, topic="preferences"), "Keep this preference?", [related.id]
         )
         for text in ("Synthetic first preference", "Synthetic second preference")
     ]
-    app.service.queue.add(item)
-    app.service.queue.add(remaining)
     started, release = threading.Event(), threading.Event()
-    decide = getattr(app.service, action)
+    decide = getattr(service, action)
 
     def delayed_decision(*args, **kwargs):
         started.set()
-        assert release.wait(5)
+        assert release.wait(10)
         return decide(*args, **kwargs)
 
-    monkeypatch.setattr(app.service, action, delayed_decision)
+    monkeypatch.setattr(service, action, delayed_decision)
+    notifications = []
+    monkeypatch.setattr(app, "notify", lambda message, **kwargs: notifications.append(message))
     async with app.run_test(size=(120, 40)) as pilot:
         widget = app.query_one("#input", Input)
-        widget.value = "/pending"
-        await pilot.press("enter")
-        for _ in range(50):
-            await pilot.pause()
-            if isinstance(app.screen, PendingScreen):
-                break
-        assert isinstance(app.screen, PendingScreen)
-        assert app.pending_count == 2
-        screen = app.screen
+        screen = await _open_resident_pending(app, pilot)
+        assert screen.query_one("#pending-count", Static).content == "Pending 2"
+        assert screen.query_one("#pending-reason", Static).content == (
+            f"Keep this preference?\n{related.id}"
+        )
         try:
             await pilot.press("r" if action == "reject" else "c")
             for _ in range(50):
@@ -2897,60 +3012,148 @@ async def test_pending_decision_keeps_tui_responsive(tmp_path, monkeypatch, acti
                     break
                 await pilot.pause()
             assert started.is_set()
-            assert app._pending_review_busy
+            assert screen.query_one("#pending-approve", Button).disabled
             assert app.screen is screen
             if action == "reject":
                 await pilot.press("escape")
                 widget.value = "/help"
                 await pilot.press("enter")
-                assert any("Commands" in str(card.render()) for card in app.query(".card"))
-                assert app._pending_review_busy
+                for _ in range(50):
+                    if isinstance(app.screen, PickScreen):
+                        break
+                    await pilot.pause()
+                assert isinstance(app.screen, PickScreen)
+                assert app.screen.query_one(".pick-title", Static).content == "Commands"
         finally:
             release.set()
-        for _ in range(100):
-            await pilot.pause()
-            if not app._pending_review_busy:
-                break
-        assert [pending.id for pending in app.service.pending()] == [remaining.id]
-        assert app.service.store.has_text(item.text) == (action == "approve")
-        assert app.pending_count == 1
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert [pending.id for pending in service.pending()] == [remaining.id]
+        assert {entry.text for entry in service.current_facts()} == (
+            {related.text, item.text} if action == "approve" else {related.text}
+        )
         if action == "approve":
             assert app.screen is screen
+            assert screen.query_one("#pending-count", Static).content == "Pending 1"
             assert screen.query_one("#pending-text", Static).content == remaining.text
-            assert "Saved" in str(screen.query_one("#pending-message", Static).content)
-            await pilot.press("escape")
+            assert "approve applied" in str(screen.query_one("#pending-message", Static).content)
         else:
-            assert app.screen is app.default_screen
-            assert any("Rejected" in str(card.render()) for card in app.query(".card"))
+            assert isinstance(app.screen, PickScreen)
+            assert any("reject applied" in message for message in notifications)
+            assert item.text in service.queue.resolved_path.read_text(encoding="utf-8")
+        await pilot.press("escape")
         assert widget.has_focus
 
 
-async def test_pending_interactive_edit_approves_only_final_text(tmp_path, monkeypatch):
-    from textual.widgets import OptionList, TextArea
+async def test_pending_reopen_waits_for_decision_and_preserves_next_draft(
+    service, resident_backend, monkeypatch
+):
+    from textual.widgets import TextArea
 
     from syvrio.app.pending_screen import PendingScreen
-    from syvrio.memory.models import Candidate, PendingItem
+    from syvrio.app.resident_tui import ResidentChatApp
+    from syvrio.memory.models import MemoryDraft
 
-    app = build_app(tmp_path, [])
-    async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        item = PendingItem.from_candidate(
-            Candidate(text="可能喜欢浅烘", topic="preferences", confidence=0.5),
-            "chat",
-            "low confidence",
-        )
-        app.service.queue.add(item)
-        app.refresh_pending()
+    _, client = resident_backend
+    app = ResidentChatApp(client)
+    first, second = [
+        service.create_pending(MemoryDraft(text=text, topic="preferences"), "Keep it?", [])
+        for text in ("First candidate", "Second candidate")
+    ]
+    entered, release = threading.Event(), threading.Event()
+    reject = service.reject
 
-        widget = app.query_one("#input", Input)
-        widget.value = "/pending"
-        await pilot.press("enter")
-        for _ in range(50):
+    def slow_reject(key):
+        entered.set()
+        assert release.wait(10)
+        return reject(key)
+
+    monkeypatch.setattr(service, "reject", slow_reject)
+    async with app.run_test() as pilot:
+        first_screen = await _open_resident_pending(app, pilot)
+        try:
+            await pilot.press("r")
+            assert await asyncio.to_thread(entered.wait, 5)
+            await pilot.press("escape")
+            app.query_one("#input", Input).value = "/pending"
+            await pilot.press("enter")
             await pilot.pause()
-            if isinstance(app.screen, PendingScreen) and app.screen.query_one(OptionList).has_focus:
-                break
-        screen = app.screen
-        assert isinstance(screen, PendingScreen)
+            assert app.screen is app.default_screen
+        finally:
+            release.set()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        second_screen = app.screen
+        assert isinstance(second_screen, PendingScreen) and second_screen is not first_screen
+        assert second_screen.query_one("#pending-text", Static).content == second.text
+        assert service.queue.get(first.id) is None
+        await pilot.press("e")
+        editor = second_screen.query_one(TextArea)
+        editor.load_text("Revised second candidate")
+        await pilot.press("ctrl+s")
+        await app.workers.wait_for_complete()
+        assert [row.text for row in service.current_facts()] == ["Revised second candidate"]
+
+
+async def test_pending_saved_decision_with_truncated_receipt_and_failed_reload(
+    service, resident_backend, monkeypatch
+):
+    from syvrio.app.resident_tui import ResidentChatApp
+    from syvrio.application import commands
+    from syvrio.memory.models import MemoryDraft
+
+    _, client = resident_backend
+    app = ResidentChatApp(client)
+    full_snapshot = commands._pending_data
+
+    def legacy_receipt(items):
+        data = full_snapshot(items)
+        return {**data, "rows": data["rows"][:1]}
+
+    monkeypatch.setattr(commands, "_pending_data", legacy_receipt)
+    rows = [
+        service.create_pending(MemoryDraft(text=text, topic="preferences"), "Keep it?", [])
+        for text in ("First candidate", "Second candidate", "Third candidate")
+    ]
+    notices = []
+    monkeypatch.setattr(app, "notify", lambda message, **kwargs: notices.append(message))
+    async with app.run_test() as pilot:
+        await _open_resident_pending(app, pilot)
+
+        def broken_reload():
+            raise OSError("list unavailable")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(client, "pending", broken_reload)
+            await pilot.press("r")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+        assert app.screen is app.default_screen
+        assert any("reject applied" in msg and "Reopen /pending" in msg for msg in notices)
+        assert service.pending() == rows[1:]
+        reopened = await _open_resident_pending(app, pilot)
+        assert reopened.query_one("#pending-text", Static).content == rows[1].text
+
+
+@pytest.mark.parametrize("failure", ["write", "transport"])
+async def test_pending_interactive_edit_approves_only_final_text(
+    service, resident_backend, monkeypatch, failure
+):
+    from textual.widgets import TextArea
+
+    from syvrio.app.resident_tui import ResidentChatApp
+    from syvrio.memory.models import MemoryDraft
+
+    _, client = resident_backend
+    app = ResidentChatApp(client)
+    notifications = []
+    monkeypatch.setattr(app, "notify", lambda message, **kwargs: notifications.append(message))
+    item = service.create_pending(
+        MemoryDraft(text="可能喜欢浅烘", topic="preferences"), "Which roast?", []
+    )
+    async with app.run_test(size=(120, 40)) as pilot:
+        widget = app.query_one("#input", Input)
+        screen = await _open_resident_pending(app, pilot)
         await pilot.press("e")
         field = screen.query_one(TextArea)
         assert field.text == item.text
@@ -2959,59 +3162,67 @@ async def test_pending_interactive_edit_approves_only_final_text(tmp_path, monke
         field.load_text(edited)
         await pilot.press("enter")
         assert field.text == "\n" + edited
-        assert app.service.pending() == [item]
+        assert service.pending() == [item]
 
         def fail_approval(*args, **kwargs):
             raise OSError("synthetic write failure")
 
         with monkeypatch.context() as patch:
-            patch.setattr(app.service, "approve", fail_approval)
+            if failure == "write":
+                patch.setattr(service, "approve", fail_approval)
+            else:
+                request = client.request
+
+                def broken_transport(method, path, **kwargs):
+                    if path == "/api/commands":
+                        raise OSError("synthetic connection error")
+                    return request(method, path, **kwargs)
+
+                patch.setattr(client, "request", broken_transport)
             await pilot.press("ctrl+s")
-            await app.workers.wait_for_complete(
-                worker for worker in app.workers if worker.group == "pending"
-            )
+            await app.workers.wait_for_complete()
             await pilot.pause()
         assert app.screen is screen
         assert field.text == "\n" + edited
         assert field.has_focus
-        assert "synthetic write failure" in str(
-            screen.query_one("#pending-message", Static).content
-        )
-        assert app.service.pending() == [item]
+        message = str(screen.query_one("#pending-message", Static).content)
+        assert ("OSError" if failure == "write" else "synthetic connection error") in message
+        assert service.pending() == [item]
         await pilot.press("ctrl+s")
-        for _ in range(100):
-            await pilot.pause()
-            if not app._pending_review_busy and widget.has_focus and not app.busy:
-                break
-
-        entries = app.service.store.entries(include_inactive=True)
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        entries = service.store.entries(include_inactive=True)
         assert [(entry.text, entry.status, entry.supersedes) for entry in entries] == [
             (edited, "active", None)
         ]
-        assert app.service.pending() == []
-        assert app.runtime.has_session is False
+        assert service.pending() == []
+        assert app.sid is None
         assert not app.query(".bubble")
         assert not app.query(".reply")
-        assert not app.busy
+        assert app.screen is app.default_screen
         assert widget.value == ""
         assert widget.has_focus
-        cards = [str(card.render()) for card in app.query(".card")]
-        assert any("Saved" in card for card in cards)
+        assert any("edit applied" in message for message in notifications)
 
 
-async def test_topics_command_lists_and_drills(tmp_path):
-    app = build_app(tmp_path, [])
-    async with app.run_test(size=(120, 40)) as pilot:
+async def test_topics_command_lists_and_drills(resident_backend, service):
+    from syvrio.app.chat_widgets import PickScreen
+    from syvrio.app.resident_tui import ResidentChatApp
+    from syvrio.memory.models import MemoryDraft
+
+    _, client = resident_backend
+    service.add(MemoryDraft(text="Synthetic coffee preference", topic="food/preferences"))
+    app = ResidentChatApp(client)
+    async with app.run_test() as pilot:
+        await app._command("/topics")
         await pilot.pause()
-        app.service.note("喝咖啡偏好清淡", topic="preferences", title="偏好")
-        app._show_topics()
+        assert isinstance(app.screen, PickScreen)
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
         await pilot.pause()
-        cards = [str(w.render()) for w in app.query(".card")]
-        assert any("preferences" in c and "Memory topics" in c for c in cards)
-        app._show_topics("preferences")
-        await pilot.pause()
-        cards = [str(w.render()) for w in app.query(".card")]
-        assert any("喝咖啡偏好清淡" in c for c in cards)
+        assert any(
+            "Synthetic coffee preference" in str(card.render()) for card in app.query(".card")
+        )
 
 
 async def test_streaming_roundtrip_renders_single_reply(tmp_path):
@@ -3164,60 +3375,40 @@ async def test_reading_diagnostics_records_state_transitions_without_content(tmp
         )
 
 
-async def test_switch_defers_distill_then_catches_up_in_background(tmp_path):
-    # 回归：切换会话不做内联抽取（不卡顿），deferred 标记由后台补沉淀消化。
-    app = build_app(tmp_path, [], extract_on_exit=True)
-    from syvrio.memory.models import Candidate
+async def test_switch_defers_distill_then_catches_up_in_background(resident_backend, monkeypatch):
+    import asyncio
 
-    class CountingExtractor:
-        def __init__(self):
-            self.calls = 0
+    from syvrio.background_memory import distillation
+    from syvrio.memory.models import MemoryDraft
 
-        def extract(self, text, context=""):
-            self.calls += 1
-            from syvrio.memory.models import ExtractionResult
+    owner, client = resident_backend
+    entered, release = threading.Event(), threading.Event()
 
-            return ExtractionResult(
-                memories=[Candidate(text="后台补记的内容", topic="misc", confidence=0.95)]
-            )
+    def extract(service, prompt, data, schema):
+        entered.set()
+        assert release.wait(8)
+        return schema(memories=[MemoryDraft(text=data["source_text"], topic="preferences")])
 
-    app.service.extractor = counting = CountingExtractor()
-    async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        first = app.sessions.create()
-        # 3 条用户消息：达到后台补沉淀阈值（min_new_messages=3）
-        for text in ("第一场对话一", "第一场对话二", "第一场对话三"):
-            app.sessions.append(
-                first,
-                {"type": "message", "id": new_message_id(), "role": "user", "content": text},
-            )
-        second = app.sessions.create()
-        app.sessions.append(
-            second,
-            {
-                "type": "message",
-                "id": new_message_id(),
-                "role": "user",
-                "content": "第二场对话内容",
-            },
-        )
-        app.refresh_sessions()
-        app.runtime.resume(first.id)  # 活跃会话才有 close(distill=False) 的 deferred 标记
-
-        app._switch_session(second.id)
-        for _ in range(300):
-            await pilot.pause()
-            if not app.busy and app.runtime.current.id == second.id:
-                break
-        assert app.runtime.current.id == second.id
-        types = {r["type"] for r in app.sessions.load(first.id).records}
-        assert "distill_deferred" in types
-        for _ in range(300):
-            await pilot.pause()
-            if app.service.store.has_text("后台补记的内容"):
-                break
-        assert counting.calls >= 1  # 后台补沉淀已执行
-        assert app.service.store.has_text("后台补记的内容")
+    monkeypatch.setattr(distillation, "ask", extract)
+    first = owner._sessions.create()
+    second = owner._sessions.create()
+    owner._sessions.append(
+        first, {"type": "message", "role": "user", "id": "u1", "content": "Synthetic preference"}
+    )
+    client.request("POST", f"/api/sessions/{first.id}/switch")
+    try:
+        client.request("POST", f"/api/sessions/{second.id}/switch")
+        assert await asyncio.to_thread(entered.wait, 5)
+        assert client.request("GET", "/api/chat/queue")["session_id"] == second.id
+        assert not owner._service.current_facts()
+    finally:
+        release.set()
+    for _ in range(100):
+        if not owner._sessions.load(first.id).undistilled_messages():
+            break
+        await asyncio.sleep(0.05)
+    assert not owner._sessions.load(first.id).undistilled_messages()
+    assert [fact.text for fact in owner._service.current_facts()] == ["Synthetic preference"]
 
 
 async def test_session_picker_search_resume_and_delete(tmp_path):
@@ -3326,53 +3517,42 @@ async def test_session_picker_search_resume_and_delete(tmp_path):
         assert len(list(picker.query("#picker-list ListItem"))) == 0
 
 
-async def test_startup_catchup_does_not_block_switching(tmp_path):
-    # 回归：启动补沉淀在后台执行，不能再把输入和会话切换一起锁住。
-    import threading
+async def test_startup_catchup_does_not_block_switching(service, monkeypatch):
+    from syvrio.app.web.backend import WebBackend
+    from syvrio.background_memory import distillation
 
-    app = build_app(tmp_path, [], extract_on_exit=True)
-    crashed = app.sessions.create()
-    app.sessions.append(
+    service.config.search.auto_start = False
+    service.config.git.auto_sync = False
+    service.init_vault()
+    sessions = SessionStore(service.paths)
+    crashed = sessions.create()
+    sessions.append(
         crashed,
-        {"type": "message", "id": new_message_id(), "role": "user", "content": "中断前说的话"},
+        {"type": "message", "id": new_message_id(), "role": "user", "content": "Synthetic message"},
     )
+    started, release = threading.Event(), threading.Event()
 
-    class BlockingExtractor:
-        def __init__(self):
-            self.started = threading.Event()
-            self.release = threading.Event()
+    def slow_extract(*_):
+        started.set()
+        assert release.wait(8)
+        return distillation.Result(memories=[])
 
-        def extract(self, text, context=None):
-            self.started.set()
-            assert self.release.wait(timeout=10)
-            return ExtractionResult(memories=[])
-
-    blocker = BlockingExtractor()
-    app.service.extractor = blocker
-    async with app.run_test(size=(120, 40)) as pilot:
-        for _ in range(200):
-            await pilot.pause()
-            if blocker.started.is_set():
-                break
-        assert blocker.started.is_set()
-        assert app.busy is False
-        assert app.query_one("#input", Input).disabled is False
-
-        other = app.sessions.create()
-        app._switch_session(other.id)
-        for _ in range(200):
-            await pilot.pause()
-            if app.runtime.has_session and app.runtime.current.id == other.id and not app.busy:
-                break
-        assert app.runtime.current.id == other.id
-
-        blocker.release.set()
-        for _ in range(300):
-            await pilot.pause()
-            if any("Consolidated" in str(widget.render()) for widget in app.query(".card")):
-                break
-        assert app.busy is False
-        assert any("Consolidated 1" in str(widget.render()) for widget in app.query(".card"))
+    monkeypatch.setattr(distillation, "ask", slow_extract)
+    owner = WebBackend(service=service)
+    owner.startup()
+    try:
+        assert await asyncio.to_thread(started.wait, 5)
+        assert not owner.health().busy
+        other = sessions.create()
+        assert owner.switch_session(other.id).session_id == other.id
+        release.set()
+        async with asyncio.timeout(8):
+            while sessions.load(crashed.id).undistilled_messages():
+                await asyncio.sleep(0.02)
+        assert owner._runtime.current.id == other.id
+    finally:
+        release.set()
+        owner.shutdown()
 
 
 async def test_transcript_replays_tool_events(tmp_path):
@@ -3569,148 +3749,6 @@ async def test_session_picker_rename_current_updates_runtime(tmp_path):
             if isinstance(app.screen, SessionPickerScreen):
                 break
         assert app.runtime.current.title() == "当前新标题"
-
-
-async def test_automatic_reflection_idle_uses_persistent_schedule(tmp_path, monkeypatch):
-    import asyncio
-
-    from syvrio.memory.reflection import ReflectionResult
-
-    app = build_app(tmp_path, [])
-    calls = []
-    monkeypatch.setattr(app.service.reflection, "auto_check_due", lambda now=None: True)
-    monkeypatch.setattr(app.service.reflection, "auto_plan", lambda now=None: "dream")
-
-    def run(mode, budget, cancel_event=None, **kwargs):
-        calls.append((mode, budget, kwargs.get("auto")))
-        return ReflectionResult(mode, requests=1)
-
-    monkeypatch.setattr(app.service.reflection, "run", run)
-    async with app.run_test() as pilot:
-        await asyncio.wait_for(app.workers.wait_for_complete(), timeout=30)
-        app._reflection_last_activity = 0
-        app._navigation_busy = True
-        app._auto_reflection_tick()
-        assert calls == []
-        app._navigation_busy = False
-        app._reflection_command("dream", "cancel")
-        app._auto_reflection_tick()
-        assert calls == []
-        app._reflection_command("dream", "resume")
-        app._auto_reflection_tick()
-        await asyncio.wait_for(app.workers.wait_for_complete(), timeout=30)
-        await pilot.pause()
-        assert calls == [("dream", 1, True)]
-        assert not app._reflection_pending
-        app._auto_reflection_tick()
-        await pilot.pause()
-        assert len(calls) == 1
-
-
-async def test_automatic_profile_refresh_spends_one_request(tmp_path, monkeypatch):
-    import asyncio
-
-    from syvrio.memory.reflection import ReflectionResult
-
-    app = build_app(tmp_path, [])
-    calls = []
-    monkeypatch.setattr(app.service.reflection, "auto_check_due", lambda now=None: True)
-    monkeypatch.setattr(app.service.reflection, "auto_plan", lambda now=None: "profile")
-
-    def run(mode, budget, cancel_event=None, **kwargs):
-        calls.append((mode, budget, kwargs.get("auto"), kwargs.get("refresh_summary")))
-        return ReflectionResult(mode, requests=1, summary_status="updated")
-
-    monkeypatch.setattr(app.service.reflection, "run", run)
-    async with app.run_test() as pilot:
-        await asyncio.wait_for(app.workers.wait_for_complete(), timeout=30)
-        app._reflection_last_activity = 0
-        app._auto_reflection_tick()
-        await asyncio.wait_for(app.workers.wait_for_complete(), timeout=30)
-        await pilot.pause()
-        assert calls == [("profile", 1, True, True)]
-        assert not app._reflection_pending
-
-
-async def test_automatic_reflection_skips_when_schedule_not_due(tmp_path, monkeypatch):
-    import asyncio
-
-    app = build_app(tmp_path, [])
-    monkeypatch.setattr(app.service.reflection, "auto_check_due", lambda now=None: False)
-    monkeypatch.setattr(
-        app.service.reflection, "auto_plan", lambda now=None: pytest.fail("到期前不得扫描")
-    )
-    monkeypatch.setattr(
-        app.service.reflection, "run", lambda *a, **k: pytest.fail("到期前不得请求")
-    )
-    async with app.run_test() as pilot:
-        await asyncio.wait_for(app.workers.wait_for_complete(), timeout=30)
-        app._reflection_last_activity = 0
-        app._auto_reflection_tick()
-        await pilot.pause()
-        assert not app._reflection_pending
-
-
-async def test_automatic_reflection_plan_without_work_does_not_run(tmp_path, monkeypatch):
-    import asyncio
-
-    app = build_app(tmp_path, [])
-    monkeypatch.setattr(app.service.reflection, "auto_check_due", lambda now=None: True)
-    monkeypatch.setattr(app.service.reflection, "auto_plan", lambda now=None: None)
-    monkeypatch.setattr(
-        app.service.reflection, "run", lambda *a, **k: pytest.fail("无任务不得请求")
-    )
-    async with app.run_test() as pilot:
-        await asyncio.wait_for(app.workers.wait_for_complete(), timeout=30)
-        app._reflection_last_activity = 0
-        app._auto_reflection_tick()
-        await asyncio.wait_for(app.workers.wait_for_complete(), timeout=30)
-        await pilot.pause()
-        assert not app._reflection_pending
-        assert not app.busy
-
-
-async def test_automatic_reflection_failure_releases_state(tmp_path, monkeypatch):
-    import asyncio
-
-    app = build_app(tmp_path, [])
-    monkeypatch.setattr(app.service.reflection, "auto_check_due", lambda now=None: True)
-    monkeypatch.setattr(app.service.reflection, "auto_plan", lambda now=None: "dream")
-
-    def fail(*args, **kwargs):
-        raise RuntimeError("synthetic auto failure")
-
-    monkeypatch.setattr(app.service.reflection, "run", fail)
-    async with app.run_test() as pilot:
-        await asyncio.wait_for(app.workers.wait_for_complete(), timeout=30)
-        app._reflection_last_activity = 0
-        app._auto_reflection_tick()
-        await asyncio.wait_for(app.workers.wait_for_complete(), timeout=30)
-        await pilot.pause()
-        assert not app._reflection_pending
-        assert not app.busy
-        assert not app.query_one("#input", Input).disabled
-
-
-async def test_automatic_reflection_disabled_or_draft_does_not_start(tmp_path, monkeypatch):
-    import asyncio
-
-    app = build_app(tmp_path, [])
-    monkeypatch.setattr(
-        app.service.reflection,
-        "auto_check_due",
-        lambda now=None: pytest.fail("禁用或草稿时不得检查调度"),
-    )
-    async with app.run_test():
-        await asyncio.wait_for(app.workers.wait_for_complete(), timeout=30)
-        app.service.config.chat.auto_reflect = False
-        app._reflection_last_activity = 0
-        app._auto_reflection_tick()
-        app.service.config.chat.auto_reflect = True
-        app.query_one("#input", Input).value = "尚未发送的草稿"
-        app._reflection_last_activity = 0
-        app._auto_reflection_tick()
-        assert not getattr(app, "_reflection_pending", False)
 
 
 async def test_removed_shortcuts_are_not_available(tmp_path, monkeypatch):
@@ -3981,12 +4019,12 @@ async def test_slash_commands_during_streaming_use_palette_and_execute(tmp_path,
             widget.value = "/th"
             await pilot.pause()
             await pilot.press("enter")
-            widget.value = "/profile r"
+            widget.value = "/dream ca"
             widget.cursor_position = len(widget.value)
             await pilot.press("tab", "enter")
             widget.value = "/not-a-command"
             await pilot.press("enter")
-            assert commands == ["/sessions", "/think", "/profile refresh", "/not-a-command"]
+            assert commands == ["/sessions", "/think", "/dream cancel", "/not-a-command"]
             assert not app._queue
         finally:
             gate.set()
@@ -4029,7 +4067,10 @@ async def test_spark_thinking_selection_during_reply_applies_to_next_turn(tmp_pa
             widget.value = "/think"
             await pilot.press("enter")
             await pilot.pause()
-            app.screen.query_one("#pick-list", ListView).index = 2
+            choices = app.screen.query_one("#pick-list", ListView)
+            choices.index = next(
+                i for i, item in enumerate(choices.children) if item.value == "disabled"
+            )
             await pilot.press("enter")
             assert app._ask_active
             assert app.service.config.llm.spark_thinking == "disabled"
@@ -4767,7 +4808,7 @@ async def test_closed_marker_after_assistant_records_when_switching_mid_ask(tmp_
             if line.strip()
         ]
         assert types.count("closed") == 1
-        assert "distill_deferred" in types
+        assert app.sessions.load(session_a).undistilled_messages()[0]["content"] == "q"
         last_assistant = max(i for i, t in enumerate(types) if t == "assistant")
         assert len(types) - 1 - types[::-1].index("closed") > last_assistant
 
@@ -4830,51 +4871,31 @@ async def test_command_during_ask_queues_and_runs_after_reply(tmp_path):
         await _wait_idle(app, pilot)
 
 
-
-
-async def test_switch_consolidate_skipped_while_ask_in_flight(tmp_path, monkeypatch):
-    # 回归：切走时目标会话仍在生成，后台补沉淀必须跳过，留给启动补记。
-    calls: list[str] = []
-
-    def fake_consolidate(self, **kwargs):
-        calls.append("consolidate")
-        return {
-            "consolidated": 0,
-            "errors": [],
-            "admitted": 0,
-            "queued": 0,
-            "duplicates": 0,
-            "blocked": 0,
-        }
-
-    monkeypatch.setattr(AgentRuntime, "consolidate_pending", fake_consolidate)
+async def test_switch_delays_distillation_until_the_original_reply_finishes(tmp_path):
     app = build_app(tmp_path, [])
     gated = GatedChatModel([AssistantTurn(content="slow reply")])
     gated.gates.append(threading.Event())
     app.runtime.model = gated
-    async with app.run_test(size=(120, 40)) as pilot:
-        await pilot.pause()
-        for _ in range(100):
-            await pilot.pause()
-            if not app.busy:
-                break
-        calls.clear()  # 启动补记的调用不计入
-
+    requested = []
+    app.runtime.on_distillation = lambda sid, through: requested.append((sid, through))
+    async with app.run_test() as pilot:
         app.query_one("#input", Input).value = "q"
         await pilot.press("enter")
         await _wait_ask_started(app, pilot)
-
-        session_b = app.sessions.create().id
-        app._switch_session(session_b)
-        for _ in range(100):
-            await pilot.pause()
-            if not app._navigation_busy:
-                break
-        assert calls == []  # 生成期间不补沉淀
-
-        gated.gates[0].set()
+        original = app.runtime.current
+        try:
+            other = app.sessions.create().id
+            app._switch_session(other)
+            for _ in range(100):
+                await pilot.pause()
+                if app.runtime.current.id == other:
+                    break
+            assert app.runtime.current.id == other
+            assert requested == []
+        finally:
+            gated.gates[0].set()
         await _wait_idle(app, pilot)
-        assert calls == []
+        assert requested == [(original.id, original.last_user_message_id())]
 
 
 def test_native_cursor_requires_supported_terminal(monkeypatch):
@@ -5152,14 +5173,12 @@ async def test_pending_long_text_scrolls_without_hiding_actions(tmp_path, size):
     from textual.widgets import OptionList, TextArea
 
     from syvrio.app.pending_screen import PendingScreen
-    from syvrio.memory.models import Candidate, PendingItem
+    from syvrio.memory.models import PendingItem
 
     app = build_app(tmp_path, [])
     text = "Synthetic [bold] literal 中文 \n" * 100 + "END OF FULL PENDING TEXT"
     items = [
-        PendingItem.from_candidate(
-            Candidate(text=body, topic="preferences", confidence=0.5), "chat", "low confidence"
-        )
+        PendingItem(text=body, topic="preferences", question="Is this still accurate?")
         for body in ("Synthetic short candidate", text)
     ]
     async with app.run_test(size=size) as pilot:
@@ -5689,41 +5708,52 @@ async def test_closing_git_screen_does_not_cancel_sync(tmp_path):
         assert len(_remote_log(remote)) == len(before) + 1
 
 
-async def test_startup_compensation_runs_missed_daily_sync(tmp_path):
-    import asyncio
+async def test_startup_compensation_runs_missed_daily_sync(service):
+    from syvrio.app.web.backend import WebBackend
 
-    app = build_app(tmp_path, [], git=GitConfig(auto_sync=True, sync_time="00:00"))
-    state_path = app.service.paths.state_dir / "git-sync.json"
-    async with app.run_test(size=(120, 40)) as pilot:
-        await asyncio.wait_for(app.workers.wait_for_complete(), timeout=30)
-        await pilot.pause()
-        await asyncio.wait_for(app.workers.wait_for_complete(), timeout=30)
-        await pilot.pause()
-        state = json.loads(state_path.read_text(encoding="utf-8"))
+    service.config.git = GitConfig(auto_sync=True, sync_time="00:00")
+    service.config.search.auto_start = False
+    owner = WebBackend(service=service)
+    state_path = service.paths.state_dir / "git-sync.json"
+    owner.startup()
+    try:
+        async with asyncio.timeout(8):
+            while True:
+                state = json.loads(state_path.read_text()) if state_path.exists() else {}
+                if (
+                    state.get("last_daily_blocked_date") == date.today().isoformat()
+                    and not service.git_sync.running
+                ):
+                    break
+                await asyncio.sleep(0.02)
         assert state["last_sync_trigger"] == "scheduled"
-        # 临时 Vault 未配置 Remote：已尝试并暂停当日自动重试，不能标记同步成功。
         assert state["last_daily_attempt_date"] == date.today().isoformat()
-        assert state["last_daily_blocked_date"] == date.today().isoformat()
         assert state.get("last_daily_success_date") != date.today().isoformat()
-        assert not app._git_sync_running
+        assert not service.git_sync.running
+    finally:
+        owner.shutdown()
 
 
-async def test_reflection_status_shows_pending_inference_batch(tmp_path):
-    import asyncio
+async def test_reflection_status_shows_pending_inference_batch(
+    resident_backend, service, monkeypatch
+):
+    from syvrio.app.chat_widgets import PickScreen
+    from syvrio.background_memory import dream
 
-    app = build_app(tmp_path, [])
-    state = app.service.reflection.schedule.load()
-    state["profile"]["pending_changes"] = 0
-    state["profile"]["pending_inferences"] = True
-    app.service.reflection.schedule.save(state)
-    async with app.run_test(size=(120, 40)) as pilot:
-        await asyncio.wait_for(app.workers.wait_for_complete(), timeout=30)
-        app._reflection_command("profile", "status")
+    owner, client = resident_backend
+    service.note("Synthetic fact for Dream", topic="preferences")
+    monkeypatch.setattr(dream, "ask", lambda _, prompt, data, schema: schema(summary="Profile"))
+    app = ResidentChatApp(client)
+    async with app.run_test() as pilot:
+        await app._command("/dream 1", confirmed=True)
+        async with asyncio.timeout(8):
+            while owner._background.dream_status()["state"] != "paused":
+                await pilot.pause(0.05)
+        await app._command("/dream status")
         await pilot.pause()
-        cards = [str(card.content) for card in app.query(".card")]
-        assert any(
-            "0 pending changes" in text and "inference batch pending" in text for text in cards
-        )
+        assert isinstance(app.screen, PickScreen)
+        detail = str(app.screen.query_one("#pick-detail-text", Static).content)
+        assert "State: paused" in detail and "Phase: hypotheses" in detail
 
 
 async def test_stale_turn_ack_does_not_clear_new_request(tmp_path):
@@ -5943,7 +5973,6 @@ async def test_context_and_compact_failures_release_only_own_state(tmp_path, mon
                 break
         assert app._navigation_busy is False
         assert app._ask_active is False
-
 
 
 @pytest.mark.parametrize("size", [(80, 24), (120, 40)])

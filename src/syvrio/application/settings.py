@@ -6,7 +6,12 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 
-from ..infra.config import CONTEXT_WINDOW_PRESETS, SPARK_THINKING_MODES, LLMConfig
+from ..infra.config import (
+    CONTEXT_WINDOW_PRESETS,
+    MIN_CONTEXT_WINDOW,
+    SPARK_THINKING_MODES,
+    LLMConfig,
+)
 from ..infra.providers import (
     PRESETS,
     delete_api_key,
@@ -115,7 +120,9 @@ class SettingsUseCases:
         options.sort(key=lambda option: recent.get((option.provider, option.model), len(recent)))
         return options
 
-    def search_models(self, query: str = "", *, refresh: bool = False) -> tuple[list[ModelOption], list[str]]:
+    def search_models(
+        self, query: str = "", *, refresh: bool = False
+    ) -> tuple[list[ModelOption], list[str]]:
         catalog = self.model_catalog(refresh=refresh)
         options = self.model_options(catalog, capabilities=False)
         current = self.service.config.llm
@@ -124,8 +131,10 @@ class SettingsUseCases:
             options.insert(0, ModelOption(current.provider, current.model, label, current=True))
         needle = query.strip().casefold()
         matches = [
-            option for option in options
-            if needle in f"{option.provider}/{option.model}".casefold() or needle in option.label.casefold()
+            option
+            for option in options
+            if needle in f"{option.provider}/{option.model}".casefold()
+            or needle in option.label.casefold()
         ]
         return matches, [provider for provider, models in catalog.items() if not models]
 
@@ -146,7 +155,9 @@ class SettingsUseCases:
         return bool(self.reasoning_options())
 
     def reasoning_options(self) -> list[tuple[str, str]]:
-        return [(value, value or "default") for value in self._reasoning_values(self.service.config.llm)]
+        return [
+            (value, value or "default") for value in self._reasoning_values(self.service.config.llm)
+        ]
 
     @staticmethod
     def _reasoning_values(llm: LLMConfig) -> tuple[str, ...]:
@@ -170,7 +181,9 @@ class SettingsUseCases:
 
     def context_options(self) -> list[int]:
         max_input = self._max_input()
-        return [size for size in CONTEXT_WINDOW_PRESETS if not max_input or size <= max_input]
+        return [size for size in CONTEXT_WINDOW_PRESETS if not max_input or size <= max_input] or [
+            MIN_CONTEXT_WINDOW
+        ]
 
     @property
     def context_window(self) -> int:
@@ -217,12 +230,24 @@ class SettingsUseCases:
             endpoint = normalize_provider_url(endpoint)
         except ValueError as exc:
             return SettingsResult(False, str(exc))
-        self.service.config.llm = replace(
-            current, provider_urls={**current.provider_urls, provider: endpoint}
+        active = provider == current.provider
+        llm = replace(
+            current,
+            base_url=endpoint if active else current.base_url,
+            provider_urls={**current.provider_urls, provider: endpoint},
         )
+        config = self.service.config
         if self.service.config_path:
-            write_config(self.service.config_path, self.service.config)
-        return SettingsResult(True, f"{provider_label(provider)} Base URL saved.", True)
+            pending = replace(config, llm=llm)
+            write_config(self.service.config_path, pending)
+            config._baseline = pending._baseline
+        config.llm = llm
+        if active and self.runtime is not None:
+            self.runtime.reload_llm(config)
+        message = f"{provider_label(provider)} Base URL saved."
+        if active:
+            message += " Applies next turn."
+        return SettingsResult(True, message, True)
 
     def update_provider_key(self, provider: str, api_key: str) -> SettingsResult:
         preset = self._preset(provider)
@@ -283,31 +308,21 @@ class SettingsUseCases:
                 f"{provider} has no API key yet; run syvrio setup in a terminal to configure it.",
             )
 
-        info = model_metadata(new_llm.litellm_model())
-        if (not new_llm.is_spark and new_llm.reasoning_effort
-                and new_llm.reasoning_effort not in self._reasoning_values(new_llm)):
+        if (
+            not new_llm.is_spark
+            and new_llm.reasoning_effort
+            and new_llm.reasoning_effort not in self._reasoning_values(new_llm)
+        ):
             new_llm.reasoning_effort = None
         context_window = self.service.config.chat.context_window
-        max_input = info.get("max_input_tokens")
-        if max_input:
-            try:
-                max_input = int(max_input)
-            except (TypeError, ValueError):
-                max_input = None
-        if max_input and context_window > max_input:
-            context_window = max_input
 
         new_llm.recent_models = new_llm.recent_model_ids()
-        self.service.config.llm = new_llm
-        self.service.config.chat.context_window = context_window
-        if self.service.config_path:
-            write_config(self.service.config_path, self.service.config)
-        self.runtime.reload_llm(self.service.config)
+        self._save_turn_settings(new_llm, context_window)
         return SettingsResult(
             True,
             f"Model switched: {self.runtime.model_label}"
             f" · context {format_tokens(context_window)}"
-            f" · reasoning {self.reasoning_selection()[1] or 'default'}",
+            f" · reasoning {self.reasoning_selection()[1] or 'default'} · applies next turn.",
             True,
         )
 
@@ -323,28 +338,23 @@ class SettingsUseCases:
             new_llm = replace(llm, spark_thinking=value)
         else:
             new_llm = replace(llm, reasoning_effort=value or None)
-        self.service.config.llm = new_llm
-        if self.service.config_path:
-            write_config(self.service.config_path, self.service.config)
-        if self.runtime is not None:
-            self.runtime.reload_llm(self.service.config)
+        self._save_turn_settings(new_llm, self.context_window)
         label, current = self.reasoning_selection()
-        return SettingsResult(True, f"{label}: {current or 'default'}", True)
+        return SettingsResult(True, f"{label}: {current or 'default'} · applies next turn.", True)
 
     def apply_context(self, value: int) -> SettingsResult:
         max_input = self._max_input()
-        if value < 2000:
-            return SettingsResult(False, "Context window must be at least 2000 tokens.")
+        if value < MIN_CONTEXT_WINDOW:
+            return SettingsResult(
+                False, f"Context window must be at least {MIN_CONTEXT_WINDOW:,} tokens."
+            )
         if max_input and value > max_input:
-            value = max_input
-            note = f"Exceeds the model limit; capped at {format_tokens(max_input)}."
+            note = f"This model can use up to {format_tokens(max_input)} tokens."
         else:
             note = ""
         if value == self.service.config.chat.context_window:
             return SettingsResult(True, "Context window unchanged.")
-        self.service.config.chat.context_window = value
-        if self.service.config_path:
-            write_config(self.service.config_path, self.service.config)
+        self._save_turn_settings(self.service.config.llm, value)
         return SettingsResult(
             True,
             f"Context window set to {format_tokens(value)} · applies next turn. {note}".strip(),
@@ -352,6 +362,20 @@ class SettingsUseCases:
         )
 
     # ---------- 内部 ----------
+
+    def _save_turn_settings(self, llm: LLMConfig, context_window: int) -> None:
+        config = self.service.config
+        if self.service.config_path:
+            pending = replace(
+                config, llm=llm, chat=replace(config.chat, context_window=context_window)
+            )
+            write_config(self.service.config_path, pending)
+            config._baseline = pending._baseline
+        model_changed = config.llm is not llm
+        config.llm = llm
+        config.chat.context_window = context_window
+        if model_changed and self.runtime is not None:
+            self.runtime.reload_llm(config)
 
     def _preset(self, provider: str):
         preset = next((item for item in PRESETS if item.key == provider), None)

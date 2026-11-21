@@ -68,6 +68,7 @@ class SessionQuery:
     def __init__(self, vault: Path | SyvrioPaths):
         paths = vault if isinstance(vault, SyvrioPaths) else vault_paths(vault)
         self.root = paths.sessions_dir
+        self.archive_root = paths.archived_sessions_dir
         self.attachments_dir = paths.attachments_dir
         self.runtime_dir = paths.runtime_dir
         self._reasoning_root = paths.runtime_dir / "session-reasoning"
@@ -75,8 +76,8 @@ class SessionQuery:
         # 补沉淀扫描只需知道文件还有多少待抽取消息，不必保留完整会话。
         self._undistilled_cache: dict[str, tuple[tuple[Path, int, int], int]] = {}
 
-    def exists(self, session_id: str) -> bool:
-        return self._path(session_id).exists()
+    def exists(self, session_id: str, *, archived: bool = False) -> bool:
+        return self._path(session_id, archived=archived).exists()
 
     def verify_attachments(self) -> tuple[int, list[str]]:
         """Verify the archive against every original message, including undone turns."""
@@ -95,7 +96,9 @@ class SessionQuery:
                 errors.append(f"{path.stem}: {exc}")
                 continue
             if session.damaged_tail_line is not None:
-                errors.append(f"{session.id}: incomplete session record on line {session.damaged_tail_line}")
+                errors.append(
+                    f"{session.id}: incomplete session record on line {session.damaged_tail_line}"
+                )
             for record in session.records:
                 attachments = record.get("attachments", [])
                 if not isinstance(attachments, list):
@@ -103,7 +106,9 @@ class SessionQuery:
                     continue
                 for meta in attachments:
                     try:
-                        AttachmentBatch.restore(self.attachments_dir, session.id, record["id"], [meta])
+                        AttachmentBatch.restore(
+                            self.attachments_dir, session.id, record["id"], [meta]
+                        )
                     except (DocumentError, KeyError, OSError, TypeError, ValueError) as exc:
                         name = meta.get("name", "?") if isinstance(meta, dict) else "?"
                         errors.append(f"{session.id}/{record.get('id')}/{name}: {exc}")
@@ -111,21 +116,20 @@ class SessionQuery:
                         checked += 1
         return checked, errors
 
-    def load(self, session_id: str, *, include_reasoning: bool = True) -> Session:
-        return self._load_path(self._path(session_id), include_reasoning=include_reasoning)
+    def load(
+        self, session_id: str, *, include_reasoning: bool = True, archived: bool = False
+    ) -> Session:
+        return self._load_path(
+            self._path(session_id, archived=archived), include_reasoning=include_reasoning
+        )
 
     def _load_path(self, path: Path, *, include_reasoning: bool) -> Session:
         session_id = path.stem
         self._validate_session_id(session_id)
         if not path.exists():
             raise KeyError(f"会话不存在：{session_id}")
-        if (
-            self.root.is_symlink()
-            or path.is_symlink()
-            or not path.resolve().is_relative_to(self.root.resolve())
-            or any(
-                parent.is_symlink() for parent in path.parents if parent.is_relative_to(self.root)
-            )
+        if path.resolve() != path or not (
+            path.is_relative_to(self.root) or path.is_relative_to(self.archive_root)
         ):
             raise ValueError("symlink in session archive")
         lines = path.read_bytes().splitlines()
@@ -254,26 +258,23 @@ class SessionQuery:
             result["tokens"] = 0
         return result
 
-    def list(self, limit: int = 20, with_tokens: bool = True) -> list[dict]:
-        if not self.root.exists():
-            return []
+    def list(
+        self, limit: int = 20, with_tokens: bool = True, *, archived: bool = False, offset: int = 0
+    ) -> list[dict]:
         sessions = []
         seen: set[str] = set()
-        for path in self._files():
+        for path in self._files(archived=archived):
             row = self._listing_row(path, with_tokens)
             if row is None:
                 continue
             seen.add(path.stem)
             sessions.append(row)
-        for stale in set(self._listing_cache) - seen:
-            self._listing_cache.pop(stale, None)
+        root = self.archive_root if archived else self.root
+        for stale, (signature, _) in tuple(self._listing_cache.items()):
+            if stale not in seen and signature[0].is_relative_to(root):
+                self._listing_cache.pop(stale, None)
         sessions.sort(key=lambda item: _session_sort_time(item["last_message_at"]), reverse=True)
-        return sessions[:limit]
-
-    @staticmethod
-    def revision(path: Path) -> tuple[int, int, int]:
-        stat = path.stat()
-        return stat.st_ino, stat.st_mtime_ns, stat.st_size
+        return sessions[offset : offset + limit]
 
     def unconsolidated(
         self, limit: int = 3, exclude: str | None = None, min_new_messages: int = 1
@@ -320,11 +321,14 @@ class SessionQuery:
         found.sort(key=lambda item: _session_sort_time(item[0]), reverse=True)
         return [session for _, session in found[:limit]]
 
-    def _files(self) -> list[Path]:
-        files = sorted(self.root.rglob("*.jsonl"))
+    def _files(self, *, archived: bool = False) -> list[Path]:
+        root = self.archive_root if archived else self.root
+        if root.resolve() != root:
+            raise ValueError("symlink in session archive")
+        files = sorted(root.rglob("*.jsonl"))
         seen: set[str] = set()
         for path in files:
-            if self.root.is_symlink() or path.is_symlink() or path.stem in seen:
+            if path.resolve() != path or path.stem in seen:
                 raise ValueError("duplicate session ID or symlink in session archive")
             seen.add(path.stem)
         return files
@@ -334,11 +338,12 @@ class SessionQuery:
         if not SESSION_ID_RE.fullmatch(session_id):
             raise KeyError(f"非法会话 ID：{session_id}")
 
-    def _path(self, session_id: str) -> Path:
+    def _path(self, session_id: str, *, archived: bool = False) -> Path:
         self._validate_session_id(session_id)
+        root = self.archive_root if archived else self.root
         return next(
-            (path for path in self._files() if path.stem == session_id),
-            self.root / "legacy" / "undated" / f"{session_id}.jsonl",
+            (path for path in self._files(archived=archived) if path.stem == session_id),
+            root / "legacy" / "undated" / f"{session_id}.jsonl",
         )
 
     def user_message(self, session_id: str, message_id: str, *, active_only: bool = False) -> dict:
@@ -348,7 +353,11 @@ class SessionQuery:
         session = self.load(session_id, include_reasoning=False)
         records = session.active_records() if active_only else session.records
         matches = [record for record in records if record.get("id") == message_id]
-        if len(matches) != 1 or matches[0].get("type") != "message" or matches[0].get("role") != "user":
+        if (
+            len(matches) != 1
+            or matches[0].get("type") != "message"
+            or matches[0].get("role") != "user"
+        ):
             raise ValueError("Source does not identify a unique user message.")
         message = matches[0]
         result = {"content": message["content"], "at": message.get("at", "")}

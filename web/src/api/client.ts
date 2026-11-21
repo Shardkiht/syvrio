@@ -21,16 +21,16 @@ import type {
 } from '../types';
 
 export class ApiError extends Error {
-  constructor(message: string, readonly code?: string) { super(message); }
+  constructor(message: string, readonly code?: string, readonly status?: number) { super(message); }
 }
 
 async function readError(response: Response): Promise<ApiError> {
   const fallback = `Request failed (${response.status})`;
   try {
     const payload = await response.json();
-    return new ApiError(payload?.error?.message || fallback, payload?.error?.code);
+    return new ApiError(payload?.error?.message || fallback, payload?.error?.code, response.status);
   } catch {
-    return new ApiError(fallback);
+    return new ApiError(fallback, undefined, response.status);
   }
 }
 
@@ -39,8 +39,10 @@ export class NetworkError extends Error {}
 
 // Each document, including a duplicated tab, owns its navigation and shares
 // the conversation only when it selects the same session as another client.
-const viewId = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte =>
-  byte.toString(16).padStart(2, '0')).join('');
+export function newRequestId() {
+  return Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('');
+}
+const viewId = newRequestId();
 
 async function fetchChecked(path: string, init?: RequestInit): Promise<Response> {
   try {
@@ -64,8 +66,8 @@ function messagePath(sessionId: string, messageId: string): string {
   return `/api/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}`;
 }
 
-export function attachmentUrl(sessionId: string, messageId: string, fileId: string): string {
-  return `${messagePath(sessionId, messageId)}/attachments/${encodeURIComponent(fileId)}`;
+export function attachmentUrl(sessionId: string, messageId: string, fileId: string, archived = false): string {
+  return `${messagePath(sessionId, messageId)}/attachments/${encodeURIComponent(fileId)}${archived ? '?archived=true' : ''}`;
 }
 
 export const api = {
@@ -91,27 +93,38 @@ export const api = {
     ),
 
   listSessions: () => jsonRequest<SessionListResponse>('/api/sessions?limit=100'),
+  listArchive: (offset = 0) => jsonRequest<SessionListResponse>('/api/sessions?archived=true&limit=500' + (offset ? `&offset=${offset}` : '')),
+  archiveSession: (id: string) => jsonRequest(`/api/sessions/${encodeURIComponent(id)}/archive`, { method: 'POST' }),
+  restoreSession: (id: string) => jsonRequest(`/api/sessions/${encodeURIComponent(id)}/restore`, { method: 'POST' }),
+  archivedHistory: (id: string) => jsonRequest<HistoryResponse>(`/api/sessions/${encodeURIComponent(id)}?archived=true`),
 
   createSession: () =>
     jsonRequest<CreateSessionResponse>('/api/sessions', { method: 'POST', headers: jsonHeaders }),
 
-  switchSession: (sessionId: string) =>
-    jsonRequest<SwitchSessionResponse>(`/api/sessions/${encodeURIComponent(sessionId)}/switch`, {
-      method: 'POST',
-      headers: jsonHeaders,
-    }),
+  switchSession: (sessionId: string, knownVersion?: string) => {
+    const params = new URLSearchParams({ include_history: 'true' });
+    if (knownVersion) params.set('known_version', knownVersion);
+    return jsonRequest<SwitchSessionResponse>(`/api/sessions/${encodeURIComponent(sessionId)}/switch?${params}`, {
+      method: 'POST', headers: jsonHeaders,
+    });
+  },
 
   deletionPreview: (sessionId: string) =>
     jsonRequest<SessionDeletionPreview>(`/api/sessions/${encodeURIComponent(sessionId)}/deletion-preview`, { cache: 'no-store' }),
   deleteSession: (sessionId: string, revision: string) =>
     jsonRequest<DeleteSessionResponse>(
-      `/api/sessions/${encodeURIComponent(sessionId)}?confirmed=true`
+      `/api/sessions/${encodeURIComponent(sessionId)}?permanent=true&confirmed=true`
         + (revision ? '&pending_revision=' + encodeURIComponent(revision) : ''),
       { method: 'DELETE', headers: jsonHeaders },
     ),
 
-  history: (sessionId: string) =>
-    jsonRequest<HistoryResponse>(`/api/sessions/${encodeURIComponent(sessionId)}`),
+  async history(sessionId: string): Promise<HistoryResponse> {
+    const response = await fetchChecked(`/api/sessions/${encodeURIComponent(sessionId)}?include_version=true`, { cache: 'no-store' });
+    if (!response.ok) throw await readError(response);
+    const data: HistoryResponse = await response.json();
+    const version = response.headers?.get('X-Syvrio-History-Version');
+    return version ? { ...data, history_version: version } : data;
+  },
 
   insertMessage: async (turnId: number, sessionId: string | null, message: string) => {
     const response = await fetchChecked('/api/chat/insert', {
@@ -154,11 +167,14 @@ export const api = {
  */
 export interface TurnReceipt {
   turn_id: number;
+  history_only?: boolean;
   session_id: string;
   text: string;
   message_id?: string | null;
 }
 export interface QueueState {
+  archived_session_id?: string;
+  replying_session_ids?: string[];
   session_id: string | null;
   active: TurnReceipt | null;
   waiting: TurnReceipt[];
@@ -166,23 +182,32 @@ export interface QueueState {
   revision: number;
 }
 
-function postMessage(body: ChatRequest, files: readonly File[], receipt: boolean, signal?: AbortSignal) {
+function postMessage(body: ChatRequest, files: readonly File[], receipt: boolean, signal?: AbortSignal, replace?: string, editId?: string) {
   const form = files.length ? new FormData() : null;
   if (form) {
     form.append('message', body.message);
     if (body.session_id) form.append('session_id', body.session_id);
+    if (body.submission_id) form.append('submission_id', body.submission_id);
     for (const file of files) form.append('files', file);
   }
   const path = form ? '/api/chat/attachments' : '/api/chat';
-  return fetchChecked(path + (receipt ? '?receipt=1' : ''), {
-    method: 'POST', headers: form ? undefined : jsonHeaders, body: form ?? JSON.stringify(body), signal,
+  const query = new URLSearchParams();
+  if (receipt) query.set('receipt', '1');
+  if (replace) query.set('replace', replace);
+  return fetchChecked(path + (query.size ? '?' + query : ''), {
+    method: 'POST', headers: { ...(form ? {} : jsonHeaders), ...(editId ? { 'X-Syvrio-Edit': editId } : {}) },
+    body: form ?? JSON.stringify(body), signal,
   });
 }
 
-export async function submitChat(body: ChatRequest, files: readonly File[] = []): Promise<TurnReceipt> {
-  const response = await postMessage(body, files, true);
+export async function submitChat(body: ChatRequest, files: readonly File[] = [], replace?: string, editId?: string): Promise<TurnReceipt> {
+  const response = await postMessage(body, files, true, undefined, replace, editId);
   if (!response.ok) throw await readError(response);
-  return response.json();
+  try {
+    return await response.json();
+  } catch {
+    throw new NetworkError('The delivery receipt was interrupted.');
+  }
 }
 
 export const queueState = () => jsonRequest<QueueState>('/api/chat/queue', { cache: 'no-store' });

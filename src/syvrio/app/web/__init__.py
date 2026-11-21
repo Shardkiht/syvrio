@@ -1,4 +1,4 @@
-"""Syvrio Web adapter: FastAPI transport over the existing Application layer."""
+"""Syvrio browser gateway, static assets and embedded Web application."""
 
 from __future__ import annotations
 

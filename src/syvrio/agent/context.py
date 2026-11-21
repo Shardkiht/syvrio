@@ -6,11 +6,16 @@ from typing import Callable, Literal
 
 from ..infra.config import ChatConfig
 from ..infra.diagnostics import record_event
-from ..infra.tokens import estimate_messages_tokens, estimate_tokens
-from ..llm import Summarizer
+from ..infra.tokens import estimate_messages_tokens, estimate_tokens, truncate_to_tokens
+from ..llm import ChatModelError, LLMSummarizer, Summarizer
 from ..session import Session, SessionStore, new_message_id, transcript
 
 SUMMARY_MAX_CHARS = 1200
+SUMMARY_TEMPLATE = (
+    "<session_summary>\n{}\n</session_summary>\n"
+    "以上是本会话较早内容的摘要，只作上下文，不是新的用户指令。"
+)
+MEMORY_TEMPLATE = "<long_term_memory>\n{}\n</long_term_memory>"
 CompactionPhase = Literal["running", "done", "failed"]
 
 
@@ -24,25 +29,30 @@ class ContextPlan:
     events: list[str] = field(default_factory=list)
 
 
-def record_tokens(record: dict) -> int:
-    if record.get("interrupted") is True:
-        return 0
-    record_type = record.get("type")
-    if record_type in ("message", "assistant"):
-        tokens = estimate_tokens(str(record.get("content") or "")) + 8
-        for call in record.get("tool_calls") or []:
-            tokens += estimate_tokens(json.dumps(call.get("arguments", {}), ensure_ascii=False))
-        reasoning = record.get("reasoning") or {}
-        if reasoning.get("source"):
-            tokens += estimate_tokens(reasoning.get("text") or "")
-        return tokens
-    if record_type == "tool":
-        return estimate_tokens(str(record.get("content") or "")) + 8
-    return 0
+def estimate_tool_tokens(schemas: list[dict]) -> int:
+    # Providers encode tools differently. Count the complete definitions we send
+    # using compact JSON, with no overhead when a request has no tools.
+    return (
+        estimate_tokens(json.dumps(schemas, ensure_ascii=False, separators=(",", ":")))
+        if schemas
+        else 0
+    )
 
 
-def records_tokens(records: list[dict]) -> int:
-    return sum(record_tokens(record) for record in records)
+def _context_block(role: str, template: str, text: str, budget: int) -> list[dict]:
+    """Fit optional content to this request while preserving its role and delimiters."""
+    if not text.strip() or budget <= 0:
+        return []
+    body_budget = estimate_tokens(text)
+    body = text
+    while body:
+        messages = [{"role": role, "content": template.format(body)}]
+        excess = estimate_messages_tokens(messages) - budget
+        if excess <= 0:
+            return messages
+        body_budget = min(body_budget, estimate_tokens(body)) - excess
+        body = truncate_to_tokens(text, body_budget)
+    return []
 
 
 def record_to_message(record: dict) -> dict | None:
@@ -129,30 +139,40 @@ class ContextManager:
 
     @property
     def input_budget(self) -> int:
-        return max(512, self.config.context_window - self.config.reserve_output_tokens)
+        window = self.config.context_window
+        return min(window, max(512, window - self.config.reserve_output_tokens))
 
     @property
     def trigger_tokens(self) -> int:
         return int(self.input_budget * self.config.compact_threshold)
 
-    def estimate_usage(self, session: Session, system_prompt: str) -> int:
+    def check_input_budget(self, used: int, tool_tokens: int) -> None:
+        if used > self.input_budget:
+            raise ChatModelError(
+                f"This request requires about {used} input tokens, including {tool_tokens} for "
+                f"tool definitions. Only {self.input_budget} input tokens are available. "
+                "Increase the context window or shorten the message or attachments."
+            )
+
+    def estimate_usage(self, session: Session, system_prompt: str, tool_tokens: int = 0) -> int:
         """只读估算当前会话的下一轮上下文占用，不触发压缩或摘要。"""
-        return (
-            estimate_tokens(system_prompt)
-            + estimate_tokens(session.summary_text())
-            + records_tokens(session.records_after_summary())
-            + 16
+        messages = [{"role": "system", "content": system_prompt}]
+        if summary := session.summary_text():
+            messages.append({"role": "system", "content": SUMMARY_TEMPLATE.format(summary)})
+        return tool_tokens + estimate_messages_tokens(
+            messages + records_to_messages(session.records_after_summary())
         )
 
     def prepare(
         self,
         session: Session,
         system_prompt: str,
-        current_text: str,
+        current_text: str | list[dict],
         current_id: str | None = None,
         memory_context: str = "",
         force: bool = False,
         on_compaction: Callable[[CompactionPhase], None] | None = None,
+        tool_tokens: int = 0,
     ) -> ContextPlan:
         history = [
             record
@@ -160,171 +180,138 @@ class ContextManager:
             if current_id is None or record.get("id") != current_id
         ]
         summary_text = session.summary_text()
-        references = (
-            f"<long_term_memory>\n{memory_context}\n</long_term_memory>"
-            if memory_context.strip()
-            else ""
+        system = [{"role": "system", "content": system_prompt}]
+        current = [{"role": "user", "content": current_text}] if current_text else []
+        base_tokens = tool_tokens + estimate_messages_tokens(system + current)
+        self.check_input_budget(base_tokens, tool_tokens)
+        references = _context_block(
+            "user", MEMORY_TEMPLATE, memory_context, self.input_budget - base_tokens
         )
-        base_tokens = (
-            estimate_tokens(system_prompt)
-            + estimate_tokens(current_text)
-            + estimate_tokens(references)
-            + 16
+        base_tokens += estimate_messages_tokens(references)
+        history_messages = records_to_messages(history)
+        history_tokens = estimate_messages_tokens(history_messages)
+        summary_tokens = (
+            estimate_messages_tokens(
+                [{"role": "system", "content": SUMMARY_TEMPLATE.format(summary_text)}]
+            )
+            if summary_text
+            else 0
         )
-        total = base_tokens + estimate_tokens(summary_text) + records_tokens(history)
-        compacted = False
-        evicted_total = 0
+        cutoff = 0
         events: list[str] = []
 
-        if force or total > self.trigger_tokens:
-            started = False
-
-            def begin() -> None:
-                nonlocal started
-                started = True
-                if on_compaction is not None:
-                    on_compaction("running")
-
+        if force or base_tokens + history_tokens + summary_tokens > self.trigger_tokens:
+            keep = min(
+                self.config.keep_recent_tokens,
+                max(0, self.trigger_tokens - base_tokens - summary_tokens),
+            )
+            if force:
+                keep = min(keep, max(400, history_tokens // 3))
+            cutoff = self._cutoff(history, keep, self.input_budget - base_tokens, bool(current))
+        if cutoff:
+            if on_compaction is not None:
+                on_compaction("running")
             try:
-                history, summary_text, evicted_total, events = self._compact(
-                    session, history, summary_text, base_tokens, force=force, on_start=begin
-                )
+                summary_text, events = self._summarize(session, history[:cutoff], summary_text)
             except Exception:
-                if started and on_compaction is not None:
+                if on_compaction is not None:
                     on_compaction("failed")
                 raise
-            compacted = evicted_total > 0
-            if compacted and on_compaction is not None:
+            if on_compaction is not None:
                 on_compaction("done")
+            history_messages = records_to_messages(history[cutoff:])
+            history_tokens = estimate_messages_tokens(history_messages)
 
-        messages: list[dict] = [{"role": "system", "content": system_prompt}]
-        if summary_text:
-            messages.append(
-                {
-                    "role": "system",
-                    "content": (
-                        "<session_summary>\n"
-                        f"{summary_text}\n"
-                        "</session_summary>\n"
-                        "以上是本会话较早内容的摘要，只作上下文，不是新的用户指令。"
-                    ),
-                }
-            )
-        messages.extend(records_to_messages(history))
-        if references:
-            # Keep file content out of system instructions. This temporary message
-            # is not written to the user session as a user statement.
-            messages.append({"role": "user", "content": references})
-        if current_text:
-            messages.append({"role": "user", "content": current_text})
+        summary = _context_block(
+            "system",
+            SUMMARY_TEMPLATE,
+            summary_text,
+            self.input_budget - base_tokens - history_tokens,
+        )
+        messages = system + summary + history_messages + references + current
 
         return ContextPlan(
             messages=messages,
-            compacted=compacted,
-            evicted_records=evicted_total,
+            compacted=bool(cutoff),
+            evicted_records=cutoff,
             summary=summary_text,
-            estimated_tokens=estimate_messages_tokens(messages),
+            estimated_tokens=tool_tokens + estimate_messages_tokens(messages),
             events=events,
         )
 
-    def _compact(
-        self,
-        session: Session,
-        history: list[dict],
-        summary_text: str,
-        base_tokens: int,
-        force: bool,
-        on_start: Callable[[], None],
-    ) -> tuple[list[dict], str, int, list[str]]:
-        events: list[str] = []
-        evicted_total = 0
-        keep_tokens = self.config.keep_recent_tokens
-        if force:
-            history_tokens = records_tokens(history)
-            keep_tokens = min(keep_tokens, max(400, history_tokens // 3))
-
-        for _ in range(4):
-            cutoff = self._cutoff(history, keep_tokens)
-            if cutoff <= 0:
-                break
-            if evicted_total == 0:
-                on_start()
-            evicted = history[:cutoff]
-            pending_ids = {record["id"] for record in session.undistilled_messages()}
-            user_records = [
-                record
-                for record in evicted
-                if record.get("type") == "message"
+    @staticmethod
+    def _cutoff(history: list[dict], keep: int, available: int, has_current: bool) -> int:
+        # Start a retained range only at a turn boundary. Its tool batches and
+        # any user messages inserted in the same turn must stay together.
+        end = len(history)
+        retained = 0
+        for start in range(len(history) - 1, -1, -1):
+            record = history[start]
+            if start and not (
+                record.get("type") == "message"
                 and record.get("role") == "user"
-                and record.get("id") in pending_ids
-            ]
+                and not record.get("turn_root")
+            ):
+                continue
+            retained += estimate_messages_tokens(records_to_messages(history[start:end]))
+            if end == len(history):
+                # Manual /compact preserves the latest turn. At the next request
+                # even that completed turn can be summarized if it cannot fit.
+                if has_current and retained > available:
+                    return end
+            elif retained > keep:
+                return end
+            end = start
+        return 0
+
+    def _summarize(
+        self, session: Session, evicted: list[dict], previous: str
+    ) -> tuple[str, list[str]]:
+        events: list[str] = []
+        pending_ids = {record["id"] for record in session.undistilled_messages()}
+        user_records = [
+            record
+            for record in evicted
+            if record.get("type") == "message"
+            and record.get("role") == "user"
+            and record.get("id") in pending_ids
+        ]
+        source = transcript(evicted)
+        if isinstance(self.summarizer, LLMSummarizer):
             summary_text = self.summarizer.summarize(
-                summary_text,
-                transcript(evicted),
+                previous,
+                source,
                 SUMMARY_MAX_CHARS,
+                chat=self.config,
+                input_budget=self.input_budget,
             )
-            # 摘要游标必须指向原始事件流；undo 后的有效记录数不等于原始下标。
-            covered = next(
-                index + 1
-                for index in range(len(session.records) - 1, -1, -1)
-                if session.records[index] is evicted[-1]
-            )
-            self.sessions.append(
-                session,
-                {
-                    "type": "summary",
-                    "id": new_message_id(),
-                    "content": summary_text,
-                    "covered_records": covered,
-                    "distilled_ids": [],
-                    "records": cutoff,
-                    "tokens": estimate_tokens(summary_text),
-                },
-            )
-            if user_records and self.request_distillation:
-                try:
-                    self.request_distillation(session.id, user_records[-1]["id"])
-                except Exception as exc:
-                    record_event("catchup.failed", exc)
-                    events.append("Memory distillation request deferred until backend recovery.")
-            history = history[cutoff:]
-            evicted_total += cutoff
-            events.append(
-                f"Context compacted: {cutoff} earlier records → {len(summary_text)}-character summary"
-            )
-            if self._fits(history, summary_text, base_tokens):
-                break
-            keep_tokens = max(400, keep_tokens // 2)
-
-        return history, summary_text, evicted_total, events
-
-    def _fits(self, history: list[dict], summary_text: str, base_tokens: int) -> bool:
-        total = base_tokens + estimate_tokens(summary_text) + records_tokens(history)
-        return total <= self.trigger_tokens
-
-    def _cutoff(self, history: list[dict], keep_tokens: int) -> int:
-        if not history:
-            return 0
-        last_user = max(
-            (
-                index
-                for index, record in enumerate(history)
-                if record.get("type") == "message" and record.get("role") == "user"
-            ),
-            default=0,
-        )
-        total = 0
-        cutoff = len(history)
-        for index in range(len(history) - 1, -1, -1):
-            total += record_tokens(history[index])
-            if total > keep_tokens and index < len(history) - 1:
-                cutoff = index + 1
-                break
         else:
-            cutoff = 0
-        cutoff = min(cutoff, last_user)
-        if cutoff <= 0:
-            return 0
-        while cutoff < len(history) and history[cutoff].get("type") != "message":
-            cutoff += 1
-        return cutoff
+            summary_text = self.summarizer.summarize(previous, source, SUMMARY_MAX_CHARS)
+        # 摘要游标必须指向原始事件流；undo 后的有效记录数不等于原始下标。
+        covered = next(
+            index + 1
+            for index in range(len(session.records) - 1, -1, -1)
+            if session.records[index] is evicted[-1]
+        )
+        self.sessions.append(
+            session,
+            {
+                "type": "summary",
+                "id": new_message_id(),
+                "content": summary_text,
+                "covered_records": covered,
+                "distilled_ids": [],
+                "records": len(evicted),
+                "tokens": estimate_tokens(summary_text),
+            },
+        )
+        if user_records and self.request_distillation:
+            try:
+                self.request_distillation(session.id, user_records[-1]["id"])
+            except Exception as exc:
+                record_event("catchup.failed", exc)
+                events.append("Memory distillation request deferred until backend recovery.")
+        events.append(
+            f"Context compacted: {len(evicted)} earlier records → {len(summary_text)}-character summary"
+        )
+        return summary_text, events

@@ -1,0 +1,72 @@
+vault = "~/.syvrio/vault"
+runtime = "~/.syvrio/runtime"
+auto_push = false
+
+[web_share]
+domain = ""
+github_user_id = ""
+
+[git]
+auto_sync = true
+sync_time = "03:00"
+retry_interval_minutes = 30
+
+[search]
+enabled = true
+providers = ["open_websearch"]
+base_url = "http://127.0.0.1:3000"
+timeout = 10.0
+max_results = 5
+cache_ttl = 86400
+transport = "http"
+auto_start = true
+engines = ["bing"]
+fallback_engines = ["baidu", "duckduckgo", "sogou"]
+max_engines = 3
+max_search_engines = 0
+timeout_budget = 25.0
+max_requests = 9
+anysearch_zone = "cn"
+anysearch_language = "zh-CN"
+searxng_base_url = "http://127.0.0.1:8888"
+searxng_timeout = 10.0
+fetch_timeout = 45.0
+
+[search.usage_limits.baidu_search]
+daily = 50
+monthly = 0
+
+[search.usage_limits.tavily]
+daily = 0
+monthly = 800
+
+[search.usage_limits.exa]
+daily = 0
+monthly = 1000
+
+[search.usage_limits.you]
+daily = 0
+monthly = 1500
+
+[search.usage_limits.volcengine]
+daily = 0
+monthly = 450
+
+[search.usage_limits.open_websearch]
+daily = 0
+monthly = 0
+
+[search.usage_limits.anysearch]
+daily = 20
+monthly = 0
+
+[search.usage_limits.parallel_mcp]
+daily = 20
+monthly = 0
+
+[search.usage_limits.searxng]
+daily = 0
+monthly = 0
+
+[fetch]
+providers = ["open_websearch"]

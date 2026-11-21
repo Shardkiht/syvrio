@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 from ..infra.secrets import contains_secret
 from ..infra.tokens import estimate_tokens
-from ..llm.client import complete
+from ..llm.client import complete, effective_context_window
 from ..memory.models import ProfileSummaryResponse
 from ..memory.temporal import resolve_relative
 
@@ -47,7 +47,8 @@ def ask(service, prompt: str, payload: dict, schema: type[BaseModel]):
     config = replace(service.config.llm, num_retries=0)
     content = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     limit = 4000 if schema is ProfileSummaryResponse or config.is_spark else 1800
-    budget = min(limit, service.config.chat.context_window - estimate_tokens(prompt + content) - 64)
+    window = effective_context_window(config, service.config.chat.context_window)
+    budget = min(limit, window - estimate_tokens(prompt + content) - 64)
     if budget < (2048 if config.is_spark else 256):
         raise ValueError("Background task exceeds the model context window.")
     response = complete(

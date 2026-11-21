@@ -29,8 +29,20 @@ CASES = [
     Case("资料归属存疑", expected="queued", question="这段经历是谁的？"),
     Case("完全重复", text="喜欢纸质阅读", seed="喜欢纸质阅读", expected="duplicates"),
     Case("不同事实", text="喜欢阅读纸质杂志", seed="喜欢纸质书"),
-    Case("数字冲突", text="每周阅读 5 次", seed="每周阅读 2 次", expected="queued", question="哪段时间？"),
-    Case("否定冲突", text="不喜欢纸质阅读", seed="喜欢纸质阅读", expected="queued", question="以前还是现在？"),
+    Case(
+        "数字冲突",
+        text="每周阅读 5 次",
+        seed="每周阅读 2 次",
+        expected="queued",
+        question="哪段时间？",
+    ),
+    Case(
+        "否定冲突",
+        text="不喜欢纸质阅读",
+        seed="喜欢纸质阅读",
+        expected="queued",
+        question="以前还是现在？",
+    ),
     Case("凭据拦截", text="密码是 synthetic-only", expected="blocked"),
     Case("年份精度", context={"event_time": "2024"}),
     Case("月份精度", context={"event_time": "2024-06"}),
@@ -62,8 +74,13 @@ CASES = [
 def run_case(case: Case, vault: Path) -> str | None:
     service = MemoryService(Config(vault=vault, retrieval=RetrievalConfig(method="keyword")))
     seed = service.note(case.seed, topic="synthetic") if case.seed else None
-    candidate = {"text": case.text, "topic": "synthetic", "context": case.context,
-                 "question": case.question, "related_ids": [seed.id] if seed and case.question else []}
+    candidate = {
+        "text": case.text,
+        "topic": "synthetic",
+        "context": case.context,
+        "question": case.question,
+        "related_ids": [seed.id] if seed and case.question else [],
+    }
     try:
         extraction = parse_extraction(json.dumps({"memories": [candidate]}, ensure_ascii=False))
     except ValueError as exc:
@@ -111,8 +128,15 @@ def run_contextual_eval(vault: Path) -> dict:
     old = service.store.append(
         "preferences", "合成偏好早期状态", context=MemoryContext(valid_from="2020-01-01")
     )
-    new = service.transition(old.id, MemoryDraft(topic="preferences", text="合成偏好后期状态",
-                              context=MemoryContext(valid_from="2024-01-01")), previous_valid_to="2023")
+    new = service.transition(
+        old.id,
+        MemoryDraft(
+            topic="preferences",
+            text="合成偏好后期状态",
+            context=MemoryContext(valid_from="2024-01-01"),
+        ),
+        previous_valid_to="2023",
+    )
     target = service.store.append(
         "events",
         "合成展览活动",

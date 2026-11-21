@@ -10,15 +10,17 @@ from .config import (
     CONFIG_FILENAME,
     CONTEXT_WINDOW_PRESETS,
     KEYRING_SERVICE,
+    MIN_CONTEXT_WINDOW,
     Config,
     LLMConfig,
     default_config_path,
     default_vault_path,
     load_config,
     read_api_key,
-    toml_literal,
-    usage_limits_toml,
     write_example_config,
+)
+from .config import (
+    write_config as write_config,
 )
 from .tokens import format_tokens
 
@@ -205,7 +207,7 @@ def _choose_context(max_input: int | None, current: int) -> int:
 
     options = [value for value in CONTEXT_WINDOW_PRESETS if not max_input or value <= max_input]
     if not options and max_input:
-        options = [max_input]
+        options = [MIN_CONTEXT_WINDOW]
     default = min(options, key=lambda value: abs(value - current))
     options = [default] + [value for value in options if value != default]
     selected = ask(
@@ -273,96 +275,6 @@ def test_connection(llm: LLMConfig) -> tuple[bool, str]:
         return True, "连接成功"
     except Exception as exc:
         return False, str(exc)[:300]
-
-
-def write_config(path: Path, config: Config) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    provider_urls = ", ".join(
-        f"{toml_literal(name)} = {toml_literal(url)}"
-        for name, url in config.llm.provider_urls.items()
-    )
-    content = f"""# Syvrio 配置（由 syvrio setup 生成）
-vault = {toml_literal(config.vault.as_posix())}
-runtime = {toml_literal(config.runtime or "~/.syvrio/runtime")}
-
-confidence_threshold = {config.confidence_threshold}
-auto_push = {str(config.auto_push).lower()}
-
-[git]
-auto_sync = {str(config.git.auto_sync).lower()}
-sync_time = {toml_literal(config.git.sync_time)}
-retry_interval_minutes = {config.git.retry_interval_minutes}
-
-[llm]
-provider = {toml_literal(config.llm.provider)}
-base_url = {toml_literal(config.llm.base_url)}
-model = {toml_literal(config.llm.model)}
-api_key_env = {toml_literal(config.llm.api_key_env)}
-reasoning_effort = {toml_literal(config.llm.reasoning_effort or "")}
-spark_thinking = {toml_literal(config.llm.spark_thinking)}
-provider_urls = {{ {provider_urls} }}
-recent_models = {toml_literal(config.llm.recent_models)}
-num_retries = {config.llm.num_retries}
-temperature = {config.llm.temperature}
-timeout = {config.llm.timeout}
-
-[chat]
-context_window = {config.chat.context_window}
-reserve_output_tokens = {config.chat.reserve_output_tokens}
-keep_recent_tokens = {config.chat.keep_recent_tokens}
-compact_threshold = {config.chat.compact_threshold}
-max_tool_steps = {config.chat.max_tool_steps}
-tool_timeout = {config.chat.tool_timeout}
-auto_recall = {config.chat.auto_recall}
-recall_rewrite = {str(config.chat.recall_rewrite).lower()}
-recall_context_turns = {config.chat.recall_context_turns}
-auto_reflect = {str(config.chat.auto_reflect).lower()}
-reflect_idle_seconds = {config.chat.reflect_idle_seconds}
-reflect_interval_seconds = {config.chat.reflect_interval_seconds}
-profile_auto_interval_hours = {config.chat.profile_auto_interval_hours}
-profile_min_cooldown_hours = {config.chat.profile_min_cooldown_hours}
-profile_min_changes = {config.chat.profile_min_changes}
-dream_auto_interval_hours = {config.chat.dream_auto_interval_hours}
-extract_on_exit = {str(config.chat.extract_on_exit).lower()}
-
-[retrieval]
-method = {toml_literal(config.retrieval.method)}
-
-[retrieval.embedding]
-backend = {toml_literal(config.retrieval.embedding.backend)}
-model = {toml_literal(config.retrieval.embedding.model)}
-provider = {toml_literal(config.retrieval.embedding.provider)}
-base_url = {toml_literal(config.retrieval.embedding.base_url)}
-api_key_env = {toml_literal(config.retrieval.embedding.api_key_env)}
-
-[search]
-enabled = {str(config.search.enabled).lower()}
-providers = {toml_literal(config.search.providers)}
-base_url = {toml_literal(config.search.base_url)}
-timeout = {config.search.timeout}
-max_results = {config.search.max_results}
-cache_ttl = {config.search.cache_ttl}
-transport = {toml_literal(config.search.transport)}
-auto_start = {str(config.search.auto_start).lower()}
-engines = {toml_literal(config.search.engines)}
-fetch_timeout = {config.search.fetch_timeout}
-fallback_engines = {toml_literal(config.search.fallback_engines)}
-max_engines = {config.search.max_engines}
-max_search_engines = {config.search.max_search_engines}
-timeout_budget = {config.search.timeout_budget}
-max_requests = {config.search.max_requests}
-anysearch_zone = {toml_literal(config.search.anysearch_zone)}
-anysearch_language = {toml_literal(config.search.anysearch_language)}
-searxng_base_url = {toml_literal(config.search.searxng_base_url)}
-searxng_timeout = {config.search.searxng_timeout}
-{usage_limits_toml(config.search.usage_limits)}
-[fetch]
-providers = {toml_literal(config.fetch.providers)}
-"""
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(content, encoding="utf-8")
-    # 先写临时文件再替换，避免中断时把现有配置截成空文件。
-    os.replace(tmp, path)
 
 
 def resolve_config_path(config_path: Path | None) -> Path:

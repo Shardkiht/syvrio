@@ -142,7 +142,13 @@ export function reduceChat(state: ChatState, event: StreamEvent): ChatState {
     case 'message_saved': {
       if (!event.message_id) return base;
       const user = [...base.messages].reverse().find((message) => message.role === 'user');
-      return { ...base, messages: base.messages.map((message) =>
+      if (!user) return base;
+      // A history read can see the new message before its receipt has a saved ID.
+      const saved = base.messages.findIndex(m => m !== user && m.role === 'user' && m.savedId === event.message_id);
+      const messages = saved < 0 ? base.messages : [
+        ...base.messages.slice(0, saved), ...base.messages.slice(base.messages.indexOf(user)),
+      ];
+      return { ...base, messages: messages.map((message) =>
         message === user ? { ...message, savedId: event.message_id } : message) };
     }
 
@@ -393,6 +399,8 @@ export function loadHistory(state: ChatState, history: HistoryResponse): ChatSta
         interrupted: item.interrupted,
         at: item.at,
       });
+    } else if (item.role === 'error') {
+      messages.push({ id: item.id, role: 'info', content: `Reply failed: ${item.content}`, at: item.at });
     } else if (item.role === 'tool') {
       // A tool record with no preceding assistant turn: keep it, folded.
       messages.push({

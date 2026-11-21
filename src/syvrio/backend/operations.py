@@ -19,16 +19,27 @@ class ResidentOperations:
         if name in {"memorize", "correct", "transition"}:
             data = {**data, "draft": MemoryDraft.model_validate(data.get("draft"))}
         operations = {
-            "memorize": service.memorize, "import_text": service.import_text,
-            "recall": service.recall, "read_topic": service.read_topic,
-            "deprecate": service.deprecate, "correct": service.correct, "transition": service.transition,
-            "topics": service.topics, "pending": service.pending, "approve": service.approve,
-            "reject": service.reject, "history": service.history, "commit": service.commit,
-            "status": service.status, "inferences": service.list_inferences,
-            "review_inference": service.review_inference, "profile": service.profile.read_text,
+            "memorize": service.memorize,
+            "import_text": service.import_text,
+            "recall": service.recall,
+            "read_topic": service.read_topic,
+            "deprecate": service.deprecate,
+            "correct": service.correct,
+            "transition": service.transition,
+            "topics": service.topics,
+            "pending": service.pending,
+            "approve": service.approve,
+            "reject": service.reject,
+            "history": service.history,
+            "commit": service.commit,
+            "status": service.status,
+            "inferences": service.list_inferences,
+            "review_inference": service.review_inference,
+            "profile": service.profile.read_text,
             "sessions": self.owner._sessions.list,
             "inference_review": self.owner._app_service.memory.load_inference_review,
-            "dream": self.owner._background.request_dream, "dream_status": self.owner._background.dream_status,
+            "dream": self.owner._background.request_dream,
+            "dream_status": self.owner._background.dream_status,
             "cancel_dream": self.owner._background.cancel_dream,
             "search": self.search,
         }
@@ -41,4 +52,6 @@ class ResidentOperations:
             raise ValueError("Search is disabled.")
         if self.search_router is None:
             self.search_router = build_search_router(self.service.config.search, self.service.paths)
-        return self.search_router.search(TypeAdapter(SearchQuery).validate_python(query)).to_payload()
+        return self.search_router.search(
+            TypeAdapter(SearchQuery).validate_python(query)
+        ).to_payload()

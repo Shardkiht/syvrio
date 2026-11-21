@@ -86,7 +86,7 @@ def process(
     ):
         if stop.is_set() or busy(session.id):
             return False
-        recalled = service.recall(part, limit=7)
+        recalled = service.recall(part, limit=service.config.chat.recall_limit)
         payload = {
             "source_text": part,
             "recorded_at": source["at"],

@@ -25,7 +25,9 @@ def build_server(
     remote = isinstance(svc, ResidentClient)
     search_config = svc.config.search
     search_router = search_router or (
-        build_search_router(search_config, svc.paths) if search_config.enabled and not remote else None
+        build_search_router(search_config, svc.paths)
+        if search_config.enabled and not remote
+        else None
     )
     mcp = FastMCP(
         "syvrio",
@@ -38,17 +40,21 @@ def build_server(
     )
 
     if remote:
+
         def model_write(action, arguments, token):
             return svc.call("mcp_write", action=action, arguments=arguments, review_token=token)
     else:
         from ..backend.mcp_writes import MCPWrites
+
         writes = MCPWrites(svc)
 
         def model_write(action, arguments, token):
             return writes.apply("in-process", action, arguments, token)
 
     @mcp.tool
-    def memorize(text: str, topic: str, context: MemoryContext | None = None, review_token: str | None = None) -> dict:
+    def memorize(
+        text: str, topic: str, context: MemoryContext | None = None, review_token: str | None = None
+    ) -> dict:
         """保存一条明确的用户事实，保留来源中给出的时间、地点和情绪。"""
         draft = MemoryDraft(text=text, topic=topic, context=context)
         return model_write("memorize", {"draft": draft.model_dump(exclude_none=True)}, review_token)
@@ -61,7 +67,7 @@ def build_server(
     @mcp.tool
     def recall(
         query: str,
-        limit: int = 7,
+        limit: int | None = None,
         time_range: dict[str, str] | None = None,
         location: str | None = None,
         emotion: str | None = None,
@@ -87,15 +93,31 @@ def build_server(
             raise ValueError(str(exc)) from exc
 
     @mcp.tool
-    def transition(entry_id: str, draft: MemoryDraft, previous_valid_to: str | None = None, review_token: str | None = None) -> dict:
+    def transition(
+        entry_id: str,
+        draft: MemoryDraft,
+        previous_valid_to: str | None = None,
+        review_token: str | None = None,
+    ) -> dict:
         """记录原事实有效期或状态的变化，并将新事实与原事实相关联。"""
-        return model_write("transition", {"entry_id": entry_id, "draft": draft.model_dump(exclude_none=True),
-                                          "previous_valid_to": previous_valid_to}, review_token)
+        return model_write(
+            "transition",
+            {
+                "entry_id": entry_id,
+                "draft": draft.model_dump(exclude_none=True),
+                "previous_valid_to": previous_valid_to,
+            },
+            review_token,
+        )
 
     @mcp.tool
     def correct(entry_id: str, draft: MemoryDraft, review_token: str | None = None) -> dict:
         """更正记录错误；旧事实保留并弃用。"""
-        return model_write("correct", {"entry_id": entry_id, "draft": draft.model_dump(exclude_none=True)}, review_token)
+        return model_write(
+            "correct",
+            {"entry_id": entry_id, "draft": draft.model_dump(exclude_none=True)},
+            review_token,
+        )
 
     @mcp.tool
     def deprecate(entry_id: str, review_token: str | None = None) -> dict:
@@ -108,10 +130,19 @@ def build_server(
         return svc.call("profile") if remote else svc.profile.read_text()
 
     @mcp.tool
-    def create_pending(draft: MemoryDraft, question: str, related_ids: list[str], review_token: str | None = None) -> dict:
+    def create_pending(
+        draft: MemoryDraft, question: str, related_ids: list[str], review_token: str | None = None
+    ) -> dict:
         """保存待澄清的候选，列出需确认的问题及关联事实。"""
-        return model_write("create_pending", {"draft": draft.model_dump(exclude_none=True),
-                           "question": question, "related_ids": related_ids}, review_token)
+        return model_write(
+            "create_pending",
+            {
+                "draft": draft.model_dump(exclude_none=True),
+                "question": question,
+                "related_ids": related_ids,
+            },
+            review_token,
+        )
 
     @mcp.tool
     def review_pending() -> list[dict]:
@@ -235,13 +266,13 @@ def build_server(
                 }
             try:
                 request = SearchQuery(
-                        query=text,
-                        limit=max(1, min(int(limit), 15)),
-                        engines=engines,
-                        context_terms=context_terms,
-                        preferred_provider=str(preferred_provider or "auto").strip().lower(),
-                        providers=selected,
-                        strategy=strategy_name,
+                    query=text,
+                    limit=max(1, min(int(limit), 15)),
+                    engines=engines,
+                    context_terms=context_terms,
+                    preferred_provider=str(preferred_provider or "auto").strip().lower(),
+                    providers=selected,
+                    strategy=strategy_name,
                 )
                 if remote:
                     return svc.search(request)

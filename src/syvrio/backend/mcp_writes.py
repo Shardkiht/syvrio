@@ -35,8 +35,13 @@ class MCPWrites:
             payload["draft"] = draft
 
         def write():
-            operations = {"memorize": service.memorize, "correct": service.correct, "transition": service.transition,
-                          "deprecate": service.deprecate, "create_pending": service.create_pending}
+            operations = {
+                "memorize": service.memorize,
+                "correct": service.correct,
+                "transition": service.transition,
+                "deprecate": service.deprecate,
+                "create_pending": service.create_pending,
+            }
             record = operations[action](**payload)
             if action == "create_pending":
                 return record.model_dump(exclude_none=True, exclude={"created_at"})
@@ -46,8 +51,15 @@ class MCPWrites:
             challenge = self._challenges.pop(review_token, None) if review_token else None
         context = challenge[1] if challenge and challenge[0] == view else RecallContext(service)
         context.begin_model_request()
-        result = context.run(action, arguments, query, write, target_id=entry_id,
-                             include_pending=action == "create_pending", related_ids=tuple(arguments.get("related_ids", ())))
+        result = context.run(
+            action,
+            arguments,
+            query,
+            write,
+            target_id=entry_id,
+            include_pending=action == "create_pending",
+            related_ids=tuple(arguments.get("related_ids", ())),
+        )
         if result.get("status") == "review_required":
             token = secrets.token_urlsafe(24)
             with self._lock:
@@ -55,5 +67,7 @@ class MCPWrites:
                 if len(self._challenges) > 256:
                     self._challenges.popitem(last=False)
             result["review_token"] = token
-            result["instruction"] = "Review these facts, then repeat the same operation with this review_token if appropriate."
+            result["instruction"] = (
+                "Review these facts, then repeat the same operation with this review_token if appropriate."
+            )
         return result

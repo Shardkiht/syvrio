@@ -29,7 +29,93 @@ def test_create_append_and_reload(tmp_path):
     assert loaded.id == session.id
     assert [message["role"] for message in loaded.messages] == ["user"]
     assert loaded.messages[0]["content"] == "你好"
-    assert loaded.title() == "你好"
+    assert loaded.title() == "未命名会话"
+
+
+def test_navigation_snapshots_are_detached_and_follow_archive_moves(tmp_path):
+    store, session = make_store(tmp_path)
+    store.append(session, {"type": "message", "role": "user", "id": "m1", "content": "Saved"})
+    snapshot = store.load_snapshot(session.id)
+    snapshot.messages[0]["content"] = "Unsaved change"
+    assert store.load_snapshot(session.id).user_texts() == ["Saved"]
+
+    store.set_archived(session.id, True)
+    with pytest.raises(KeyError):
+        store.load_snapshot(session.id)
+    assert store.load(session.id, archived=True).user_texts() == ["Saved"]
+    store.set_archived(session.id, False)
+    assert store.load_snapshot(session.id).user_texts() == ["Saved"]
+
+
+def test_title_job_survives_restart_and_uses_first_valid_exchange(service, monkeypatch):
+    from threading import Event
+
+    from syvrio.background_memory import BackgroundMemory, titles
+    from syvrio.infra.jobs import job_path
+
+    backend = BackgroundMemory(service)
+    store = backend.sessions
+    session, untouched = store.create(), store.create()
+    for item in (
+        {"type": "message", "role": "user", "id": "m1", "content": "interrupted question"},
+        {"type": "assistant", "id": "a1", "content": "partial answer", "interrupted": True},
+        {"type": "message", "role": "user", "id": "m2", "content": "actual question"},
+        {
+            "type": "assistant",
+            "id": "a2",
+            "content": "tool preamble",
+            "tool_calls": [{"name": "recall"}],
+        },
+        {"type": "tool", "id": "t1", "content": "tool result"},
+        {"type": "assistant", "content": "actual answer"},  # Older records can lack an ID.
+        {"type": "message", "role": "user", "id": "m3", "content": "later topic"},
+        {"type": "assistant", "id": "a4", "content": "later answer"},
+    ):
+        store.append(session, item)
+        store.append(untouched, item)
+    # Listing or restarting does not schedule historical conversations.
+    assert len(store.list()) == 2 and not backend.pending_titles()
+    backend.request_title(session.id)
+    restarted = BackgroundMemory(service)
+    assert restarted.pending_titles() == {session.id}
+    seen = []
+
+    def generate(service, question, answer):
+        seen.append((question, answer))
+        return "Generated title"
+
+    monkeypatch.setattr(titles, "generate", generate)
+    path = job_path(service.paths, "title", session.id)
+    assert restarted._step_job("title", path, Event())
+    assert seen == [("actual question", "actual answer")] and not restarted.pending_titles()
+    saved = store.load(session.id)
+    assert saved.title() == "Generated title"
+    assert store.load(untouched.id).title() == "未命名会话"
+    backend.request_title(session.id)
+    assert not backend.pending_titles()
+    store.append(saved, {"type": "undo", "message_id": "m2"})
+    assert saved.title() == "未命名会话"
+
+
+def test_missing_title_credentials_leave_history_readable(service, monkeypatch):
+    from threading import Event
+
+    from syvrio.background_memory import BackgroundMemory, titles
+    from syvrio.infra.jobs import job_path
+
+    backend = BackgroundMemory(service)
+    session = backend.sessions.create()
+    for item in (
+        {"type": "message", "role": "user", "id": "m1", "content": "question"},
+        {"type": "assistant", "id": "a1", "content": "answer"},
+    ):
+        backend.sessions.append(session, item)
+    monkeypatch.setattr(titles, "ask", lambda *_: pytest.fail("Unexpected title model call"))
+    backend.request_title(session.id)
+    path = job_path(service.paths, "title", session.id)
+    assert backend._step_job("title", path, Event()) and not path.exists()
+    loaded = backend.sessions.load(session.id)
+    assert loaded.title() == "未命名会话" and loaded.user_texts() == ["question"]
 
 
 def test_session_redacts_credentials_in_nested_records(tmp_path):
@@ -111,17 +197,18 @@ def test_rename_and_list(tmp_path):
 
 
 @pytest.mark.parametrize("count", [1, 10, 50])
-def test_session_listing_scans_archive_once(tmp_path, monkeypatch, count):
+def test_active_listing_scans_only_active_root_once(tmp_path, monkeypatch, count):
     store = SessionStore(tmp_path)
     for _ in range(count):
         store.create()
     scans = 0
     files = store._files
 
-    def count_files():
+    def count_files(*, archived=False):
         nonlocal scans
+        assert not archived
         scans += 1
-        return files()
+        return files(archived=archived)
 
     monkeypatch.setattr(store, "_files", count_files)
     assert len(store.list(limit=count, with_tokens=False)) == count
@@ -354,8 +441,16 @@ def test_permanent_delete_removes_only_this_sessions_uploaded_copies(tmp_path, m
         with source.open("rb") as stream:
             batch = AttachmentBatch.stage(store.attachments_dir, [(source.name, stream)])
         batch.bind(session.id, mid)
-        store.append(session, {"type": "message", "id": mid, "role": "user", "content": "Read",
-                               "attachments": [asdict(item) for item in batch.files]})
+        store.append(
+            session,
+            {
+                "type": "message",
+                "id": mid,
+                "role": "user",
+                "content": "Read",
+                "attachments": [asdict(item) for item in batch.files],
+            },
+        )
     unlink = Path.unlink
     reasoning = store._reasoning_path(first.id, "assistant")
     journal = store._turn_undo_root / first.id / "turn.json"
@@ -363,18 +458,30 @@ def test_permanent_delete_removes_only_this_sessions_uploaded_copies(tmp_path, m
         sidecar.parent.mkdir(parents=True)
         sidecar.write_bytes(b"preserve on failure")
 
+    original = first.path.read_bytes()
+    store.set_archived(first.id, True)
+    archived = store.load(first.id, archived=True)
+    assert archived.path.read_bytes() == original
+    assert store.verify_attachments() == (1, [])
+    with pytest.raises(ValueError, match="active sessions"):
+        store.append(archived, {"type": "title", "title": "stale write"})
+    store.set_archived(first.id, False)
+    assert first.path.read_bytes() == original and store.verify_attachments() == (2, [])
+    store.set_archived(first.id, True)
+
     def fail_to_unlink(path, *args, **kwargs):
-        if path == first.path:
+        if path == archived.path:
             raise PermissionError("session is open")
         return unlink(path, *args, **kwargs)
 
     with monkeypatch.context() as mp:
         mp.setattr(Path, "unlink", fail_to_unlink)
         with pytest.raises(PermissionError, match="session is open"):
-            store.delete(first.id)
-    assert store.verify_attachments() == (2, [])
+            store.delete(first.id, archived=True)
+    assert archived.path.read_bytes() == original
+    assert (store.attachments_dir / first.id).is_dir()
     assert all(sidecar.read_bytes() == b"preserve on failure" for sidecar in (reasoning, journal))
-    assert store.delete(first.id)
+    assert store.delete(first.id, archived=True)
     assert not any(sidecar.exists() for sidecar in (reasoning, journal))
     with pytest.raises(FileNotFoundError):
         store.append(first, {"type": "title", "title": "late write"})

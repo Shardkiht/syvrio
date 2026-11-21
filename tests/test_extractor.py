@@ -53,7 +53,9 @@ def test_partial_validity_dates_are_not_fabricated():
 
 
 def test_context_represents_stated_location_without_an_inferred_category():
-    assert MemoryContext(location="合成地点").model_dump(exclude_none=True) == {"location": "合成地点"}
+    assert MemoryContext(location="合成地点").model_dump(exclude_none=True) == {
+        "location": "合成地点"
+    }
     with pytest.raises(ValidationError):
         MemoryContext(location="合成地点", location_kind="residence")
 
@@ -105,7 +107,9 @@ def test_model_extraction_keeps_only_emotions_quoted_in_the_source(adapter, word
 
     emotions = {**wording, "recollection": "十分兴奋"}
     payload = {"memories": [{"text": "参加展览", "context": {"emotion": emotions}}]}
-    response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))])
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))]
+    )
     config = LLMConfig(provider="local")
     source = "参加展览，当时有点紧张。"
     if adapter == "chat":
@@ -134,9 +138,7 @@ def test_llm_extractor_requests_optional_context_without_current_date(monkeypatc
         return SimpleNamespace(
             choices=[
                 SimpleNamespace(
-                    message=SimpleNamespace(
-                        content='{"memories":[{"text":"去年参加合成展览"}]}'
-                    )
+                    message=SimpleNamespace(content='{"memories":[{"text":"去年参加合成展览"}]}')
                 )
             ]
         )
@@ -149,10 +151,21 @@ def test_llm_extractor_requests_optional_context_without_current_date(monkeypatc
 
 
 def test_parse_plain_json_preserves_explicit_question_and_references():
-    result = parse_extraction(json.dumps({"memories": [
-        {"text": "喜欢清淡风味", "topic": "preferences"},
-        {"text": "可能在搬家", "topic": "housing", "question": "搬家完成了吗？", "related_ids": ["fact-1"]},
-    ]}))
+    result = parse_extraction(
+        json.dumps(
+            {
+                "memories": [
+                    {"text": "喜欢清淡风味", "topic": "preferences"},
+                    {
+                        "text": "可能在搬家",
+                        "topic": "housing",
+                        "question": "搬家完成了吗？",
+                        "related_ids": ["fact-1"],
+                    },
+                ]
+            }
+        )
+    )
     assert result.memories[0].question is None
     assert result.memories[1].related_ids == ["fact-1"]
     assert result.memories[1].question == "搬家完成了吗？"

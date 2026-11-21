@@ -172,6 +172,9 @@ class InferenceScreen(ModalScreen):
         self._by_id = {item.id: item for item in items}
         self._sources = dict(sources)
         self._busy = False
+        edited = self._by_id.get(focus_id) if focus_id and self._editing else None
+        if edited is not None and self._filter != "all":
+            self._filter = edited.status
         self._editing = False
         if focus_id is not None:
             self._selected_id = focus_id

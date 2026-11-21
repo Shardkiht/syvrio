@@ -32,8 +32,12 @@ def resident_transport(monkeypatch):
                 service = get_service(config, vault)
                 self.config, self.paths = service.config, service.paths
                 api = create_app(WebBackend(service=service), resident_token="fixture")
-                self.transport = instances.enter_context(TestClient(api, base_url="http://localhost"))
-                self.transport.headers.update({"X-Syvrio-Token": "fixture", "X-Syvrio-View": "cli-test"})
+                self.transport = instances.enter_context(
+                    TestClient(api, base_url="http://localhost")
+                )
+                self.transport.headers.update(
+                    {"X-Syvrio-Token": "fixture", "X-Syvrio-View": "cli-test"}
+                )
 
             def request(self, method, path, **kwargs):
                 response = self.transport.request(method, path, **kwargs)
@@ -279,7 +283,9 @@ def test_cli_correct_and_forget(tmp_path):
     service.init_vault()
     entry = service.note("旧表述：住在城西", topic="housing")
 
-    result = invoke(["correct", entry.id, "新表述：住在滨江", "--topic", "housing", "--vault", str(vault)])
+    result = invoke(
+        ["correct", entry.id, "新表述：住在滨江", "--topic", "housing", "--vault", str(vault)]
+    )
     assert result.exit_code == 0, result.output
     assert "已更正" in result.output
     assert service.store.find(entry.id).status == "deprecated"
@@ -307,7 +313,9 @@ def test_cli_correct_rejects_inactive_entry(tmp_path):
     entry = service.note("一条记录", topic="misc")
     service.deprecate(entry.id)
 
-    result = invoke(["correct", entry.id, "试图更正已弃用的记忆", "--topic", "misc", "--vault", str(vault)])
+    result = invoke(
+        ["correct", entry.id, "试图更正已弃用的记忆", "--topic", "misc", "--vault", str(vault)]
+    )
     assert result.exit_code == 1
     assert "active memory" in result.output
 
@@ -382,7 +390,6 @@ def test_update_forwards_python_and_uv_paths(tmp_path, monkeypatch):
     _update_home(
         tmp_path,
         monkeypatch,
-        channel="evo",
         service="syvrio-web.service",
         python="/usr/bin/python3.13",
         uv="/opt/uv/bin/uv",
@@ -400,6 +407,7 @@ def test_update_forwards_python_and_uv_paths(tmp_path, monkeypatch):
     assert seen["uv"] == "/opt/uv/bin/uv"
     assert seen["python"] == "/usr/bin/python3.13"
     assert seen["port"] == 8765
+    assert seen["channel"] == "stable"
 
 
 def test_update_failure_reaches_diagnostics(tmp_path, monkeypatch):

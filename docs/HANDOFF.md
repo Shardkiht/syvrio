@@ -5,21 +5,46 @@
 在仓库根目录运行 `uv sync --frozen`。Web、TUI、CLI 和 MCP 使用同一套应用服务。各客户端使用同一份开发配置时，可以看到相同的会话、正式记忆和审核结果。首次连接会按配置发现或启动本机常驻后端。Web 网关另行监听浏览器使用的地址。
 
 ```sh
-uv run syvrio web --help
-corepack pnpm --dir web install --frozen-lockfile
-corepack pnpm --dir web dev --host 127.0.0.1 --port 5173 --strictPort
+uv run syvrio web --port 8746
 ```
 
-启动 Web 后，Vite 开发服务器将 API 请求转发至默认的本机 8765 端口。开发与生产分别使用独立的 Vault、Runtime、配置和端口。上传的原件由对应会话拥有，保存于 Vault 的 `attachments/`，该目录由 Vault 自己的 Git 设置忽略。迁移上传原件需单独复制，部署和历史格式迁移分开进行。
+在另一个终端启动前端。
+
+```sh
+cd web
+corepack pnpm install --frozen-lockfile
+corepack pnpm dev
+```
+
+开发网页固定在 `http://127.0.0.1:7987/`，通过本机 8746 端口的 Web 网关访问 API。开发与生产分别使用独立的 Vault、Runtime、配置和端口。上传的原件由对应会话拥有，保存于 Vault 的 `attachments/`，该目录由 Vault 自己的 Git 设置忽略。迁移上传原件需单独复制，部署和历史格式迁移分开进行。
+
+本地配置按入口、模型、聊天和记忆分组。所有客户端加载内置 TOML 后按字段应用本地覆盖；旧单文件首次加载时迁移。配置格式、示例和缺失文件行为见 [README](../README.md#配置)。
+
+共享入口 `syvrio web share` 随 wheel 分发，复用同一个本机 Web 网关。ngrok v3 使用 GitHub 登录后的账号数字 ID 校验，设置保存在入口 TOML 的 `[web_share]`，ngrok 自己管理令牌。普通 Web 启动不会创建隧道。
 
 ## 客户端行为
 
-- 普通发送在后台的会话队列中等待，当前回合结束后发送下一条。Ctrl+Enter 请求在当前回合的安全边界插入，执行中的工具先完成。重新连接时按回合事件的位置续读。
-- 最新用户消息的撤销与编辑复用 `/undo`。Web 支持鼠标悬停、键盘聚焦和触屏。撤销先校验持久化的最后一回合、被修改文件的版本，以及其他会话增加的引用。发生冲突时保留整回合。
-- Web 和 TUI 的 `/import` 打开本机的多文件选择器。Web 的圆形加号共用同一个选择器，文档和图片先加入草稿，发送后再由模型结合用户要求阅读或提炼记忆。聊天命令由共享命令目录提供。独立的 `syvrio import` 可以在终端批量整理已有资料。模型设置可按名称搜索厂商目录，搜索框位于刷新按钮右侧。窄屏使用两行设置导航，桌面内容区与侧栏分开滚动。
+应用层的 `ConversationDirectory` 管理客户端到会话的绑定，`ConversationUseCases` 保存活动回合和队列，`ConversationScheduler` 统一处理提交、取消、撤销、编辑重发和启动下一条。排查两端顺序不一致时，先比对会话 ID、回合 ID 和等待队列。
+
+自动启动和手动运行都进入 `backend/server.py`。它持有本地监听和 Vault 所有权，委托 `backend/channel.py` 管理会话及后台资源。`backend/api/` 定义共享 HTTP 路由和 SSE 编码。`app/web/gateway.py` 提供网页、转发 API，网页健康检查中的 `static_ready` 表示网关本机的静态资源已就绪。
+
+- 模型、当前供应商的 Base URL、思考档位和上下文窗口可在生成中修改。Web 与终端共用设置，每个会话在回合开始时固定一份。工具续请求沿用原设置，排队消息和其他会话的新回合在实际开始时取最新设置。
+- 上下文默认和下限为 50,000 tokens。旧配置低于下限时按 50,000 读取，高于下限时保留原值。对话和后台任务按模型输入能力取实际预算。预算计入历史、当轮输入、图片、工具定义及工具返回。压缩摘要也按当轮预算分段。模型无法完成摘要时，已生成的部分与本地节选一起保存，原始消息仍可从会话历史读取。
+- 首次完整问答会触发后台短标题任务。侧栏在标题生成后自动刷新。打开旧会话仅供阅读，用户继续聊天时才为未命名会话补标题。
+- 普通发送在后台的会话队列中等待，当前回合结束后发送下一条。生成中，Web 输入框的发送按钮原位变为停止按钮。有草稿时可选排队，纯文本还可用 Ctrl+Enter 请求在安全边界插入。执行中的工具先完成。重新连接时按回合事件的位置续读。
+- 在同一网页或终端里切换、新建会话时，原回合和队列留在原会话。Web 点击会话后立即高亮目标并显示其草稿，已有本标签页缓存时先显示正文。切换请求携带已知历史版本，后台从同一快照返回版本和按需更新的正文。首次打开时显示加载状态，归档阅读和独立刷新仍使用历史接口。发送等目标绑定确认，旧回合的回执和事件仍归原会话。切换响应丢失时，网页从后台查询本标签页当前绑定的会话，恢复后再开放发送。网页按会话保留本标签页里尚未发送的文字和附件。
+- Web 编辑重发时在一个请求里提交原消息 ID、替代正文和附件。新回合启动并保存附件后，在同一事务中撤回原回合、恢复其工具写入并保存替代消息。原回复若还在生成，会先停止并保存已收到的部分。启动或保存失败时，原问答、附件和记忆仍可读取，网页按会话保留可修改的草稿。撤销会检查最后一回合、被修改文件的版本和其他会话增加的引用。
+- Web 和 TUI 的 `/import` 打开本机的多文件选择器。Web 的圆形加号共用同一个选择器，文档和图片先加入草稿，发送后再由模型结合用户要求阅读或提炼记忆。聊天命令由共享命令目录提供。独立的 `syvrio import` 可以在终端批量整理已有资料。模型列表上方可按名称搜索厂商目录，右侧图标可手动刷新。设置弹窗固定为 560 × 480 像素，屏幕空间不足时缩小。切换页签时外框和顶部导航保持原位，长内容在页签内滚动。窄屏导航分为两行。
 - 思考档位优先采用厂商提供的能力，缺失时使用模型预设。auto 优先列出。会话记录的思考附件可在 Runtime 中保存，单个附件损坏不会阻止会话正文加载。
+- 模型结束时只返回思考内容、没有最终正文，客户端会显示失败原因，已收到的思考仍可在会话里查看。中间回合只返回工具调用时，继续执行工具并等待最终回答。
+- 回复失败时，会话保存本回合已经收到的内容和脱敏错误，刷新后可查看。刷新恰逢回合结束会从磁盘读取历史。会话默认归档。只读视图可立即释放；目标会话的写入、队列和后台任务会阻止归档。会话原文按年月保存在 `archived/sessions/`，拒绝的候选保存在 `archived/pending/rejected.md`。整个 `archived/` 目录排除在检索与后台处理之外。
+- 终端编辑待审记忆或推断后通过常驻后端保存。编辑推断后选中新建的已确认记录，保留原记录及其来源。`/profile` 展示完整的已发布画像，重新生成使用 `/dream`。
 
 ## 记忆写入与审核
+
+Web 顶栏的 Pending 和 `/pending` 共用右侧审核面板。待审与推断返回完整清单后按查询和状态筛选。`/pending edit <id>` 在 Web 与 TUI 中打开原文，保留原文需显式确认。
+
+普通聊天提交携带稳定的 `submission_id`。后台在 Runtime 登记正文与附件的指纹及回执，重复编号复用同一回合。Web 在等待回执时保留消息，网络失败会重试；TUI 可用 Ctrl+R 补发。收到回执后通过原回合的事件序号续读。
 
 聊天写入正式事实或创建候选前，Runtime 调用统一的 `recall`，把结构化事实交给模型复核。创建候选时额外读取活动候选清单。操作、对象、内容、事实版本或对话上下文发生变化后，会重新提供依据。一次模型请求中的两个工具调用不能替代模型重新决定。
 
@@ -29,16 +54,19 @@ corepack pnpm --dir web dev --host 127.0.0.1 --port 5173 --strictPort
 
 常驻后台负责编排会话沉淀、Dream 以及待审改写后的上下文补充。沉淀游标与相应写入一同提交。Dream 生成画像和有正式来源的新推断；人工编辑推断保留旧正文。原始会话、正式事实、推断与待审候选的格式和路径见 [Vault 规范](vault-v2.md)。
 
+只维护 main，PyPI 手动发布工作流只接受该分支的正式版本 X.Y.Z。历史分支和已有分发包保留。
+
 ## 回归入口
 
 ```sh
-uv run pytest tests/test_resident_clients.py tests/test_agent.py
+uv run pytest tests/test_application_conversation.py tests/test_resident_clients.py tests/test_web_api.py tests/test_agent.py
 uv run pytest tests/test_background_memory.py tests/test_reflection.py
 uv run pytest tests/test_store.py tests/test_queue.py tests/test_service.py
 uv run python -m evals.memory_eval
 uv run python -m evals.retrieval_eval --keyword
-corepack pnpm --dir web test
-corepack pnpm --dir web build
+cd web
+corepack pnpm test
+corepack pnpm build
 ```
 
 跨客户端回归覆盖本机 TCP 通信、队列顺序、断线重放、TUI 输入恢复和 Vault 后端所有权。涉及并发或落盘的改动，还需核对失败后文件、游标、审计与跨会话来源引用。自动化测试用临时目录与合成数据。真实厂商联调应明确记录厂商、平台和实测范围。

@@ -32,7 +32,7 @@ def fake_interpreter(directory: Path, version: str = "3.13.5", name: str = "pyth
 
 def patch_release_transport(monkeypatch) -> None:
     transport = httpx.MockTransport(
-        lambda request: httpx.Response(200, json={"releases": {"0.5.2rc1": [wheel("0.5.2rc1")]}})
+        lambda request: httpx.Response(200, json={"releases": {"0.6.0": [wheel("0.6.0")]}})
     )
     factory = httpx.Client
     monkeypatch.setattr(update.httpx, "Client", lambda **kwargs: factory(transport=transport))
@@ -79,7 +79,7 @@ def make_versions(tmp_path):
     (old_env / "bin").mkdir(parents=True)
     old = old_env / "bin" / "syvrio"
     old.touch()
-    new_env = tmp_path / "versions" / "0.5.2rc1-abc"
+    new_env = tmp_path / "versions" / "0.6.0-abc"
     (new_env / "bin").mkdir(parents=True)
     new = new_env / "bin" / "syvrio"
     new.touch()
@@ -91,7 +91,7 @@ def test_update_channels_ignore_yanked_and_source_releases():
     releases["0.5.3"][0]["yanked"] = True
     releases["0.6.0"] = [{"filename": "syvrio-0.6.0.tar.gz"}]
     assert update.select_release(releases, "0.5.2rc1", "stable")[0] == "0.5.2"
-    assert update.select_release(releases, "0.5.2rc1", "evo")[0] == "0.5.2rc10"
+    assert update.select_release(releases, "0.5.2rc1", "evo")[0] == "0.5.2"
     assert update.select_release(releases, "0.5.2", "evo") is None
 
 
@@ -289,7 +289,7 @@ def test_update_switches_or_restores_service(tmp_path, monkeypatch, healthy):
 
     monkeypatch.setattr(update, "_run", run)
     if healthy:
-        assert "0.5.2rc1" in update.update(tmp_path, "evo", "syvrio-web.service", 8765)
+        assert "0.6.0" in update.update(tmp_path, "evo", "syvrio-web.service", 8765)
         assert link.resolve() == new
         assert events == [("stop", old), ("start", new)]
     else:
@@ -381,7 +381,7 @@ def test_update_waits_for_settling_stop(tmp_path, monkeypatch):
         return ""
 
     monkeypatch.setattr(update, "_run", run)
-    assert "0.5.2rc1" in update.update(tmp_path, "evo", "syvrio-web.service", 8765)
+    assert "0.6.0" in update.update(tmp_path, "evo", "syvrio-web.service", 8765)
     assert link.resolve() == new
     assert events == ["stop", ("start", new)]
 
@@ -457,7 +457,7 @@ def test_update_rollback_failure_reports_both_errors(tmp_path, monkeypatch):
     link.symlink_to(old)
     patch_release_transport(monkeypatch)
     monkeypatch.setattr(update, "_install", lambda *args: new)
-    # 旧版（0.3.4）预检通过；新版（0.5.2rc1）健康检查失败，触发回滚。
+    # 旧版（0.3.4）预检通过；新版（0.6.0）健康检查失败，触发回滚。
     monkeypatch.setattr(update, "_healthy", lambda c, u, version, seconds=20: version == "0.3.4")
 
     def run(*args, **kwargs):
@@ -525,7 +525,7 @@ def test_update_rollback_success_discards_failed_install(tmp_path, monkeypatch):
     assert link.resolve() == old
     assert health_checks == [
         ("0.3.4", 20),
-        ("0.5.2rc1", update.STARTUP_SECONDS),
+        ("0.6.0", update.STARTUP_SECONDS),
         ("0.3.4", update.STARTUP_SECONDS),
     ]
 

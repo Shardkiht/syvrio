@@ -1,4 +1,4 @@
-/** Mirrors src/syvrio/app/web/models.py. Keep these in sync with the Schema. */
+/** Mirrors src/syvrio/backend/api/models.py. Keep these in sync with the Schema. */
 
 export type EventType =
   | 'start'
@@ -57,6 +57,7 @@ export interface ContextUsage {
 export interface SessionInfo {
   id: string;
   title: string;
+  title_pending?: boolean;
   messages: number;
   started_at: string;
   updated_at: string;
@@ -120,6 +121,8 @@ export interface CreateSessionResponse {
 export interface SwitchSessionResponse {
   session_id: string;
   title: string;
+  history_version?: string;
+  history?: HistoryResponse | null;
 }
 
 export interface ToolCallInfo {
@@ -135,7 +138,7 @@ export interface ReasoningBlock {
 export interface HistoryItem {
   attachments?: { id: string; name: string; size: number; media_type: string }[];
   id: string;
-  role: 'user' | 'assistant' | 'tool' | 'summary';
+  role: 'user' | 'assistant' | 'tool' | 'summary' | 'error';
   content: string;
   at: string;
   reasoning: ReasoningBlock | null;
@@ -151,6 +154,8 @@ export interface MessageDraft {
 }
 
 export interface HistoryResponse {
+  /** Version accompanying a full HTTP history read. */
+  history_version?: string;
   session_id: string;
   title: string;
   items: HistoryItem[];
@@ -164,6 +169,7 @@ export interface ApiErrorResponse {
 }
 
 export interface ChatRequest {
+  submission_id?: string;
   message: string;
   session_id: string | null;
 }

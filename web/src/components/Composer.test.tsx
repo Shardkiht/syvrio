@@ -8,6 +8,42 @@ function renderComposer() {
   );
 }
 
+it('uses the same primary button to send, stop, and send again', () => {
+  const props = { progress: '', onSend: vi.fn(), onStop: vi.fn(), onInsert: vi.fn() };
+  const { rerender } = render(<Composer {...props} busy={false} />);
+  const primary = screen.getByRole('button', { name: 'Send' });
+  rerender(<Composer {...props} busy />);
+  expect(screen.getByRole('button', { name: 'Stop' })).toBe(primary);
+  expect(screen.queryByRole('button', { name: 'Queue message' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Insert' })).toBeNull();
+
+  const input = screen.getByRole('textbox', { name: 'Message' });
+  fireEvent.change(input, { target: { value: 'Next question' } });
+  expect(screen.getByRole('button', { name: 'Insert' })).toBeTruthy();
+  fireEvent.click(primary);
+  expect(props.onStop).toHaveBeenCalledOnce();
+  expect(props.onSend).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Queue message' }));
+  expect(props.onSend).toHaveBeenCalledWith('Next question');
+  expect(screen.queryByRole('button', { name: 'Queue message' })).toBeNull();
+  rerender(<Composer {...props} busy={false} />);
+  expect(screen.getByRole('button', { name: 'Send' })).toBe(primary);
+});
+
+it('preserves unfinished input while the destination of a switch is unconfirmed', () => {
+  const props = { busy: false, progress: '', onSend: vi.fn(), onStop: vi.fn() };
+  const { rerender } = render(<Composer {...props} checkingSelection />);
+  const input = screen.getByRole('textbox', { name: 'Message' });
+  fireEvent.change(input, { target: { value: 'still drafting' } });
+  fireEvent.keyDown(input, { key: 'Enter' });
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+  expect(props.onSend).not.toHaveBeenCalled();
+  expect((input as HTMLTextAreaElement).value).toBe('still drafting');
+  rerender(<Composer {...props} />);
+  fireEvent.keyDown(input, { key: 'Enter' });
+  expect(props.onSend).toHaveBeenCalledWith('still drafting');
+});
+
 it('uses the plus button to pick and send multiple attachments', () => {
   const onSend = vi.fn();
   render(<Composer busy={false} progress="" onSend={onSend} onStop={() => {}} />);

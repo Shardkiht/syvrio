@@ -251,6 +251,15 @@ def model_metadata(model: str) -> dict:
         return {}
 
 
+def effective_context_window(llm: LLMConfig, configured: int) -> int:
+    """Bound a configured budget by the model's advertised input capacity."""
+    try:
+        maximum = int(model_metadata(llm.litellm_model()).get("max_input_tokens") or 0)
+    except (ValueError, TypeError):
+        maximum = 0
+    return min(configured, maximum) if maximum > 0 else configured
+
+
 @lru_cache(maxsize=128)
 def supported_params(model: str) -> tuple[str, ...]:
     """读取 LiteLLM 认为该模型支持的 OpenAI 参数。"""
@@ -295,8 +304,11 @@ def provider_reasoning_levels(config: LLMConfig) -> tuple[str, ...] | None:
 
 
 def _provider_catalog(
-    config: LLMConfig, timeout: float, ttl: float = 12 * 3600,
-    refresh: bool = False, api_key: str | None = None,
+    config: LLMConfig,
+    timeout: float,
+    ttl: float = 12 * 3600,
+    refresh: bool = False,
+    api_key: str | None = None,
 ) -> ModelCatalog:
     api_key = api_key or config.api_key()
     key = _model_cache_key(config, api_key)
@@ -335,9 +347,13 @@ def _advertised_levels(model, *, spark: bool) -> tuple[str, ...] | None:
         declared = _field(_field(model, "effort"), "supported_levels")
         if declared is None:
             declared = _field(_field(model, "reasoning"), "supported_efforts")
-    if not isinstance(declared, list) or not declared or any(
-        not isinstance(level, str) or not re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", level)
-        for level in declared
+    if (
+        not isinstance(declared, list)
+        or not declared
+        or any(
+            not isinstance(level, str) or not re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", level)
+            for level in declared
+        )
     ):
         return None
     return tuple(dict.fromkeys(declared))
@@ -431,7 +447,9 @@ class LiteLLMChatModel:
         if any(isinstance(msg.get("content"), list) for msg in primary):
             info = model_metadata(self.config.litellm_model())
             if info.get("supports_vision") is False:
-                raise ChatModelError("This model cannot read images. Select a vision-capable model.")
+                raise ChatModelError(
+                    "This model cannot read images. Select a vision-capable model."
+                )
         source = source if tools else ""
         if on_delta is None and on_reasoning is None:
             response = complete(self.config, primary, tools=tools or None)

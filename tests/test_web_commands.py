@@ -6,10 +6,15 @@ no network, no reads of the user's configuration or memory files.
 
 from __future__ import annotations
 
+import json
+from threading import Event
+from uuid import uuid4
+
 import keyring
 import pytest
 from fastapi.testclient import TestClient
 
+from syvrio.agent.context import ContextManager
 from syvrio.app.command_catalog import SLASH_COMMANDS as TUI_COMMANDS
 from syvrio.app.command_catalog import SLASH_SUBCOMMANDS as TUI_SUBCOMMANDS
 from syvrio.app.web.backend import WebBackend
@@ -23,9 +28,8 @@ from syvrio.application.commands import (
     slash_matches,
     web_command_catalog,
 )
-from syvrio.application.contracts import InferenceReview, ModelOption, SettingsResult
+from syvrio.application.contracts import ModelOption, SettingsResult
 from syvrio.application.conversation import SAFE_COMMANDS
-from syvrio.application.memory import MemoryUseCases
 from syvrio.application.settings import SettingsUseCases
 from syvrio.infra.config import (
     ChatConfig,
@@ -34,9 +38,9 @@ from syvrio.infra.config import (
     RetrievalConfig,
     SearchConfig,
 )
-from syvrio.llm import AssistantTurn, LiteLLMChatModel
+from syvrio.llm import AssistantTurn, LiteLLMChatModel, ToolCall
 from syvrio.memory.extractor import StaticExtractor
-from syvrio.memory.models import ExtractionResult, Inference, PendingItem
+from syvrio.memory.models import ExtractionResult, PendingItem
 from syvrio.memory.service import MemoryService
 from syvrio.time import utc_timestamp
 
@@ -162,6 +166,12 @@ def test_pending_review_preserves_full_text_and_requires_confirmation(client, ba
     assert row["question"] == "Which preference applies?"
     assert row["related_ids"] == []
     assert row.get("session_id") is None and row.get("message_id") is None
+    for confirmed in (False, True):
+        editor = run(client, "/pending edit p-example", confirmed=confirmed).json()
+        assert editor["status"] == "ok" and editor["data"]["edit_id"] == "p-example"
+        assert editor["data"]["rows"][0]["text"] == original
+        assert len(service.pending()) == 1 and not service.current_facts()
+    assert run(client, "/pending edit missing").json()["status"] == "error"
 
     edited = "I revised the synthetic review text. " * 60 + "\n\nA separate note."
     response = run(client, "/pending edit p-example", pending_text=edited).json()
@@ -177,38 +187,75 @@ def test_pending_review_preserves_full_text_and_requires_confirmation(client, ba
     assert [entry.text for entry in service.store.entries()] == [edited]
 
 
-def test_inference_command_edit_keeps_full_text_and_requires_confirmation(client, monkeypatch):
-    stamp = utc_timestamp()
-    original = Inference(
-        id="inf-example",
-        kind="profile",
-        text="Synthetic hypothesis. " * 20,
-        source_ids=["fact-example"],
-        created_at=stamp,
-        updated_at=stamp,
-    )
-    monkeypatch.setattr(
-        MemoryUseCases, "load_inference_review", lambda self: InferenceReview([original], {})
-    )
-    calls = []
+def test_review_covers_candidates_and_inferences_beyond_twenty(client, backend):
+    from syvrio.memory.models import MemoryDraft
 
-    def review(self, item_id, action, text):
-        calls.append((item_id, action, text))
-        return InferenceReview([original.model_copy(update={"text": text})], {})
+    service = backend._app_service.memory.service
+    source = service.add(MemoryDraft(text="Synthetic evidence", topic="review"))
+    candidates, inferences = set(), set()
+    for index in range(23):
+        draft = MemoryDraft(text=f"Review candidate {index}", topic="review")
+        candidates.add(service.create_pending(draft, "Keep this?", []).id)
+        inferences.add(
+            service.propose_inference(f"Inference {index}", [source.id], kind="profile").id
+        )
+    for command, expected in (("pending", candidates), ("inferences", inferences)):
+        data = run(client, f"/{command}").json()["data"]
+        assert {r["id"] for r in data["rows"]} == expected
+        assert data["count"] == len(expected) == 23
 
-    monkeypatch.setattr(MemoryUseCases, "review_inference", review)
+
+@pytest.mark.parametrize("kind", ["pending", "inferences"])
+def test_review_receipt_failure_preserves_decision_for_retry(client, backend, monkeypatch, kind):
+    from syvrio.memory.models import MemoryDraft
+
+    memory = backend._app_service.memory
+    service = memory.service
+    if kind == "pending":
+        item = service.create_pending(
+            MemoryDraft(text="Synthetic draft", topic="review"), "Keep it?", []
+        )
+        command, load = f"/pending reject {item.id}", "pending"
+    else:
+        source = service.note("Synthetic source")
+        item = service.propose_inference("Synthetic hypothesis", [source.id], kind="profile")
+        command, load = f"/inferences confirm {item.id}", "_sources"
+
+    def unavailable(*args):
+        raise OSError("Synthetic receipt failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(memory, load, unavailable)
+        assert run(client, command, confirmed=True).json()["status"] == "error"
+    if kind == "pending":
+        assert service.pending() == [item]
+        assert not service.queue.resolved_path.exists()
+    else:
+        assert service.list_inferences() == [item]
+    assert run(client, command, confirmed=True).json()["status"] == "ok"
+
+
+def test_inference_command_edit_keeps_full_text_and_requires_confirmation(client, backend):
+    service = backend._app_service.memory.service
+    source = service.note("Synthetic reading preference.")
+    original = service.propose_inference("Synthetic hypothesis. " * 20, [source.id], kind="profile")
     assert run(client, "/inferences").json()["data"]["rows"][0]["text"] == original.text
-    line = "/inferences correct inf-example"
+    line = f"/inferences correct {original.id}"
     edited = "Edited synthetic hypothesis. " * 100 + "\nA second line."
     response = run(client, line, inference_text=edited).json()
     assert response["status"] == "confirm_required"
     assert edited not in response["message"]
-    assert not calls
+    assert service.list_inferences() == [original]
     assert run(client, "/status", inference_text=edited).status_code == 422
     response = run(client, line, inference_text=edited, confirmed=True).json()
     assert response["status"] == "ok", response
-    assert calls == [("inf-example", "correct", edited)]
-    assert response["data"]["rows"][0]["text"] == edited
+    assert response["message"] == "Edit saved as a confirmed inference."
+    rows = {row["status"]: row for row in response["data"]["rows"]}
+    assert (rows["deprecated"]["id"], rows["deprecated"]["text"]) == (original.id, original.text)
+    assert rows["confirmed"]["id"] != original.id and rows["confirmed"]["text"] == edited
+    assert set(row["id"] for row in rows.values()) == {
+        item.id for item in service.list_inferences()
+    }
 
 
 def test_chat_endpoint_rejects_slash_lines(client, backend):
@@ -280,13 +327,98 @@ def test_command_api_rejects_cross_site_writes(client):
 # ---------- busy policy ----------
 
 
+def test_running_tool_turn_keeps_settings_and_queued_and_new_sessions_pick_up_changes(
+    client, backend, monkeypatch
+):
+    config = backend._service.config
+    old_endpoint, new_endpoint = "https://old.example.invalid/v1", "https://new.example.invalid/v1"
+    config.llm = LLMConfig(
+        provider="spark", model="first-model", spark_thinking="enabled", base_url=old_endpoint
+    )
+    config.chat.context_window = 96000
+    backend._runtime.reload_llm(config)
+    monkeypatch.setattr("syvrio.application.settings.model_metadata", lambda _: {})
+    monkeypatch.setattr(
+        SettingsUseCases, "_reasoning_values", staticmethod(lambda _: ("enabled", "disabled"))
+    )
+    entered, release = Event(), Event()
+    calls, budgets = [], {}
+    prepare = ContextManager.prepare
+
+    def record_budget(manager, session, system_prompt, current_text, **kwargs):
+        budgets[current_text] = manager.config.context_window
+        return prepare(manager, session, system_prompt, current_text, **kwargs)
+
+    def respond(model, messages, tools, on_delta=None, cancel=None, *, on_reasoning=None):
+        text = next(msg["content"] for msg in reversed(messages) if msg["role"] == "user")
+        calls.append((text, model.config.model, model.config.spark_thinking, model.config.base_url))
+        if text == "running" and messages[-1]["role"] == "user":
+            entered.set()
+            assert release.wait(15)
+            return AssistantTurn(tool_calls=[ToolCall("local", "recall", {"query": "synthetic"})])
+        return AssistantTurn(content="ok")
+
+    monkeypatch.setattr(ContextManager, "prepare", record_budget)
+    monkeypatch.setattr(LiteLLMChatModel, "chat", respond)
+    view = {"X-Syvrio-View": str(uuid4())}
+
+    def assert_finished(response):
+        response.raise_for_status()
+        events = [
+            json.loads(line[6:]) for line in response.iter_lines() if line.startswith("data: ")
+        ]
+        assert events[-1]["type"] == "done", events[-1]
+
+    running = client.post("/api/chat?receipt=1", headers=view, json={"message": "running"}).json()
+    sid = running["session_id"]
+    try:
+        assert entered.wait(5)
+        queued = client.post(
+            "/api/chat?receipt=1", headers=view, json={"message": "queued", "session_id": sid}
+        ).json()
+        for command in ("/model spark/second-model", "/think disabled", "/context 64000"):
+            result = client.post(
+                "/api/commands", headers=view, json={"line": command, "session_id": sid}
+            ).json()
+            assert result["status"] == "ok", result
+        changed = client.post(
+            "/api/settings/providers/spark",
+            headers=view,
+            json={"action": "set_endpoint", "endpoint": new_endpoint},
+        )
+        changed.raise_for_status()
+        assert changed.json()["ok"]
+        meter = client.get("/api/context-usage", headers=view, params={"session_id": sid})
+        assert meter.json()["limit"] == 96000
+        other = client.post(
+            "/api/chat", headers={"X-Syvrio-View": str(uuid4())}, json={"message": "fresh"}
+        )
+        assert_finished(other)
+    finally:
+        release.set()
+    for turn in (running, queued):
+        assert_finished(client.get(f"/api/chat/turns/{turn['turn_id']}", headers=view))
+    assert calls == [
+        ("running", "first-model", "enabled", old_endpoint),
+        ("fresh", "second-model", "disabled", new_endpoint),
+        ("running", "first-model", "enabled", old_endpoint),
+        ("queued", "second-model", "disabled", new_endpoint),
+    ]
+    assert budgets == {"running": 96000, "queued": 64000, "fresh": 64000}
+    assert (
+        client.get("/api/context-usage", headers=view, params={"session_id": sid}).json()["limit"]
+        == 64000
+    )
+
+
 def test_busy_allows_read_only_commands_and_blocks_mutating_ones(backend):
     commands = backend._commands
     assert commands.execute("/status", busy=True).status == "ok"
     assert commands.execute("/help", busy=True).status == "ok"
     assert commands.execute("/model", busy=True).status == "ok"
     assert commands.execute("/new", busy=True).status == "busy"
-    assert commands.execute("/model custom/fake", busy=True).status == "busy"
+    assert commands.execute("/model custom/fake", busy=True).status == "ok"
+    assert commands.execute("/context 54321", busy=True).status == "ok"
     assert commands.execute("/compact", busy=True).status == "busy"
 
 
@@ -296,7 +428,8 @@ def test_busy_blocks_mutating_forms_of_otherwise_safe_names(backend):
     # must not run concurrently with a streaming reply.
     for line in (
         "/dream 1",
-        "/profile refresh",
+        "/model refresh",
+        "/dream resume",
         "/git sync",
         "/pending approve x",
         "/inferences confirm x",

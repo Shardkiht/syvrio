@@ -11,7 +11,7 @@ from typing import Literal
 from .paths import SyvrioPaths
 from .transaction import vault_transaction
 
-JobKind = Literal["context", "distillation", "dream"]
+JobKind = Literal["context", "distillation", "dream", "title"]
 
 
 def job_directory(paths: SyvrioPaths, kind: JobKind) -> Path:

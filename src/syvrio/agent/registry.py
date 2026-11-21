@@ -1,4 +1,5 @@
 """Tool schemas, execution, and timeouts shared by the agent's integrations."""
+
 from __future__ import annotations
 
 import json

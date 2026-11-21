@@ -1,4 +1,5 @@
 """Shared Textual layout, transcript rendering, and input interactions."""
+
 from __future__ import annotations
 
 import json
@@ -31,7 +32,6 @@ class ChatViewMixin:
         else:
             self.action_command_palette()
 
-
     def compose(self) -> ComposeResult:
         with Horizontal(id="root"):
             with Vertical(id="sidebar"):
@@ -55,20 +55,16 @@ class ChatViewMixin:
                     "Enter send   Ctrl+P commands   Ctrl+B conversations", id="composer-hint"
                 )
 
-
     def action_toggle_sidebar(self) -> None:
         self._set_sidebar_visible(not self.query_one("#sidebar", Vertical).display)
-
 
     def _set_sidebar_visible(self, visible: bool) -> None:
         self.query_one("#sidebar", Vertical).display = visible
         self.query_one("#show-sidebar", SidebarToggle).display = not visible
 
-
     def show_sidebar(self) -> None:
         self._set_sidebar_visible(True)
         self.query_one("#input", Input).focus()
-
 
     def _focus_active_input(self) -> None:
         if len(self.screen_stack) > 1:
@@ -79,20 +75,17 @@ class ChatViewMixin:
             return
         self.query_one("#input", Input).focus()
 
-
     def pop_screen(self):
         # 模态屏关闭后恢复输入框焦点与硬件光标；否则原生竖线会停在左上角闪烁。
         result = super().pop_screen()
         self.call_after_refresh(self._restore_input_cursor)
         return result
 
-
     def _restore_input_cursor(self) -> None:
         for widget in self.screen.query(Input):
             if widget.has_focus:
                 self.cursor_position = widget.cursor_screen_offset
                 return
-
 
     def action_focus_next(self) -> None:
         if len(self.screen_stack) == 1:
@@ -115,16 +108,13 @@ class ChatViewMixin:
                     return
         self._focus_active_input()
 
-
     def action_focus_previous(self) -> None:
         self._focus_active_input()
-
 
     def run_command_from_palette(self, command: str) -> None:
         self.query_one("#cmd-palette", CommandPalette).close()
         self.query_one("#input", Input).value = ""
         self._submit_command(f"/{command}")
-
 
     def on_key(self, event) -> None:
         palette = self.query_one("#cmd-palette", CommandPalette)
@@ -147,10 +137,8 @@ class ChatViewMixin:
             event.stop()
             self._stop_generation()
 
-
     def _chat(self) -> VerticalScroll:
         return self.query_one("#chat", VerticalScroll)
-
 
     def _clear_chat(self) -> None:
         self.query_one("#chat", TranscriptView).clear_transcript()
@@ -159,11 +147,9 @@ class ChatViewMixin:
         self._thinking_widget = None
         self._stream_flush_scheduled = False
 
-
     def _scroll_end(self) -> None:
         # 布局刷新前后都可能收到上滑/选择事件，真正滚动时再核验跟随意图。
         self.call_after_refresh(self._chat().scroll_to_follow)
-
 
     def on_mouse_down(self, event: MouseDown) -> None:
         if event.widget is not None and self._chat() in event.widget.ancestors_with_self:
@@ -171,17 +157,14 @@ class ChatViewMixin:
             self._chat().record_reading_state()
             self.query_one("#input", BarInput).suspend_cursor()
 
-
     def on_mouse_up(self, event: MouseUp) -> None:
         self._chat().selecting = False
         self._chat().record_reading_state()
-
 
     def add_welcome(self) -> None:
         chat = self._chat()
         chat.add_class("home")
         chat.mount(HomePanel(classes="welcome-shell"))
-
 
     @staticmethod
     def _tool_event_label(call: dict, result: dict) -> str:
@@ -211,7 +194,6 @@ class ChatViewMixin:
             return f"Fetch failed: {detail}" if detail else "Fetch failed"
         return f"{name} {'ok' if ok else 'failed'}"
 
-
     def add_user_turn(self, content: str, stamp: str | None = None) -> None:
         chat = self._chat()
         if chat.has_class("home"):
@@ -223,7 +205,6 @@ class ChatViewMixin:
         chat.mount(Vertical(Static(content, classes="bubble", markup=False), classes="user-turn"))
         self._scroll_end()
 
-
     def add_assistant_turn(self, content: str, stamp: str, meta: str | None = None) -> None:
         chat = self._chat()
         chat.mount(Static(f"{ASSISTANT_NAME} · {stamp}", classes="who-ai"))
@@ -233,19 +214,16 @@ class ChatViewMixin:
         chat.mount(Static("", classes="divider"))
         self._scroll_end()
 
-
     def add_card(self, text: str, title: str | None = None) -> None:
         body = f"{title}\n{text}" if title else text
         self._chat().mount(Static(body, classes="card", markup=False))
         self._scroll_end()
-
 
     def add_markdown_card(self, markdown: str, title: str | None = None) -> None:
         if title:
             self._chat().mount(Static(title, classes="who-ai"))
         self._chat().mount(Markdown(markdown, classes="reply"))
         self._scroll_end()
-
 
     def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id != "input":
@@ -256,7 +234,6 @@ class ChatViewMixin:
             palette.open(value[1:])
         else:
             palette.close()
-
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "attach-files":

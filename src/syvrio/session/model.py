@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import secrets
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -19,6 +20,14 @@ def new_message_id() -> str:
     return f"m-{stamp:%Y%m%d-%H%M%S}-{secrets.token_hex(4)}"
 
 
+def title_message_key(record: dict) -> str:
+    if record.get("id"):
+        return record["id"]
+    # Early archives can lack message IDs. Bind their title to the content and timestamp.
+    text = record.get("at", "") + "\0" + (record.get("content") or "")
+    return "legacy-" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 @dataclass
 class Session:
     id: str
@@ -27,7 +36,7 @@ class Session:
     records: list[dict] = field(default_factory=list)
     damaged_tail_line: int | None = None
 
-    def active_records(self) -> list[dict]:
+    def active_records(self, *, include_failures: bool = False) -> list[dict]:
         """按 undo 事件投影有效会话；撤销同时令其后的摘要失效。"""
         active: list[dict] = []
         for record in self.records:
@@ -46,7 +55,9 @@ class Session:
                 )
                 if target is not None:
                     del active[target:]
-            elif record_type in ("message", "assistant", "tool", "summary"):
+            elif record_type in ("message", "assistant", "tool", "summary") or (
+                include_failures and record_type == "turn_failed"
+            ):
                 active.append(record)
         return active
 
@@ -91,15 +102,45 @@ class Session:
                 return record.get("id")
         return None
 
-    def title(self, width: int = 40) -> str:
+    def saved_title(self) -> str:
+        answer_key = None
         for record in reversed(self.records):
-            if record.get("type") == "title":
-                return record.get("title", "")[:width]
-        texts = self.user_texts()
-        if not texts:
-            return "(空会话)"
-        title = texts[0].replace("\n", " ").strip()
-        return title[:width] + ("…" if len(title) > width else "")
+            if record.get("type") != "title" or not record.get("title"):
+                continue
+            if record.get("source") == "llm":
+                if answer_key is None:
+                    pair = self.title_exchange()
+                    answer_key = title_message_key(pair[1]) if pair else ""
+                if answer_key != record.get("answer_id"):
+                    continue
+            return record["title"]
+        return ""
+
+    def title(self, width: int = 40) -> str:
+        return (self.saved_title() or "未命名会话")[:width]
+
+    def title_exchange(self) -> tuple[dict, dict] | None:
+        """First completed exchange, excluding undone, interrupted and tool-only output."""
+        user = answer = None
+        for item in self.active_records():
+            kind = item.get("type")
+            if kind == "message" and item.get("role") == "user":
+                if not item.get("turn_root"):
+                    if user and answer:
+                        return user, answer
+                    user = item
+                answer = None
+            elif user and (
+                kind == "assistant" or (kind == "message" and item.get("role") == "assistant")
+            ):
+                answer = (
+                    item
+                    if not item.get("interrupted")
+                    and not item.get("tool_calls")
+                    and (item.get("content") or "").strip()
+                    else None
+                )
+        return (user, answer) if user and answer else None
 
     def latest_summary(self) -> dict | None:
         for record in reversed(self.active_records()):

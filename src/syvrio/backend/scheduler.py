@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import threading
 
-from ...application.git import GitUseCases
-from ...infra.diagnostics import record_event
+from ..application.git import GitUseCases
+from ..infra.diagnostics import record_event
 
 
 class GitScheduler:

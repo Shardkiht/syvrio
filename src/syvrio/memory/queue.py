@@ -32,7 +32,7 @@ class PendingQueue:
         self.paths = vault if isinstance(vault, SyvrioPaths) else vault_paths(vault)
         self.vault = self.paths.vault_dir
         self.pending_path = self.paths.memories_dir / "pending.md"
-        self.resolved_path = self.vault / "archived" / "pending.md"
+        self.resolved_path = self.paths.archived_dir / "pending" / "rejected.md"
         self._lock = vault_write_lock(self.paths)
         self._sessions = SessionQuery(self.paths)
         key = hashlib.sha256(os.fsencode(os.path.normcase(str(self.vault.resolve())))).hexdigest()
@@ -166,7 +166,7 @@ class PendingQueue:
             existing = next((i for i, _ in records if i.id == item.id), None)
             if existing == item:
                 return
-            archived = self._records(read_utf8(self.resolved_path), "archived/pending.md")
+            archived = self._records(read_utf8(self.resolved_path), "archived/pending/rejected.md")
             if existing or any(i.id == item.id for i, _ in archived):
                 raise ValueError("Duplicate pending id.")
             nl = "\r\n" if "\r\n" in raw else "\n"
@@ -186,7 +186,10 @@ class PendingQueue:
             item, block = result
             if status == "rejected":
                 archive = read_utf8(self.resolved_path)
-                if any(i.id == item_id for i, _ in self._records(archive, "archived/pending.md")):
+                if any(
+                    i.id == item_id
+                    for i, _ in self._records(archive, "archived/pending/rejected.md")
+                ):
                     raise SchemaError("Pending id already exists in the archive.")
                 nl = "\r\n" if "\r\n" in (archive or raw) else "\n"
                 output = append_record(archive, block.raw, "Rejected pending items", nl)

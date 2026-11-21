@@ -64,7 +64,7 @@ class TurnFileJournal:
             _active.reset(token)
 
     def _allowed(self, name: PurePosixPath) -> bool:
-        return name.as_posix() in {_CHANGE_LOG, "archived/pending.md"} or (
+        return name.as_posix() in {_CHANGE_LOG, "archived/pending/rejected.md"} or (
             name.suffix == ".md"
             and (
                 (len(name.parts) >= 2 and name.parts[0] == "memories")
@@ -102,6 +102,11 @@ class TurnFileJournal:
                 or not isinstance(data["references"], dict)
             ):
                 raise ValueError
+            files = data["files"]
+            if "archived/pending.md" in files:
+                if "archived/pending/rejected.md" in files:
+                    raise ValueError
+                files["archived/pending/rejected.md"] = files.pop("archived/pending.md")
             return data
         except (KeyError, TypeError, ValueError) as exc:
             raise TurnUndoError("The undo journal could not be read.") from exc

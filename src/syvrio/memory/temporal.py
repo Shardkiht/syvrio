@@ -76,10 +76,12 @@ def matches_context(
         if context.event_time:
             periods.append(date_bounds(context.event_time))
         if context.valid_from or context.valid_to:
-            periods.append((
-                date_bounds(context.valid_from)[0] if context.valid_from else date.min,
-                date_bounds(context.valid_to)[1] if context.valid_to else date.max,
-            ))
+            periods.append(
+                (
+                    date_bounds(context.valid_from)[0] if context.valid_from else date.min,
+                    date_bounds(context.valid_to)[1] if context.valid_to else date.max,
+                )
+            )
         return any(low <= last and high >= first for low, high in periods)
     return True
 

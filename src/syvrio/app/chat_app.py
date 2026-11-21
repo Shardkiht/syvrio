@@ -20,7 +20,7 @@ from textual.worker import Worker, WorkerState
 from ..agent.insertion import InsertionRequest
 from ..agent.runtime import AgentRuntime
 from ..application.service import ApplicationService
-from ..errors import SessionDeletionChanged, SessionProtectedError
+from ..errors import SessionProtectedError
 from ..infra.attachments import AttachmentBatch
 from ..infra.diagnostics import record_event
 from ..infra.tokens import format_tokens
@@ -47,7 +47,9 @@ from .command_catalog import SLASH_COMMANDS
 from .session_ui import visible_sessions
 
 
-class ChatApp(ChatViewMixin, ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixin, App):
+class ChatApp(
+    ChatViewMixin, ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixin, App
+):
     TITLE = "Syvrio — Personal Memory"
 
     CSS = APP_CSS
@@ -59,7 +61,6 @@ class ChatApp(ChatViewMixin, ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, C
         ("ctrl+o", "attach_files", "Attach files"),
         Binding("ctrl+enter", "insert_message", "Insert message", show=False, priority=True),
     ]
-
 
     def __init__(
         self,
@@ -99,8 +100,8 @@ class ChatApp(ChatViewMixin, ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, C
         "_pending_switch": "pending_switch",
         "_pending_command": "pending_command",
         "_navigation_busy": "_navigation_busy",
-        "_ask_active": "_ask_active",
-        "_ask_in_flight": "_ask_in_flight",
+        "_ask_active": "ask_active",
+        "_ask_in_flight": "ask_in_flight",
         "_ask_user_message_id": "_ask_user_message_id",
         "_cancel_generation": "_cancel",
         "_undo_requested": "_undo_requested",
@@ -140,7 +141,6 @@ class ChatApp(ChatViewMixin, ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, C
 
     # ---------- 布局 ----------
 
-
     def on_mount(self) -> None:
         self.set_interval(0.15, self._render_model_status)
         self.refresh_pending()
@@ -178,15 +178,6 @@ class ChatApp(ChatViewMixin, ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, C
                 streaming=self._ask_active,
                 queued=self.application.conversation.queue_snapshot().count,
             )
-
-
-
-
-
-
-
-
-
 
     def _submit_command(self, line: str) -> None:
         name = line[1:].partition(" ")[0].lower()
@@ -243,7 +234,6 @@ class ChatApp(ChatViewMixin, ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, C
             self.query_one("#input", Input).focus()
             return
         self._switch_session(row["id"])
-
 
     def _new_session(self) -> None:
         if self._navigation_busy:
@@ -342,22 +332,11 @@ class ChatApp(ChatViewMixin, ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, C
     def confirm_delete_session(self, row: dict) -> None:
         if not self._session_deletable(row["id"]):
             return
-        try:
-            pending, revision = self.application.conversation.deletion_preview(row["id"])
-        except (KeyError, OSError, ValueError, SessionProtectedError) as exc:
-            self.notify(str(exc), severity="warning")
-            return
-        detail = None
-        if pending:
-            detail = f"Pending items that will also be deleted ({len(pending)})\n\n" + "\n\n".join(
-                f"• {item.text}" for item in pending
-            )
         self.push_screen(
             PickScreen(
-                f'Delete session "{escape(row["title"])}" and its uploaded copies from the Vault?\nThis cannot be undone.',
-                [("Cancel", False), ("Delete permanently", True)],
-                partial(self._delete_session_result, row, pending_revision=revision),
-                detail=detail,
+                f'Move "{escape(row["title"])}" to Archive?',
+                [("Cancel", False), ("Archive", True)],
+                partial(self._delete_session_result, row),
             )
         )
 
@@ -369,17 +348,13 @@ class ChatApp(ChatViewMixin, ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, C
         self.query_one("#input", Input).focus()
 
     def _session_deletable(self, session_id: str) -> bool:
-        """删除守卫：当前会话、正在生成回复的会话、队列引用的会话都不可删。
-
-        后台请求仍持有会话对象并继续写文件，物理删除后下一次追加会重建出僵尸文件。
-        """
-        allowed, reason = self.application.conversation.delete_guard(session_id)
+        allowed, reason = self.application.conversation.archive_guard(session_id)
         if not allowed:
             self.notify(reason or "Session cannot be deleted.")
             self._focus_session_picker_or_input()
         return allowed
 
-    def _delete_session_result(self, row: dict, confirmed, *, pending_revision: str = "") -> None:
+    def _delete_session_result(self, row: dict, confirmed) -> None:
         if confirmed is not True:
             self._focus_session_picker_or_input()
             return
@@ -389,23 +364,19 @@ class ChatApp(ChatViewMixin, ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, C
         # 用弹窗打开前捕获的 row，不读列表当前高亮：模态期间列表可能被刷新重建。
         if self.application.conversation.session_exists(row["id"]):
             try:
-                self.application.conversation.delete_session(row["id"], pending_revision)
-            except SessionDeletionChanged as exc:
-                self.notify(str(exc), severity="warning")
-                self.confirm_delete_session(row)
-                return
+                self.application.conversation.archive_session(row["id"])
             except SessionProtectedError as exc:
                 self.notify(str(exc), severity="warning")
                 self._focus_session_picker_or_input()
                 return
             except (OSError, ValueError) as exc:
                 record_event("session.delete_failed", exc)
-                self.notify("Session could not be deleted; the file was kept.", severity="warning")
+                self.notify("Session could not be archived; the file was kept.", severity="warning")
                 self._focus_session_picker_or_input()
                 return
             self.refresh_sessions()
             self.refresh_pending()
-            self.notify("Session deleted.")
+            self.notify("Session archived.")
         else:
             self.notify("Session no longer exists.")
         # 从会话选择器里删除时，同步刷新底层选择器的列表
@@ -416,21 +387,10 @@ class ChatApp(ChatViewMixin, ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, C
 
     # ---------- 对话流 ----------
 
-
-
-
-
-
-
     def build_transcript(self) -> None:
         self._chat().remove_class("home")
         self.query_one("#chat", TranscriptView).show_session(self.application.conversation.current)
         self._scroll_end()
-
-
-
-
-
 
     # ---------- 状态栏与忙碌态 ----------
 
@@ -604,8 +564,6 @@ class ChatApp(ChatViewMixin, ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, C
             self.add_event(phase)
 
     # ---------- 输入与回合 ----------
-
-
 
     def action_attach_files(self) -> None:
         if len(self.screen_stack) != 1:

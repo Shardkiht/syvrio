@@ -11,7 +11,7 @@
 | [web.md](web.md) | Web 操作、API、源码与受管理部署、更新和恢复 |
 | [vault-v2.md](vault-v2.md) | 数据格式、备份、迁移、回退，以及 UTC 存储与时间字段清单 |
 | [开发约定](../AGENTS.md) | 代码、数据安全、测试、脱敏和提交规则 |
-| [配置示例](../config.example.toml) | 实际配置键与默认值 |
+| [配置示例](../config.example.toml) | 本地覆盖示例，完整默认值见 [内置配置](../src/syvrio/defaults/) |
 | [用户手册](../README.md) · [English](../README.en.md) | 安装、命令和使用方式 |
 
 ## 阅读顺序

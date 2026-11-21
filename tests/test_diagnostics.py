@@ -130,6 +130,7 @@ def test_chat_latency_separates_stream_and_tool_completion_without_payloads(tmp_
         chat=ChatConfig(auto_recall=0),
         retrieval=RetrievalConfig(method="keyword"),
     )
+
     def consult(arguments):
         client.complete(config.llm, [{"role": "user", "content": arguments["text"]}])
         return ToolOutcome(True, "ok", "ok")
@@ -228,14 +229,16 @@ def test_full_queue_does_not_block_producer(monkeypatch):
     assert len(read_events(path)) == 2
 
 
-def test_cli_entrypoint_logs_unhandled_error(monkeypatch):
+def test_cli_entrypoint_logs_unhandled_error(tmp_path, monkeypatch):
     from syvrio.app import cli
 
     def fail(**kwargs):
         raise RuntimeError("synthetic command failure")
 
     monkeypatch.setattr(cli, "app", fail)
-    monkeypatch.setattr(cli.sys, "argv", ["syvrio", "--config", "synthetic-private.toml", "status"])
+    config_file = tmp_path / "synthetic-private.toml"
+    config_file.touch()
+    monkeypatch.setattr(cli.sys, "argv", ["syvrio", "--config", str(config_file), "status"])
     with pytest.raises(RuntimeError, match="synthetic command failure"):
         cli.main()
     path = runtime_path() / "logs" / "syvrio.log"
@@ -252,6 +255,7 @@ def test_cli_uses_parsed_subcommand_in_diagnostics(tmp_path, monkeypatch):
         raise RuntimeError("synthetic command failure")
 
     config_file = tmp_path / "synthetic-private.toml"
+    config_file.touch()
     monkeypatch.setattr(cli, "_service", fail)
     monkeypatch.setattr(cli.sys, "argv", ["syvrio", "status", "--config", str(config_file)])
     with pytest.raises(RuntimeError, match="synthetic command failure"):

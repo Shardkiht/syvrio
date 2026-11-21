@@ -58,13 +58,13 @@ Web 和 TUI 的聊天上传原件保存在 `Vault/attachments/`。该目录由 V
 
 - 正式记忆按逻辑主题保存在 `memories/<category>/<topic>.md`，ID 跨主题唯一。顶层列表以 `**Core**` 开头，Core 只有 `id/status/text`。`recorded_at`、会话来源对和可选替代关系保存在 Extensions。更新保留未知扩展、原文换行与未修改记录的字节。详见 [Vault 格式](docs/vault-v2.md)。
 - `active/deprecated` 是正式记忆的两种状态。更正以新 ID 写入并弃用旧事实。状态演化可以保存新旧有效期，保持真实历史。时间精度按已有证据保留。补充 Context 只填空字段，`emotion.event/recollection/unspecified` 分别保存相应时点的用户原话。
-- `memories/pending.md` 是唯一活动候选文件。确认只写入最终事实并移除候选。改写后确认同时登记异步 Context 补充任务。用户拒绝的原文进入 `archived/pending.md`。`related_ids` 为审核提供背景，已有事实的状态需独立操作。
+- `memories/pending.md` 是唯一活动候选文件。确认只写入最终事实并移除候选。改写后确认同时登记异步 Context 补充任务。用户拒绝的原文进入 `archived/pending/rejected.md`。`related_ids` 为审核提供背景，已有事实的状态需独立操作。
 - `inferences/<kind>/<id>.md` 保存独立推断，状态为 `hypothesis/confirmed/deprecated`。来源必须是真实记忆 ID。用户改写时在同一事务弃用旧文并以新 ID 保存确认后的推断。来源变化保留推断现状。`profile.md` 由 Dream 从当前事实和已确认推断生成。
 - `records/memory-changes.jsonl` 针对正式记忆创建和实际字段变化各写一行。变化事件只含记忆 ID 和创建标志或新值。`records/memory/audit.jsonl` 是独立的操作审计。通过 `vault_transaction(paths)` 一并写入事实、日志及相关任务。嵌套操作复用外层事务，成功提交或失败时整体恢复。
 - 常驻后端按物理 Vault 独占运行。Vault 写入和 Git 快照使用 Runtime 的 `vault.lock`。Git 操作按 `Git → Vault` 顺序取锁，网络推送等待只持有 Git 锁。使用同一套已解析的 `SyvrioPaths` 构造领域存储与后台作业。
 - `sessions/YYYY/MM/<id>.jsonl` 追加消息、摘要、撤回和沉淀事件。稳定消息 ID 定位原话。保存绝对 UTC 时刻与已知的来源本地日期。尾行恢复以物理行号追加 `recovery` 标记及诊断。会话写入前屏蔽已识别的凭据。
 - 最新回合 `/undo` 为正式记忆可恢复原文件的例外。先核对所有受影响文件和存续引用，再在一个事务内恢复文件并追加撤回事件。其他会话写过同一文件或新增引用时拒绝整次撤回。Runtime 持久化撤回凭据、推理附件与后台进度，应与需要恢复的 Vault 配对备份。
-- 永久删除会话时，有正式记忆来源引用就拒绝。相关活动候选须在确认界面列出并随会话移除。消息的上传副本随会话删除。`Vault/attachments/` 由 Vault Git 忽略，迁移时另行复制并核对校验值。
+- Vault 归档按内容类型分子目录。会话默认归档，原文移入 `Vault/archived/sessions/YYYY/MM/<id>.jsonl`。整个 `Vault/archived/` 排除在检索、后台任务和自动 Git 处理之外。确认后可释放只读视图并归档，目标会话有写入、排队消息或后台任务时拦截。永久删除已归档会话需手动确认，有正式记忆来源引用就拒绝。相关活动候选须在确认界面列出并随会话移除。消息的上传副本随会话删除。`Vault/attachments/` 由 Vault Git 忽略，迁移时另行复制并核对校验值。
 - `SOUL.md` 是可选人设。敏感凭据、真实配置与用户数据只能留在本地。历史离线工具处理各自的旧格式。生产 Vault 升级到当前格式需专门设计和验证迁移流程。
 
 ## 测试
@@ -87,8 +87,10 @@ CI 的测试、构建、CLI 检查与发布作业统一在 Debian 13 容器中�
 
 ## 界面不变量
 
+- 敏感操作一律需要二次确认。首次触发展示操作目标和影响，用户明确确认后才执行。会话归档和永久删除分别确认，默认焦点放在取消按钮。
 - 临时确认、选择与展示弹窗保持适中尺寸，优先随内容自适应并限制最大宽高；短内容不预留大面积空白，长内容在限定区域内滚动，操作按钮保持可见，避免默认接近全屏。
 - 忙碌态（补沉淀/切换/请求中）收到的用户意图**必须排队接续，不得静默丢弃**；异常必须释放 busy 并把错误显示出来，不能让输入框永久禁用。
+- 模型、思考档位和上下文预算等按回合使用的设置，在生成中也可保存。回合开始时固定设置，工具调用后继续回答时沿用同一份。排队消息与其他会话均在新回合实际开始时读取最新设置。
 - 流式输出：循环级不做重试（重试会重复 delta）；完成时就地定稿，不重复挂载；中途断流保留半截并显式标注。
 - git、LLM 等慢操作在 worker 线程执行，UI 线程只经 `call_from_thread` 接收回调。
 
@@ -99,7 +101,7 @@ CI 的测试、构建、CLI 检查与发布作业统一在 Debian 13 容器中�
 - 用 `typer.Exit`/`click.Abort` 表示流程退出，不表示失败：`main()` 对它们直接放行不记录；`ui.fail(message, exc=exc)` 会在抛出退出码**之前**把原始异常记成 `cli.failed`（带 `command` 字段），调用侧拿到原始异常时必须传 `exc=`，否则诊断日志只剩退出码。
 - 降级路径（keyring 不可用、tiktoken 编码表下载失败等）静默退回默认行为时必须 `diagnostics.record_once` 记录一次，并写注释说明降级语义；`record_once` 的事件名必须加入 `_EVENTS` 白名单（`tests/test_diagnostics.py` 的静态对齐测试会拦截脱钩）。
 - `except BaseException` 只许用于"释放资源后重抛"的模式；裸 `except: pass` 只允许在探针/TOCTOU/尽力清理场景，且必须有注释。
-- Web 边界统一走 `WebError(code, message, status)`，由 `server.py` 的全局处理器产出 `{code, message}` 信封；不得把 traceback 或记忆内容带进 HTTP 响应。
+- 共享 HTTP 边界使用 `APIError(code, message, status)`，由 `backend/api/routes.py` 的处理器返回 `{"error": {"code": ..., "message": ...}}`。Web 网关沿用相同错误格式。不得把 traceback 或记忆内容带进 HTTP 响应。
 - 诊断事件名采用 `域.动作` 形式，失败类以 `.failed`/`.unreadable` 等后缀结尾。
 
 ## 文档同步
@@ -111,7 +113,7 @@ README 面向用户，必须始终与 `src/syvrio` 的当前架构一致。以�
 - 新增或删除 CLI 子命令：更新“命令行”示例。
 - 新增或删除 TUI 斜杠命令：更新“会话内命令”表。
 - 新增或删除 MCP 工具：同步 `app/server.py` 与 README 工具列表。
-- 配置字段或默认值变化：同步 `config.example.toml`、README 配置示例与 `infra/config.py`。
+- 配置的默认值只在 `src/syvrio/defaults/` 的四份 TOML 维护，本地配置只保存覆盖。配置字段或默认值变化：同步 `config.example.toml`、README 配置示例与 `infra/config.py`。
 - 存储格式或写入规则变化：更新 README 的“写入规则”和“结构”章节。
 - README 不写会快速过期的固定数字（如测试数量），只写稳定的覆盖范围。
 - 功能待办以 GitHub Issues 为准（创建时写清现状/方案/验收标准，完成时带验收记录关闭）；README Roadmap 只留条目级摘要并指向 Issues。

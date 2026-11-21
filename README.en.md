@@ -33,7 +33,7 @@ uv run syvrio setup
 uv run syvrio chat
 ```
 
-Setup selects the Vault and model. Supply provider credentials using the system credential store or the provider's environment variable. Sending the first message creates a session. The terminal, web interface, CLI and MCP client connect to the same resident backend and share sessions, memories, job progress and configuration.
+Setup selects the Vault and model. Supply provider credentials using the system credential store or the provider's environment variable. Sending the first message creates a session. The terminal, web interface, CLI and MCP client connect to the same resident backend and share sessions, memories, job progress and configuration. Any client can start the backend on first connection. The terminal connects directly. The browser loads its pages from the Web gateway and uses the same API through it. When the browser and terminal open the same conversation, their messages run in the order received. Different conversations can generate replies concurrently. You can open another conversation or start a new one during a reply. The original conversation continues processing its queue and shows the latest reply when you return.
 
 To run the web interface from source, install Node.js and Corepack, build the assets once, then start the server.
 
@@ -44,22 +44,45 @@ uv run syvrio web
 
 The default URL is `http://127.0.0.1:8765/`. Use `syvrio backend status` to inspect the backend for the current Vault, and `syvrio backend start` or `syvrio backend stop` to manage it. The web guide covers deployment, LAN access and authentication. [Web client guide](docs/web.md)
 
+Syvrio maintains a single release line on `main`. Install and update the `syvrio` package from PyPI.
+
+With a PyPI installation and a configured ngrok v3 agent, run `syvrio web share --domain demo.ngrok-free.dev --github-id 12345`. Confirm to save the hostname and GitHub numeric user ID, then use `syvrio web share` on subsequent starts. The tunnel protects the loopback Web gateway with GitHub login. Ordinary `syvrio web` starts locally. [Deployment and updates](docs/web.md#ngrok)
+
+The development frontend runs at `http://127.0.0.1:7987/`. Start its gateway with `syvrio web --port 8746`. You can also set the gateway port with `SYVRIO_WEB_PORT`.
+
+## Configuration
+
+The default entry is `~/.syvrio/config.toml`. Select another entry with `--config` or `SYVRIO_CONFIG`. Local files override individual fields from the [packaged defaults](src/syvrio/defaults/).
+
+| File beside the entry | Settings |
+|---|---|
+| `config.toml` | Vault, Runtime, Git, web search and fetch |
+| `models.toml` | Model provider, endpoint and request options. API keys come from the environment or system credential store |
+| `chat.toml` | Context window, compaction, output reserve and tool budgets |
+| `memory.toml` | Retrieval, embeddings, automatic recall, distillation and Dream |
+
+For example, set `default_limit = 15` under `[retrieval]` in `memory.toml` to request up to 15 results by default. Chat prefetch uses `[recall].auto_recall` independently.
+
+The first load migrates a legacy single file in place and drops obsolete options. Removing an override or an optional group file restores the corresponding defaults on the next load. A missing explicitly selected entry stops startup. Repair the installation if a packaged defaults file is missing.
+
 ## Chat and attachments
 
-- **Sending and undoing.** Press Enter during a reply to queue a message for the end of the turn. Ctrl+Enter requests insertion at a safe point in the current turn. Tool calls must finish before insertion. `/undo` interrupts the latest turn, restores eligible local file changes and puts the sent text back in the composer. In the browser, hover over the latest user message to undo or edit and resend it. Later edits or references from another session can block the entire undo.
+Each outgoing message keeps its delivery ID across retries. The web app retains the text and attachments when a connection drops and retries on reconnect. You can also choose Retry delivery. In the terminal, Ctrl+R retries a delivery while preserving the next draft. Replies already in progress resume from the same turn.
+
+- **Sending and undoing.** In the browser, Send becomes Stop in the same position while a reply is in progress. Press Enter during a reply to queue a message for the end of the turn. Ctrl+Enter requests insertion at a safe point in the current turn. Tool calls must finish before insertion. `/undo` interrupts the latest turn, restores eligible local file changes and puts the sent text back in the composer. In the browser, hover over the latest user message to undo or edit and resend it. The edit replaces the original turn when it is saved. If saving fails, the original messages, attachments and memory changes remain available. You can revise or retry the draft after refreshing. Later edits or references from another session can block the entire undo.
 - **Documents and images.** Click the circular **+** inside the web composer or press **Ctrl+O** in the TUI to attach local files. Each message supports up to eight files, 20 MiB per file and 40 MiB in total. Models can read documents. Vision-capable models can also analyze PNG, JPEG, WebP and GIF images. The `/import` chat command opens the same local file picker as **+**. Selected files stay in the draft until you press Send or Enter. The model can then read or summarize the files, or save facts when you ask it to.
-- **Sessions and models.** Browse and manage conversations with `/sessions`. Search the available model list with `/model` and select a supported reasoning level with `/thinking`. Reasoning and tool details can be expanded in the conversation. Type `/` to see the commands available in your client.
+- **Sessions and models.** Browse and manage conversations with `/sessions`. After the first complete exchange, the model suggests a short title in the language of the conversation. Use `/rename` to set your own title. While a reply is streaming, use `/model` to select a model, `/think` to choose the reasoning level, and `/context` to set the context window. Each turn keeps its original settings when it continues after a tool call. Queued messages use the latest settings when their turn starts. Expand reasoning and tool details in the conversation. Type `/` to see the available commands.
 - **Context compaction.** Long conversations use summaries to fit the model's context window. Use `/compact` to request a summary. The original messages remain in the session JSONL. Background distillation processes each original user message and commits its progress with the facts it saved. Switching sessions, exiting or restarting the backend can resume unfinished work.
 
 ## Memory, review and profiles
 
-Formal memories are Markdown entries organized by topic. Each has a stable ID, text, topic and status. Optional context covers event date, validity dates, location and feelings, including separate wording for the event and for later recollection. Dates retain the stated precision of year, month or day. A chat-derived entry links to its source session and user message. Recall returns formal facts and supports date ranges, location and emotion filters.
+Formal memories are Markdown entries organized by topic. Each has a stable ID, text, topic and status. Optional context covers event date, validity dates, location and feelings, including separate wording for the event and for later recollection. Dates retain the stated precision of year, month or day. A chat-derived entry links to its source session and user message. By default, `recall` returns up to 10 formal facts. Use `limit` to choose a different count. Results can be filtered by date range, location and emotion.
 
 | Action | Result |
 | --- | --- |
 | Record and manage a fact | `memorize` saves a fact. `correct` corrects an error. `transition` records a change over time. `deprecate` retires a fact while retaining its history. |
-| `/pending` | Select a candidate to review its question and related facts. Confirm the draft, edit its text and confirm, or reject it. Direct approval retains its context. For edited text, a background job can fill empty context fields from the final fact and its trusted source. |
-| `/inferences` | Review hypotheses with a category and source fact IDs. Confirmed inferences are stored separately from formal facts. |
+| `/pending` | Open Pending in the upper right of the web app. Search by topic, text or ID. `/pending edit <id>` opens the full text. Saving the original wording requires choosing Save unchanged. Edited facts can receive context from their trusted source in the background. |
+| `/inferences` | Scroll the full list, filter by status, and search by text, category or ID. Confirmed inferences are stored separately from formal facts. |
 | `/profile` | Read the most recently published full profile. |
 | `/dream` | First update the full profile from active facts and confirmed inferences, then generate new hypotheses in batches. Use `/dream status`, `/dream cancel` and `/dream resume` to inspect, cancel or resume a job. |
 
@@ -98,11 +121,13 @@ The MCP server exposes recall, topic reading, recording, correction, transitions
 | Data | Location |
 | --- | --- |
 | Formal memories and active candidates | `memories/<topic>.md` and `memories/pending.md` |
-| Rejected candidates, inferences and full profile | `archived/pending.md`, `inferences/<kind>/<ID>.md` and `profile.md` |
+| Rejected candidates, inferences and full profile | `archived/pending/rejected.md`, `inferences/<kind>/<ID>.md` and `profile.md` |
 | Sessions and formal memory changes | `sessions/YYYY/MM/<ID>.jsonl` and `records/memory-changes.jsonl` |
 | Original attachments belonging to each session | `attachments/`, excluded from Vault Git sync |
 
-To move a Vault with attachments, copy the whole Vault directory or back up and restore `attachments/` separately. Permanent session deletion lists related candidates and, when confirmed, removes them along with that session's attachment copies. A reference from formal memory blocks deletion. Indexes, locks and background jobs live in a separate Runtime directory. Optional Git synchronization runs alongside the resident backend. [Vault format](docs/vault-v2.md)
+Confirming the conversation in the sidebar archive dialog moves it into `archived/sessions/YYYY/MM/<id>.jsonl`. Open Archive at the bottom of the sidebar to read, restore or explicitly confirm permanent deletion. Retrieval, background jobs and managed Git sync exclude the entire `archived/` tree. Copy the complete Vault when moving it to preserve archived files and original attachments. Permanent session deletion lists related candidates and, when confirmed, removes them along with that session's attachment copies. A reference from formal memory blocks deletion. Indexes, locks and background jobs live in a separate Runtime directory. Optional Git synchronization runs alongside the resident backend. [Vault format](docs/vault-v2.md)
+
+The CLI supports `syvrio sessions --archived`, `--archive ID`, `--restore ID` and `--delete-permanently ID`.
 
 ## Configuration and Git
 
