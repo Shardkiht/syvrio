@@ -9,10 +9,19 @@ from statistics import median
 from tempfile import TemporaryDirectory
 from time import perf_counter
 
-from evals.retrieval_eval import load_data
-from syvrio.infra.config import Config
 from syvrio.memory.schema import Core, render_record
 from syvrio.memory.service import MemoryService
+
+if __name__ == "__main__" and not __package__:
+    from retrieval_eval import load_data
+    from retrieval_fixture import guard_vector
+    from retrieval_metrics import LIMITS, target_indices
+    from sandbox import eval_environment, local_hybrid_config
+else:
+    from evals.retrieval_eval import load_data
+    from evals.retrieval_fixture import guard_vector
+    from evals.retrieval_metrics import LIMITS, target_indices
+    from evals.sandbox import eval_environment, local_hybrid_config
 
 SHORT_FACTS = (
     ("name", "identity", "人物基本资料", "姓名：虚构人物甲"),
@@ -24,7 +33,6 @@ SHORT_FACTS = (
 SHORT_CASES = (
     ("name", "姓名"),
     ("name", "我叫什么名字"),
-    ("name", "我是谁"),
     ("name", "我指的是姓名"),
     ("name", "我叫什么名字 姓名 名字 称呼"),
     ("name", "用户姓名 真实名字 如何称呼"),
@@ -38,38 +46,32 @@ SHORT_CASES = (
 SHORT_FIELD_MARKERS = tuple(text.split("：")[0] for _, _, _, text in SHORT_FACTS)
 
 
-def corpus_entries() -> list[tuple[int, str, str]]:
-    """冻结语料里本身就埋了同类短字段（姓名/年龄/职业…），会直接挤占 top3。
-
-    本评测要验证的是「长文本干扰下短字段仍在前三」，所以先剔除同字段的竞品，只留下
-    无关长文。返回值带原始下标，`legacy-NNNN` 仍按冻结语料顺序编号，用例的 target 不变。
-    """
-    corpus, _ = load_data()
+def legacy_cases() -> list[tuple[str, set[str]]]:
+    """Score each frozen query once, accepting the best rank among all its targets."""
+    _, cases = load_data()
     return [
-        (index, item["category"], item["text"])
-        for index, item in enumerate(corpus)
-        if not any(marker in item["text"] for marker in SHORT_FIELD_MARKERS)
+        (
+            case["query"],
+            {f"legacy-{target:04d}" for target in target_indices(case)},
+        )
+        for case in cases
     ]
 
 
-def legacy_cases() -> list[tuple[str, str, str]]:
-    """冻结用例的 target 是语料下标，换成 seed_vault 生成的 legacy-NNNN 记录 ID。"""
-    _, cases = load_data()
-    rows: list[tuple[str, str, str]] = []
-    for case in cases:
-        for target in case.get("targets") or [case["target"]]:
-            rows.append((case["category"], case["query"], f"legacy-{target:04d}"))
-    return rows
-
-
-def seed_vault(vault: Path) -> int:
+def seed_vault(vault: Path, *, short_fields: bool = True) -> int:
     topics = defaultdict(list)
     titles = {}
-    for index, topic, text in corpus_entries():
-        topics["legacy-" + topic].append((f"legacy-{index:04}", text))
-    for label, topic, title, text in SHORT_FACTS:
-        topics[topic].append((f"short-{label}", text))
-        titles[topic] = title
+    corpus, _ = load_data()
+    for index, item in enumerate(corpus):
+        text = item["text"]
+        if short_fields and any(marker in text for marker in SHORT_FIELD_MARKERS):
+            continue
+        topics["legacy-" + item["category"]].append((f"legacy-{index:04}", text))
+    if short_fields:
+        # This independent fixture has one known owner/value per requested field.
+        for label, topic, title, text in SHORT_FACTS:
+            topics[topic].append((f"short-{label}", text))
+            titles[topic] = title
     distractors = (
         "录入培训资料时，要核对客户姓名、名字的读音和联系方式，不能在表格遗漏备注。",
         "设备采购样表记录产品型号和测评排名，清单是同事设备，不是自用设备。",
@@ -106,14 +108,28 @@ def seed_vault(vault: Path) -> int:
     return sum(map(len, topics.values()))
 
 
-def metrics(ranks: list[int | None], durations: list[float]) -> dict[str, float]:
-    return {
-        **{
-            f"hit@{k}": sum(r is not None and r <= k for r in ranks) / len(ranks) for k in (1, 3, 5)
-        },
-        "mrr@10": sum(1 / r if r is not None and r <= 10 else 0.0 for r in ranks) / len(ranks),
-        "median_ms": median(durations),
-    }
+def measure(service: MemoryService, cases: list[tuple[str, set[str]]], details: bool) -> None:
+    depth = service.config.retrieval.default_limit
+    ranks = []
+    durations = []
+    with guard_vector(service.retriever.vector) as check:
+        for query, targets in cases:
+            start = perf_counter()
+            hits = service.recall(query)
+            durations.append((perf_counter() - start) * 1000)
+            check()
+            if len(hits) > depth:
+                raise ValueError(f"Short-field recall exceeded the configured limit of {depth}")
+            rank = next((i for i, hit in enumerate(hits, 1) if hit.id in targets), None)
+            ranks.append(rank)
+            if details:
+                print(f"default_limit={depth} {query} rank={rank}")
+    print(f"default_limit={depth} cases={len(ranks)}", end=" ")
+    for k in (1, 3, 5, depth):
+        count = sum(r is not None and r <= k for r in ranks)
+        print(f"hit@{k}={count}/{len(ranks)}", end=" ")
+    mrr = sum(1 / r for r in ranks if r is not None) / len(ranks)
+    print(f"mrr@{depth}={mrr:.4f} median_ms={median(durations):.1f}")
 
 
 def main() -> None:
@@ -121,38 +137,34 @@ def main() -> None:
     parser.add_argument("--details", action="store_true")
     args = parser.parse_args()
     with TemporaryDirectory(prefix="syvrio-short-facts-") as temporary:
-        root = Path(temporary)
-        count = seed_vault(root / "vault")
-        service = MemoryService(Config(vault=root / "vault", runtime=str(root / "runtime")))
-        if service.retrieval_mode != "hybrid":
-            raise SystemExit("requires local-embed and its configured model")
-        start = perf_counter()
-        service.retriever.vector.sync()
-        if service.retriever.vector.degraded:
-            raise SystemExit("local embedding could not build the index")
-        print(f"records={count} index_seconds={perf_counter() - start:.3f}", flush=True)
-        rows = defaultdict(list)
-        checks = [("short", query, f"short-{key}", []) for key, query in SHORT_CASES] + [
-            ("legacy", query, ident, []) for _, query, ident in legacy_cases()
-        ]
-        for group, query, ident, subs in checks:
-            start = perf_counter()
-            hits = service.recall(query, 10)
-            ms = (perf_counter() - start) * 1000
-            rank = next(
-                (
-                    i
-                    for i, hit in enumerate(hits, 1)
-                    if (hit.id == ident if ident else any(s in hit.text for s in subs))
-                ),
-                None,
-            )
-            rows[group].append((rank, ms))
-            rows["overall"].append((rank, ms))
-            if args.details:
-                print(group, query, rank)
-        for group, measures in rows.items():
-            print(group, {k: round(v, 4) for k, v in metrics(*zip(*measures, strict=True)).items()})
+        short = [(query, {f"short-{key}"}) for key, query in SHORT_CASES]
+        for group, cases in (("short", short), ("legacy", legacy_cases())):
+            with eval_environment(Path(temporary) / group) as vault:
+                count = seed_vault(vault, short_fields=group == "short")
+                service = MemoryService(local_hybrid_config(vault))
+                ids = {entry.id for entry in service.current_facts()}
+                for query, targets in cases:
+                    if not targets or not targets <= ids:
+                        raise ValueError(f"Missing target in the {group} fixture: {query}")
+                if service.retrieval_mode != "hybrid":
+                    raise SystemExit("requires local-embed and its configured model")
+                start = perf_counter()
+                with guard_vector(service.retriever.vector):
+                    service.retriever.vector.sync()
+                print(
+                    f"{group} records={count} index_seconds={perf_counter() - start:.3f}",
+                    flush=True,
+                )
+                for limit in LIMITS:
+                    service.config.retrieval.default_limit = limit
+                    measure(service, cases, args.details)
+                    if group == "short" and args.details:
+                        # A broad identity question has no single ground-truth name record.
+                        with guard_vector(service.retriever.vector):
+                            probe = service.recall("我是谁")
+                        print(
+                            f"default_limit={limit} unscored 我是谁 ids={[hit.id for hit in probe]}"
+                        )
 
 
 if __name__ == "__main__":

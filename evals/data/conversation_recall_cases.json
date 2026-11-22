@@ -1,0 +1,41 @@
+{
+  "facts": {
+    "tide-current": "潮纹组现在使用的封签颜色是靛蓝，从第二批开始生效。",
+    "tide-past": "潮纹组第一批使用过琥珀色封签，第二批开始已停用琥珀色。",
+    "mist-current": "雾纹组现在使用的封签颜色是银灰，从第二批开始生效。",
+    "tide-box": "潮纹组合成样本的保管地点是北柜三层。",
+    "mist-box": "雾纹组合成样本的保管地点是东柜底层。",
+    "glider-material": "折翼模型的制作材料是竹片。",
+    "glider-weight": "折翼模型的配重是两枚铜环。",
+    "boat-material": "折舟模型的制作材料是软木，配重是锡块。",
+    "bell-pitch": "砂铃样品的校验音是降 E。",
+    "bell-case": "砂铃样品的运输箱用棉绳捆扎。",
+    "station": "空镜台的借用时段是第七天上午。",
+    "station-noise": "空镜台的维护手册封面是橙色。",
+    "tide-log": "潮纹组的合成样本交接清单记录每次清点数量。",
+    "mist-log": "雾纹组的合成样本交接清单附带空箱编号。",
+    "model-log": "折翼模型的交接清单要贴检验标签。",
+    "boat-log": "折舟模型的交接清单采用纸质签收。",
+    "tide-flap": "潮纹组的合成样本箱盖有磁扣。",
+    "tide-label": "潮纹组的合成样本袋带透明标贴。",
+    "tide-tray": "潮纹组的合成样本托盘可以叠放。",
+    "mist-flap": "雾纹组的合成样本箱盖用编绳固定。",
+    "mist-label": "雾纹组的合成样本标签需要覆膜。",
+    "mist-tray": "雾纹组的合成样本托盘为方形。",
+    "gong-weight": "砂锣样品的重量是三十三克；它和砂铃样品来自不同系列。"
+  },
+  "cases": [
+    {"id":"current", "question":"我的潮纹组现在使用什么颜色的封签？", "query":"潮纹组 现在 封签颜色", "trigger":true, "required":["tide-current"], "forbidden":["tide-past","mist-current"]},
+    {"id":"historical", "question":"你还记得潮纹组第一批用的封签颜色吗？", "query":"潮纹组 第一批 曾用 封签颜色", "trigger":true, "required":["tide-past"], "forbidden":["tide-current","mist-current"]},
+    {"id":"same-field", "question":"我把雾纹组的合成样本放在哪个柜子？", "query":"雾纹组 合成样本 保管地点", "trigger":true, "required":["mist-box"], "forbidden":["tide-box"]},
+    {"id":"followup-positive", "previous":["我在安排潮纹组的合成样本交接。"], "question":"那它们放在哪个柜子？", "query":"潮纹组 合成样本 保管地点", "trigger":true, "required":["tide-box"], "forbidden":["mist-box"]},
+    {"id":"multiple-evidence", "question":"我制作折翼模型时，材料和配重分别是什么？", "query":"折翼模型 制作材料 配重", "trigger":true, "required":["glider-material","glider-weight"], "forbidden":["boat-material"]},
+    {"id":"cue", "question":"记得砂铃样品的校验音吗？", "query":"砂铃 校验音", "trigger":true, "required":["bell-pitch"], "forbidden":["bell-case"]},
+    {"id":"no-answer-related", "question":"我的砂铃样品重多少克？", "query":"砂铃样品 重量 克", "trigger":true, "required":[], "forbidden":["gong-weight","glider-weight","boat-material"]},
+    {"id":"no-answer-unseen", "question":"我给虚构的星芒盒取的代号是什么？", "query":"星芒盒 代号", "trigger":true, "required":[], "forbidden":[]},
+    {"id":"translation", "question":"帮我翻译：砂铃样品装入运输箱。", "query":"砂铃样品 运输箱", "trigger":false, "required":[], "forbidden":[]},
+    {"id":"public-task", "question":"请帮我搜索公开的折翼模型制作教程", "query":"折翼模型 制作教程", "trigger":false, "required":[], "forbidden":[]},
+    {"id":"followup-negative", "previous":["帮我翻译这段关于空镜台的说明。"], "question":"那下一段呢？", "query":"空镜台 说明", "trigger":false, "required":[], "forbidden":[]},
+    {"id":"chitchat", "question":"晚上好！", "query":"晚上好", "trigger":false, "required":[], "forbidden":[]}
+  ]
+}

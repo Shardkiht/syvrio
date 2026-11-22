@@ -65,6 +65,8 @@ uv run pytest tests/test_application_conversation.py tests/test_resident_clients
 uv run pytest tests/test_background_memory.py tests/test_reflection.py
 uv run pytest tests/test_store.py tests/test_queue.py tests/test_service.py
 uv run python -m evals.memory_eval
+uv run python -m evals.recall_gold_eval
+uv run python -m evals.conversation_recall_eval --method hybrid
 uv run python -m evals.retrieval_eval --keyword
 cd web
 corepack pnpm test
