@@ -1,44 +1,47 @@
-# 检索评测
+# 记忆检索评测
 
-## 记忆解析与裁决回归
+[2026-11-22 合成库实测报告](reports/2026-11-22-recall.md)记录了默认返回 7 条和 10 条的逐题配对结果、漏掉的证据和上下文开销。
 
-```bash
-uv run python evals/memory_eval.py
-```
+## 如何判断检索是否准确
 
-`memory_eval.py` 使用固定合成模型输出和独立临时 vault，覆盖普通抽取结果、低置信与敏感候选、更新/冲突、重复、日期精度与非法日期、生效区间、未知相对时间、事件/居住地点、显式/推断情绪及凭据拦截。对应案例也在 `tests/test_memory_eval.py` 中随 pytest 和 CI 执行。
+主基准 [recall_gold.json](data/recall_gold.json) 给每个问题预先标出回答所需的事实，每个事实包含对象、时期、字段和具体值。记忆正文单独写入合成 Vault。题目、答案表和干扰项标注仅供评分器使用。例如询问两门课各自的地点，两份材料都写到同一门课只能覆盖其中一个地点。询问旧地点时，新地点属于已标注的干扰项。
 
-同时输出历史状态、事件日期、地点及显式情绪的固定查询对照。情绪案例覆盖事情发生时、回想时、两个时点并存和时点不明。评分包括 Recall@1、Hit@3、Hit@5 和 MRR@5。
+两次运行分别把临时默认返回数设为 7 和 10，按相同问题调用产品的 `recall` 工具，调用参数都省略 `limit`。评分器解析最终送给模型的工具消息，核对 ID 和正文，再按以下口径逐题计分。
 
-指标为各类固定案例的通过情况；它验证程序的解析、裁决与存储契约，**不衡量真实模型理解自然语言的准确性**，不代表长期聊天效果。推断去重、隔离和来源边界另由 `tests/test_inference.py` 覆盖。没有真实 vault、Key、付费模型或额外服务依赖。
+| 指标 | 含义 |
+| --- | --- |
+| 证据齐全题数 | 一题所需的每个独立事实都至少有一条材料支持。另列各题平均事实覆盖比例。 |
+| 文档 Recall@K | 返回的相关记忆条数占题库中全部相关记忆条数的比例。同一事实的独立佐证可以各计一条。 |
+| Precision@K / 实返精度 | 前者除以 K，后者除以实际返回条数。相关条目很少时，增大 K 本身就会摊低前者。 |
+| nDCG@K | 按返回位置给相关条目折算分数，排在前面的权重更高。 |
+| 干扰与缺证 | 对有答案题统计已标注的干扰项抢在首条正确证据之前的次数。对库中无答案题单列返回候选和命中已标注干扰项的次数。 |
 
-## 检索基准
+先按题算各比例，再在有答案题上取平均，每题权重相同。无答案题单列。另列需要 1 个、2–7 个、超过 7 个事实的题数，便于看出返回条数的容量限制。工具正文的平均 token 数包括所有题。生成回答是否正确需要单独测量。
 
-可复现的检索质量基准：语料与题库由真实 LLM 一次性生成后**冻结为 JSON 提交**，评测时只读固定文件、不再调用 LLM，因此不同分支逐字节同一批数据，对比 keyword（BM25）/ vector（本地向量）/ hybrid（RRF 融合）三路。
-
-## 运行
+## 运行与复核
 
 ```bash
 uv sync --extra local-embed
-uv run python evals/retrieval_eval.py               # 全部三路（读 evals/data/*.json）
-uv run python evals/retrieval_eval.py --keyword     # 只跑 BM25（离线）
-uv run python evals/retrieval_eval.py --failures    # 打印未过 @3 的用例
-uv run python evals/generate_retrieval_data.py --corpus 1000 --cases 50   # 重新生成数据（真实 LLM，需 SPARK_API_KEY）
-uv run python -m evals.short_facts_eval --details  # 大规模短字段回归
-uv run python -m evals.field_lookup_eval           # 完整标签与重叠标签回归
+uv run python -m evals.recall_gold_eval --json /tmp/syvrio-gold-hybrid.json
+uv run python -m evals.recall_gold_eval --keyword --json /tmp/syvrio-gold-keyword.json
+uv run python -m evals.conversation_recall_eval --method hybrid --details
+uv run python -m evals.conversation_recall_eval --method keyword --details
+uv run python -m evals.retrieval_eval --json /tmp/syvrio-frozen.json
+uv run python -m evals.retrieval_eval --keyword --failures
+uv run python -m evals.short_facts_eval --details
+uv run python -m evals.field_lookup_eval
+uv run python -m evals.memory_eval
 ```
 
-## 方法
+首次跑混合检索需能取得本地嵌入模型。模型已缓存时可设 `HF_HUB_OFFLINE=1` 离线复跑。关键词入口无需嵌入模型。各基准使用临时 Vault、配置和 Runtime。向量降级会使该轮测评失败。金标 JSON 报告包含数据哈希、每题的预期值、实际排名和可核对的记忆原文。
 
-- **语料**：1000 条合成条目，由真实 LLM 一次性生成后冻结为 `evals/data/retrieval_corpus.json`。内容为虚构生活记录（占位人物、编造数值），生成时过滤邮箱/URL/手机号/身份证号/车牌等个人信息标识；真实品牌、城市等专有名词允许出现，但不指向任何真实个人。
-- **题库**：50 题，冻结为 `evals/data/retrieval_cases.json`，以**目标条目 ID** 判命中（不是子串）。混合真实问法：指向性明确的主题复述、弱指向口语改写（“我上次……来着”）、字段查询（“我什么血型/我今年多大”）、数字干扰与低词面重叠；字段题用 `targets` 接受同标签任一条目。
-- **指标**：任一目标命中率记 Recall@3 / Recall@5（更准确地说是 Hit@K），MRR@10 为前十条内首个命中目标的倒数排名。
-
-生成器见 `evals/generate_retrieval_data.py`（需真实 LLM 与 `SPARK_API_KEY`）；它不参与评测与 CI，仅用于离线产出或更新冻结数据。
-
-短字段评测在原有合成数据上加入字段式姓名、年龄、家乡、职业、设备型号，以及同领域和带数字的干扰项。它通过 `MemoryService.recall` 跑混合检索，分别报告原题、短字段和整体的 Hit@1/3/5、MRR@10、预热查询中位耗时，以及冷建索引耗时。该评测直测检索层，未调用 LLM 改写或自动召回。
-
-字段匹配评测使用另一组固定合成语料，覆盖重叠标签、同名字段的上下文区分、英文标签和普通文本。除 Hit@1/3 外，还单独统计较短标签错误排到第一的次数。
+| 入口 | 覆盖范围 |
+| --- | --- |
+| [金标检索](recall_gold_eval.py) | 61 条记忆、52 个独立事实、30 题。包含新旧值、近似名称、自然口语、多事实和无答案题。 |
+| [会话自动召回](conversation_recall_eval.py) | 12 个合成会话。通过实际 Agent 入口测是否触发、自动注入的证据，再用冻结的独立查询对照显式工具；使用无密钥时的查询改写回退路径和记录输入的替身模型。 |
+| [历史冻结题库](retrieval_eval.py) | 1,000 条记忆、50 题。分别测底层 BM25、向量、混合检索和实际工具。旧题以任一预标 ID 命中计 Hit@K，保留作版本对照。原始生成器仅供人工更新冻结题库，其运行需要单独的模型调用。 |
+| [短字段](short_facts_eval.py)与[字段重叠](field_lookup_eval.py) | 在大量干扰记录中查姓名、设备等短值和相近标签。短字段的 9 个有明确答案的问法单独计分，“我是谁”作为观察项。 |
+| [解析与裁决](memory_eval.py) | 固定合成抽取结果，核对候选入库、重复、冲突、低置信与敏感内容、时间、地点、情绪以及历史状态检索。 |
 
 ## 2026-11-20 至 21 日 · 统一后端重构与默认召回条数
 

@@ -1,138 +1,176 @@
-"""检索评测：读取LLM生成并冻结的语料/题库，对比 keyword / vector / hybrid 三路。
+"""Paired top-7/top-10 retrieval on the frozen synthetic corpus (no chat LLM).
 
-语料与题库由 ``evals/generate_retrieval_data.py`` 用真实 LLM 一次性生成后冻结为
-``evals/data/retrieval_corpus.json`` 与 ``evals/data/retrieval_cases.json``。本脚本
-评测时**不再调用 LLM**，只读这两份固定文件，因此不同分支跑的是逐字节相同的同一批
-数据，可复现、可横向对比。内容全为虚构占位，不含真实个人信息。
-
-用例以“目标条目 ID”判命中：语料按顺序写入临时 vault 时记录每条对应的条目 ID，
-命中该 ID 即算相关，避免用子串误判。
-
-用法：
-    uv run python evals/retrieval_eval.py            # 全部三路（需 local-embed extra）
-    uv run python evals/retrieval_eval.py --keyword  # 只跑 BM25，离线可用
-    uv run python evals/retrieval_eval.py --failures # 打印未过 @3 的用例
+python evals/retrieval_eval.py [--keyword] [--failures] [--json PATH]
+python -m evals.retrieval_eval --json -  # machine-readable report on stdout
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
-import tempfile
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
-from syvrio.infra.config import Config, LLMConfig, RetrievalConfig
-from syvrio.memory.schema import Core, render_record
+from syvrio.agent.session import SessionStore
+from syvrio.agent.tools import build_tools
+from syvrio.infra.config import Config, EmbeddingConfig, RetrievalConfig
 from syvrio.memory.service import MemoryService
-from syvrio.retrieval import KeywordRetriever
-from syvrio.retrieval.vector import LocalEmbedder, VectorRetriever
+
+if __package__:
+    from .retrieval_fixture import MODEL, guard_vector, run_metadata, seed, tool_search
+    from .retrieval_metrics import LIMITS, RankedResults, paired_evaluation, validate_data
+    from .sandbox import eval_environment
+else:  # Running the documented command puts evals/ on sys.path.
+    from retrieval_fixture import MODEL, guard_vector, run_metadata, seed, tool_search
+    from retrieval_metrics import LIMITS, RankedResults, paired_evaluation, validate_data
+    from sandbox import eval_environment
 
 DATA_DIR = Path(__file__).parent / "data"
 CORPUS_FILE = DATA_DIR / "retrieval_corpus.json"
 CASES_FILE = DATA_DIR / "retrieval_cases.json"
 
 
+def _read_frozen_data() -> tuple[list[dict], list[dict], dict[str, str]]:
+    corpus_bytes, case_bytes = CORPUS_FILE.read_bytes(), CASES_FILE.read_bytes()
+    corpus, cases = json.loads(corpus_bytes), json.loads(case_bytes)
+    validate_data(corpus, cases)
+    return (
+        corpus,
+        cases,
+        {
+            CORPUS_FILE.name: hashlib.sha256(corpus_bytes).hexdigest(),
+            CASES_FILE.name: hashlib.sha256(case_bytes).hexdigest(),
+        },
+    )
+
+
 def load_data() -> tuple[list[dict], list[dict]]:
-    if not CORPUS_FILE.exists() or not CASES_FILE.exists():
-        raise SystemExit("缺少冻结数据；先运行：uv run python evals/generate_retrieval_data.py")
-    corpus = json.loads(CORPUS_FILE.read_text(encoding="utf-8"))
-    cases = json.loads(CASES_FILE.read_text(encoding="utf-8"))
+    corpus, cases, _ = _read_frozen_data()
     return corpus, cases
 
 
-def evaluate(ids: list[str], retrievers: dict, cases: list[dict]) -> dict:
-    results: dict[str, dict] = {}
-    for name, retriever in retrievers.items():
-        p3 = p5 = 0
-        mrr = 0.0
-        per_category: dict[str, list[bool]] = {}
-        failures = []
-        for case in cases:
-            target_ids = {ids[t] for t in case.get("targets") or [case["target"]]}
-            hits = retriever.search(case["query"], 10)
-            ranks = [i + 1 for i, hit in enumerate(hits) if hit.id in target_ids]
-            rank = min(ranks) if ranks else None
-            ok3 = rank is not None and rank <= 3
-            ok5 = rank is not None and rank <= 5
-            p3 += ok3
-            p5 += ok5
-            mrr += 1.0 / rank if rank else 0.0
-            per_category.setdefault(case["category"], []).append(ok3)
-            if not ok3:
-                top = hits[0].text[:36].replace("\n", " ") if hits else "无结果"
-                failures.append(f"  [{case['category']}] {case['query']} → {top}")
-        results[name] = {
-            "p3": p3 / len(cases),
-            "p5": p5 / len(cases),
-            "mrr": mrr / len(cases),
-            "per_category": per_category,
-            "failures": failures,
-        }
-    return results
+def run(root: Path, *, keyword_only: bool) -> dict:
+    with eval_environment(root):
+        return _run(root, keyword_only=keyword_only)
+
+
+def _run(root: Path, *, keyword_only: bool) -> dict:
+    corpus, cases, hashes = _read_frozen_data()
+    method = "keyword" if keyword_only else "hybrid"
+    config = Config(
+        vault=root / "vault",
+        runtime=str(root / "runtime"),
+        retrieval=RetrievalConfig(
+            method=method,
+            embedding=EmbeddingConfig(backend="local", model=MODEL),
+        ),
+    )
+    config.search.enabled = False
+    config.fetch.providers = []
+    service = MemoryService(config)
+    if service.retrieval_mode != method:
+        raise RuntimeError(f"Requested {method}, got {service.retrieval_mode}. Check local-embed.")
+    ids = seed(service, corpus)
+    retriever = service.retriever
+    vector = None if keyword_only else retriever.vector
+    with guard_vector(vector) as check:
+        retrievers = {"keyword": retriever}
+        if not keyword_only:
+            vector.sync()
+            check()
+            retrievers = {"keyword": retriever.keyword, "vector": vector, "hybrid": retriever}
+
+        results = {}
+        for name, engine in retrievers.items():
+
+            def raw_search(query, limit, engine=engine):
+                hits = engine.search(query, limit)
+                check()
+                return RankedResults([hit.id for hit in hits])
+
+            results[f"raw_{name}"] = paired_evaluation(cases, ids, raw_search)
+
+        session = SessionStore(service.paths).create()
+        frozen_text = {ident: item["text"] for ident, item in zip(ids, corpus, strict=True)}
+        tool_registries = {}
+        packaged_default = config.retrieval.default_limit
+
+        def chat_search(query, limit):
+            # Both arms exercise an omitted limit. Build each schema with its respective
+            # in-memory default; no configuration file is written.
+            config.retrieval.default_limit = limit
+            try:
+                if limit not in tool_registries:
+                    tool_registries[limit] = build_tools(service, session)
+                result = tool_search(tool_registries[limit], query, frozen_text)
+                check()
+                return result
+            finally:
+                config.retrieval.default_limit = packaged_default
+
+        results[f"recall_tool_{method}"] = paired_evaluation(cases, ids, chat_search)
+    return {
+        "schema_version": 1,
+        "corpus_size": len(corpus),
+        "question_count": len(cases),
+        "multi_target_questions": sum("targets" in case for case in cases),
+        "dataset_sha256": hashes,
+        "environment": run_metadata(method),
+        "embedding_model": None if keyword_only else MODEL,
+        "limits": list(LIMITS),
+        "packaged_tool_default": packaged_default,
+        "tested_tool_defaults": list(LIMITS),
+        "tool_limit_argument": {str(k): "omitted" for k in LIMITS},
+        "score_scope": (
+            "One vote per frozen question. First matching target ID wins, including any "
+            "alternative for multi-target fields. Labels indicate retrieval, not answer correctness. "
+            "All questions have at least one labeled target."
+        ),
+        "token_scope": (
+            "estimate_tokens on serialized recall tool message content only. Excludes system "
+            "prompt, tool schemas, conversation history and output. No LLM calls or query rewrite."
+        ),
+        "results": results,
+    }
+
+
+def print_report(report: dict, failures: bool) -> None:
+    print(f"{report['corpus_size']} synthetic records; {report['question_count']} questions.")
+    for name, result in report["results"].items():
+        for limit in LIMITS:
+            stats = result["metrics"][str(limit)]
+            counts = " ".join(
+                f"{k}={n}/{stats['questions']}" for k, n in stats["hit_counts"].items()
+            )
+            print(f"{name} k={limit}  {counts}  MRR@{limit}={stats[f'MRR@{limit}']:.3f}", end="")
+            if "mean_tool_tokens" in stats:
+                print(f"  mean_tool_tokens={stats['mean_tool_tokens']:.1f}", end="")
+            print()
+        print("  paired:", json.dumps(result["paired"]))
+        if failures:
+            for row in result["cases"]:
+                rank = row["runs"]["10"]["rank"]
+                if rank is None or rank > 3:
+                    print(f"  [{row['category']}] {row['query']} (rank at k=10: {rank})")
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="检索评测（LLM生成并冻结的合成语料）")
-    parser.add_argument("--keyword", action="store_true", help="只跑 BM25（离线）")
-    parser.add_argument("--failures", action="store_true", help="打印未过 @3 的用例")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--keyword", action="store_true", help="Only run offline keyword retrieval")
+    parser.add_argument("--failures", action="store_true", help="Show misses at rank 3 with k=10")
+    parser.add_argument("--json", metavar="PATH", help="Write per-question JSON; use - for stdout")
     args = parser.parse_args()
-
-    corpus, cases = load_data()
-
-    with tempfile.TemporaryDirectory(prefix="syvrio-eval-") as tmp:
-        vault = Path(tmp) / "vault"
-        config = Config(vault=vault, llm=LLMConfig(), retrieval=RetrievalConfig(method="keyword"))
-        service = MemoryService(config)
-        service.init_vault()
-        ids: list[str] = []
-        by_topic: dict[str, list[str]] = {}
-        for index, item in enumerate(corpus):
-            key = f"fixture-{index}"
-            ids.append(key)
-            record = render_record(
-                Core(id=key, status="active", text=item["text"]),
-                extensions=[("recorded_at", "2024-01-01T00:00:00Z")],
-            )
-            by_topic.setdefault(item["category"], []).append(record)
-        for category, records in by_topic.items():
-            path = service.store.topic_path(category)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(f"# {category}\n\n" + "\n".join(records), encoding="utf-8")
-        retrievers: dict = {"keyword": KeywordRetriever(service.store)}
-        if not args.keyword:
-            if not LocalEmbedder.available():
-                raise SystemExit(
-                    "未安装 local-embed extra，先用 --keyword 或 uv sync --extra local-embed"
-                )
-            embedder = LocalEmbedder("BAAI/bge-small-zh-v1.5")
-            vector = VectorRetriever(service.store, embedder)
-            retrievers["vector"] = vector
-            retrievers["hybrid"] = _hybrid(service, vector)
-
-        results = evaluate(ids, retrievers, cases)
-        print(f"{'':<10}{'Recall@3':>10}{'Recall@5':>10}{'MRR@10':>9}")
-        for name, r in results.items():
-            print(f"{name:<10}{r['p3']:>9.0%}{r['p5']:>10.0%}{r['mrr']:>9.3f}")
-        print("\n分类 Recall@3：")
-        print(f"{'':<8}" + "".join(f"{name:>10}" for name in results))
-        categories = [c["category"] for c in cases]
-        for category in dict.fromkeys(categories):
-            line = f"{category:<8}"
-            for _name, r in results.items():
-                rows = r["per_category"][category]
-                line += f"{sum(rows) / len(rows):>10.0%}"
-            print(line)
-        if args.failures:
-            for name, r in results.items():
-                if r["failures"]:
-                    print(f"\n{name} 未过 @3：")
-                    print("\n".join(r["failures"]))
-
-
-def _hybrid(service: MemoryService, vector: VectorRetriever):
-    from syvrio.retrieval import HybridRetriever
-
-    return HybridRetriever(KeywordRetriever(service.store), vector)
+    with TemporaryDirectory(prefix="syvrio-eval-") as directory:
+        report = run(Path(directory), keyword_only=args.keyword)
+    if args.json != "-":
+        print_report(report, args.failures)
+    if args.json:
+        payload = json.dumps(report, ensure_ascii=False, indent=2) + "\n"
+        if args.json == "-":
+            print(payload, end="")
+        else:
+            Path(args.json).write_text(payload, encoding="utf-8")
 
 
 if __name__ == "__main__":

@@ -7,9 +7,17 @@ from statistics import median
 from tempfile import TemporaryDirectory
 from time import perf_counter
 
-from syvrio.infra.config import Config
 from syvrio.memory.schema import Core, render_record
 from syvrio.memory.service import MemoryService
+
+if __name__ == "__main__" and not __package__:
+    from retrieval_fixture import guard_vector
+    from retrieval_metrics import LIMITS
+    from sandbox import eval_environment, local_hybrid_config
+else:
+    from evals.retrieval_fixture import guard_vector
+    from evals.retrieval_metrics import LIMITS
+    from evals.sandbox import eval_environment, local_hybrid_config
 
 FIELDS = (
     ("port", "端口：4826"),
@@ -71,35 +79,53 @@ def seed(vault: Path) -> None:
 
 
 def main() -> None:
-    with TemporaryDirectory(prefix="syvrio-field-eval-") as temporary:
-        root = Path(temporary)
-        vault = root / "vault"
+    with (
+        TemporaryDirectory(prefix="syvrio-field-eval-") as temporary,
+        eval_environment(Path(temporary)) as vault,
+    ):
         seed(vault)
-        service = MemoryService(Config(vault=vault, runtime=str(root / "runtime")))
+        service = MemoryService(local_hybrid_config(vault))
         if service.retrieval_mode != "hybrid":
             raise SystemExit("requires local-embed and its configured model")
-        service.retriever.vector.sync()
-        if service.retriever.vector.degraded:
-            raise SystemExit("local embedding could not build the index")
-        ranks = []
-        durations = []
-        nested_first = 0
+        with guard_vector(service.retriever.vector):
+            service.retriever.vector.sync()
+        ids = {entry.id for entry in service.current_facts()}
+        if not {expected for expected, _ in CASES}.union(NESTED_LABELS.values()) <= ids:
+            raise ValueError("Field lookup fixture is missing an expected record")
+        print(f"records={len(ids)}")
+        for limit in LIMITS:
+            service.config.retrieval.default_limit = limit
+            measure(service)
+
+
+def measure(service: MemoryService) -> None:
+    depth = service.config.retrieval.default_limit
+    ranks = []
+    durations = []
+    nested_first = 0
+    with guard_vector(service.retriever.vector) as check:
         for expected, query in CASES:
             start = perf_counter()
-            hits = service.recall(query, 10)
+            hits = service.recall(query)
             durations.append((perf_counter() - start) * 1000)
+            check()
+            if len(hits) > depth:
+                raise ValueError(f"Field lookup returned more than its configured limit of {depth}")
             rank = next((i for i, hit in enumerate(hits, 1) if hit.id == expected), None)
             winner = hits[0].id if hits else ""
             ranks.append(rank)
             nested_first += winner == NESTED_LABELS.get(expected)
-            print(f"{expected}: rank={rank} first={winner}")
-        print(
-            f"records={len(service.current_facts())} "
-            f"hit@1={sum(rank == 1 for rank in ranks)}/{len(ranks)} "
-            f"hit@3={sum(rank is not None and rank <= 3 for rank in ranks)}/{len(ranks)} "
-            f"nested_label_first={nested_first}/{len(NESTED_LABELS)} "
-            f"median_ms={median(durations):.1f}"
-        )
+            print(f"default_limit={depth} {expected}: rank={rank} first={winner}")
+    returned_hits = sum(rank is not None for rank in ranks)
+    print(
+        f"default_limit={depth} cases={len(ranks)} "
+        f"hit@1={sum(rank == 1 for rank in ranks)}/{len(ranks)} "
+        f"hit@3={sum(rank is not None and rank <= 3 for rank in ranks)}/{len(ranks)} "
+        f"returned_hit={returned_hits}/{len(ranks)} "
+        f"mrr@{depth}={sum(1 / r for r in ranks if r is not None) / len(ranks):.4f} "
+        f"nested_label_first={nested_first}/{len(NESTED_LABELS)} "
+        f"median_ms={median(durations):.1f}"
+    )
 
 
 if __name__ == "__main__":

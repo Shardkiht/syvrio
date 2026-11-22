@@ -9,6 +9,11 @@ from syvrio.infra.config import Config, RetrievalConfig
 from syvrio.memory.extractor import StaticExtractor, parse_extraction
 from syvrio.memory.service import MemoryService
 
+if __name__ == "__main__" and not __package__:
+    from sandbox import eval_environment
+else:
+    from evals.sandbox import eval_environment
+
 
 @dataclass(frozen=True)
 class Case:
@@ -71,8 +76,13 @@ CASES = [
 ]
 
 
-def run_case(case: Case, vault: Path) -> str | None:
-    service = MemoryService(Config(vault=vault, retrieval=RetrievalConfig(method="keyword")))
+def run_case(case: Case, root: Path) -> str | None:
+    with eval_environment(root) as vault:
+        service = MemoryService(Config(vault=vault, retrieval=RetrievalConfig(method="keyword")))
+        return _check_candidate(case, service)
+
+
+def _check_candidate(case: Case, service: MemoryService) -> str | None:
     seed = service.note(case.seed, topic="synthetic") if case.seed else None
     candidate = {
         "text": case.text,
@@ -116,15 +126,21 @@ def main() -> int:
     for name, error in failures:
         print(f"失败：{name}：{error}")
     print("固定模型输出；不调用真实模型，不衡量自然语言语义抽取效果。")
+    print("结构化过滤契约：已知时间、地点或情绪条件，最多返回 5 条。")
     print(json.dumps(metrics, ensure_ascii=False))
-    return 1 if failures else 0
+    return int(bool(failures) or metrics["contextual"]["Recall@1"] != 1.0)
 
 
-def run_contextual_eval(vault: Path) -> dict:
+def run_contextual_eval(root: Path) -> dict:
     """小型合成对照，比较不带上下文的关键词检索与明确时间/地点/情绪条件。"""
+    with eval_environment(root) as vault:
+        service = MemoryService(Config(vault=vault, retrieval=RetrievalConfig(method="keyword")))
+        return _check_filters(service)
+
+
+def _check_filters(service: MemoryService) -> dict:
     from syvrio.memory.models import MemoryContext, MemoryDraft
 
-    service = MemoryService(Config(vault=vault, retrieval=RetrievalConfig(method="keyword")))
     old = service.store.append(
         "preferences", "合成偏好早期状态", context=MemoryContext(valid_from="2020-01-01")
     )
@@ -164,7 +180,7 @@ def run_contextual_eval(vault: Path) -> dict:
         ("合成展览", {"emotion": "怀念"}, target.id),
         ("合成展览", {"emotion": "遗憾"}, other.id),
     ]
-    result = {"cases": len(cases)}
+    result = {"cases": len(cases), "limit": 5}
     for name in ("baseline", "contextual"):
         ranks = []
         for query, filters, expected in cases:
