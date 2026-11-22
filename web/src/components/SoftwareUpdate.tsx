@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { api, ApiError } from '../api/client';
 import type { UpdateCheck, UpdateStatus } from '../types';
@@ -7,7 +7,9 @@ import { ConfirmDialog } from './CommandUI';
 const POLL_INTERVAL = 2000;
 const RECONNECT_TIMEOUT = 120_000;
 
-export function SoftwareUpdate({ version, onChanged }: { version?: string; onChanged: () => void }) {
+export function SoftwareUpdate({ version, onChanged, checkOnOpen = false }: {
+  version?: string; onChanged: () => void; checkOnOpen?: boolean;
+}) {
   const [release, setRelease] = useState<UpdateCheck | null>(null);
   const [busy, setBusy] = useState<'status' | 'check' | 'install' | null>('status');
   const [running, setRunning] = useState(false);
@@ -19,7 +21,35 @@ export function SoftwareUpdate({ version, onChanged }: { version?: string; onCha
   const changed = useRef(onChanged);
   useEffect(() => { changed.current = onChanged; }, [onChanged]);
 
-  // Recover the job on reopening About. Only an explicit check contacts PyPI.
+  const watchUpdate = useCallback(() => {
+    setRunning(true);
+    setWatch(sequence => sequence + 1);
+  }, []);
+
+  const check = useCallback(async (signal?: AbortSignal) => {
+    setBusy('check');
+    setRelease(null);
+    setCanReload(false);
+    setMessage('');
+    try {
+      const result = await api.checkUpdate(signal);
+      if (signal?.aborted) return;
+      setRelease(result);
+      if (result.state === 'running') {
+        setMessage(result.message);
+        watchUpdate();
+      }
+      else if (!result.available) setMessage('You’re up to date.');
+      else if (result.managed) setMessage(`Syvrio ${result.latest} is available.`);
+      else setMessage(`Syvrio ${result.latest} is available. Update with your package manager.`);
+    } catch (error) {
+      if (!signal?.aborted) setMessage(error instanceof Error ? error.message : 'Could not check for updates.');
+    } finally {
+      if (!signal?.aborted) setBusy(null);
+    }
+  }, [watchUpdate]);
+
+  // Restore any running job first. Opening About manually only reads local status.
   useEffect(() => {
     const controller = new AbortController();
     let timer: number;
@@ -54,6 +84,8 @@ export function SoftwareUpdate({ version, onChanged }: { version?: string; onCha
         setRunning(true);
         setMessage(status.message || 'Installing the update…');
         timer = window.setTimeout(poll, POLL_INTERVAL);
+      } else if (checkOnOpen && !tracking) {
+        await check(controller.signal);
       } else if (status.state !== 'idle' || tracking) {
         setMessage(status.message || 'No active update. Check again for the installed version.');
         setRelease(null);
@@ -64,34 +96,7 @@ export function SoftwareUpdate({ version, onChanged }: { version?: string; onCha
     };
     void poll();
     return () => { controller.abort(); window.clearTimeout(timer); };
-  }, [watch]);
-
-  const watchUpdate = () => {
-    setRunning(true);
-    setWatch(sequence => sequence + 1);
-  };
-
-  const check = async () => {
-    setBusy('check');
-    setRelease(null);
-    setCanReload(false);
-    setMessage('');
-    try {
-      const result = await api.checkUpdate();
-      setRelease(result);
-      if (result.state === 'running') {
-        setMessage(result.message);
-        watchUpdate();
-      }
-      else if (!result.available) setMessage('You’re up to date.');
-      else if (result.managed) setMessage(`Syvrio ${result.latest} is available.`);
-      else setMessage(`Syvrio ${result.latest} is available. Update with your package manager.`);
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Could not check for updates.');
-    } finally {
-      setBusy(null);
-    }
-  };
+  }, [watch, checkOnOpen, check]);
 
   const install = async () => {
     if (!release || !confirm) return;

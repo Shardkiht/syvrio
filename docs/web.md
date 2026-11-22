@@ -369,7 +369,7 @@ uv run python scripts/build_web.py --check  # 校验已暂存静态资源
 
 ## PyPI 自动更新
 
-在 **Settings → About → Check for updates** 检查 PyPI 上的正式版。TUI 提供 `/update`。界面显示当前版本和可用版本；受管理的安装可以确认目标版本，启动独立的 systemd 用户任务执行更新。升级会保留旧环境已安装的本地向量检索和文档解析组件。服务准备重启时会检查所有会话的活动请求，忙时可稍后重试。重启期间连接可能暂时中断，可在服务恢复后重新打开更新界面查看结果。直接监听局域网地址的 Web 网关只提供版本检查；确认安装可使用本机 TUI、本机环回网关或带 GitHub 登录的 ngrok 共享入口。
+在 Web 或 TUI 输入 `/update` 可立即检查 PyPI 正式版。手动打开 Web 的 **Settings → About** 时，点击 **Check for updates** 开始检查。界面显示当前版本和可用版本；受管理的安装可以确认目标版本，启动独立的 systemd 用户任务执行更新。升级会保留旧环境已安装的本地向量检索和文档解析组件。服务准备重启时会检查所有会话的活动请求，忙时可稍后重试。重启期间连接可能暂时中断，可在服务恢复后重新打开更新界面查看结果。直接监听局域网地址的 Web 网关只提供版本检查；确认安装可使用本机 TUI、本机环回网关或带 GitHub 登录的 ngrok 共享入口。
 
 `syvrio update` 切换由 Linux/WSL 用户级 systemd 管理的 Web 服务。需要本机已装有 Python ≥ 3.12（任意补丁版本即可，不要求 3.12）、`uv`、可访问的用户 systemd 实例以及带 Web 资源的 PyPI wheel。
 

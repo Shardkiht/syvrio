@@ -10,6 +10,19 @@ const release = {
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 
 describe('software update', () => {
+  it('reports the latest version without offering installation when /update finds no upgrade', async () => {
+    vi.spyOn(api, 'updateStatus').mockResolvedValue({ state: 'idle', message: '' });
+    const check = vi.spyOn(api, 'checkUpdate').mockResolvedValue({
+      ...release, latest: release.current, available: false,
+    });
+    const install = vi.spyOn(api, 'installUpdate');
+    render(<SoftwareUpdate version={release.current} onChanged={vi.fn()} checkOnOpen />);
+    expect(await screen.findByText('You’re up to date.')).toBeTruthy();
+    expect(check).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('button', { name: /install/i })).toBeNull();
+    expect(install).not.toHaveBeenCalled();
+  });
+
   it('checks explicitly and reconciles a lost confirmation receipt without resending', async () => {
     const status = vi.spyOn(api, 'updateStatus').mockResolvedValue({ state: 'idle', message: '' });
     const check = vi.spyOn(api, 'checkUpdate').mockResolvedValue(release);
