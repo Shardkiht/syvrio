@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import configparser
 import tarfile
-import tomllib
 import zipfile
+from email.parser import BytesHeaderParser
 from pathlib import Path
+from runpy import run_path
 
 ROOT = Path(__file__).resolve().parents[1]
 LEGACY_PACKAGES = {"quiet_memo", "quietmemo"}
@@ -25,6 +26,9 @@ def verify_distributions(directory: Path, version: str) -> None:
         raise ValueError(f"Expected {wheel} and {sdist}, found {sorted(packages)}")
 
     with zipfile.ZipFile(directory / wheel) as archive:
+        metadata = archive.read(f"{stem}.dist-info/METADATA")
+        if BytesHeaderParser().parsebytes(metadata)["Version"] != version:
+            raise ValueError("Wheel metadata version must match the source version")
         names = archive.namelist()
         if "syvrio/__init__.py" not in names or any(
             name.split("/", 1)[0] in LEGACY_PACKAGES for name in names
@@ -44,6 +48,9 @@ def verify_distributions(directory: Path, version: str) -> None:
             raise ValueError("Wheel must expose only the syvrio console script")
 
     with tarfile.open(directory / sdist, "r:gz") as archive:
+        with archive.extractfile(f"{stem}/PKG-INFO") as metadata_file:
+            if BytesHeaderParser().parse(metadata_file)["Version"] != version:
+                raise ValueError("Source package metadata version must match the source version")
         names = archive.getnames()
         source = f"{stem}/src/"
         if source + "syvrio/__init__.py" not in names or any(
@@ -55,9 +62,16 @@ def verify_distributions(directory: Path, version: str) -> None:
 
 
 if __name__ == "__main__":
-    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    version = run_path(str(ROOT / "src/syvrio/__init__.py"))["__version__"]
     try:
-        verify_distributions(ROOT / "dist", project["version"])
-    except (OSError, ValueError, zipfile.BadZipFile, tarfile.TarError, configparser.Error) as exc:
+        verify_distributions(ROOT / "dist", version)
+    except (
+        OSError,
+        ValueError,
+        KeyError,
+        zipfile.BadZipFile,
+        tarfile.TarError,
+        configparser.Error,
+    ) as exc:
         raise SystemExit(f"Invalid distribution: {exc}") from exc
-    print(f"Validated Syvrio {project['version']} wheel and source distribution")
+    print(f"Validated Syvrio {version} wheel and source distribution")
