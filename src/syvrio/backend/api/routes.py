@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 import re
 import secrets
+import subprocess
 from uuid import UUID
 
+import httpx
 from fastapi import FastAPI, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -15,11 +17,13 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.formparsers import MultiPartException, MultiPartParser
 from starlette.types import Lifespan
 
+from ...application import software_update
 from ...application.commands import parse_command
 from ...errors import ConversationError
 from ...infra.attachments import MAX_BATCH_BYTES, MAX_FILES, AttachmentBatch
 from ...infra.diagnostics import record_event
 from ...infra.documents import DocumentError
+from ...infra.update import UpdateError
 from .channel import HISTORY_ITEM_LIMIT, APIChannel, APIError
 from .http import error_response, guard_hosts
 from .models import (
@@ -43,6 +47,9 @@ from .models import (
     SessionListResponse,
     SwitchSessionHistoryResponse,
     SwitchSessionResponse,
+    UpdateCheckResponse,
+    UpdateJobResponse,
+    UpdateRequest,
 )
 from .views import ClientViews
 
@@ -77,6 +84,7 @@ def create_api(
         description="Shared API for clients of the local Syvrio backend.",
         lifespan=lifespan,
     )
+    instance_id = secrets.token_hex(16)
 
     guard_hosts(app, host, allowed_hosts)
 
@@ -109,9 +117,11 @@ def create_api(
     if resident_token:
         from ..mcp_writes import MCPWrites
         from ..operations import ResidentOperations
+        from .update_admission import UpdateAdmission
 
         operations = ResidentOperations(owner)
         mcp_writes = MCPWrites(owner._service)
+        admission = UpdateAdmission(app, lambda: owner.directory.busy)
 
         def authenticate(request: Request) -> None:
             supplied = request.headers.get("x-syvrio-token", "")
@@ -121,11 +131,20 @@ def create_api(
         @app.get("/api/resident", include_in_schema=False)
         def resident_info(request: Request):
             authenticate(request)
-            return {"protocol": 1}
+            return {"protocol": 1, "instance": instance_id}
 
         @app.post("/api/resident/{operation}", include_in_schema=False)
         def local_operation(request: Request, operation: str, body: dict):
             authenticate(request)
+            if operation in {"update_drain", "update_resume"}:
+                ticket = body.get("ticket")
+                if not isinstance(ticket, str) or not re.fullmatch(r"[0-9a-f]{32}", ticket):
+                    raise APIError("invalid_request", "Invalid update ticket.", 422)
+                if operation == "update_drain":
+                    admission.reserve(ticket)
+                else:
+                    admission.release(ticket)
+                return {"ok": True}
             if operation == "shutdown":
                 request.app.state.stop_resident()
                 return {"stopping": True}
@@ -141,6 +160,62 @@ def create_api(
     @app.get("/api/health", response_model=HealthResponse, tags=["web"])
     async def health(request: Request):
         return channel(request).health(static_ready=static_ready)
+
+    def update_operation(function, *args):
+        try:
+            return function(*args)
+        except UpdateError as exc:
+            record_event("update.failed", exc)
+            if exc.stage in {"unmanaged", "busy"}:
+                raise APIError(f"update_{exc.stage}", str(exc), 409) from exc
+            raise APIError("update_error", "Check the managed update configuration.", 400) from exc
+        except (
+            ValueError,
+            KeyError,
+            TypeError,
+            OSError,
+            subprocess.SubprocessError,
+            httpx.HTTPError,
+        ) as exc:
+            record_event("update.failed", exc)
+            raise APIError(
+                "update_unavailable", "Software update service unavailable.", 503
+            ) from exc
+
+    @app.get("/api/update", response_model=UpdateCheckResponse, tags=["updates"])
+    def check_update(request: Request):
+        data = update_operation(software_update.check)
+        supplied = request.headers.get("x-syvrio-token", "")
+        data["managed"] = (
+            data["managed"]
+            and bool(resident_token)
+            and secrets.compare_digest(supplied.encode(), resident_token.encode())
+        )
+        return data
+
+    @app.get("/api/update/status", response_model=UpdateJobResponse, tags=["updates"])
+    def update_status():
+        return update_operation(software_update.status)
+
+    @app.get("/api/update/instance", include_in_schema=False)
+    def update_instance():
+        return {"instance": instance_id, "busy": owner.directory.busy}
+
+    @app.post("/api/update", status_code=202, response_model=UpdateJobResponse, tags=["updates"])
+    def start_update(request: Request, body: UpdateRequest):
+        if not resident_token:
+            raise APIError("forbidden", "A managed resident is required.", 403)
+        authenticate(request)
+        if (
+            request.headers.get("content-type", "").partition(";")[0].strip().lower()
+            != "application/json"
+        ):
+            raise APIError("invalid_request", "Send a JSON confirmation.", 415)
+        if not body.confirmed or not re.fullmatch(r"\d{1,10}\.\d{1,10}\.\d{1,10}", body.version):
+            raise APIError("invalid_update", "Confirm a specific stable release.", 422)
+        if owner.directory.busy:
+            raise APIError("update_busy", "Wait for all replies to finish before updating.", 409)
+        return update_operation(software_update.start, body.version, owner._service.paths)
 
     @app.get("/api/context-usage", response_model=ContextUsageResponse, tags=["web"])
     async def context_usage(request: Request, session_id: str | None = None):

@@ -1,65 +1,13 @@
-import { useEffect, useLayoutEffect, useRef, useState, type RefObject, type CSSProperties, type KeyboardEvent } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type MutableRefObject, type RefObject, type KeyboardEvent } from 'react';
 import { isCommandLine, suggestionsFor, type Suggestion } from '../state/commands';
 import { isComposing } from '../state/shortcuts';
 import type { CommandInfo, CompactionPhase, ContextUsage } from '../types';
+import { ContextMeter, type MeterReading } from './ContextMeter';
 import { CommandSuggestions } from './CommandUI';
-import { ArrowUpIcon, PlusIcon, StopIcon } from './Icons';
+import { ArrowUpIcon, FileIcon, PlusIcon, StopIcon } from './Icons';
 
 /** Starter commands shown under the home composer, in display order. */
 const STARTER_COMMANDS = ['model', 'status', 'help', 'sessions'];
-const compactTokens = new Intl.NumberFormat('en', { notation: 'compact' });
-
-const COMPACTION_LABEL = {
-  running: 'Compressing context…',
-  done: 'Context compressed',
-  failed: 'Context compression failed',
-};
-
-function ContextMeter({ usage, compaction }: { usage: ContextUsage | null; compaction: CompactionPhase | null }) {
-  const [open, setOpen] = useState(false);
-  const ratio = usage && usage.limit > 0 ? usage.used / usage.limit : 0;
-  const percent = Math.min(100, ratio * 100);
-  const share = percent > 0 && percent < 1 ? '<1%' : `${Math.floor(percent)}%`;
-  const parts = usage ? compactTokens.formatToParts(usage.used) : [];
-  const amount = usage ? parts.filter(part => part.type !== 'compact').map(part => part.value).join('') : '—';
-  const unit = parts.find(part => part.type === 'compact')?.value.toLowerCase();
-  const nearLimit = usage !== null && ratio >= usage.compact_threshold;
-  const waveCeiling = compaction === 'running' ? 99 : 85;
-  const detail = usage
-    ? `${usage.used.toLocaleString()} / ${usage.limit.toLocaleString()} tokens (${share})`
-    : 'Estimate unavailable';
-  return (
-    <div className={`context-meter${open ? ' expanded' : ''}`} data-compaction={compaction ?? undefined}>
-      <button type="button" className="context-dial" aria-expanded={open}
-        aria-label={`Context estimate: ${detail}`}
-        data-fill={percent === 0 ? 'empty' : percent === 100 ? 'full' : 'partial'}
-        data-wave={percent >= 10 && percent <= waveCeiling ? 'moving' : 'still'}
-        style={{ '--context-fill': `${percent}%` } as CSSProperties}
-        onClick={() => setOpen((value) => !value)}
-        onBlur={() => setOpen(false)}
-        onKeyDown={(event) => {
-          if (!open || event.key !== 'Escape' || isComposing(event)) return;
-          event.preventDefault();
-          event.stopPropagation();
-          setOpen(false);
-        }}>
-        <svg className="context-ring" viewBox="0 0 32 32" fill="none" aria-hidden="true" focusable="false">
-          <circle cx="16" cy="16" r="15" stroke="currentColor" strokeWidth="2" />
-        </svg>
-        <span className="context-value" aria-hidden="true">
-          {amount}{unit && <small>{unit}</small>}
-        </span>
-      </button>
-      <div className="context-detail" aria-hidden="true">
-        <strong>{compaction ? COMPACTION_LABEL[compaction] : 'Context estimate'}</strong>
-        <span>{detail}</span>
-        {nearLimit && <span className="context-warning">Near the compaction threshold</span>}
-      </div>
-      {compaction && <span className="sr-only" role="status">{COMPACTION_LABEL[compaction]}</span>}
-    </div>
-  );
-}
-
 export type ComposerDraft = { text: string; files: File[] };
 
 export function Composer({
@@ -69,7 +17,8 @@ export function Composer({
   checkingSelection = false,
   onSendAfterSelection,
   progress,
-  contextUsage = null,
+  contextUsage,
+  meterReading,
   compaction = null,
   pickerRef,
   openFiles,
@@ -92,6 +41,7 @@ export function Composer({
   onSendAfterSelection?: (text: string, files: readonly File[], handedOff: () => void) => Promise<void>;
   progress: string;
   contextUsage?: ContextUsage | null;
+  meterReading?: MutableRefObject<MeterReading | null>;
   compaction?: CompactionPhase | null;
   pickerRef?: RefObject<HTMLInputElement>;
   openFiles?: () => void;
@@ -129,6 +79,7 @@ export function Composer({
   const [index, setIndex] = useState(0);
   const [dismissed, setDismissed] = useState(false);
   const ref = useRef<HTMLTextAreaElement>(null);
+  const lastFocusSignal = useRef(focusSignal);
 
   // `rows={3}` gives the textarea its intrinsic three-line height; this effect
   // only grows it past that. `overflow-y` is driven by the same measurement so
@@ -165,7 +116,10 @@ export function Composer({
   }, [value]);
 
   useEffect(() => {
-    if (focusSignal > 0) ref.current?.focus();
+    if (focusSignal !== lastFocusSignal.current) {
+      lastFocusSignal.current = focusSignal;
+      ref.current?.focus({ preventScroll: true });
+    }
   }, [focusSignal]);
 
   useEffect(() => {
@@ -338,11 +292,27 @@ export function Composer({
                 setFileError('Choose up to 8 non-empty files, 20 MiB each and 40 MiB total.');
               } else { setFiles(next); setFileError(''); }
             }} />
-          {files.length > 0 && <div className="attachment-list" aria-label="Attachments">
-            {files.map((file, i) => <button type="button" key={i}
-              disabled={waitingToSend} aria-label={`Remove ${file.name}`}
-              onClick={() => setFiles(files.filter((_, index) => index !== i))}>{file.name} ×</button>)}
-          </div>}
+          {files.length > 0 && (
+            <ul className="attachment-list" aria-label="Attachments">
+              {files.map((file, index) => {
+                const extension = file.name.match(/^.+(\.[a-z0-9]{1,10})$/i)?.[1] ?? '';
+                const stem = file.name.slice(0, file.name.length - extension.length);
+                return (
+                  <li className="attachment-preview" key={index}>
+                    <FileIcon size={18} />
+                    <span className="attachment-name" title={file.name}>
+                      <bdi className="attachment-stem">{stem}</bdi>{extension}
+                    </span>
+                    <button type="button" className="attachment-remove" disabled={waitingToSend}
+                      aria-label={`Remove ${file.name}`}
+                      onClick={() => setFiles(current => current.filter((_, position) => position !== index))}>
+                      <span aria-hidden="true">×</span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
           {fileError && <div role="alert">{fileError}</div>}
           <textarea
             ref={ref}
@@ -380,7 +350,7 @@ export function Composer({
                     title="Send after the current reply (Enter)">Queue</button>
                 </>
               )}
-              <ContextMeter usage={contextUsage} compaction={compaction} />
+              <ContextMeter reading={meterReading} usage={contextUsage} compaction={compaction} />
               <button type="button" className={busy ? 'stop' : 'send'} onClick={busy ? onStop : submit}
                 disabled={waitingToSend || (checkingSelection && (!onSendAfterSelection || busy || commandDraft)) || (!busy && !hasDraft)}
                 aria-label={busy ? 'Stop' : 'Send'} title={busy ? 'Stop generating' : 'Send'}>
@@ -399,7 +369,7 @@ export function Composer({
           ))}
         </div>
       )}
-      <div className="composer-hint">{waitingToSend ? 'Waiting to send…' : checkingSelection ? 'Confirming current chat…' : 'Enter to send or queue · Ctrl+Enter to insert · Shift+Enter for a new line'}</div>
+      <div className="composer-hint">{waitingToSend ? 'Waiting to send…' : 'Enter to send or queue · Ctrl+Enter to insert'}</div>
     </div>
   );
 }

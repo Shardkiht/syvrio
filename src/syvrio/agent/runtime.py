@@ -624,17 +624,22 @@ class AgentRuntime:
     ) -> list[str]:
         if self.session is None:
             return ["This session has no records to compact."]
-        plan = self.turn_settings().context.prepare(
+        context = self.turn_settings().context
+        plan = context.prepare(
             self.current,
             self._system_prompt(),
             "",
-            force=True,
             on_compaction=on_compaction,
+            tool_tokens=self._ordinary_tool_tokens(self.current),
         )
-        events = list(plan.events)
-        if not events:
-            events.append("No earlier records to compact.")
-        return events
+        if plan.compacted:
+            return plan.events
+        if plan.estimated_tokens < context.trigger_tokens:
+            return [
+                f"Context usage is {plan.estimated_tokens:,} tokens. "
+                f"Compaction starts at {context.trigger_tokens:,} tokens."
+            ]
+        return ["There is no new conversation history to summarize."]
 
     def _request_distillation(self, session_id: str, through: str | None) -> None:
         if self.on_distillation is not None and through is not None:
@@ -689,6 +694,11 @@ class AgentRuntime:
         return self.estimate_usage(self.session)
 
     def estimate_usage(self, session: Session) -> int:
+        return self.context.estimate_usage(
+            session, self._system_prompt(), self._ordinary_tool_tokens(session)
+        )
+
+    def _ordinary_tool_tokens(self, session: Session) -> int:
         # Attachments and file tools are scoped to a single input. An idle
         # session's meter estimates its next ordinary request.
         settings = self._tool_settings()
@@ -696,7 +706,7 @@ class AgentRuntime:
         if cached is None or cached[0] != settings:
             tools = build_tools(self.service, session, timeout=self.config.tool_timeout)
             cached = self._meter_tools = settings, estimate_tool_tokens(tools.schemas())
-        return self.context.estimate_usage(session, self._system_prompt(), cached[1])
+        return cached[1]
 
     def _tool_settings(self) -> tuple[dict, dict]:
         config = self.service.config

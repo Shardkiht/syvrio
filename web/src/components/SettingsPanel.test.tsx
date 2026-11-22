@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SettingsPanel } from './SettingsPanel';
+import { SHORTCUT_HELP } from '../state/shortcuts';
 import type { CommandResponse } from '../types';
 
 const HEALTH = {
@@ -199,7 +200,10 @@ describe('settings panel', () => {
     fireEvent.click(screen.getByTestId('settings-tab-about'));
     const about = screen.getByTestId('settings-about');
     expect(about.textContent).toContain('0.4.0.dev0');
-    expect(about.textContent).toContain('Alt+S');
+    expect(about.textContent).not.toContain('Alt+S');
     expect(about.textContent).not.toMatch(/sk-/);
+    fireEvent.click(screen.getByRole('button', { name: 'Shortcuts' }));
+    const shortcuts = within(screen.getByRole('region', { name: 'Keyboard shortcuts' }));
+    for (const { keys } of SHORTCUT_HELP) expect(shortcuts.getByText(keys)).toBeTruthy();
   });
 });

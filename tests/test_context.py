@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import pytest
 
-from syvrio.agent.context import ContextManager, records_to_messages
+from syvrio.agent.context import SUMMARY_TEMPLATE, ContextManager, records_to_messages
 from syvrio.agent.session import SessionStore, new_message_id
 from syvrio.infra.config import ChatConfig, LLMConfig
 from syvrio.infra.tokens import estimate_messages_tokens
 from syvrio.llm import LLMSummarizer
+from syvrio.session import transcript
 
 pytestmark = pytest.mark.agent
 
@@ -20,7 +21,7 @@ class FakeSummarizer:
         return f"摘要-{len(self.calls)}"
 
 
-def build_session(store, repeat=3):
+def build_session(store, repeat=30):
     session = store.create()
     for index in range(6):
         store.append(
@@ -60,39 +61,77 @@ def test_prepare_under_budget_does_not_compact(tmp_path):
     assert plan.messages[-1] == {"role": "user", "content": "继续"}
 
 
-def test_small_window_compacts_with_default_recent_history_and_keeps_tool_exchange(tmp_path):
+@pytest.mark.parametrize("has_current_input", [False, True], ids=["manual", "before-reply"])
+def test_trigger_boundary_compacts_completed_history_once(tmp_path, has_current_input):
+    store = SessionStore(tmp_path)
+    session = store.create()
+    store.append(
+        session, {"type": "message", "role": "user", "id": "old", "content": "已完成的问题"}
+    )
+    store.append(session, {"type": "assistant", "id": "reply", "content": "已完成的答案"})
+    history = transcript(session.records_after_summary())
+    text = "尚未回答的问题" if has_current_input else ""
+    current_id = "now" if has_current_input else None
+    if has_current_input:
+        store.append(
+            session, {"type": "message", "role": "user", "id": current_id, "content": text}
+        )
+    summarizer = FakeSummarizer()
+    manager = ContextManager(
+        ChatConfig(context_window=1200, reserve_output_tokens=200, compact_threshold=0.8),
+        summarizer,
+        store,
+    )
+    tools_at_threshold = manager.trigger_tokens - manager.estimate_usage(session, "system")
+    below = manager.prepare(session, "system", text, current_id, tool_tokens=tools_at_threshold - 1)
+    assert below.estimated_tokens == manager.trigger_tokens - 1 and not below.compacted
+    assert not summarizer.calls and session.latest_summary() is None
+
+    plan = manager.prepare(session, "system", text, current_id, tool_tokens=tools_at_threshold)
+    assert plan.compacted and plan.evicted_records == 2 and summarizer.calls == [("", history)]
+    restored = store.load(session.id)
+    assert [record["id"] for record in restored.records_after_summary()] == (
+        ["now"] if has_current_input else []
+    )
+    again = manager.prepare(restored, "system", text, current_id, tool_tokens=tools_at_threshold)
+    assert not again.compacted and summarizer.calls == [("", history)]
+    assert again.messages == plan.messages
+    assert [m["content"] for m in plan.messages if m["role"] == "user"] == (
+        [text] if has_current_input else []
+    )
+
+
+def test_full_summary_includes_recent_tool_exchange_and_preserves_current_input(tmp_path):
     store = SessionStore(tmp_path)
     session = build_session(store, repeat=30)
     for record in [
         {"type": "message", "role": "user", "id": "previous", "content": "查询"},
         {"type": "assistant", "tool_calls": [{"id": "c1", "name": "recall"}]},
-        {"type": "tool", "tool_call_id": "c1", "content": "已找到"},
+        {"type": "tool", "name": "recall", "tool_call_id": "c1", "content": "已找到"},
         {"type": "assistant", "content": "查询完成"},
         {"type": "message", "role": "user", "id": "now", "content": "继续"},
     ]:
         store.append(session, record)
     summarizer = FakeSummarizer()
     manager = ContextManager(ChatConfig(context_window=2000), summarizer, store)
+    history = session.records_after_summary()[:-1]
+    persisted = records_to_messages(history)
 
     plan = manager.prepare(session, "系统", "继续", current_id="now", memory_context="参考")
 
-    assert plan.compacted and len(summarizer.calls) == 1
+    assert plan.compacted and plan.evicted_records == len(history)
+    assert summarizer.calls == [("", transcript(history))]
+    assert "调用工具：recall" in summarizer.calls[0][1] and "已找到" in summarizer.calls[0][1]
     assert plan.estimated_tokens == estimate_messages_tokens(plan.messages) <= manager.input_budget
-    assert plan.messages[-6:] == [
-        {"role": "user", "content": "查询"},
-        {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [
-                {"id": "c1", "type": "function", "function": {"name": "recall", "arguments": "{}"}}
-            ],
-        },
-        {"role": "tool", "tool_call_id": "c1", "content": "已找到"},
-        {"role": "assistant", "content": "查询完成"},
+    assert plan.messages == [
+        {"role": "system", "content": "系统"},
+        {"role": "system", "content": SUMMARY_TEMPLATE.format("摘要-1")},
         {"role": "user", "content": "<long_term_memory>\n参考\n</long_term_memory>"},
         {"role": "user", "content": "继续"},
     ]
-    assert len([m for m in plan.messages if m["content"] == "继续"]) == 1
+    restored = store.load(session.id)
+    assert [record["id"] for record in restored.records_after_summary()] == ["now"]
+    assert records_to_messages(restored.active_records())[:-1] == persisted
 
 
 def test_small_window_fits_long_summary_without_overwriting_it(tmp_path):
@@ -132,7 +171,7 @@ def test_small_window_bounds_recalled_text_without_splitting_its_wrapper(tmp_pat
     assert plan.messages[-1] == {"role": "user", "content": "问题"}
 
 
-def test_manual_compaction_keeps_inserted_input_with_its_root_turn(tmp_path):
+def test_compaction_summarizes_inserted_input_with_its_root_turn(tmp_path):
     store = SessionStore(tmp_path)
     session = build_session(store)
     latest = session.last_user_message_id()
@@ -146,17 +185,19 @@ def test_manual_compaction_keeps_inserted_input_with_its_root_turn(tmp_path):
             "content": "补充资料" * 180,
         },
     )
-    manager = ContextManager(ChatConfig(keep_recent_tokens=0), FakeSummarizer(), store)
-    plan = manager.prepare(session, "系统", "", force=True)
-    assert plan.compacted
-    assert [record.get("id") for record in session.records_after_summary()][0] == latest
-    assert plan.messages[-1]["content"].startswith("补充资料")
+    store.append(session, {"type": "assistant", "content": "补充资料已处理"})
+    summarizer = FakeSummarizer()
+    manager = ContextManager(ChatConfig(context_window=2000), summarizer, store)
+    expected = transcript(session.records_after_summary())
+    plan = manager.prepare(session, "系统", "")
+    assert plan.compacted and not session.records_after_summary()
+    assert summarizer.calls == [("", expected)]
+    assert expected.index("第 5 轮用户消息") < expected.index("用户：补充资料")
+    assert expected.endswith("助手：补充资料已处理")
 
 
 def test_summary_requests_cover_full_evicted_history_within_turn_budget(tmp_path, monkeypatch):
     from types import SimpleNamespace
-
-    from syvrio.session import transcript
 
     store = SessionStore(tmp_path)
     session = store.create()
@@ -269,7 +310,7 @@ def test_compaction_phases_follow_summary_persistence(tmp_path, fail):
     session = build_session(store, repeat=45)
     summarizer = FakeSummarizer()
     manager = ContextManager(
-        ChatConfig(context_window=2500, keep_recent_tokens=350, reserve_output_tokens=300),
+        ChatConfig(context_window=2500, reserve_output_tokens=300),
         summarizer,
         store,
     )
@@ -285,10 +326,10 @@ def test_compaction_phases_follow_summary_persistence(tmp_path, fail):
 
         summarizer.summarize = fail_summary
         with pytest.raises(ValueError, match="synthetic summary failure"):
-            manager.prepare(session, "system", "", force=True, on_compaction=on_compaction)
+            manager.prepare(session, "system", "", on_compaction=on_compaction)
         assert phases == [("running", False), ("failed", False)]
     else:
-        plan = manager.prepare(session, "system", "", force=True, on_compaction=on_compaction)
+        plan = manager.prepare(session, "system", "", on_compaction=on_compaction)
         assert plan.compacted
         assert phases == [("running", False), ("done", True)]
 
@@ -335,12 +376,12 @@ def test_compaction_requests_distillation_after_persisting_summary(tmp_path):
         requests.append(through)
 
     manager = ContextManager(
-        ChatConfig(context_window=1000, reserve_output_tokens=100, keep_recent_tokens=100),
+        ChatConfig(context_window=1000, reserve_output_tokens=100),
         FakeSummarizer(),
         store,
         request_distillation=request,
     )
-    plan = manager.prepare(session, "系统提示", "当前问题", current_id="current", force=True)
+    plan = manager.prepare(session, "系统提示", "当前问题", current_id="current")
     assert plan.compacted and plan.evicted_records > 0
     assert requests and "current" not in requests
     assert plan.summary.startswith("摘要-")
@@ -352,11 +393,11 @@ def test_resume_uses_persisted_summary(tmp_path):
     store = SessionStore(tmp_path)
     session = build_session(store)
     manager = ContextManager(
-        ChatConfig(context_window=800, reserve_output_tokens=100, keep_recent_tokens=100),
+        ChatConfig(context_window=800, reserve_output_tokens=100),
         FakeSummarizer(),
         store,
     )
-    manager.prepare(session, "系统提示", "触发压缩", force=True)
+    manager.prepare(session, "系统提示", "触发压缩")
 
     reloaded = store.load(session.id)
     plan = manager.prepare(reloaded, "系统提示", "下一轮")
@@ -397,31 +438,40 @@ def test_undo_invalidates_later_summary_and_compacts_against_raw_positions(tmp_p
     assert loaded.summary_text() == ""
     assert [text.split("较长", 1)[0] for text in loaded.user_texts()] == ["第 1 问", "第 2 问"]
 
+    store.append(loaded, {"type": "message", "id": "m5", "role": "user", "content": "撤销后新问"})
+    store.append(loaded, {"type": "assistant", "id": "a5", "content": "撤销后新答"})
+    coverage = len(loaded.records)  # Includes the undone records and invalidated summary.
+    summarizer = FakeSummarizer()
     manager = ContextManager(
-        ChatConfig(context_window=1000, reserve_output_tokens=100, keep_recent_tokens=100),
-        FakeSummarizer(),
+        ChatConfig(context_window=1000, reserve_output_tokens=100, compact_threshold=0.25),
+        summarizer,
         store,
     )
-    plan = manager.prepare(loaded, "系统提示", "下一问", force=True)
+    plan = manager.prepare(loaded, "系统提示", "下一问")
 
-    assert loaded.covered_records() == 3  # meta + 第一条用户消息 + 第一条助手回复
+    assert plan.compacted and loaded.covered_records() == coverage
     assert loaded.summary_text() == "摘要-1"
-    contents = [str(message.get("content")) for message in plan.messages]
-    assert any(content.startswith("第 2 问") for content in contents)
-    assert all(not content.startswith("第 3 问") for content in contents)
-    assert all("旧摘要" not in content for content in contents)
+    previous, content = summarizer.calls[0]
+    assert previous == "" and "旧摘要" not in content
+    assert all(text in content for text in ("第 1 问", "第 2 问", "撤销后新问", "撤销后新答"))
+    assert all(text not in content for text in ("第 3 问", "第 4 问"))
+    assert not loaded.records_after_summary()
+    assert plan.messages[-1] == {"role": "user", "content": "下一问"}
 
 
 def test_no_compaction_with_only_current_message(tmp_path):
     store = SessionStore(tmp_path)
     session = store.create()
     store.append(session, {"type": "message", "id": "m1", "role": "user", "content": "唯一一句"})
-    manager = ContextManager(ChatConfig(), FakeSummarizer(), store)
+    manager = ContextManager(ChatConfig(context_window=1000), FakeSummarizer(), store)
 
-    plan = manager.prepare(session, "系统提示", "唯一一句", current_id="m1", force=True)
+    plan = manager.prepare(
+        session, "系统提示", "唯一一句", current_id="m1", tool_tokens=manager.trigger_tokens
+    )
 
-    assert not plan.compacted
+    assert not plan.compacted and plan.estimated_tokens >= manager.trigger_tokens
     assert plan.summary == ""
+    assert [r["id"] for r in session.records_after_summary()] == ["m1"]
 
 
 def test_failed_enqueue_still_compacts_and_keeps_messages_for_recovery(tmp_path):
@@ -432,12 +482,12 @@ def test_failed_enqueue_still_compacts_and_keeps_messages_for_recovery(tmp_path)
         raise OSError("synthetic write failure")
 
     manager = ContextManager(
-        ChatConfig(context_window=4096, reserve_output_tokens=512, keep_recent_tokens=1500),
+        ChatConfig(context_window=4096, reserve_output_tokens=512),
         FakeSummarizer(),
         store,
         request_distillation=fail,
     )
-    plan = manager.prepare(session, "系统提示", "继续", force=True)
+    plan = manager.prepare(session, "系统提示", "继续")
     assert plan.compacted
     assert estimate_messages_tokens(plan.messages) <= manager.input_budget
     assert any("recovery" in note for note in plan.events)
@@ -456,13 +506,13 @@ def test_failed_summary_never_enqueues_evicted_messages(tmp_path):
             raise TimeoutError("synthetic")
 
     manager = ContextManager(
-        ChatConfig(context_window=1000, reserve_output_tokens=100, keep_recent_tokens=100),
+        ChatConfig(context_window=1000, reserve_output_tokens=100),
         Broken(),
         store,
         request_distillation=lambda *args: requests.append(args),
     )
     with pytest.raises(TimeoutError):
-        manager.prepare(session, "sys", "current", force=True)
+        manager.prepare(session, "sys", "current")
     assert not requests
     assert not store.load(session.id).latest_summary()
 
@@ -471,11 +521,11 @@ def test_compaction_without_flush_does_not_acknowledge_messages(tmp_path):
     store = SessionStore(tmp_path)
     session = build_session(store)
     manager = ContextManager(
-        ChatConfig(context_window=1000, reserve_output_tokens=100, keep_recent_tokens=100),
+        ChatConfig(context_window=1000, reserve_output_tokens=100),
         FakeSummarizer(),
         store,
     )
-    plan = manager.prepare(session, "系统提示", "继续", force=True)
+    plan = manager.prepare(session, "系统提示", "继续")
     assert plan.compacted
     assert store.load(session.id).user_texts_after_distilled() == session.user_texts()
 
@@ -486,10 +536,10 @@ def test_compaction_skips_messages_before_the_distillation_cursor(tmp_path):
     store.append(session, {"type": "distilled", "up_to": session.last_user_message_id()})
     requests = []
     manager = ContextManager(
-        ChatConfig(context_window=1000, reserve_output_tokens=100, keep_recent_tokens=100),
+        ChatConfig(context_window=1000, reserve_output_tokens=100),
         FakeSummarizer(),
         store,
         request_distillation=lambda *args: requests.append(args),
     )
-    assert manager.prepare(session, "系统提示", "继续", force=True).compacted
+    assert manager.prepare(session, "系统提示", "继续").compacted
     assert not requests and not store.load(session.id).needs_consolidation()

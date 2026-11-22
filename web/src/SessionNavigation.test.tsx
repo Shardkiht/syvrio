@@ -39,13 +39,23 @@ it('renders cached history immediately, validates its version in the switch, and
       + (known ? '&known_version=' + known : ''));
   }
   render(<App />);
+  const shortcuts = 'Enter to send or queue · Ctrl+Enter to insert';
+  expect(screen.getByText(shortcuts)).toBeTruthy();
   await select('a');
   expect(screen.getByText('Loading conversation…')).toBeTruthy();
+  expect(document.querySelector('.main.is-empty')).toBeNull();
+  expect(document.querySelector('.composer-hint')?.textContent).toBe(shortcuts);
   const old = sessionHistory('a', 'Old answer');
   old.items.push({ ...old.items[0], id: 'reply', role: 'assistant', content: 'Answer', reasoning: { text: 'Reasoning details', seconds: 1 } });
   await act(async () => respond(switchResponse(old, 'a1')));
   await screen.findByText('Old answer');
+  fireEvent.click(screen.getByRole('button', { name: 'Open commands' }));
+  fireEvent.keyDown(screen.getByTestId('palette-input'), { key: 'Escape' });
+  expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Message' }));
+  const sidebarButton = screen.getByTestId('session-b');
+  sidebarButton.focus();
   await select('b');
+  expect(document.activeElement).toBe(sidebarButton);
   expect(screen.queryByText('Old answer')).toBeNull();
   await act(async () => respond(switchResponse(sessionHistory('b', 'Another chat'), 'b1')));
   await screen.findByText('Another chat');
@@ -53,6 +63,7 @@ it('renders cached history immediately, validates its version in the switch, and
   await select('a', 'a1');
   expect(screen.getByText('Old answer')).toBeTruthy();
   expect(screen.queryByText('Loading conversation…')).toBeNull();
+  expect(document.querySelector('.composer-hint')?.textContent).toBe(shortcuts);
   fireEvent.click(screen.getByRole('button', { name: /Thought for/ }));
   expect(screen.getByTestId('thinking-body').textContent).toContain('Reasoning details');
   await act(async () => respond({ session_id: 'a', title: 'a', history_version: 'a1', history: null }));
@@ -112,8 +123,12 @@ it.each(['confirmed', 'failed', 'superseded'] as const)(
     const file = new File(['test'], 'b.txt');
     fireEvent.change(input(), { target: { value: 'B draft' } });
     fireEvent.change(screen.getByLabelText('Select attachments'), { target: { files: [file] } });
+    // Keep the native textarea newline available while the switch is pending.
+    expect(fireEvent.keyDown(input(), { key: 'Enter', shiftKey: true })).toBe(true);
+    expect(input().readOnly).toBe(false);
     fireEvent.keyDown(input(), { key: 'Enter' });
     fireEvent.keyDown(input(), { key: 'Enter' });
+    expect(screen.getByText('Waiting to send…')).toBeTruthy();
     expect(submit).not.toHaveBeenCalled();
     if (outcome === 'superseded') await click('c');
     await act(async () => { finish(); });

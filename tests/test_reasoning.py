@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from threading import Event
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 from test_agent import FakeSummarizer, build_runtime
@@ -261,7 +262,9 @@ def test_incomplete_reasoning_never_replays_as_protocol(tmp_path, monkeypatch, c
     assert stream.closed
 
 
-def test_compact_keeps_recent_reasoning_chain_whole_and_private(tmp_path, monkeypatch):
+def test_compaction_summarizes_tool_turns_without_disclosing_private_reasoning(
+    tmp_path, monkeypatch
+):
     runtime, _ = build_runtime(tmp_path, _model(monkeypatch))
     store = runtime.sessions
     session = store.create()
@@ -289,11 +292,27 @@ def test_compact_keeps_recent_reasoning_chain_whole_and_private(tmp_path, monkey
         },
     )
     store.append(session, {"type": "tool", "id": "t2", "tool_call_id": "call", "content": "result"})
-    manager = ContextManager(ChatConfig(context_window=1400), FakeSummarizer(), store)
-    plan = manager.prepare(session, "system", "continue", force=True)
-    assert plan.compacted
-    assert [m["role"] for m in plan.messages[-4:]] == ["user", "assistant", "tool", "user"]
-    assert plan.messages[-3]["reasoning_content"] == "private recent thought"
-    assert "private old thought" not in str(plan.messages)
+    store.append(session, {"type": "assistant", "id": "answer", "content": "recent answer"})
+    store.append(session, {"type": "message", "role": "user", "id": "now", "content": "continue"})
+    summarizer = Mock(wraps=FakeSummarizer())
+    manager = ContextManager(ChatConfig(context_window=1400), summarizer, store)
+    plan = manager.prepare(session, "system", "continue", current_id="now")
+    assert plan.compacted and plan.evicted_records == 6
+    summarizer.summarize.assert_called_once()
+    transcript = summarizer.summarize.call_args.args[1]
+    assert all(
+        text in transcript for text in ("old answer", "recent", "recall", "result", "recent answer")
+    )
+    assert "private" not in transcript and "private" not in str(plan.messages)
+    assert [m["role"] for m in plan.messages] == ["system", "system", "user"]
+    assert plan.messages[-1]["content"] == "continue"
     assert "private" not in session.path.read_text(encoding="utf-8")
-    assert store.load(session.id).records[-2]["content"] == "result"
+    restored = store.load(session.id)
+    assert [r["id"] for r in restored.records_after_summary()] == ["now"]
+    replay = records_to_messages(restored.active_records())
+    assert [m["reasoning_content"] for m in replay if "reasoning_content" in m] == [
+        "private old thought",
+        "private recent thought",
+    ]
+    assert replay[3]["tool_calls"][0]["id"] == replay[4]["tool_call_id"] == "call"
+    assert replay[4]["content"] == "result"

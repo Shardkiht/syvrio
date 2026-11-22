@@ -403,7 +403,7 @@ def test_update_forwards_python_and_uv_paths(tmp_path, monkeypatch):
     )
     seen: dict[str, object] = {}
 
-    def fake(root, channel, service, port, python=None, uv=None):
+    def fake(root, channel, service, port, python=None, uv=None, *, prepare_restart):
         seen.update(root=root, channel=channel, service=service, port=port, python=python, uv=uv)
         return "ok"
 

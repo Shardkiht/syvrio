@@ -46,6 +46,10 @@ class ConversationDirectory[C: ConversationOwner]:
             channel.conversation.scheduling.session_busy(session_id) for channel in self._channels
         )
 
+    @property
+    def busy(self) -> bool:
+        return any(channel.conversation.scheduling.activity()[0] for channel in self._channels)
+
     def live_session(self, session_id: str) -> Session | None:
         channel = self._bound(session_id)
         return channel.conversation.runtime.session if channel is not None else None

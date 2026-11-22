@@ -52,6 +52,7 @@ export interface ContextUsage {
   used: number;
   limit: number;
   compact_threshold: number;
+  compaction_trigger_tokens?: number;
 }
 
 export interface SessionInfo {
@@ -223,4 +224,16 @@ export interface CommandResponse {
   session_id: string | null;
   refresh_sessions: boolean;
   refresh_history: boolean;
+}
+
+export interface UpdateStatus {
+  state: 'idle' | 'running' | 'completed' | 'failed';
+  message: string;
+}
+
+export interface UpdateCheck extends UpdateStatus {
+  current: string;
+  latest: string;
+  available: boolean;
+  managed: boolean;
 }

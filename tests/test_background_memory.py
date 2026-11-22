@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import json
 from threading import Event, Thread
+from unittest.mock import Mock
 
 import pytest
 
+from syvrio.agent.context import ContextManager
 from syvrio.background_memory import BackgroundMemory, context_fill, distillation
+from syvrio.infra.config import ChatConfig
 from syvrio.infra.jobs import enqueue_context_fill, job_path, read_job
 from syvrio.infra.transaction import vault_transaction
 from syvrio.memory.inference import source_fingerprint
@@ -16,6 +19,33 @@ pytestmark = pytest.mark.memory
 
 def message(sessions, session, mid, text):
     sessions.append(session, {"type": "message", "role": "user", "id": mid, "content": text})
+
+
+def test_compaction_enqueues_only_undistilled_originals(service, monkeypatch):
+    owner = BackgroundMemory(service)
+    session = owner.sessions.create()
+    message(owner.sessions, session, "first", "已经处理的原始消息")
+    owner.sessions.advance_distilled(session, "first")
+    message(owner.sessions, session, "second", "尚未处理的原始消息")
+    summarizer = Mock()
+    summarizer.summarize.return_value = "仅用于对话的合成摘要"
+    context = ContextManager(
+        ChatConfig(context_window=1000, reserve_output_tokens=100),
+        summarizer,
+        owner.sessions,
+        owner.request_distillation,
+    )
+    plan = context.prepare(session, "system", "", tool_tokens=context.trigger_tokens)
+    assert plan.compacted and plan.summary == summarizer.summarize.return_value
+    path = job_path(service.paths, "distillation", session.id)
+    assert read_job(path)["through"] == "second"
+
+    extract = Mock(return_value=distillation.Result(memories=[]))
+    monkeypatch.setattr(distillation, "ask", extract)
+    assert distillation.process(service, owner.sessions, path, lambda _: False, Event())
+    extract.assert_called_once()
+    assert extract.call_args.args[2]["source_text"] == "尚未处理的原始消息"
+    assert not path.exists() and not owner.sessions.load(session.id).undistilled_messages()
 
 
 def test_distillation_commits_each_original_source_and_empty_decision(service, monkeypatch):

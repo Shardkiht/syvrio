@@ -117,8 +117,8 @@ export function PendingReview({
         <header className="pending-header">
           <div>
             <div className="confirm-title">{panel.title}</div>
-            <div className="pending-meta">
-              {pending
+            <div className="pending-meta" role="status">
+              {panel.loading ? 'Loading candidates…' : pending
                 ? (panel.count === 0 ? 'No pending candidates' : `${panel.count} pending`)
                 : (panel.count === 0 ? 'No inferences' : `${panel.count} inferences`)}
             </div>
@@ -155,7 +155,7 @@ export function PendingReview({
                 </button>
               ))}
             </div>
-            {(!pending || selected) && <div className="pending-detail" ref={detail}>
+            {(!pending || selected) && <div key={pending ? selected?.id : undefined} className="pending-detail" ref={detail}>
               {selected ? (
                 <>
                   <div className="pending-meta">{selected.topic}</div>

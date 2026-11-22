@@ -6,9 +6,10 @@ import { SHORTCUT_HELP } from '../state/shortcuts';
 import type { ThemeMode } from '../state/theme';
 import type { CommandResponse, HealthResponse, ModelSearchResponse } from '../types';
 import { ProvidersSection } from './ProvidersSection';
+import { SoftwareUpdate } from './SoftwareUpdate';
 import { CheckIcon, RefreshIcon, SearchIcon } from './Icons';
 
-type SectionKey = 'model' | 'appearance' | 'thinking' | 'context' | 'providers' | 'about';
+type SectionKey = 'model' | 'appearance' | 'thinking' | 'context' | 'providers' | 'shortcuts' | 'about';
 
 const SECTIONS: { key: SectionKey; label: string; description: string }[] = [
   { key: 'model', label: 'Model', description: 'Active provider and model' },
@@ -16,7 +17,8 @@ const SECTIONS: { key: SectionKey; label: string; description: string }[] = [
   { key: 'thinking', label: 'Thinking', description: 'Reasoning effort' },
   { key: 'context', label: 'Context', description: 'Context window size' },
   { key: 'providers', label: 'Providers', description: 'API keys and endpoints' },
-  { key: 'about', label: 'About', description: 'Version, status and shortcuts' },
+  { key: 'shortcuts', label: 'Shortcuts', description: 'Keyboard shortcuts' },
+  { key: 'about', label: 'About', description: 'Version and status' },
 ];
 
 const THEMES: { key: ThemeMode; label: string }[] = [
@@ -376,11 +378,25 @@ export function SettingsPanel({
               />
             )}
 
+            {section === 'shortcuts' && (
+              <section className="settings-section" aria-labelledby="settings-shortcuts-title">
+                <h2 className="settings-section-title" id="settings-shortcuts-title">Keyboard shortcuts</h2>
+                <dl className="settings-keys">
+                  {SHORTCUT_HELP.map(({ keys, description, note }) => (
+                    <div key={keys} className="settings-key-row">
+                      <dt><kbd>{keys}</kbd></dt>
+                      <dd>{description}{note && <small>{note}</small>}</dd>
+                    </div>
+                  ))}
+                </dl>
+              </section>
+            )}
+
             {section === 'about' && (
               <div className="settings-section" data-testid="settings-about">
                 <div className="settings-section-title">About</div>
                 <dl className="settings-facts">
-                  <dt>Version</dt><dd>{health?.version ?? 'unknown'}</dd>
+                  <dt>Version</dt><dd><SoftwareUpdate version={health?.version} onChanged={onChanged} /></dd>
                   <dt>Provider</dt><dd>{health?.provider ?? 'unknown'}</dd>
                   <dt>Model</dt><dd>{health?.model ?? 'unknown'}</dd>
                   <dt>Generating</dt><dd>{health?.busy ? 'yes' : 'no'}</dd>
@@ -389,15 +405,6 @@ export function SettingsPanel({
                   <dt>Static assets</dt>
                   <dd>{health?.static_ready ? 'built' : 'not built (run scripts/build_web.py)'}</dd>
                 </dl>
-                <div className="settings-section-title">Shortcuts</div>
-                <div className="settings-keys">
-                  {SHORTCUT_HELP.map((item) => (
-                    <div key={item.keys} className="settings-key-row">
-                      <span>{item.keys}</span>
-                      <span>{item.description}{item.note ? ` · ${item.note}` : ''}</span>
-                    </div>
-                  ))}
-                </div>
               </div>
             )}
 

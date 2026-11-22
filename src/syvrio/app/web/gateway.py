@@ -36,6 +36,7 @@ def create_gateway(
     *,
     locate: Callable[[], tuple[str, str] | None] | None = None,
     static_dir: Path | None = None,
+    token: str | None = None,
 ) -> FastAPI:
     assets = WebAssets(static_dir)
     upstream = httpx.URL(base)
@@ -55,7 +56,7 @@ def create_gateway(
         "/{path:path}", methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
     )
     async def forward(request: Request, path: str):
-        nonlocal upstream
+        nonlocal upstream, token
         if path.startswith("api/resident"):
             return error_response("not_found", "Not found.", 404)
         if path != "api" and not path.startswith("api/") and path not in _API_DOCS:
@@ -68,6 +69,11 @@ def create_gateway(
         headers = {
             key: value for key, value in request.headers.items() if key.lower() in _REQUEST_HEADERS
         }
+        # Authorize the narrow software-update route only through a loopback gateway
+        # (including the GitHub-authenticated share). Never forward a browser token.
+        admin = path == "api/update" and host in {"localhost", "127.0.0.1", "::1"}
+        if admin and token:
+            headers["X-Syvrio-Token"] = token
         client = request.app.state.client
         outgoing = client.build_request(
             request.method, url, headers=headers, content=request.stream()
@@ -79,6 +85,9 @@ def create_gateway(
             endpoint = await asyncio.to_thread(locate) if locate else None
             if endpoint:
                 upstream = httpx.URL(endpoint[0])
+                token = endpoint[1]
+                if admin:
+                    headers["X-Syvrio-Token"] = token
             if not endpoint or request.method not in {"GET", "HEAD"}:
                 return error_response(
                     "backend_unavailable", "The resident backend is unavailable.", 503

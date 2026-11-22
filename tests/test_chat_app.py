@@ -942,6 +942,7 @@ async def test_status_bar_renders_context_usage(tmp_path):
 
 async def test_resumed_session_shows_its_own_context_usage(tmp_path):
     app = build_app(tmp_path, [])
+    app.runtime.config.reserve_output_tokens = 31000
     target = app.sessions.create()
     app.sessions.append(
         target,
@@ -958,8 +959,10 @@ async def test_resumed_session_shows_its_own_context_usage(tmp_path):
         await _wait_context_usage(app, pilot)
         assert app.runtime.last_plan is None
         usage = app.runtime.context_usage()
-        assert usage > 0
-        assert f"{format_tokens(usage)}/32K" in str(app.query_one("#status", Static).content)
+        assert 800 <= usage < 25600
+        status = str(app.query_one("#status", Static).content)
+        assert f"{format_tokens(usage)}/32K" in status
+        assert "compact next turn" in status
 
 
 async def test_undo_recomputes_context_usage(tmp_path):
@@ -4863,7 +4866,7 @@ async def test_command_during_ask_queues_and_runs_after_reply(tmp_path):
                     break
             assert gated.calls == ["q", "next question"]
             assert any(
-                "No earlier records" in str(card.render()) for card in app.query(".event-card")
+                "Compaction starts at" in str(card.render()) for card in app.query(".event-card")
             )
         finally:
             for gate in gated.gates:

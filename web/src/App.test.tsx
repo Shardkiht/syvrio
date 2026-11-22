@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
 import { Markdown } from './components/Markdown';
@@ -32,6 +32,7 @@ const command = (name: string, patch: Partial<CommandInfo> = {}): CommandInfo =>
 const CATALOG: CommandInfo[] = [
   command('new'),
   command('sessions', { support: 'client', intent: 'open_sessions' }),
+  command('update', { support: 'client', intent: 'open_update' }),
   command('model', {
     usage: '/model [refresh]',
     subcommands: [{ name: 'refresh', description: 'Refresh model list' }],
@@ -276,6 +277,8 @@ describe('Web client interactions', () => {
       { ...SESSIONS[0], id: 's-10', title: 'Ten percent' },
       { ...SESSIONS[0], id: 's-9', title: 'Nine percent' },
     ];
+    let releaseEstimate!: () => void;
+    const delayedEstimate = new Promise<void>(resolve => { releaseEstimate = resolve; });
     vi.stubGlobal('fetch', async (url: string) => {
       const route = new URL(url, 'http://localhost');
       switch (route.pathname) {
@@ -284,6 +287,7 @@ describe('Web client interactions', () => {
         case '/api/commands': return json({ items: CATALOG });
         case '/api/context-usage': {
           const id = route.searchParams.get('session_id');
+          if (id === 's-9') await delayedEstimate;
           return json({
             session_id: id,
             used: id === null ? 0 : id === 's-10' ? 400 : 360,
@@ -305,6 +309,10 @@ describe('Web client interactions', () => {
     expect(ten.getAttribute('data-wave')).toBe('moving');
 
     fireEvent.click(screen.getByTestId('session-s-9'));
+    const loading = await screen.findByRole('button', { name: /Context estimate: Loading estimate/ });
+    expect(loading.textContent).toBe('400');
+    expect(loading.style.getPropertyValue('--context-fill')).toBe('10%');
+    await act(async () => releaseEstimate());
     const nine = await screen.findByRole('button', { name: /Context estimate: 360 \/ 4,000 tokens/ });
     expect(nine.textContent).toBe('360');
     expect(nine.getAttribute('data-wave')).toBe('still');
@@ -756,6 +764,35 @@ describe('Slash commands and shortcuts', () => {
     expect(spy.confirmed).toEqual([false, false, true]);
   });
 
+  it('opens Pending before the response and keeps late results out of a reopened drawer', async () => {
+    installFetch();
+    const fetchOther = globalThis.fetch;
+    const replies: ((response: Response) => void)[] = [];
+    vi.stubGlobal('fetch', (url: string, init?: RequestInit) => {
+      if (url === '/api/commands' && init?.method === 'POST')
+        return new Promise<Response>(resolve => replies.push(resolve));
+      return fetchOther(url, init);
+    });
+    render(<App />);
+    await ready();
+    const open = screen.getByRole('button', { name: 'Open pending review' });
+    fireEvent.click(open);
+    const first = screen.getByRole('dialog', { name: 'Pending review' });
+    expect(within(first).getByRole('status').textContent).toBe('Loading candidates…');
+    fireEvent.keyDown(first, { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: 'Pending review' })).toBeNull();
+    const response = (text: string) => json(commandResult({ command: 'pending', intent: 'pending',
+      data: { kind: 'pending', count: 1, rows: [{ id: 'test', topic: 'test', text }] } }));
+    await act(async () => replies[0](response('Stale candidate')));
+    expect(screen.queryByRole('dialog', { name: 'Pending review' })).toBeNull();
+    fireEvent.click(open);
+    const drawer = screen.getByRole('dialog', { name: 'Pending review' });
+    expect(within(drawer).getByRole('status').textContent).toBe('Loading candidates…');
+    await act(async () => replies[1](response('Current candidate')));
+    expect(screen.getByRole('dialog', { name: 'Pending review' })).toBe(drawer);
+    expect(within(drawer).getByText('Current candidate')).toBeTruthy();
+  });
+
   it('combines inference status and search over the full list', async () => {
     const rows = Array.from({ length: 26 }, (_, i) => ({
       id: `inf-${i}`, topic: 'profile', status: i < 24 ? 'confirmed' : 'hypothesis', text: `Synthetic row ${i}`,
@@ -870,6 +907,18 @@ describe('Slash commands and shortcuts', () => {
       inference_text: 'Edited\nwith a second line', session_id: null,
     });
     expect(screen.getByTestId('message-list').textContent).not.toContain('Edited');
+  });
+
+  it('opens software updates from the shared /update command', async () => {
+    const spy = spyCommands(body => body.line === '/update'
+      ? commandResult({ status: 'client', command: 'update', intent: 'open_update' })
+      : commandResult());
+    installFetch({ ...spy.overrides, '/api/update/status': () => json({ state: 'idle', message: '' }) });
+    render(<App />);
+    await ready();
+    send('/update');
+    const about = await screen.findByTestId('settings-about');
+    expect(within(about).getByRole('button', { name: 'Check for updates' })).toBeTruthy();
   });
 
   it('opens /sessions in a modal with keyboard navigation and /help in the palette', async () => {
@@ -1051,7 +1100,9 @@ describe('Slash commands and shortcuts', () => {
     expect(spy.lines).toEqual([]);
 
     fireEvent.keyDown(window, { key: 'p', ctrlKey: true, shiftKey: true });
-    expect(screen.getByTestId('command-palette-overlay')).toBeTruthy();
+    const palette = screen.getByRole('dialog', { name: 'Command palette' });
+    expect(within(palette).getByRole('option', { name: /\/help/ })).toBeTruthy();
+    expect(palette.textContent).not.toContain('Ctrl+Shift+P');
     fireEvent.keyDown(window, { key: 'Escape' });
     await waitFor(() => expect(screen.queryByTestId('command-palette-overlay')).toBeNull());
 
@@ -1322,7 +1373,7 @@ describe('Session archive', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'New chat' }));
     await waitFor(() => expect(calls).toContain('POST /api/sessions'));
-    expect(screen.getByTestId('message-list').textContent).toContain('Syvrio');
+    expect(within(screen.getByTestId('message-list')).getByRole('heading', { name: 'Syvrio', level: 1 })).toBeTruthy();
     // No extra row: the session file only appears with the first message.
     expect(document.querySelectorAll('.session-row').length).toBe(SESSIONS.length);
   });

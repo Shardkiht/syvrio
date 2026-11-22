@@ -25,7 +25,7 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
   const chatRef = useRef<ChatState>(chat);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [health, setHealth] = useState<HealthResponse | null>(null);
-  const [usage, setUsage] = useState<ContextUsage | null>(null);
+  const [usage, setUsage] = useState<{ sessionId: string | null; value: ContextUsage | null }>();
   const [compaction, setCompaction] = useState<CompactionPhase | null>(null);
   const [historyRevision, setHistoryRevision] = useState(0);
   const [online, setOnline] = useState(true);
@@ -53,7 +53,7 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [confirm, setConfirm] = useState<{ line: string; message: string } | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState<false | 'model' | 'providers' | 'about'>(false);
   const [panel, setPanel] = useState<CommandPanel | null>(null);
   const [focusSignal, setFocusSignal] = useState(0);
   const [queued, setQueued] = useState<TurnReceipt[]>([]);
@@ -152,8 +152,12 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
     if (!health || compaction === 'running' || compaction === 'failed') return;
     const controller = new AbortController();
     void api.contextUsage(chat.sessionId, controller.signal)
-      .then((value) => { if (!controller.signal.aborted) setUsage(value); })
-      .catch(() => { if (!controller.signal.aborted) setUsage(null); });
+      .then((value) => {
+        if (!controller.signal.aborted) {
+          setUsage({ sessionId: chat.sessionId, value: value.session_id === chat.sessionId ? value : null });
+        }
+      })
+      .catch(() => { if (!controller.signal.aborted) setUsage({ sessionId: chat.sessionId, value: null }); });
     return () => controller.abort();
   }, [chat.sessionId, chat.busy, historyRevision, health, compaction]);
 
@@ -247,6 +251,13 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
     if (isUndo && editing.current) return;
     const finishEdit = isUndo ? beginEdit() : undefined;
     if (isCompact) setCompaction('running');
+    const opening: ReviewPanel | null = requestLine.toLowerCase() === '/pending' && !review
+      ? { kind: 'pending', title: 'Pending review', rows: [], count: 0, loading: true }
+      : null;
+    if (opening) setPanel(opening);
+    // A dismissed drawer may have another request in flight by the time this one settles.
+    const present = (next: CommandPanel) =>
+      setPanel(current => opening && current !== opening ? current : next);
     try {
       const result = await api.runCommand({
         line: requestLine,
@@ -284,9 +295,9 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
           openFiles?.();
         } else if (result.intent === 'open_sessions') {
           setPanel({ kind: 'sessions' });
-        } else if (result.intent === 'open_settings') {
+        } else if (result.intent === 'open_settings' || result.intent === 'open_update') {
           setPanel(null);
-          setSettingsOpen(true);
+          setSettingsOpen(result.intent === 'open_update' ? 'about' : 'model');
         } else if (result.intent === 'leave') {
           if (await navigate(null)) setPanel(resultPanelFor(result));
         } else {
@@ -300,7 +311,7 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
         setPaletteOpen(true);
         return;
       }
-      if (commandPanel && canPresent()) setPanel(commandPanel);
+      if (commandPanel && canPresent()) present(commandPanel);
       // /model, /think and /context can change the active model; keep the
       // header label in sync without a full page reload.
       if (result.data?.model_changed === true) void refreshHealth();
@@ -324,14 +335,14 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
         if (result.status === 'ok' && result.intent === 'rename' && requestLine.toLowerCase() === '/rename') {
           setPanel({ ...output, title: 'Rename session', message: '', rename: true });
         } else {
-          setPanel(output);
+          present(output);
         }
       }
     } catch (error) {
       if (review) throw error;
       if (isCompact && version === navigationVersion.current) setCompaction('failed');
       if (version === navigationVersion.current && sequence === commandSequence.current) {
-        setPanel({
+        present({
           title: 'Command failed',
           message: error instanceof Error ? error.message : 'unknown error',
         });
@@ -735,7 +746,7 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
     composerDraftId: preview?.draftId ?? chat.sessionId ?? blankDraftId.current,
     checkingSelection,
     deliveries,
-    contextUsage: usage?.session_id === chat.sessionId ? usage : null,
+    contextUsage: usage?.sessionId === chat.sessionId ? usage.value : undefined,
     compaction,
     sessions,
     replyingSessionIds,

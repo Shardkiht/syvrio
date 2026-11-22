@@ -19,9 +19,9 @@ Turn everyday conversations into long-term Markdown memories you can inspect, tr
 
 Stop repeating your preferences and plans every time you start a chat. Tell it “I prefer unsweetened hot drinks,” open another conversation, and it can look that preference up. Open the Markdown files to inspect what it remembers, correct a fact, or retire an entry while preserving its history.
 
-![Syvrio Web: save a drink preference and recall it in a new chat](docs/assets/syvrio-demo.gif)
+![Syvrio Web remembers a preference for unsweetened hot drinks and recommends roasted barley tea in a new chat](docs/assets/syvrio-demo.gif)
 
-Recorded in the actual Web client with an isolated synthetic Vault and local model replay. The app performs the memory write, cross-session retrieval, and streaming. [View the still screenshot](docs/assets/syvrio-demo.png).
+Recorded in the Web client with a synthetic Vault and local model replay. The second chat asks only “What should I order to drink?” Syvrio calls `recall` to find the preference saved in the first chat. [View the recall result](docs/assets/syvrio-demo.png).
 
 ## Quick start
 
@@ -50,6 +50,8 @@ With a PyPI installation and a configured ngrok v3 agent, run `syvrio web share 
 
 The development frontend runs at `http://127.0.0.1:7987/`. Start its gateway with `syvrio web --port 8746`. You can also set the gateway port with `SYVRIO_WEB_PORT`.
 
+In the Web app, open **Settings → About** and choose **Check for updates**. In the TUI, enter `/update`. Both check stable releases on PyPI. Installations managed by a systemd user service can install the selected release after confirmation. Connected clients briefly disconnect during the restart. See the [update guide](docs/web.md#pypi-自动更新).
+
 ## Configuration
 
 The default entry is `~/.syvrio/config.toml`. Select another entry with `--config` or `SYVRIO_CONFIG`. Local files override individual fields from the [packaged defaults](src/syvrio/defaults/).
@@ -67,12 +69,14 @@ The first load migrates a legacy single file in place and drops obsolete options
 
 ## Chat and attachments
 
+Open **Commands** in the top-right corner to find and run a command. Open **Settings → Shortcuts** for key bindings and alternatives to browser-reserved keys.
+
 Each outgoing message keeps its delivery ID across retries. The web app retains the text and attachments when a connection drops and retries on reconnect. You can also choose Retry delivery. In the terminal, Ctrl+R retries a delivery while preserving the next draft. Replies already in progress resume from the same turn.
 
 - **Sending and undoing.** In the browser, Send becomes Stop in the same position while a reply is in progress. Press Enter during a reply to queue a message for the end of the turn. Ctrl+Enter requests insertion at a safe point in the current turn. Tool calls must finish before insertion. `/undo` interrupts the latest turn, restores eligible local file changes and puts the sent text back in the composer. In the browser, hover over the latest user message to undo or edit and resend it. The edit replaces the original turn when it is saved. If saving fails, the original messages, attachments and memory changes remain available. You can revise or retry the draft after refreshing. Later edits or references from another session can block the entire undo.
 - **Documents and images.** Click the circular **+** inside the web composer or press **Ctrl+O** in the TUI to attach local files. Each message supports up to eight files, 20 MiB per file and 40 MiB in total. Models can read documents. Vision-capable models can also analyze PNG, JPEG, WebP and GIF images. The `/import` chat command opens the same local file picker as **+**. Selected files stay in the draft until you press Send or Enter. The model can then read or summarize the files, or save facts when you ask it to.
 - **Sessions and models.** Browse and manage conversations with `/sessions`. After the first complete exchange, the model suggests a short title in the language of the conversation. Use `/rename` to set your own title. While a reply is streaming, use `/model` to select a model, `/think` to choose the reasoning level, and `/context` to set the context window. Each turn keeps its original settings when it continues after a tool call. Queued messages use the latest settings when their turn starts. Expand reasoning and tool details in the conversation. Type `/` to see the available commands.
-- **Context compaction.** Long conversations use summaries to fit the model's context window. Use `/compact` to request a summary. The original messages remain in the session JSONL. Background distillation processes each original user message and commits its progress with the facts it saved. Switching sessions, exiting or restarting the backend can resume unfinished work.
+- **Context compaction.** Sending a message and running `/compact` use the same threshold. When estimated input reaches 80% of the available input budget (the default), completed conversation history and tool results since the previous summary are folded into the summary. The input budget reserves room for the model's output. The original messages remain in the session JSONL. Background distillation processes each original user message and commits its progress with the facts it saved. Switching sessions, exiting or restarting the backend can resume unfinished work.
 
 ## Memory, review and profiles
 

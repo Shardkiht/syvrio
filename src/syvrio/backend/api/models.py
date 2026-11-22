@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictBool
 
 from ...application.contracts import ModelOption
 from ...application.turns import TurnEvent
@@ -31,11 +31,29 @@ class HealthResponse(BaseModel):
     static_ready: bool = False
 
 
+class UpdateJobResponse(BaseModel):
+    state: Literal["idle", "running", "failed", "completed"]
+    message: str
+
+
+class UpdateCheckResponse(UpdateJobResponse):
+    current: str
+    latest: str
+    available: bool
+    managed: bool
+
+
+class UpdateRequest(BaseModel):
+    version: str
+    confirmed: StrictBool
+
+
 class ContextUsageResponse(BaseModel):
     session_id: str | None
     used: int
     limit: int
     compact_threshold: float
+    compaction_trigger_tokens: int
 
 
 class SessionInfo(BaseModel):

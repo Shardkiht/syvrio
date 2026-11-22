@@ -443,12 +443,16 @@ def test_health_and_openapi(client, backend):
 
 
 def test_context_usage_tracks_requested_session_without_switching(client, backend):
+    config = backend._service.config.chat
+    config.reserve_output_tokens = 10000
+    config.compact_threshold = 0.75
     empty = client.get("/api/context-usage").json()
     assert empty == {
         "session_id": None,
         "used": 0,
         "limit": backend._app_service.settings.context_window,
-        "compact_threshold": backend._conversation.compact_threshold(),
+        "compact_threshold": 0.75,
+        "compaction_trigger_tokens": 30000,
     }
     session = backend._sessions.create()
     backend._sessions.append(

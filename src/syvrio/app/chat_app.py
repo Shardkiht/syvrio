@@ -461,7 +461,9 @@ class ChatApp(
         self.update_status()
 
     def update_status(self) -> None:
-        total = self.application.settings.context_window
+        conversation = self.application.conversation
+        limits = conversation.context_limits(conversation.current_id)
+        total = limits.window
         # 后台请求的 plan 属于别的会话时不得污染当前视图的用量显示。
         plan = self.application.conversation.last_plan if self._plan_is_current() else None
         key = self._usage_key()
@@ -480,7 +482,7 @@ class ChatApp(
         text = f"[#8a8b90]Context[/] {bar} [#8a8b90]{used_text}/{format_tokens(total)}[/]"
         if self.pending_count:
             text += f"   [#b08a6a]Pending {self.pending_count}[/]"
-        if percent >= self.application.conversation.compact_threshold():
+        if used >= limits.trigger_tokens:
             text += " [#b08a6a]⚠ compact next turn[/]"
         self.query_one("#status", Static).update(text)
         self._render_model_status()

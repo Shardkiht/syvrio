@@ -18,6 +18,8 @@ import type {
   SessionListResponse,
   StreamEvent,
   SwitchSessionResponse,
+  UpdateCheck,
+  UpdateStatus,
 } from '../types';
 
 export class ApiError extends Error {
@@ -85,6 +87,12 @@ export const api = {
   },
   disconnect: () => fetchChecked('/api/view/disconnect', { method: 'POST', keepalive: true }),
   health: () => jsonRequest<HealthResponse>('/api/health'),
+  checkUpdate: () => jsonRequest<UpdateCheck>('/api/update', { cache: 'no-store' }),
+  updateStatus: (signal: AbortSignal) =>
+    jsonRequest<UpdateStatus>('/api/update/status', { cache: 'no-store', signal }),
+  installUpdate: (version: string) => jsonRequest<UpdateStatus>('/api/update', {
+    method: 'POST', headers: jsonHeaders, body: JSON.stringify({ version, confirmed: true }),
+  }),
 
   contextUsage: (sessionId: string | null, signal: AbortSignal) =>
     jsonRequest<ContextUsage>(

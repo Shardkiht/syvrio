@@ -17,6 +17,7 @@ from ..memory.models import PendingItem
 from ..memory.turn_undo import TurnUndoError
 from ..session import Session, SessionStore
 from .contracts import (
+    ContextLimits,
     QueuedItem,
     QueueSnapshot,
     Submission,
@@ -695,14 +696,16 @@ class ConversationUseCases:
     def estimate_usage(self, session: Session) -> int:
         return self.runtime.estimate_usage(session)
 
-    def context_limit(self, session_id: str | None) -> int:
+    def context_limits(self, session_id: str | None) -> ContextLimits:
+        """Use the running turn's budget until that turn finishes."""
         with self._lock:
-            if session_id and self.ask_in_flight == session_id and self._turn_settings:
-                return self._turn_settings.context.config.context_window
-        return self.runtime.turn_settings().context.config.context_window
-
-    def compact_threshold(self) -> float:
-        return self.runtime.config.compact_threshold
+            active = (
+                self._turn_settings if session_id and self.ask_in_flight == session_id else None
+            )
+        context = (active or self.runtime.turn_settings()).context
+        return ContextLimits(
+            context.config.context_window, context.config.compact_threshold, context.trigger_tokens
+        )
 
     def force_compact(
         self, on_compaction: Callable[[CompactionPhase], None] | None = None

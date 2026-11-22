@@ -170,7 +170,6 @@ class ContextManager:
         current_text: str | list[dict],
         current_id: str | None = None,
         memory_context: str = "",
-        force: bool = False,
         on_compaction: Callable[[CompactionPhase], None] | None = None,
         tool_tokens: int = 0,
     ) -> ContextPlan:
@@ -197,30 +196,23 @@ class ContextManager:
             if summary_text
             else 0
         )
-        cutoff = 0
+        compacted_records = 0
         events: list[str] = []
 
-        if force or base_tokens + history_tokens + summary_tokens > self.trigger_tokens:
-            keep = min(
-                self.config.keep_recent_tokens,
-                max(0, self.trigger_tokens - base_tokens - summary_tokens),
-            )
-            if force:
-                keep = min(keep, max(400, history_tokens // 3))
-            cutoff = self._cutoff(history, keep, self.input_budget - base_tokens, bool(current))
-        if cutoff:
+        if history and base_tokens + history_tokens + summary_tokens >= self.trigger_tokens:
             if on_compaction is not None:
                 on_compaction("running")
             try:
-                summary_text, events = self._summarize(session, history[:cutoff], summary_text)
+                summary_text, events = self._summarize(session, history, summary_text)
             except Exception:
                 if on_compaction is not None:
                     on_compaction("failed")
                 raise
             if on_compaction is not None:
                 on_compaction("done")
-            history_messages = records_to_messages(history[cutoff:])
-            history_tokens = estimate_messages_tokens(history_messages)
+            compacted_records = len(history)
+            history_messages = []
+            history_tokens = 0
 
         summary = _context_block(
             "system",
@@ -232,37 +224,12 @@ class ContextManager:
 
         return ContextPlan(
             messages=messages,
-            compacted=bool(cutoff),
-            evicted_records=cutoff,
+            compacted=bool(compacted_records),
+            evicted_records=compacted_records,
             summary=summary_text,
             estimated_tokens=tool_tokens + estimate_messages_tokens(messages),
             events=events,
         )
-
-    @staticmethod
-    def _cutoff(history: list[dict], keep: int, available: int, has_current: bool) -> int:
-        # Start a retained range only at a turn boundary. Its tool batches and
-        # any user messages inserted in the same turn must stay together.
-        end = len(history)
-        retained = 0
-        for start in range(len(history) - 1, -1, -1):
-            record = history[start]
-            if start and not (
-                record.get("type") == "message"
-                and record.get("role") == "user"
-                and not record.get("turn_root")
-            ):
-                continue
-            retained += estimate_messages_tokens(records_to_messages(history[start:end]))
-            if end == len(history):
-                # Manual /compact preserves the latest turn. At the next request
-                # even that completed turn can be summarized if it cannot fit.
-                if has_current and retained > available:
-                    return end
-            elif retained > keep:
-                return end
-            end = start
-        return 0
 
     def _summarize(
         self, session: Session, evicted: list[dict], previous: str

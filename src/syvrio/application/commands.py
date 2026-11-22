@@ -32,6 +32,7 @@ SLASH_COMMANDS = [
     ("think", "/think", "Reasoning effort"),
     ("context", "/context", "Context window"),
     ("setup", "/setup", "Run setup in terminal"),
+    ("update", "/update", "Check for software updates"),
     ("rename", "/rename <title>", "Rename session"),
     ("import", "/import", "Choose local files to attach"),
     ("pending", "/pending", "Review pending"),
@@ -121,6 +122,7 @@ WEB_CAPABILITIES: dict[str, WebCapability] = {
         note="Opens the Web settings panel for providers, keys and endpoints.",
     ),
     "rename": WebCapability(SERVER, "rename"),
+    "update": WebCapability(CLIENT, "open_update"),
     "import": WebCapability(CLIENT, "pick_attachments", note="Choose files on this device."),
     "pending": WebCapability(
         SERVER, "pending", note="List, approve or reject: /pending approve|reject|edit <id>."
