@@ -69,7 +69,7 @@ APP_CSS = """
     /* ListItem 默认高度跟随子容器（Vertical 是 1fr 会撑满列表），必须钉死 auto */
     #sessions > ListItem { background: transparent; padding: 0 1; height: auto; }
     #sessions > ListItem > Vertical { height: auto; }
-    .session-title { color: #d4d4d4; width: 1fr; overflow-x: hidden; text-overflow: ellipsis; }
+    .session-title { color: #d4d4d4; width: 1fr; height: 1; text-wrap: nowrap; text-overflow: ellipsis; }
     .session-meta { color: #8e8e8e; }
     #session-actions { height: 1; margin-top: 1; }
     #session-actions Button { height: 1; min-width: 0; border: none; background: #242424; color: #d4d4d4; padding: 0 2; }
