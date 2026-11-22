@@ -40,15 +40,15 @@ class MemoryUseCases:
 
     # ---------- Inferences ----------
 
-    def load_inference_review(self) -> InferenceReview:
+    def load_inference_review(self, *, include_sources: bool = True) -> InferenceReview:
         items = self.service.list_inferences()
-        return InferenceReview(items, self._sources(items))
+        return InferenceReview(items, self._sources(items) if items and include_sources else {})
 
     def review_inference(
-        self, item_id: str, action: str, text: str | None = None
+        self, item_id: str, action: str, text: str | None = None, *, include_sources: bool = True
     ) -> InferenceReview:
         updated = self.service.review_inference(item_id, action, text)
-        items = self.service.list_inferences()
+        review = self.load_inference_review(include_sources=include_sources)
         feedback = {
             "confirm": "Confirmed.",
             "reject": "Rejected.",
@@ -57,8 +57,8 @@ class MemoryUseCases:
             else "No changes.",
         }.get(action)
         return InferenceReview(
-            items,
-            self._sources(items),
+            review.items,
+            review.sources,
             action=action,
             updated_id=updated.id,
             feedback=feedback,
@@ -77,6 +77,9 @@ class MemoryUseCases:
 
     def topics(self) -> list[dict]:
         return self.service.topics()
+
+    def topic_directory(self) -> list[dict[str, str]]:
+        return self.service.store.topic_directory()
 
     def topic_entries(self, topic: str):
         return self.service.topic_entries(topic)

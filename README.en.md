@@ -65,7 +65,13 @@ The default entry is `~/.syvrio/config.toml`. Select another entry with `--confi
 | `chat.toml` | Context window, compaction, output reserve and tool budgets |
 | `memory.toml` | Retrieval, embeddings, automatic recall, distillation and Dream |
 
+Provider environment variables take precedence. Settings and `syvrio setup` save keys in the system keyring. On Linux or WSL without a keyring backend, Syvrio can encrypt keys with `systemd-creds --user`. Encrypted credentials are stored under `syvrio/credentials/` in the user data directory. Set `SYVRIO_CREDENTIALS_DIR` to use a dedicated absolute path. Add your keys again when moving to another machine or OS account.
+
 For example, set `default_limit = 15` under `[retrieval]` in `memory.toml` to request up to 15 results by default. Chat prefetch uses `[recall].auto_recall` independently.
+
+Dream has its own `[dream].context_window` in `memory.toml`, defaulting to 200,000 tokens. It generates the profile first, then proposes inferences. Each stage sends all its evidence in one request when its input and output allowance fit. Larger inputs resume in batches. A smaller advertised model window takes precedence.
+
+A model change takes effect on the next Dream request. After a failure, switch models and run `/dream run` to resume from the last saved position. Changes to the underlying facts or confirmed inferences cause Dream to rebuild the profile from the updated evidence.
 
 The first load migrates a legacy single file in place and drops obsolete options. Removing an override or an optional group file restores the corresponding defaults on the next load. A missing explicitly selected entry stops startup. Repair the installation if a packaged defaults file is missing.
 
@@ -77,7 +83,7 @@ Each outgoing message keeps its delivery ID across retries. The web app retains 
 
 - **Sending and undoing.** In the browser, Send becomes Stop in the same position while a reply is in progress. Press Enter during a reply to queue a message for the end of the turn. Ctrl+Enter requests insertion at a safe point in the current turn. Tool calls must finish before insertion. `/undo` interrupts the latest turn, restores eligible local file changes and puts the sent text back in the composer. In the browser, hover over the latest user message to undo or edit and resend it. The edit replaces the original turn when it is saved. If saving fails, the original messages, attachments and memory changes remain available. You can revise or retry the draft after refreshing. Later edits or references from another session can block the entire undo.
 - **Documents and images.** Click the circular **+** inside the web composer or press **Ctrl+O** in the TUI to attach local files. Each message supports up to eight files, 20 MiB per file and 40 MiB in total. Models can read documents. Vision-capable models can also analyze PNG, JPEG, WebP and GIF images. The `/import` chat command opens the same local file picker as **+**. Selected files stay in the draft until you press Send or Enter. The model can then read or summarize the files, or save facts when you ask it to.
-- **Sessions and models.** Browse and manage conversations with `/sessions`. After the first complete exchange, the model suggests a short title in the language of the conversation. Use `/rename` to set your own title. While a reply is streaming, use `/model` to select a model, `/think` to choose the reasoning level, and `/context` to set the context window. Each turn keeps its original settings when it continues after a tool call. Queued messages use the latest settings when their turn starts. Expand reasoning and tool details in the conversation. Type `/` to see the available commands.
+- **Sessions and models.** Browse and manage conversations with `/sessions`. After the first complete exchange, the model suggests a short title in the language of the conversation. Edit the title in the Web header or use `/rename`. Titles can contain up to 80 characters. Longer titles prompt you to revise them. While a reply is streaming, use `/model` to select a model, `/think` to choose the reasoning level, and `/context` to set the context window. Each turn keeps its original settings when it continues after a tool call. Queued messages use the latest settings when their turn starts. Expand reasoning and tool details in the conversation. Type `/` to see the available commands.
 - **Context compaction.** Sending a message and running `/compact` use the same threshold. When estimated input reaches 80% of the available input budget (the default), completed conversation history and tool results since the previous summary are folded into the summary. The input budget reserves room for the model's output. The original messages remain in the session JSONL. Background distillation processes each original user message and commits its progress with the facts it saved. Switching sessions, exiting or restarting the backend can resume unfinished work.
 
 ## Memory, review and profiles
@@ -90,7 +96,8 @@ Formal memories are Markdown entries organized by topic. Each has a stable ID, t
 | `/pending` | Open Pending in the upper right of the web app. Search by topic, text or ID. `/pending edit <id>` opens the full text. Saving the original wording requires choosing Save unchanged. Edited facts can receive context from their trusted source in the background. |
 | `/inferences` | Scroll the full list, filter by status, and search by text, category or ID. Confirmed inferences are stored separately from formal facts. |
 | `/profile` | Read the most recently published full profile. |
-| `/dream` | First update the full profile from active facts and confirmed inferences, then generate new hypotheses in batches. Use `/dream status`, `/dream cancel` and `/dream resume` to inspect, cancel or resume a job. |
+| `/topics` | Browse topics by category and filter by title or path. Open a topic to read its active entries. Returning to the list restores your filter and position. |
+| `/dream` | Alias for `/dream run`. Confirm to let the backend schedule profile updates and generate hypotheses for review. Use `/dream status` to see progress, retries or failures. |
 
 A model proposes a pending item when a question still needs the user's decision after reviewing recalled facts and active candidates. Invalid input such as credentials is blocked at write time. Deprecation preserves memory IDs. An undo of the latest turn can restore the previous files, including removal of a newly created ID, after checking for intervening changes and references.
 
@@ -104,7 +111,7 @@ syvrio recall "drink preferences"
 syvrio recall "museum visits" --from 2024 --to 2025 --location Hangzhou
 syvrio pending
 syvrio profile
-syvrio dream --requests 5
+syvrio dream status
 syvrio status
 ```
 

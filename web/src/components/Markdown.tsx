@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import ReactMarkdown from 'react-markdown';
+import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeSanitize from 'rehype-sanitize';
 
@@ -25,15 +25,27 @@ function CodeBlock({ language, content }: { language: string; content: string })
   );
 }
 
+// Read-only documents can cite links and images without navigating or loading them.
+const readingReferences: Components = {
+  a({ href, children }) {
+    return <span>{children}{href && children !== href && <span className="reading-reference"> ({href})</span>}</span>;
+  },
+  img({ src, alt }) {
+    return <span>{alt || src || 'Image'}{alt && src && <span className="reading-reference"> ({src})</span>}</span>;
+  },
+};
+
 /** react-markdown never renders raw HTML; rehype-sanitize is a second boundary. */
-export function Markdown({ text }: { text: string }) {
+export function Markdown({ text, reading = false }: { text: string; reading?: boolean }) {
   return (
     <div className="markdown">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         rehypePlugins={[rehypeSanitize]}
         components={{
+          ...(reading ? readingReferences : {}),
           code({ className, children }) {
+            if (reading) return <code className={className}>{children}</code>;
             const language = /language-([\w+-]+)/.exec(className || '')?.[1] || '';
             const content = String(children).replace(/\n$/, '');
             const block = Boolean(language) || content.includes('\n');

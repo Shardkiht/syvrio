@@ -43,6 +43,27 @@ pytestmark = pytest.mark.web
 BASE_URL = "http://127.0.0.1:8765"
 
 
+def test_rename_length_agrees_for_command_and_title_editor(client, backend):
+    session_id = backend._sessions.create().id
+    route = f"/api/sessions/{session_id}"
+    assert client.post(f"{route}/switch").status_code == 200
+    valid = "🌙" * 80
+    assert client.put(f"{route}/title", json={"title": valid}).status_code == 204
+    oversized = valid + "星"
+    rejected = client.put(f"{route}/title", json={"title": oversized})
+    assert rejected.status_code == 422
+    result = client.post(
+        "/api/commands",
+        json={
+            "line": f"/rename {oversized}",
+            "session_id": session_id,
+        },
+    ).json()
+    assert result["status"] == "error"
+    assert result["message"] == rejected.json()["error"]["message"]
+    assert client.get("/api/sessions").json()["items"][0]["title"] == valid
+
+
 @pytest.mark.parametrize("upload", [False, True])
 @pytest.mark.parametrize("existing_session", [False, True])
 def test_concurrent_redelivery_returns_one_turn_even_if_first_receipt_was_lost(
@@ -1630,18 +1651,14 @@ def test_static_files_and_spa_fallback(backend, tmp_path):
 # ---------- command concurrency ----------
 
 
-def test_long_command_keeps_health_and_cancel_responsive(backend, monkeypatch):
+def test_long_command_keeps_health_and_dream_status_responsive(backend, monkeypatch):
     entered = threading.Event()
     release = threading.Event()
-    cancelled = []
-    monkeypatch.setattr(backend._app_service.reflection, "run", lambda *a, **k: None)
-    monkeypatch.setattr(
-        backend._app_service.reflection, "cancel", lambda *a, **k: cancelled.append(True)
-    )
+    backend._background.stop()
     real_execute = backend._commands.execute
 
     def slow_execute(line, *, busy=False, confirmed=False):
-        if line.strip() == "/dream 1":
+        if line.strip() == "/dream run":
             entered.set()
             assert release.wait(timeout=10), "command was never released"
         return real_execute(line, busy=busy, confirmed=confirmed)
@@ -1653,7 +1670,7 @@ def test_long_command_keeps_health_and_cancel_responsive(backend, monkeypatch):
     with ThreadPoolExecutor(max_workers=1) as pool:
         future = pool.submit(
             lambda: command_client.post(
-                "/api/commands", json={"line": "/dream 1", "confirmed": True}
+                "/api/commands", json={"line": "/dream run", "confirmed": True}
             )
         )
         assert entered.wait(timeout=10)
@@ -1663,12 +1680,11 @@ def test_long_command_keeps_health_and_cancel_responsive(backend, monkeypatch):
         chat = controller.post("/api/chat", json={"message": "hi"})
         assert chat.status_code == 409
         assert chat.json()["error"]["code"] == "busy"
-        # /dream cancel bypasses the command mutex and interrupts the run.
-        cancel = controller.post("/api/commands", json={"line": "/dream cancel"})
-        assert cancel.status_code == 200
-        assert cancelled
+        # Reading progress stays available while the manual submission holds the command mutex.
+        status = controller.post("/api/commands", json={"line": "/dream status"})
+        assert status.status_code == 200 and status.json()["data"]["state"] == "idle"
         release.set()
-        assert future.result(timeout=10).status_code == 200
+        assert future.result(timeout=10).json()["data"]["state"] == "queued"
     assert backend.scheduling.activity() == (False, None)
     assert backend.active_turn_id() is None
 
@@ -1733,7 +1749,7 @@ def test_background_title_and_manual_rename_across_views(client, backend, monkey
     entered, release, finished = (threading.Event() for _ in range(3))
     original_process = titles.process
     seen = []
-    generated, manual = "道路结冰原因", "手动指定标题"
+    generated, manual = "道路结冰原因", "完整标题" * 19 + "保留结尾"
     question, answer = "道路为什么会结冰？", "路面温度低于冰点时，水会凝固。"
 
     def ask(service, prompt, payload, schema):

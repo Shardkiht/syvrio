@@ -8,6 +8,7 @@ from urllib.parse import quote
 
 from textual.widgets import Input
 
+from ..application.commands import parse_command
 from ..memory.models import Inference, PendingItem
 from .chat_widgets import (
     ModelPickerScreen,
@@ -46,7 +47,7 @@ class ResidentCommands:
             screen.show_error(str(exc))
 
     async def _command(self, line, *, confirmed=False, extra=None, review_screen=None):
-        name, _, argument = line.lstrip("/").partition(" ")
+        name, argument = parse_command(line)
         origin, version = self.screen, self._version
         # A reopened review must read after the preceding decision has finished.
         lock = self._submitting if name == "new" else self._review_locks.get(name, nullcontext())
@@ -186,11 +187,11 @@ class ResidentCommands:
                     searchable=True,
                 )
             )
-        elif intent == "dream" and values.get("rows"):
+        elif intent == "dream" and argument.strip().lower() == "status":
             self.push_screen(
                 PickScreen(
                     "Dream",
-                    [(row["text"], row["id"]) for row in values["rows"]],
+                    [("Refresh status", "status"), ("Run Dream", "run")],
                     lambda key: key and self._submit_command("/dream " + key),
                     detail=message,
                 )

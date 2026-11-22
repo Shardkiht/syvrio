@@ -109,8 +109,8 @@ export function ProvidersSection({ onChanged, refreshControl }: {
     <div className="settings-section" data-testid="providers-section">
       <div className="settings-section-title">Providers</div>
       <p className="settings-hint">
-        API keys are stored in the system credential store and are never sent back
-        to the browser. Removing a provider deletes its saved key.
+        The backend stores API keys using your operating system’s credential protection.
+        Removing a provider deletes its saved key.
       </p>
       {refreshControl}
       <div className="providers-list" data-testid="providers-list">

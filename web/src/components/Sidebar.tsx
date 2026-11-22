@@ -3,6 +3,7 @@ import { ArchiveIcon, PanelIcon, PlusIcon } from './Icons';
 
 export function Sidebar({
   sessions,
+  previewTitle,
   replyingSessionIds,
   currentId,
   open,
@@ -13,6 +14,7 @@ export function Sidebar({
   onClose,
 }: {
   sessions: SessionInfo[];
+  previewTitle: (session: SessionInfo) => string;
   replyingSessionIds: ReadonlySet<string>;
   currentId: string | null;
   open: boolean;
@@ -67,7 +69,7 @@ export function Sidebar({
                 {replyingSessionIds.has(session.id) && (
                   <span className="session-reply-dot" role="img" aria-label="Generating a reply" title="Generating a reply" />
                 )}
-                <span className="session-title">{session.title}</span>
+                <span className="session-title">{previewTitle(session)}</span>
               </button>
               <button
                 type="button"

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { CommandPalette, CommandPanelDialog, CommandResultDialog, ConfirmDialog, SessionCommandDialog } from './components/CommandUI';
+import { CommandPalette, CommandResultDialog, ConfirmDialog, SessionCommandDialog } from './components/CommandUI';
 import { Composer, type ComposerDraft } from './components/Composer';
 import type { MeterReading } from './components/ContextMeter';
 import { CommandsIcon, InboxIcon, PanelIcon, SettingsIcon } from './components/Icons';
@@ -7,12 +7,24 @@ import { RecoveredEdit } from './components/MessageActions';
 import { MessageList } from './components/MessageList';
 import { PendingReview } from './components/PendingReview';
 import { SettingsPanel } from './components/SettingsPanel';
+import { SurfacePresence } from './components/SurfacePresence';
 import { Sidebar } from './components/Sidebar';
+import { SessionTitle, useSessionTitleEdits } from './components/SessionTitle';
 import { ArchivePanel } from './components/ArchivePanel';
+import { DreamPanel } from './components/DreamPanel';
+import { TopicBrowser } from './components/TopicBrowser';
+import { api } from './api/client';
+import { panelFor } from './state/commands';
 import { useChat } from './hooks/useChat';
 import { isComposing, matchShortcut } from './state/shortcuts';
 import { applyTheme, readTheme, watchSystemTheme, type ThemeMode } from './state/theme';
-import type { SessionInfo } from './types';
+
+async function readTopicPanel(line: string, session: string | null) {
+  const response = await api.runCommand({ line, session_id: session, confirmed: false });
+  const panel = panelFor(response);
+  if (panel && 'kind' in panel && panel.kind === 'topics') return panel;
+  throw new Error(response.message || 'Could not read topics.');
+}
 
 export default function App() {
   const picker = useRef<HTMLInputElement>(null);
@@ -54,23 +66,13 @@ export default function App() {
     newSession,
     selectSession,
     catalog,
-    paletteOpen,
-    setPaletteOpen,
-    panel,
-    setPanel,
-    confirm,
-    setConfirm,
-    confirmCommand,
-    deleteTarget,
-    setDeleteTarget,
+    dialog, openDialog, closeDialog, confirmCommand,
     requestDeleteSession,
     archiveSession,
     refreshSessions,
+    renameSession,
     confirmDeleteSession,
-    settingsOpen,
-    setSettingsOpen,
     refreshHealth,
-    runPanelCommand,
     reviewMemory,
     runCommand,
     handleEscape,
@@ -83,7 +85,9 @@ export default function App() {
   const chat = preview ?? boundChat;
   const model = health ? `${health.provider}/${health.model}` : 'Loading...';
   const empty = chat.messages.length === 0 && !loadingHistory;
-  const title = sessions.find((session) => session.id === chat.sessionId)?.title || 'New chat';
+  const currentSession = sessions.find(session => session.id === chat.sessionId);
+  const title = currentSession?.title || 'New chat';
+  const titleEditor = useSessionTitleEdits(renameSession);
 
   const [theme, setTheme] = useState<ThemeMode>(readTheme);
   const themeBooted = useRef(false);
@@ -118,16 +122,9 @@ export default function App() {
     };
   }, []);
 
-  const [archiveOpen, setArchiveOpen] = useState(false);
-  const [archivePrompt, setArchivePrompt] = useState<{ session: SessionInfo; trigger: HTMLButtonElement } | null>(null);
-  const modalOpen = Boolean(archivePrompt || archiveOpen || paletteOpen || confirm || deleteTarget || settingsOpen || panel);
-  const cancelArchive = useCallback(() => {
-    setArchivePrompt(null);
-    const trigger = archivePrompt?.trigger;
-    requestAnimationFrame(() => {
-      if (trigger?.isConnected && document.activeElement === document.body) trigger.focus({ preventScroll: true });
-    });
-  }, [archivePrompt]);
+  const modalOpen = dialog !== null;
+  const panel = dialog?.kind === 'panel' ? dialog.panel : null;
+  const deleteTarget = dialog?.kind === 'delete' ? dialog.target : null;
 
   // One global listener; every binding lives in state/shortcuts.ts.
   useEffect(() => {
@@ -135,64 +132,46 @@ export default function App() {
       if (event.defaultPrevented || isComposing(event)) return;
       const action = matchShortcut(event);
       if (!action) return;
-      if (archivePrompt) {
-        if (action === 'escape') {
-          event.preventDefault();
-          cancelArchive();
-        }
-        return;
-      }
       if (action === 'escape') {
         if (handleEscape()) {
           event.preventDefault();
-          if (modalOpen) focusComposer();
         }
         return;
       }
-      if (modalOpen) {
-        if (action === 'settings' && panel && 'prefix' in panel && panel.prefix === '/model') {
-          event.preventDefault();
-          setPanel(null);
-          setSettingsOpen('providers');
-        }
-        return;
-      }
+      if (modalOpen) return;
       event.preventDefault();
       if (action === 'palette') {
-        setPanel(null);
-        setPaletteOpen(true);
+        openDialog({ kind: 'palette' });
       } else if (action === 'sidebar') {
         toggleSidebar();
       } else if (action === 'model') {
         void runCommand('/model');
       } else if (action === 'settings') {
-        setSettingsOpen('model');
+        openDialog({ kind: 'settings', section: 'model' });
       } else if (action === 'stop' && chat.busy) {
         void stop();
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [archivePrompt, cancelArchive, chat.busy, focusComposer, handleEscape, modalOpen, panel, runCommand, setPaletteOpen, setPanel, setSettingsOpen, stop, toggleSidebar]);
-
-  const closePalette = () => { setPaletteOpen(false); focusComposer(); };
-  const closeConfirm = () => { setConfirm(null); focusComposer(); };
-  const closeDelete = () => setDeleteTarget(null);
-  const closeSettings = () => { setSettingsOpen(false); focusComposer(); };
-  const closePanel = () => { setPanel(null); focusComposer(); };
+  }, [chat.busy, handleEscape, modalOpen, openDialog, runCommand, stop, toggleSidebar]);
 
   return (
     <>
       <div ref={(node) => { node?.toggleAttribute('inert', modalOpen); }} className={`app${sidebarOpen ? '' : ' sidebar-collapsed'}`}>
         <Sidebar
           sessions={sessions}
+          previewTitle={session => {
+            const edit = titleEditor.edits[session.id];
+            return (!edit?.error && edit?.value.trim()) || session.title;
+          }}
           replyingSessionIds={replyingSessionIds}
           currentId={chat.sessionId}
           open={sidebarOpen}
           onNew={() => void newSession()}
           onSelect={(id) => void selectSession(id)}
-          onArchive={(session, trigger) => setArchivePrompt({ session, trigger })}
-          onOpenArchive={() => setArchiveOpen(true)}
+          onArchive={(session, trigger) => openDialog({ kind: 'archive-confirm', session }, trigger)}
+          onOpenArchive={() => openDialog({ kind: 'archive' })}
           onClose={() => setSidebarOpen(false)}
         />
         <main className={`main${empty ? ' is-empty' : ''}`}>
@@ -210,7 +189,9 @@ export default function App() {
               <PanelIcon size={20} />
             </button>
             <div className="topbar-identity">
-              <div className="topbar-title" title={title}>{title}</div>
+              {currentSession
+                ? <SessionTitle key={currentSession.id} session={currentSession} editor={titleEditor} />
+                : <div className="topbar-title">{title}</div>}
               <div className="topbar-model">
                 <div
                   className={`connection ${online ? 'online' : 'offline'}`}
@@ -241,7 +222,7 @@ export default function App() {
               <button
                 type="button"
                 className="icon-button commands-toggle"
-                onClick={() => setPaletteOpen(true)}
+                onClick={() => openDialog({ kind: 'palette' })}
                 aria-label="Open commands"
                 title="Commands (Alt+P)"
                 data-testid="commands-toggle"
@@ -251,7 +232,7 @@ export default function App() {
               <button
                 type="button"
                 className="icon-button commands-toggle"
-                onClick={() => setSettingsOpen('model')}
+                onClick={() => openDialog({ kind: 'settings', section: 'model' })}
                 aria-label="Open settings"
                 title="Settings (Alt+S)"
                 data-testid="settings-toggle"
@@ -318,84 +299,108 @@ export default function App() {
         </main>
       </div>
 
-      {archivePrompt && (
-        <ConfirmDialog
-          title="Archive conversation?"
-          testId="archive-confirm-overlay"
-          message={`Move “${archivePrompt.session.title}” to Archive? You can restore it later.`}
-          focusCancel
-          confirmLabel="Archive"
-          onCancel={cancelArchive}
-          onConfirm={() => {
-            setArchivePrompt(null);
-            void archiveSession(archivePrompt.session);
-            focusComposer();
-          }}
-        />
-      )}
-      {paletteOpen && !archivePrompt && !confirm && !deleteTarget && !settingsOpen && (
-        <CommandPalette
-          catalog={catalog}
-          onRun={(line) => {
-            setPaletteOpen(false);
-            void runCommand(line);
-          }}
-          onClose={closePalette}
-        />
-      )}
-      {confirm && !archivePrompt && !deleteTarget && !settingsOpen && (
-        <ConfirmDialog
-          message={confirm.message}
-          onConfirm={() => void confirmCommand()}
-          onCancel={closeConfirm}
-        />
-      )}
-      {archiveOpen && !archivePrompt && !deleteTarget && <ArchivePanel onClose={() => setArchiveOpen(false)}
-        onRestore={refreshSessions} onDelete={requestDeleteSession} />}
-      {deleteTarget && !archivePrompt && !settingsOpen && (
-        <ConfirmDialog
-          title="Delete session"
-          testId="delete-overlay"
-          focusCancel
-          confirmLabel="Delete permanently"
-          confirmDisabled={!deleteTarget.preview}
-          message={`Permanently delete "${deleteTarget.title}" and its uploaded files from Archive? This cannot be undone.`}
-          onConfirm={() => { void confirmDeleteSession(); }}
-          onCancel={closeDelete}
-        >
-          {deleteTarget.notice && <div role="status">{deleteTarget.notice}</div>}
-          {!deleteTarget.preview && !deleteTarget.notice && <div role="status">Reading related pending items…</div>}
-          {deleteTarget.preview && deleteTarget.preview.pending.length > 0 && (
-            <div className="deletion-pending" tabIndex={0}>
-              <strong>Pending items that will also be deleted ({deleteTarget.preview.pending.length})</strong>
-              <ul>{deleteTarget.preview.pending.map(item => <li key={item.id}>{item.text}</li>)}</ul>
-            </div>
-          )}
-        </ConfirmDialog>
-      )}
-      {settingsOpen && !archivePrompt && (
-        <SettingsPanel
-          health={health}
-          initialSection={settingsOpen}
-          theme={theme}
-          onTheme={setTheme}
-          onClose={closeSettings}
-          onChanged={() => { void refreshHealth(); }}
-        />
-      )}
-      {panel && !archivePrompt && !paletteOpen && !confirm && !deleteTarget && !settingsOpen && ('rows' in panel ? (
-        <PendingReview key={panel.kind} panel={panel}
-          onResolve={(action, id, text) => reviewMemory(panel.kind, action, id, text)}
-          onClose={closePanel} />
-      ) : 'options' in panel ? (
-        <CommandPanelDialog panel={panel} onPick={(line) => void runPanelCommand(line)} onClose={closePanel} />
-      ) : 'kind' in panel ? (
-        <SessionCommandDialog sessions={sessions} currentId={chat.sessionId}
-          onSelect={(id) => { closePanel(); void selectSession(id); }} onClose={closePanel} />
-      ) : (
-        <CommandResultDialog key={panel.title} panel={panel} title={title}
-          onRun={(line) => void runPanelCommand(line)} onClose={closePanel} />
-      ))}
+      <SurfacePresence modal>
+        {dialog?.kind === 'archive-confirm' && (
+          <ConfirmDialog
+            key="archive-confirm"
+            title="Archive conversation?"
+            testId="archive-confirm-overlay"
+            message={`Move “${dialog.session.title}” to Archive? You can restore it later.`}
+            focusCancel
+            confirmLabel="Archive"
+            onCancel={closeDialog}
+            onConfirm={() => {
+              closeDialog();
+              void archiveSession(dialog.session);
+              focusComposer();
+            }}
+          />
+        )}
+        {dialog?.kind === 'palette' && (
+          <CommandPalette
+            key="palette"
+            catalog={catalog}
+            onRun={(line) => {
+              closeDialog();
+              void runCommand(line);
+            }}
+            onClose={closeDialog}
+          />
+        )}
+        {dialog?.kind === 'confirm' && (
+          <ConfirmDialog
+            key="command-confirm"
+            message={dialog.message}
+            onConfirm={() => void confirmCommand()}
+            onCancel={closeDialog}
+          />
+        )}
+        {dialog?.kind === 'archive' && <ArchivePanel key="archive" initialSelected={dialog.selected} onClose={closeDialog}
+          onRestore={refreshSessions} onDelete={requestDeleteSession} />}
+        {deleteTarget && (
+          <ConfirmDialog
+            key="delete"
+            title="Delete session"
+            testId="delete-overlay"
+            focusCancel
+            confirmLabel="Delete permanently"
+            confirmDisabled={!deleteTarget.preview}
+            message={`Permanently delete "${deleteTarget.title}" and its uploaded files from Archive? This cannot be undone.`}
+            onConfirm={() => { void confirmDeleteSession(); }}
+            onCancel={closeDialog}
+          >
+            {deleteTarget.notice && <div role="status">{deleteTarget.notice}</div>}
+            {!deleteTarget.preview && !deleteTarget.notice && <div role="status">Reading related pending items…</div>}
+            {deleteTarget.preview && deleteTarget.preview.pending.length > 0 && (
+              <div className="deletion-pending" tabIndex={0}>
+                <strong>Pending items that will also be deleted ({deleteTarget.preview.pending.length})</strong>
+                <ul>{deleteTarget.preview.pending.map(item => <li key={item.id}>{item.text}</li>)}</ul>
+              </div>
+            )}
+          </ConfirmDialog>
+        )}
+        {dialog?.kind === 'settings' && (
+          <SettingsPanel
+            key="settings"
+            health={health}
+            initialSection={typeof dialog.section === 'object' ? dialog.section.section : dialog.section}
+            initialNotice={typeof dialog.section === 'object' ? dialog.section.notice : undefined}
+            theme={theme}
+            onTheme={setTheme}
+            onClose={closeDialog}
+            onChanged={() => { void refreshHealth(); }}
+          />
+        )}
+        {panel && ('rows' in panel ? (
+          <PendingReview key={panel.kind} panel={panel}
+            onRetry={() => void runCommand('/' + panel.kind)}
+            onResolve={(action, id, text) => reviewMemory(panel.kind, action, id, text)}
+            onClose={closeDialog} />
+        ) : 'kind' in panel && panel.kind === 'topics' ? (
+          <TopicBrowser key="topics" initialTopics={panel.topics} initialDocument={panel.document}
+            readTopics={async () => {
+              const list = await readTopicPanel('/topics', null);
+              if (!list.topics) throw new Error('The topic list is unavailable.');
+              return list.topics;
+            }}
+            readTopic={async topic => {
+              const detail = await readTopicPanel(`/topics ${topic}`, null);
+              if (!detail.document) throw new Error('This topic is unavailable.');
+              return detail.document;
+            }}
+            onClose={closeDialog} />
+        ) : 'kind' in panel && panel.kind === 'dream' ? (
+          <DreamPanel key="dream" panel={panel} onPick={runCommand} onClose={closeDialog} />
+        ) : 'kind' in panel ? (
+          <SessionCommandDialog key="sessions" sessions={sessions} currentId={chat.sessionId}
+            onNew={() => { closeDialog(); void newSession(); }}
+            onArchive={() => { openDialog({ kind: 'archive' }); }}
+            onSelect={(id) => { closeDialog(); void selectSession(id); }} onClose={closeDialog} />
+        ) : (
+          <CommandResultDialog key={panel.title} panel={panel} title={title}
+            onRun={runCommand} onClose={closeDialog} />
+        ))}
+      </SurfacePresence>
     </>
   );
 }

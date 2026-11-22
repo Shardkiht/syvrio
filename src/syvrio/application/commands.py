@@ -12,6 +12,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from ..errors import ConversationError
 from ..infra.config import MIN_CONTEXT_WINDOW
 from ..infra.diagnostics import record_event
 from ..infra.transaction import vault_transaction
@@ -38,7 +39,7 @@ SLASH_COMMANDS = [
     ("pending", "/pending", "Review pending"),
     ("inferences", "/inferences", "View and review inferences"),
     ("profile", "/profile", "View the generated profile"),
-    ("dream", "/dream [n|cancel|resume|status]", "Run reflection, cancel or view status"),
+    ("dream", "/dream [run|status]", "Update your profile and generate hypotheses"),
     ("topics", "/topics [name]", "Browse topics"),
     ("help", "/help", "Show commands"),
     ("exit", "/exit", "Quit"),
@@ -48,9 +49,8 @@ SLASH_COMMANDS = [
 SLASH_SUBCOMMANDS = {
     "model": (("refresh", "Refresh model list"),),
     "dream": (
-        ("cancel", "Cancel reflection"),
-        ("resume", "Resume automatic reflection"),
-        ("status", "Show reflection status"),
+        ("run", "Update your profile and propose hypotheses for review"),
+        ("status", "Show Dream status and available actions"),
     ),
 }
 
@@ -71,6 +71,38 @@ def slash_matches(prefix: str) -> list[tuple[str, str, str]]:
 
 def command_names() -> frozenset[str]:
     return frozenset(name for name, _, _ in SLASH_COMMANDS)
+
+
+REVIEW_ACTIONS = {
+    "pending": frozenset({"approve", "reject", "edit"}),
+    "inferences": frozenset({"confirm", "reject", "correct", "edit"}),
+}
+MODEL_REFRESH = frozenset({"refresh", "--refresh", "-r"})
+
+
+def is_command_form(name: str, argument: str) -> bool:
+    """Check fixed forms before confirmation, scheduling or client-side actions."""
+    if name not in command_names():
+        return False
+    argument = argument.strip()
+    if not argument or name in {"rename", "topics", "think", "context"}:
+        return True
+    if name == "model":
+        provider, _, model = argument.partition("/")
+        return argument.lower() in MODEL_REFRESH or bool(provider and model)
+    if name == "dream":
+        return argument.lower() in {"run", "status"}
+    if name == "git":
+        return argument.lower() in {"sync", "status"}
+    if name in REVIEW_ACTIONS:
+        parts = argument.split(maxsplit=2)
+        action = parts[0].lower()
+        return (
+            action in REVIEW_ACTIONS[name]
+            and len(parts) >= 2
+            and (len(parts) == 2 or action in {"edit", "correct"})
+        )
+    return False
 
 
 def parse_command(line: str) -> tuple[str, str]:
@@ -137,9 +169,7 @@ WEB_CAPABILITIES: dict[str, WebCapability] = {
         "profile",
         note="View the latest generated profile. Use /dream to request regeneration.",
     ),
-    "dream": WebCapability(
-        SERVER, "dream", note="Status, cancel or run: /dream [status|cancel|<n>]."
-    ),
+    "dream": WebCapability(SERVER, "dream", note="Run Dream or check its status."),
     "topics": WebCapability(SERVER, "topics"),
     "help": WebCapability(SERVER, "help", shortcut="Ctrl+Shift+P / Alt+P"),
     "exit": WebCapability(
@@ -201,6 +231,10 @@ class CommandResult:
     session_id: str | None = None
     refresh_sessions: bool = False
     refresh_history: bool = False
+
+    @classmethod
+    def invalid(cls, name: str) -> CommandResult:
+        return cls("unknown", name, message="Invalid command.")
 
 
 def _inference_data(items) -> dict[str, Any]:
@@ -264,15 +298,12 @@ class CommandUseCases:
         }
     )
     TURN_SETTINGS = frozenset({"model", "think", "context"})
-    MODEL_REFRESH = frozenset({"refresh", "--refresh", "-r"})
 
     # Side-effecting command forms need a server-side confirmation even when
     # the browser dialog was already shown (the dialog is not an auth boundary).
     WRITE_ACTIONS = {
-        "pending": frozenset({"approve", "reject", "edit"}),
-        "inferences": frozenset({"confirm", "reject", "correct", "edit"}),
-        "dream": frozenset({"resume"}),
-        "git": frozenset({"sync", "commit", "push"}),
+        **REVIEW_ACTIONS,
+        "git": frozenset({"sync"}),
     }
 
     @classmethod
@@ -284,7 +315,7 @@ class CommandUseCases:
         return (
             bool(argument)
             and name in cls.TURN_SETTINGS
-            and not (name == "model" and argument.lower() in cls.MODEL_REFRESH)
+            and not (name == "model" and argument.lower() in MODEL_REFRESH)
         )
 
     @staticmethod
@@ -299,8 +330,10 @@ class CommandUseCases:
         """Whether a command *form* writes data or runs a long job.
 
         The busy gate and the Web command mutex key off the form, not the name:
-        /dream status is read-only while /dream 3 runs a reflection job.
+        /dream status is read-only while /dream run submits a reflection job.
         """
+        if not is_command_form(name, argument):
+            return False
         edit = cls._pending_edit(name, argument)
         if edit is not None:
             return bool(edit[1])
@@ -312,10 +345,10 @@ class CommandUseCases:
 
     @classmethod
     def _needs_confirmation(cls, name: str, argument: str) -> bool:
+        if name == "dream":
+            return argument.strip().lower() in {"", "run"}
         head = argument.split(maxsplit=1)[0].lower() if argument.strip() else ""
-        if head in cls.WRITE_ACTIONS.get(name, ()):
-            return True
-        return name == "dream" and head.isdigit()
+        return head in cls.WRITE_ACTIONS.get(name, ())
 
     def execute(
         self,
@@ -326,18 +359,9 @@ class CommandUseCases:
         expected_message_id: str | None = None,
     ) -> CommandResult:
         name, argument = parse_command(line)
-        if not line.startswith("/") or name not in command_names():
-            # Never forward an unrecognised slash command to the LLM.
-            return CommandResult(
-                "unknown",
-                name,
-                message=f"Unknown command: /{name}. Type /help for available commands.",
-            )
+        if not is_command_form(name, argument):
+            return CommandResult.invalid(name)
         capability = WEB_CAPABILITIES[name]
-        if name == "import" and argument:
-            return CommandResult(
-                "error", name, message="Use /import without a path to choose files on this device."
-            )
         if capability.support == CLIENT:
             return CommandResult(
                 "client", name, capability.intent, message=capability.note or capability.intent
@@ -377,6 +401,14 @@ class CommandUseCases:
                 )
             # The server re-checks confirmation independently of any browser dialog.
             if (capability.confirm or self._needs_confirmation(name, argument)) and not confirmed:
+                if name == "dream":
+                    return CommandResult(
+                        "confirm_required",
+                        name,
+                        capability.intent,
+                        "Use your saved memories to update your profile and propose "
+                        "hypotheses for your review?",
+                    )
                 description = (
                     " ".join(argument.split(maxsplit=2)[:2])
                     if name in {"pending", "inferences"}
@@ -432,22 +464,39 @@ class CommandUseCases:
 
         if name == "status":
             llm = application.config.llm
-            rows = [
-                f"Provider: {llm.provider}",
-                f"Model: {llm.model}",
-                f"Retrieval: {application.config.retrieval.method}",
-                f"Context window: {application.settings.context_window}",
-                f"Session: {conversation.current_id or '(not created yet)'}",
-                f"Generating: {'yes' if busy else 'no'}",
-                f"Pending review: {application.pending_count}",
-            ]
-            return CommandResult("ok", name, "status", "\n".join(rows))
+            status = {
+                "provider": llm.provider,
+                "model": llm.model,
+                "retrieval": application.config.retrieval.method,
+                "context_window": application.settings.context_window,
+                "session": conversation.current_id,
+                "generating": busy,
+                "pending_review": application.pending_count,
+            }
+            display = {
+                **status,
+                "session": conversation.current_id or "(not created yet)",
+                "generating": "yes" if busy else "no",
+            }
+            message = "\n".join(
+                f"{key.replace('_', ' ').capitalize()}: {value}" for key, value in display.items()
+            )
+            return CommandResult("ok", name, "status", message, data={"status": status})
 
         if name == "summary":
-            if not conversation.has_session:
-                return CommandResult("ok", name, "summary", "This new session has no summary yet.")
-            text = conversation.summary_text() or "This session has no summary yet."
-            return CommandResult("ok", name, "summary", text[:MAX_TEXT])
+            has_session = conversation.has_session
+            text = (
+                conversation.summary_text() or "This session has no summary yet."
+                if has_session
+                else "This new session has no summary yet."
+            )
+            return CommandResult(
+                "ok",
+                name,
+                "summary",
+                text[:MAX_TEXT],
+                data={"can_compact": has_session and not busy},
+            )
 
         if name == "topics":
             if argument:
@@ -456,7 +505,7 @@ class CommandUseCases:
                 return CommandResult(
                     "ok", name, "topics", f"{topic['topic']}\n\n" + "\n".join(lines), data=topic
                 )
-            rows = application.memory.topics()
+            rows = application.memory.topic_directory()
             names = [str(row.get("topic") or row.get("title") or "") for row in rows]
             names = [item for item in names if item]
             return CommandResult(
@@ -464,7 +513,7 @@ class CommandUseCases:
                 name,
                 "topics",
                 f"{len(rows)} topics. " + ", ".join(names) if names else "No topics yet.",
-                data={"count": len(rows), "names": names},
+                data={"count": len(rows), "names": names, "topics": rows},
             )
 
         if name == "pending":
@@ -480,32 +529,25 @@ class CommandUseCases:
                     f"{len(items)} pending item(s)." if items else "No pending items.",
                     data=_pending_data(items),
                 )
-            if head in ("approve", "reject", "edit"):
-                if len(parts) < 2:
-                    return CommandResult("error", name, "pending", f"Usage: /pending {head} <id>")
-                item_id = parts[1]
-                override = parts[2] if len(parts) == 3 else None
-                if head == "reject":
-                    memory.reject(item_id)
-                else:
-                    memory.approve(item_id, override)
-                return CommandResult(
-                    "ok",
-                    name,
-                    "pending",
-                    f"Pending item {item_id}: {head} applied.",
-                    data=_pending_data(memory.pending().items),
-                )
+            item_id = parts[1]
+            override = parts[2] if len(parts) == 3 else None
+            if head == "reject":
+                memory.reject(item_id)
+            else:
+                memory.approve(item_id, override)
             return CommandResult(
-                "error", name, "pending", "Usage: /pending [approve|reject|edit <id>]"
+                "ok",
+                name,
+                "pending",
+                f"Pending item {item_id}: {head} applied.",
+                data=_pending_data(memory.pending().items),
             )
 
         if name == "inferences":
             memory = application.memory
-            head, _, rest = argument.partition(" ")
-            head, rest = head.lower(), rest.strip()
-            if not head:
-                review = memory.load_inference_review()
+            parts = argument.split(maxsplit=2)
+            if not parts:
+                review = memory.load_inference_review(include_sources=False)
                 return CommandResult(
                     "ok",
                     name,
@@ -513,30 +555,19 @@ class CommandUseCases:
                     f"{len(review.items)} inference(s).",
                     data=_inference_data(review.items),
                 )
-            if head in ("confirm", "reject", "correct", "edit"):
-                item_id, _, text = rest.partition(" ")
-                if not item_id:
-                    return CommandResult(
-                        "error", name, "inferences", f"Usage: /inferences {head} <id>"
-                    )
-                action = "correct" if head == "edit" else head
-                result = memory.review_inference(item_id, action, text.strip() or None)
-                return CommandResult(
-                    "ok",
-                    name,
-                    "inferences",
-                    result.feedback or f"Inference {item_id}: {action} applied.",
-                    data={**_inference_data(result.items), "updated_id": result.updated_id},
-                )
+            head, item_id = parts[0].lower(), parts[1]
+            text = parts[2] if len(parts) == 3 else None
+            action = "correct" if head == "edit" else head
+            result = memory.review_inference(item_id, action, text, include_sources=False)
             return CommandResult(
-                "error", name, "inferences", "Usage: /inferences [confirm|reject|correct <id>]"
+                "ok",
+                name,
+                "inferences",
+                result.feedback or f"Inference {item_id}: {action} applied.",
+                data={**_inference_data(result.items), "updated_id": result.updated_id},
             )
 
         if name == "profile":
-            if argument:
-                return CommandResult(
-                    "error", name, "profile", "Use /profile to view or /dream to regenerate."
-                )
             try:
                 snapshot = application.memory.profile()
             except (OSError, UnicodeError) as exc:
@@ -558,36 +589,7 @@ class CommandUseCases:
             )
 
         if name == "dream":
-            reflection = application.reflection
-            head = argument.strip().lower()
-            if head == "cancel":
-                reflection.cancel()
-                return CommandResult("ok", name, "dream", "Dream cancelled.")
-            if head == "resume" or head.isdigit():
-                job = reflection.run("dream", int(head) if head.isdigit() else None)
-                return CommandResult("ok", name, "dream", f"Dream submitted: {job}.")
-            schedule = reflection.schedule()
-            status = reflection.status()
-            lines = [
-                f"Automatic Dream: {'enabled' if schedule.enabled else 'disabled'}",
-                f"State: {status['state']}",
-                f"Next: {schedule.dream_next or '-'}",
-            ]
-            if schedule.dream_pending and status.get("phase"):
-                lines.append(f"Phase: {status['phase']}")
-            return CommandResult(
-                "ok",
-                name,
-                "dream",
-                "\n".join(lines),
-                data={
-                    "kind": "dream",
-                    "rows": [
-                        {"id": "cancel", "text": "Cancel automatic reflection"},
-                        {"id": "1", "text": "Run reflection on 1 item"},
-                    ],
-                },
-            )
+            return application.reflection.command(argument)
 
         if name == "git":
             head = argument.strip().lower()
@@ -656,9 +658,14 @@ class CommandUseCases:
                 return CommandResult(
                     "error", name, "rename", "Send a message first, then rename the session."
                 )
-            conversation.rename_current(argument[:200])
+            try:
+                conversation.rename_current(argument)
+            except ConversationError as exc:
+                if exc.code != "invalid_title":
+                    raise
+                return CommandResult("error", name, "rename", str(exc))
             return CommandResult(
-                "ok", name, "rename", f"Renamed to: {argument[:200]}", refresh_sessions=True
+                "ok", name, "rename", f"Renamed to: {argument}", refresh_sessions=True
             )
 
         if name == "compact":
@@ -708,7 +715,7 @@ class CommandUseCases:
     def _model(self, argument: str) -> CommandResult:
         settings = self.app.settings
         llm = self.app.config.llm
-        refresh = argument.lower() in self.MODEL_REFRESH
+        refresh = argument.lower() in MODEL_REFRESH
 
         if refresh:
             # The TUI refreshes the catalog from a background worker. The Web
@@ -757,14 +764,7 @@ class CommandUseCases:
         if argument and not refresh:
             # Applying a choice is not a list: omit `options` so the browser
             # does not reopen the picker immediately after the selection.
-            provider, separator, model = argument.partition("/")
-            if not separator or not provider or not model:
-                return CommandResult(
-                    "error",
-                    "model",
-                    "model",
-                    "Usage: /model <provider>/<model>. Use /model to list options.",
-                )
+            provider, _, model = argument.partition("/")
             known = any(option.provider == provider and option.model == model for option in options)
             # Providers with no /models list still allow switching by explicit
             # ID on the configured provider; unknown providers stay rejected.
@@ -808,7 +808,7 @@ class CommandUseCases:
             + "\n".join(lines)
             + "\n\n"
             + detail,
-            data={"options": payload},
+            data={"options": payload, **({"refresh_message": detail} if refresh else {})},
         )
 
     def _think(self, argument: str) -> CommandResult:

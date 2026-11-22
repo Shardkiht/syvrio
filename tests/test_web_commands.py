@@ -13,6 +13,7 @@ from uuid import uuid4
 import keyring
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from syvrio.agent.context import ContextManager
 from syvrio.app.command_catalog import SLASH_COMMANDS as TUI_COMMANDS
@@ -143,8 +144,232 @@ def test_unknown_command_is_never_forwarded_to_the_llm(client, backend):
     response = run(client, "/this-does-not-exist")
     assert response.status_code == 200
     assert response.json()["status"] == "unknown"
-    assert "available commands" in response.json()["message"]
+    assert response.json()["message"] == "Invalid command."
     assert backend._runtime.model.calls == 0
+
+
+def test_topic_directory_returns_metadata_and_opens_each_exact_path(client, backend, monkeypatch):
+    assert run(client, "/topics").json()["data"] == {"count": 0, "names": [], "topics": []}
+    service = backend._app_service.memory.service
+    first = service.note("A synthetic reading note.\nWith a second line.", topic="general/reading")
+    second = service.note("A separate synthetic reading note.", topic="projects/reading")
+    service.deprecate(service.note("An old synthetic note.", topic="general/reading").id)
+
+    parsed = []
+    original = service.store.document
+
+    def count_parse(path):
+        parsed.append(path.relative_to(service.paths.vault_dir).as_posix())
+        return original(path)
+
+    monkeypatch.setattr(service.store, "document", count_parse)
+    listing = run(client, "/topics").json()
+    assert parsed == []
+    assert listing["status"] == "ok"
+    data = listing["data"]
+    assert data["count"] == 2
+    assert data["names"] == [row["topic"] for row in data["topics"]] == [first.topic, second.topic]
+    for row, fact in zip(data["topics"], (first, second), strict=True):
+        assert row["title"] == "reading" and row["updated"]
+        detail = run(client, f"/topics {row['topic']}").json()
+        assert parsed == [row["topic"]]
+        parsed.clear()
+        assert detail["status"] == "ok"
+        expected = fact.as_recall().model_dump(exclude_none=True)
+        assert detail["data"] == {"topic": expected["topic"], "entries": [expected]}
+
+
+def test_dream_exposes_only_run_and_status_and_manual_run_advances_retry(client, backend):
+    background = backend._background
+    background.stop()
+    background.service.config.chat.default_budget = 7
+    menu = run(client, "/dream status").json()
+    assert menu["data"]["state"] == "idle"
+    assert menu["data"]["error_type"] is None and menu["data"]["failures"] == 0
+    assert menu["data"]["rows"] == [{"id": "run", "text": "Run Dream"}]
+    catalog = client.get("/api/commands").json()["items"]
+    dream = next(row for row in catalog if row["name"] == "dream")
+    assert {item["name"] for item in dream["subcommands"]} == {"run", "status"}
+    assert run(client, "/dream run").json()["status"] == "confirm_required"
+    confirmation = run(client, "/dream").json()
+    assert confirmation["status"] == "confirm_required"
+    assert confirmation["message"] == (
+        "Use your saved memories to update your profile and propose hypotheses for your review?"
+    )
+    assert background.dream_status()["state"] == "idle"
+    submitted = run(client, "/dream", confirmed=True).json()
+    assert submitted["status"] == "ok" and submitted["data"]["state"] == "queued"
+    assert "queued" in submitted["message"]
+    assert background.dream_status()["remaining_requests"] == 7
+
+    job = background.dream.status()
+    background.dream.failed(TimeoutError(), job["id"], job["generation"])
+    retry = background.dream.status()
+    background._signals["dream"].clear()
+    for line in ("/dream", "/dream run"):
+        assert run(client, line).json()["status"] == "confirm_required"
+    menu = run(client, "/dream status").json()["data"]
+    assert menu["error_type"] == "TimeoutError" and menu["failures"] == 1
+    assert menu["error_at"] == retry["updated_at"]
+    assert menu["retry_at"] == retry["retry_at"] and background.dream.status() == retry
+    assert menu["rows"] == [{"id": "run", "text": "Run Dream"}]
+    assert not background._signals["dream"].is_set()
+    override = run(client, "/dream run", confirmed=True).json()
+    assert background._signals["dream"].is_set()
+    assert override["data"]["retry_at"] is None and "retry now" in override["message"]
+    assert background.dream.status() == {**retry, "retry_at": 0}
+
+
+def test_invalid_command_forms_are_rejected_before_confirmation_or_work(client, backend):
+    background = backend._background
+    background.stop()
+    for line in (
+        "/missing",
+        "/dream 1",
+        "/dream cancel",
+        "/dream resume",
+        "/dream typo",
+        "/dream run 2",
+        "/dream status extra",
+        "/git sync extra",
+        "/git typo",
+        "/pending typo id",
+        "/inferences typo id",
+        "/new typo",
+        "/status extra",
+        "/setup typo",
+        "/model typo",
+        "/profile typo",
+    ):
+        for confirmed in (False, True):
+            result = run(client, line, confirmed=confirmed).json()
+            assert (result["status"], result["message"]) == ("unknown", "Invalid command."), line
+            assert (
+                backend._commands.execute(line, busy=True, confirmed=confirmed).status == "unknown"
+            )
+    assert background.dream.status()["state"] == "idle"
+    assert backend._runtime.model.calls == 0
+
+
+def test_manual_dream_retries_one_checkpoint_while_worker_applies_normal_backoff(
+    client, backend, monkeypatch
+):
+    from syvrio.background_memory import dream
+
+    background = backend._background
+    background.service.config.chat.default_budget = 5
+    background.service.note("Synthetic fact for a Dream retry.", topic="example")
+    calls = []
+    failed_once, failed_twice = Event(), Event()
+    retrying, release = Event(), Event()
+    record_failure = background.dream.failed
+
+    def signal_failure(error, job_id, generation):
+        record_failure(error, job_id, generation)
+        if background.dream.status()["failures"] == 1:
+            failed_once.set()
+        else:
+            failed_twice.set()
+
+    def generate(_, prompt, payload, schema):
+        calls.append(prompt)
+        if prompt == dream.PROFILE:
+            return schema(summary="Synthetic profile.")
+        if calls.count(dream.INFER) == 2:
+            retrying.set()
+            assert release.wait(8)
+        raise TimeoutError("Synthetic retry")
+
+    monkeypatch.setattr(background.dream, "failed", signal_failure)
+    monkeypatch.setattr(dream, "ask", generate)
+    assert run(client, "/dream", confirmed=True).json()["status"] == "ok"
+    assert failed_once.wait(5)
+    checkpoint = background.dream.status()
+    assert checkpoint["phase"] == "hypotheses" and checkpoint["failures"] == 1
+    assert not background.dream.due()
+    background.schedule.tick(background.schedule.next_at())
+    assert background.dream.status() == checkpoint
+    try:
+        override = run(client, "/dream", confirmed=True).json()
+        assert override["data"]["retry_at"] is None and override["data"]["failures"] == 1
+        assert retrying.wait(5)
+        active = background.dream.status()
+        for key in ("id", "generation", "phase", "batch", "failures"):
+            assert active[key] == checkpoint[key]
+        assert active["requests"] == checkpoint["requests"] + 1
+        assert active["remaining_requests"] == checkpoint["remaining_requests"] - 1
+        again = run(client, "/dream run", confirmed=True).json()
+        assert again["data"]["state"] == "running" and "already running" in again["message"]
+        assert run(client, "/dream status").json()["data"]["state"] == "running"
+        assert background.dream.status() == active
+    finally:
+        release.set()
+    assert failed_twice.wait(5)
+    failed = background.dream.status()
+    assert failed["failures"] == 2
+    assert failed["retry_at"] > checkpoint["retry_at"] and not background.dream.due()
+    assert calls == [dream.PROFILE, dream.INFER, dream.INFER]
+
+
+@pytest.mark.parametrize(
+    ("error", "category"),
+    [
+        (ValidationError.from_exception_data("Synthetic private response", []), "ValidationError"),
+        (RuntimeError("Synthetic private response"), "DreamError"),
+    ],
+)
+def test_dream_failed_status_exposes_only_safe_error_details(client, backend, error, category):
+    background = backend._background
+    background.stop()
+    run(client, "/dream", confirmed=True)
+    job = background.dream.status()
+    for _ in range(3):
+        background.dream.failed(error, job["id"], job["generation"])
+    receipt = run(client, "/dream status").json()
+    status = receipt["data"]
+    assert status["state"] == "failed" and status["retry_at"] is None
+    assert status["error_type"] == category and status["failures"] == 3
+    assert status["error_at"] == background.dream.status()["updated_at"]
+    assert category in receipt["message"] and "Synthetic private response" not in str(receipt)
+
+
+def test_dream_zero_budget_pauses_and_resume_keeps_its_checkpoint(client, backend):
+    background = backend._background
+    background.stop()
+    config = background.service.config.chat
+    config.default_budget = 0
+    paused = run(client, "/dream run", confirmed=True).json()
+    assert paused["data"]["state"] == "paused"
+    assert "dream.default_budget is 0" in paused["message"] and "/dream" not in paused["message"]
+    checkpoint = background.dream.status()
+    assert checkpoint["remaining_requests"] == 0
+    assert run(client, "/dream status").json()["data"]["rows"] == [
+        {"id": "run", "text": "Run Dream"}
+    ]
+    assert run(client, "/dream", confirmed=True).json()["data"]["state"] == "paused"
+    assert background.dream.status() == checkpoint
+    config.default_budget = 3
+    assert run(client, "/dream run", confirmed=True).json()["data"]["state"] == "queued"
+    resumed = background.dream.status()
+    assert (resumed["id"], resumed["phase"]) == (checkpoint["id"], checkpoint["phase"])
+    assert resumed["remaining_requests"] == 3
+
+
+def test_dream_status_describes_paused_truncated_output(client, backend, monkeypatch):
+    background = backend._background
+    status = {
+        **background.dream_status(),
+        "state": "paused",
+        "phase": "profile",
+        "error": "DreamOutputTruncated",
+        "failures": 1,
+        "updated_at": utc_timestamp(),
+    }
+    monkeypatch.setattr(background, "dream_status", lambda: status)
+    receipt = run(client, "/dream status").json()
+    assert receipt["data"]["error_type"] == "DreamOutputTruncated"
+    assert receipt["data"]["retry_at"] is None
+    assert "output limit" in receipt["message"] and "current batch" in receipt["message"]
 
 
 def test_pending_review_preserves_full_text_and_requires_confirmation(client, backend):
@@ -219,9 +444,9 @@ def test_review_receipt_failure_preserves_decision_for_retry(client, backend, mo
     else:
         source = service.note("Synthetic source")
         item = service.propose_inference("Synthetic hypothesis", [source.id], kind="profile")
-        command, load = f"/inferences confirm {item.id}", "_sources"
+        command, load = f"/inferences confirm {item.id}", "load_inference_review"
 
-    def unavailable(*args):
+    def unavailable(*args, **kwargs):
         raise OSError("Synthetic receipt failure")
 
     with monkeypatch.context() as patch:
@@ -233,6 +458,18 @@ def test_review_receipt_failure_preserves_decision_for_retry(client, backend, mo
     else:
         assert service.list_inferences() == [item]
     assert run(client, command, confirmed=True).json()["status"] == "ok"
+
+
+def test_inference_list_and_review_receipt_read_only_the_displayed_data(
+    client, backend, monkeypatch
+):
+    memory = backend._app_service.memory
+    source = memory.service.note("Synthetic source")
+    item = memory.service.propose_inference("Synthetic inference", [source.id], kind="profile")
+    monkeypatch.setattr(memory, "_sources", lambda *_: pytest.fail("Web requested unused sources"))
+    assert run(client, "/inferences").json()["data"]["count"] == 1
+    result = run(client, f"/inferences confirm {item.id}", confirmed=True).json()
+    assert result["status"] == "ok" and result["data"]["rows"][0]["status"] == "confirmed"
 
 
 def test_inference_command_edit_keeps_full_text_and_requires_confirmation(client, backend):
@@ -258,6 +495,41 @@ def test_inference_command_edit_keeps_full_text_and_requires_confirmation(client
     }
 
 
+def test_review_actions_reject_extra_text_except_when_editing(client, backend):
+    from syvrio.memory.models import MemoryDraft
+
+    service = backend._app_service.memory.service
+    candidate = service.create_pending(
+        MemoryDraft(text="Synthetic candidate", topic="review"), "Keep?", []
+    )
+    source = service.note("Synthetic evidence.")
+    inference = service.propose_inference("Synthetic hypothesis", [source.id], kind="profile")
+    for line in (
+        f"/pending approve {candidate.id} extra",
+        f"/pending reject {candidate.id} extra",
+        f"/inferences confirm {inference.id} extra",
+        f"/inferences reject {inference.id}\nextra",
+    ):
+        for confirmed in (False, True):
+            result = run(client, line, confirmed=confirmed).json()
+            assert (result["status"], result["message"]) == ("unknown", "Invalid command."), line
+    assert service.pending() == [candidate]
+    assert service.current_facts() == [source]
+    assert service.list_inferences() == [inference]
+
+    revised = "Revised synthetic text.\nSecond line with spaces."
+    for line in (
+        f"/pending edit {candidate.id} {revised}",
+        f"/inferences edit {inference.id} {revised}",
+    ):
+        assert run(client, line).json()["status"] == "confirm_required"
+        assert run(client, line, confirmed=True).json()["status"] == "ok"
+    assert any(entry.text == revised for entry in service.current_facts())
+    assert any(
+        item.status == "confirmed" and item.text == revised for item in service.list_inferences()
+    )
+
+
 def test_chat_endpoint_rejects_slash_lines(client, backend):
     response = client.post("/api/chat", json={"message": "/new"})
     assert response.status_code == 422
@@ -269,7 +541,7 @@ def test_import_never_reads_a_browser_supplied_path(client, tmp_path):
     secret = tmp_path / "private.txt"
     secret.write_text("SENTINEL-DO-NOT-LEAK", encoding="utf-8")
     body = run(client, f"/import {secret} --apply").json()
-    assert body["status"] == "error"
+    assert body["status"] == "unknown"
     assert run(client, "/import").json()["intent"] == "pick_attachments"
     assert "SENTINEL-DO-NOT-LEAK" not in str(body)
     assert str(secret) not in str(body)
@@ -415,7 +687,11 @@ def test_running_tool_turn_keeps_settings_and_queued_and_new_sessions_pick_up_ch
 
 def test_busy_allows_read_only_commands_and_blocks_mutating_ones(backend):
     commands = backend._commands
-    assert commands.execute("/status", busy=True).status == "ok"
+    result = commands.execute("/status", busy=True)
+    assert result.status == "ok"
+    assert result.data["status"]["generating"] is True
+    assert isinstance(result.data["status"]["context_window"], int)
+    assert "Generating: yes" in result.message
     assert commands.execute("/help", busy=True).status == "ok"
     assert commands.execute("/model", busy=True).status == "ok"
     assert commands.execute("/new", busy=True).status == "busy"
@@ -424,14 +700,23 @@ def test_busy_allows_read_only_commands_and_blocks_mutating_ones(backend):
     assert commands.execute("/compact", busy=True).status == "busy"
 
 
+def test_summary_offers_compaction_for_an_existing_idle_session(backend):
+    commands = backend._commands
+    commands.conversation.switch(None)
+    assert commands.execute("/summary").data["can_compact"] is False
+    commands.conversation.switch(backend._sessions.create().id)
+    assert commands.execute("/summary").data["can_compact"] is True
+    assert commands.execute("/summary", busy=True).data["can_compact"] is False
+
+
 def test_busy_blocks_mutating_forms_of_otherwise_safe_names(backend):
     commands = backend._commands
     # The name alone is read-only-ish, but these forms write data or run jobs and
     # must not run concurrently with a streaming reply.
     for line in (
-        "/dream 1",
+        "/dream",
+        "/dream run",
         "/model refresh",
-        "/dream resume",
         "/git sync",
         "/pending approve x",
         "/inferences confirm x",
@@ -446,9 +731,8 @@ def test_busy_blocks_mutating_forms_of_otherwise_safe_names(backend):
 
 
 def test_is_mutating_distinguishes_command_forms():
-    assert CommandUseCases.is_mutating("dream", "1") is True
+    assert CommandUseCases.is_mutating("dream", "run") is True
     assert CommandUseCases.is_mutating("dream", "status") is False
-    assert CommandUseCases.is_mutating("dream", "cancel") is False
     assert CommandUseCases.is_mutating("git", "sync") is True
     assert CommandUseCases.is_mutating("git", "") is False
     assert CommandUseCases.is_mutating("pending", "approve x") is True
@@ -498,6 +782,7 @@ def test_model_refresh_reports_an_empty_provider_catalog(client, monkeypatch):
     assert body["status"] == "ok"
     assert "local terminal" not in body["message"]
     assert "did not return a model list" in body["message"]
+    assert "did not return a model list" in body["data"]["refresh_message"]
     assert body["data"]["options"][0]["model"] == "fake"
 
 

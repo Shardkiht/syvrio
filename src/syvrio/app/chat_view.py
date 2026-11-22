@@ -10,6 +10,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.events import MouseDown, MouseUp
 from textual.widgets import Button, Input, ListView, Markdown, Static
 
+from ..application.commands import parse_command
 from .chat_input import BarInput
 from .chat_widgets import (
     ASSISTANT_NAME,
@@ -21,7 +22,7 @@ from .chat_widgets import (
     SidebarToggle,
     TranscriptView,
 )
-from .command_catalog import SLASH_SUBCOMMANDS
+from .command_catalog import SLASH_SUBCOMMANDS, slash_matches
 
 
 class ChatViewMixin:
@@ -101,20 +102,39 @@ class ChatViewMixin:
                 prefix = value[1:]
                 if palette.prefix != prefix:
                     palette.open(prefix)
-                if command := palette.current:
+                if palette.matches:
+                    command = palette.current or palette.matches[0][0]
                     suffix = " " if command in SLASH_SUBCOMMANDS else ""
-                    widget.value = f"/{command}{suffix}"
-                    widget.cursor_position = len(widget.value)
+                    self.fill_command(command + suffix)
                     return
         self._focus_active_input()
 
     def action_focus_previous(self) -> None:
         self._focus_active_input()
 
-    def run_command_from_palette(self, command: str) -> None:
-        self.query_one("#cmd-palette", CommandPalette).close()
-        self.query_one("#input", Input).value = ""
-        self._submit_command(f"/{command}")
+    def fill_command(self, command: str) -> None:
+        widget = self.query_one("#input", Input)
+        widget.value = "/" + command
+        widget.cursor_position = len(widget.value)
+        widget.focus()
+
+    def _submit_command_input(self, event: Input.Submitted) -> None:
+        line = event.value.strip()
+        name, argument = parse_command(line)
+        typed = f"{name} {argument.lower()}" if argument else name
+        palette = self.query_one("#cmd-palette", CommandPalette)
+        choice = palette.current if palette.display and palette.prefix == event.value[1:] else None
+        if choice and choice != typed:
+            self.fill_command(choice)
+            return
+        # A prefix with suggestions remains editable even when its popup was dismissed.
+        matches = slash_matches(line[1:])
+        if matches and not any(key == typed for key, _, _ in matches):
+            self.notify("Complete the command before sending.")
+            return
+        palette.close()
+        event.input.value = ""
+        self._submit_command(line)
 
     def on_key(self, event) -> None:
         palette = self.query_one("#cmd-palette", CommandPalette)

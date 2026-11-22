@@ -38,9 +38,7 @@ class ResidentOperations:
             "profile": service.profile.read_text,
             "sessions": self.owner._sessions.list,
             "inference_review": self.owner._app_service.memory.load_inference_review,
-            "dream": self.owner._background.request_dream,
-            "dream_status": self.owner._background.dream_status,
-            "cancel_dream": self.owner._background.cancel_dream,
+            "dream": lambda action="run": self.owner._app_service.reflection.command(action),
             "search": self.search,
         }
         if name not in operations:

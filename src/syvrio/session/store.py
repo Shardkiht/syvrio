@@ -15,6 +15,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
+from ..errors import ConversationError
 from ..infra.files import atomic_write
 from ..infra.locking import vault_write_lock
 from ..infra.paths import TURN_UNDO_DIR, SyvrioPaths, vault_paths
@@ -302,8 +303,10 @@ class SessionStore(SessionQuery):
         from ..infra.jobs import job_path
         from ..infra.transaction import vault_transaction
 
+        if not isinstance(title, str) or not (title := title.strip()) or len(title) > 80:
+            raise ConversationError("invalid_title", "Enter a session title of 1 to 80 characters.")
         with vault_transaction(self.paths) as tx:
-            self.append(session, {"type": "title", "title": title.strip()[:80]})
+            self.append(session, {"type": "title", "title": title})
             pending = job_path(self.paths, "title", session.id)
             if pending.exists():
                 tx.write(pending, None)

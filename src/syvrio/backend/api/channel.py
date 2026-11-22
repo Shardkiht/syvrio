@@ -56,6 +56,7 @@ class APIError(SyvrioError):
     def from_conversation(cls, exc: ConversationError) -> APIError:
         if exc.code in {
             "invalid_request",
+            "invalid_title",
             "invalid_session_id",
             "empty_message",
             "command_required",

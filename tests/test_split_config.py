@@ -25,6 +25,7 @@ def test_migrate_then_remove_each_override(tmp_path):
         'profile_min_changes = 17\n[retrieval]\nmethod = "keyword"\n'
     )
     first = load_config(entry)
+    assert first.dream.context_window == 200000
     assert first == load_config(entry)
     assert tomllib.loads(entry.read_text()) == {"vault": vault.as_posix()}
     assert tomllib.loads((tmp_path / "chat.toml").read_text()) == {
@@ -71,6 +72,24 @@ def test_remove_retired_chat_override_without_resplitting_existing_files(tmp_pat
     assert model.read_bytes() == original_model
     assert not (tmp_path / "memory.toml").exists()
     assert load_config(entry) == config
+
+
+def test_dream_window_round_trip_and_deleted_override(tmp_path):
+    entry = tmp_path / "config.toml"
+    memory = tmp_path / "memory.toml"
+    cfg = load_config(entry)
+    cfg.dream.context_window = 128000
+    cfg.chat.context_window = 64000
+    write_config(entry, cfg)
+    assert tomllib.loads(memory.read_text()) == {"dream": {"context_window": 128000}}
+    restored = load_config(entry)
+    assert (restored.dream.context_window, restored.chat.context_window) == (128000, 64000)
+    memory.unlink()
+    restored = load_config(entry)
+    assert (restored.dream.context_window, restored.chat.context_window) == (200000, 64000)
+    memory.write_text("[dream]\ncontext_window = 0\n")
+    with pytest.raises(ConfigError, match=r"dream\.context_window"):
+        load_config(entry)
 
 
 def test_saving_one_setting_preserves_independent_edits_and_follows_deleted_group(tmp_path):

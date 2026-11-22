@@ -2,43 +2,96 @@
 
 from __future__ import annotations
 
+import time
 from datetime import UTC, datetime
 
 from ..background_memory import BackgroundMemory
+from ..infra.transaction import vault_transaction
 from ..time import format_local_timestamp
-from .contracts import ReflectionSchedule
+from .commands import CommandResult, is_command_form
+
+
+def _local_time(timestamp: float | None) -> str | None:
+    return (
+        format_local_timestamp(datetime.fromtimestamp(timestamp, UTC).isoformat())
+        if timestamp
+        else None
+    )
 
 
 class ReflectionUseCases:
-    def __init__(self, background: BackgroundMemory):
+    def __init__(self, background: BackgroundMemory | None):
         self.background = background
 
-    def run(self, mode: str, budget: int | None = None) -> str:
-        if mode != "dream":
-            raise ValueError("Use /dream to regenerate the complete profile and hypotheses.")
-        return self.background.request_dream(budget)
+    def command(self, argument: str) -> CommandResult:
+        if not isinstance(argument, str) or not is_command_form("dream", argument.strip()):
+            return CommandResult.invalid("dream")
+        action = argument.strip().lower() or "run"
+        if self.background is None:
+            return CommandResult(
+                "error", "dream", "dream", "Open Syvrio with its resident service to use Dream."
+            )
 
-    def cancel(self) -> None:
-        self.background.cancel_dream()
+        # A fast worker can finish immediately. Take the receipt before it advances the job.
+        with vault_transaction(self.background.service.paths):
+            before = self.background.dream_status()
+            status = before
+            if action == "run":
+                self.background.request_dream(retry_now=True)
+                status = self.background.dream_status()
 
-    def status(self) -> dict:
-        return self.background.dream_status()
-
-    def schedule(self) -> ReflectionSchedule:
-        status = self.status()
-        next_at = status["next_at"]
-        next_run = (
-            format_local_timestamp(datetime.fromtimestamp(next_at, UTC).isoformat())
-            if next_at
-            else None
-        )
-        return ReflectionSchedule(
-            running=status["state"] == "queued",
-            enabled=status["enabled"],
-            profile_next=next_run,
-            dream_next=next_run,
-            profile_pending=status.get("phase")
-            if status["state"] in {"queued", "paused"}
-            else None,
-            dream_pending=status["state"] in {"queued", "paused"},
-        )
+        state = status["state"]
+        next_at = status["next_at"] if status["enabled"] else None
+        retry_at = status.get("retry_at", 0)
+        waiting = state == "queued" and retry_at > time.time()
+        error_type = status.get("error") if state in {"queued", "failed", "paused"} else None
+        if error_type and error_type not in (
+            "ValidationError",
+            "TimeoutError",
+            "DreamOutputTruncated",
+        ):
+            error_type = "DreamError"
+        data = {
+            "kind": "dream",
+            "state": state,
+            "enabled": status["enabled"],
+            "next_at": next_at,
+            "phase": status.get("phase"),
+            "retry_at": retry_at if waiting else None,
+            "error_type": error_type,
+            "error_at": status.get("updated_at") if error_type else None,
+            "failures": status.get("failures", 0) if error_type else 0,
+        }
+        if action == "status":
+            data["rows"] = [{"id": "run", "text": "Run Dream"}]
+            lines = [
+                f"Automatic Dream: {'enabled' if status['enabled'] else 'disabled'}",
+                f"State: {state}",
+                f"Next: {_local_time(next_at) or '-'}",
+            ]
+            if status.get("phase") and state in {
+                "queued",
+                "running",
+                "paused",
+                "cancelled",
+                "failed",
+            }:
+                lines.append(f"Phase: {status['phase']}")
+            message = "\n".join(lines)
+        elif state == "paused":
+            message = "Dream is paused because the backend setting dream.default_budget is 0."
+        elif state == "running":
+            message = "Dream is already running."
+        elif before["state"] == "queued" and before.get("retry_at") and not retry_at:
+            message = "The existing Dream run is queued to retry now."
+        elif before["state"] == "queued":
+            message = "Dream is already queued."
+        else:
+            message = "Dream submitted and queued."
+        if error_type == "DreamOutputTruncated":
+            message += "\nThe model reached its output limit. Running Dream again retries the current batch."
+        elif error_type:
+            message += f"\nLast error: {error_type}."
+        if waiting:
+            message += f"\nScheduled retry: {_local_time(retry_at)}."
+        return CommandResult("ok", "dream", "dream", message, data=data)

@@ -196,18 +196,33 @@ class SettingsUseCases:
     # ---------- 应用 ----------
 
     def configure_provider(self, provider: str, api_key: str) -> SettingsResult:
+        return self._save_provider_key(provider, api_key, updating=False)
+
+    def update_provider_key(self, provider: str, api_key: str) -> SettingsResult:
+        return self._save_provider_key(provider, api_key, updating=True)
+
+    def _save_provider_key(self, provider: str, api_key: str, *, updating: bool) -> SettingsResult:
         preset = self._preset(provider)
         if preset is None:
             return SettingsResult(False, f"Unknown provider: {provider}")
         key = api_key.strip()
         if not key:
             return SettingsResult(False, "API key is empty; nothing changed.")
+        if os.environ.get(preset.api_key_env):
+            return SettingsResult(
+                False,
+                f"{provider_label(preset.key)} API key is provided by {preset.api_key_env}. "
+                "Update the environment variable and restart the backend, "
+                "or unset it and restart to manage the key here.",
+            )
         if not save_api_key(preset.api_key_env, key):
             return SettingsResult(
                 False,
                 "Could not save the API key to system credentials. "
                 f"Set {preset.api_key_env} in your environment instead.",
             )
+        if updating:
+            return SettingsResult(True, f"{provider_label(preset.key)} API key updated.")
         return SettingsResult(
             True,
             f"{provider_label(preset.key)} API key saved. Choose an API-listed model to switch.",
@@ -248,21 +263,6 @@ class SettingsUseCases:
         if active:
             message += " Applies next turn."
         return SettingsResult(True, message, True)
-
-    def update_provider_key(self, provider: str, api_key: str) -> SettingsResult:
-        preset = self._preset(provider)
-        if preset is None:
-            return SettingsResult(False, f"Unknown provider: {provider}")
-        key = api_key.strip()
-        if not key:
-            return SettingsResult(False, "API key is empty; nothing changed.")
-        if not save_api_key(preset.api_key_env, key):
-            return SettingsResult(
-                False,
-                "Could not save the API key to system credentials. "
-                f"Set {preset.api_key_env} in your environment instead.",
-            )
-        return SettingsResult(True, f"{provider_label(preset.key)} API key updated.")
 
     def remove_provider(self, provider: str) -> SettingsResult:
         preset = self._preset(provider)

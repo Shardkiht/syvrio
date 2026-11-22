@@ -7,6 +7,7 @@ import {
   resultPanelFor,
   searchCommands,
   suggestionsFor,
+  thinkingOptions,
 } from './commands';
 
 const command = (name: string, patch: Partial<CommandInfo> = {}): CommandInfo => ({
@@ -64,8 +65,8 @@ describe('slash completion', () => {
     expect(suggestionsFor('/new ', CATALOG)).toEqual([]);
   });
 
-  it('adds a trailing space only when a command has children', () => {
-    expect(suggestionsFor('/mod', CATALOG)[0].insert).toBe('/model ');
+  it('completes only the command name until a space is typed', () => {
+    expect(suggestionsFor('/mod', CATALOG)[0]).toMatchObject({ insert: '/model', label: '/model' });
     expect(suggestionsFor('/new', CATALOG)[0].insert).toBe('/new');
   });
 
@@ -88,24 +89,7 @@ describe('command palette', () => {
 
 describe('option panels', () => {
   it('puts auto first and orders the Spark switch from disabled to enabled', () => {
-    const panel = panelFor(result({ intent: 'think', data: { options: ['enabled', 'auto', 'disabled'] } }));
-    expect(panel).toMatchObject({ options: [
-      { value: 'auto' }, { value: 'disabled' }, { value: 'enabled' },
-    ] });
-  });
-
-  it('turns model / reasoning / context options into clickable choices', () => {
-    const models = panelFor(result({
-      intent: 'model',
-      data: { options: [{ provider: 'spark', model: 'x2', current: true }] },
-    }));
-    expect(models).toMatchObject({ options: [{ label: '* spark/x2', value: 'spark/x2' }] });
-
-    const thinking = panelFor(result({ intent: 'think', data: { options: ['', 'high'] } }));
-    expect(thinking).toMatchObject({ options: [{ label: 'default', value: 'default' }, { value: 'high' }] });
-
-    const context = panelFor(result({ intent: 'context', data: { options: [8000, 16000] } }));
-    expect(context).toMatchObject({ options: [{ value: '8000' }, { label: '16000', value: '16000' }] });
+    expect(thinkingOptions(['enabled', 'auto', 'disabled'])).toEqual(['auto', 'disabled', 'enabled']);
   });
 
   it('does not reopen the picker after a choice was applied', () => {
@@ -116,8 +100,8 @@ describe('option panels', () => {
   it('gives explicit feedback for unsupported, unknown, busy and errors', () => {
     expect(commandMessage(result({ status: 'unsupported', command: 'import' })))
       .toContain('not available on the Web');
-    expect(commandMessage(result({ status: 'unknown', command: 'nope' })))
-      .toContain('Unknown command');
+    expect(commandMessage(result({ status: 'unknown', command: 'nope', message: 'Invalid command.' })))
+      .toBe('Invalid command.');
     expect(commandMessage(result({ status: 'busy' }))).toContain('Busy');
     expect(commandMessage(result({ status: 'confirm_required' })))
       .toContain('Confirmation required');
@@ -133,10 +117,10 @@ it('keeps the published profile intact and displays its generation time locally'
     command: 'profile', intent: 'profile', message: body,
     data: { status: 'Last generated ' + stamp, generated_at: stamp },
   }));
-  expect(panel.message).toMatch(/^Last generated \d{4}-\d{2}-\d{2} /);
-  expect(panel.message.endsWith(body)).toBe(true);
-  expect(panel.message).not.toContain(stamp);
-  expect(panel.action?.line).toBe('/dream');
+  expect(panel.metadata?.[0]).toMatch(/^Last generated \d{4}-\d{2}-\d{2} /);
+  expect(panel.metadata?.[0]).not.toContain(stamp);
+  expect(panel.message).toBe(body);
+  expect(panel.actions?.map(action => action.line)).toEqual(['/dream status', '/dream']);
 });
 
 it('localizes absolute timestamps in the Web Git status command', () => {

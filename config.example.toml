@@ -17,3 +17,5 @@
 # Example for a separate memory.toml:
 # [retrieval]
 # default_limit = 15
+# [dream]
+# context_window = 200000

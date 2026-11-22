@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
-import { searchCommands, type OptionPanel, type ResultPanel, type Suggestion } from '../state/commands';
+import { searchCommands, type ResultAction, type ResultPanel, type Suggestion } from '../state/commands';
 import { isComposing } from '../state/shortcuts';
 import type { CommandInfo, SessionInfo } from '../types';
+import { CheckIcon } from './Icons';
+import { Markdown } from './Markdown';
+import './command-results.css';
 
 export function CommandDialog({
   title, className, testId, role = 'dialog', overlayClass = '', onClose, onKeyDown, children,
@@ -65,12 +68,10 @@ export function moveOption(event: KeyboardEvent, buttons: HTMLButtonElement[]): 
 export function CommandSuggestions({
   suggestions,
   index,
-  onHover,
   onPick,
 }: {
   suggestions: Suggestion[];
   index: number;
-  onHover: (index: number) => void;
   onPick: (suggestion: Suggestion) => void;
 }) {
   const listRef = useRef<HTMLDivElement>(null);
@@ -91,7 +92,6 @@ export function CommandSuggestions({
           aria-selected={position === index}
           className={`command-suggestion${position === index ? ' active' : ''}`}
           onMouseDown={(event) => event.preventDefault()}
-          onMouseEnter={() => onHover(position)}
           onClick={() => onPick(suggestion)}
         >
           <span className="command-suggestion-label">{suggestion.label}</span>
@@ -164,7 +164,7 @@ export function CommandPalette({
               onMouseEnter={() => setIndex(position)}
               onClick={() => onRun(`/${command.name}`)}
             >
-              <span className="palette-usage">{command.usage}</span>
+              <span className="palette-usage">/{command.name}</span>
               <span className="palette-description">{command.description}</span>
               {command.support === 'unsupported' && (
                 <span className="palette-note">unsupported</span>
@@ -218,92 +218,102 @@ export function ConfirmDialog({
   );
 }
 
-/** Clickable model / reasoning / context choices produced by a command. */
-export function CommandPanelDialog({
-  panel,
-  onPick,
-  onClose,
-}: {
-  panel: OptionPanel;
-  onPick: (line: string) => void;
-  onClose: () => void;
-}) {
-  return (
-    <CommandDialog title={panel.title} className="command-panel" testId="command-panel-overlay"
-      onClose={onClose} onKeyDown={(event) => {
-        moveOption(event, Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('.panel-options button')));
-        if (event.key === 'Enter' && event.target === event.currentTarget && panel.options[0]) {
-          event.preventDefault();
-          onPick(`${panel.prefix} ${panel.options[0].value}`);
-        }
-      }}>
-      <div className="confirm-title">{panel.title}</div>
-      {panel.message && <div className="command-result-body" tabIndex={0}>{panel.message}</div>}
-      <div className="panel-options" data-testid="panel-options">
-        {panel.options.map((option) => (
-          <button key={option.value} type="button"
-            onClick={() => onPick(`${panel.prefix} ${option.value}`)}>
-            {option.label}
-          </button>
-        ))}
-      </div>
-      <div className="confirm-actions">
-        <button type="button" onClick={onClose}>Close</button>
-      </div>
-    </CommandDialog>
-  );
-}
-
 export function CommandResultDialog({ panel, title, onRun, onClose }: {
   panel: ResultPanel;
   title: string;
-  onRun: (line: string) => void;
+  onRun: (line: string) => void | Promise<unknown>;
   onClose: () => void;
 }) {
-  const [draft, setDraft] = useState(title);
+  const [draft, setDraft] = useState(panel.draft ?? title);
+  const [working, setWorking] = useState<string | null>(null);
+  const [refreshSource, setRefreshSource] = useState<ResultPanel | null>(null);
+  const [actionError, setActionError] = useState('');
   const body = useRef<HTMLDivElement>(null);
-  const save = () => {
-    if (panel.rename && draft.trim()) onRun(`/rename ${draft.trim()}`);
-    else if (panel.action) onRun(panel.action.line);
+  const actions = panel.rename ? [] : panel.actions ?? [];
+  const shortcut = actions.find((action) => action.saveShortcut);
+  const saveLine = panel.rename && draft.trim() ? `/rename ${draft.trim()}` : shortcut?.line;
+  const run = async (line: string | undefined, refresh = false) => {
+    if (working !== null || !line) return;
+    setWorking(line);
+    setRefreshSource(refresh ? panel : null);
+    setActionError('');
+    try { await onRun(line); }
+    catch (error) { setActionError(error instanceof Error ? error.message : 'The command failed. Try again.'); }
+    finally { setWorking(null); }
   };
+  const grouped = Boolean(panel.groups?.length);
+  const receipt = !grouped && !panel.reading && !panel.rename;
+  const inlineFields = new Set(panel.groups?.flatMap((group) => group.fields.map(({ label }) => label)));
+  const actionButton = (action: ResultAction, inline = false) => (
+    <button type="button" key={action.line}
+      className={inline ? 'result-field-button' : action.primary ? 'result-primary' : undefined}
+      disabled={working !== null} aria-busy={working === action.line}
+      onClick={() => void run(action.line, action.refresh)}>
+      {working === action.line ? 'Working…' : action.label}
+    </button>
+  );
   return (
-    <CommandDialog title={panel.title} className="command-panel command-result"
+    <CommandDialog title={panel.title} className={`command-panel command-result result-sheet${receipt ? ' result-receipt' : ''}`}
       testId="command-result-overlay" onClose={onClose} onKeyDown={(event) => {
         if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's'
-          && (panel.rename || panel.action?.saveShortcut)) {
+          && (panel.rename || shortcut)) {
           event.preventDefault();
-          save();
+          void run(saveLine);
         } else if (body.current && (event.key === 'PageUp' || event.key === 'PageDown')) {
           event.preventDefault();
           body.current.scrollBy?.({ top: body.current.clientHeight * (event.key === 'PageUp' ? -1 : 1) });
         } else if (event.key === 'Enter' && (event.target === event.currentTarget || panel.rename
           && event.target instanceof HTMLInputElement)) {
           event.preventDefault();
-          if (panel.rename) save();
+          if (panel.rename) void run(saveLine);
           else onClose();
         }
       }}>
-      <div className="confirm-title">{panel.title}</div>
+      <header className="result-header">
+        {receipt && panel.feedback && <span className="result-symbol" data-feedback={panel.feedback} aria-hidden="true">
+          {panel.feedback === 'success' ? <CheckIcon size={15} /> : panel.feedback === 'error' ? '!' : 'i'}
+        </span>}
+        <h2>{panel.title}</h2>
+      </header>
+      {panel.metadata && panel.metadata.length > 0 &&
+        <ul className="result-metadata">{panel.metadata.map((item) => <li key={item}>{item}</li>)}</ul>}
       {panel.rename ? (
-        <input aria-label="Session title" className="palette-input" autoFocus maxLength={200}
+        <input aria-label="Session title" className="palette-input" autoFocus readOnly={working !== null}
           value={draft} onChange={(event) => setDraft(event.target.value)} />
-      ) : panel.message && <div ref={body} className="command-result-body" tabIndex={0}>{panel.message}</div>}
-      <div className="confirm-actions">
+      ) : (panel.message || grouped) && <div ref={body} className="result-scroll" tabIndex={0}>
+        {grouped ? panel.groups?.map((group) => <section className="result-group" key={group.title}>
+          <h3>{group.title}</h3>
+          <dl>{group.fields.map(({ label, value }) => {
+            const action = actions.find((item) => item.field === label);
+            return <div key={label}><dt>{label}</dt><dd>
+              <span>{value}</span>{action && actionButton(action, true)}
+            </dd></div>;
+          })}</dl>
+        </section>) : panel.reading
+          ? <article className="result-article"><Markdown text={panel.message} reading /></article>
+          : <div className="result-text" role={panel.feedback === 'error' ? 'alert' : 'status'}>{panel.message}</div>}
+      </div>}
+      {panel.rename && panel.message && <p className="result-error" role="alert">{panel.message}</p>}
+      {actionError && <p className="result-error" role="alert">{actionError}</p>}
+      <div className="confirm-actions result-actions">
+        {refreshSource && refreshSource !== panel && <span className="result-updated" role="status">Refreshed</span>}
         <button type="button" onClick={onClose}>{panel.rename ? 'Cancel' : 'Close'}</button>
-        {(panel.rename || panel.action) && (
-          <button type="button" onClick={save} disabled={panel.rename && !draft.trim()}>
-            {panel.rename ? 'Save' : panel.action?.label}
-          </button>
-        )}
+        {actions.filter((action) => !action.field || !inlineFields.has(action.field)).map((action) => actionButton(action))}
+        {panel.rename && <button type="button" className="result-primary" onClick={() => void run(saveLine)}
+          disabled={working !== null || !draft.trim()} aria-busy={working !== null}>
+          {working !== null ? 'Saving…' : 'Save'}
+        </button>}
       </div>
     </CommandDialog>
   );
 }
 
-export function SessionCommandDialog({ sessions, currentId, onSelect, onClose }: {
+export function SessionCommandDialog({ sessions, currentId, onSelect, onNew, onArchive, onClose }: {
   sessions: SessionInfo[];
   currentId: string | null;
   onSelect: (id: string) => void;
+  onNew: () => void;
+  onArchive: () => void;
   onClose: () => void;
 }) {
   return (
@@ -326,7 +336,11 @@ export function SessionCommandDialog({ sessions, currentId, onSelect, onClose }:
         ))}
         {!sessions.length && <div className="command-result-body">No conversations yet</div>}
       </div>
-      <div className="confirm-actions"><button type="button" onClick={onClose}>Close</button></div>
+      <div className="confirm-actions">
+        <button type="button" onClick={onNew}>New chat</button>
+        <button type="button" onClick={onArchive}>Browse archive</button>
+        <button type="button" onClick={onClose}>Close</button>
+      </div>
     </CommandDialog>
   );
 }

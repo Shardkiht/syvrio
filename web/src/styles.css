@@ -342,6 +342,49 @@ textarea, input, select { touch-action: manipulation; }
   max-width: 45%;
   gap: 7px;
 }
+
+.session-name { white-space: normal; }
+.session-name-field {
+  position: relative;
+  display: inline-grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  max-width: 100%;
+  border-radius: 5px;
+  cursor: text;
+}
+.session-name-width, .session-name-field input {
+  grid-area: 1 / 1 / 2 / 2;
+  font: inherit;
+  padding: 3px 5px;
+}
+.session-name-width {
+  visibility: hidden;
+  white-space: pre;
+  min-width: 4ch;
+  padding-inline-end: 7px;
+}
+.session-name-field input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+  color: inherit;
+  text-overflow: ellipsis;
+}
+.session-name-field svg { flex: none; margin-inline: 5px; color: var(--muted); opacity: 0; }
+.session-name-field:hover svg, .session-name-field:focus-within svg { opacity: 1; }
+.session-name-field input:focus {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+.session-name small { display: block; font-size: 12px; font-weight: 400; color: var(--muted); }
+.session-name [role="alert"] { color: var(--danger); }
+@media (hover: none) { .session-name-field svg { opacity: .7; } }
 .topbar-actions {
   display: flex;
   align-items: center;
@@ -944,7 +987,10 @@ button.fold-summary:hover {
 .context-value small { font-size: 8px; font-weight: 500; }
 
 .context-detail {
-  display: none;
+  display: grid;
+  visibility: hidden;
+  opacity: 0;
+  transform: translateY(4px);
   position: absolute;
   z-index: 5;
   inset-inline-end: 0;
@@ -964,11 +1010,13 @@ button.fold-summary:hover {
 
 .context-meter[data-compaction] .context-detail,
 .context-meter.expanded .context-detail,
-.context-meter:has(:focus-visible) .context-detail { display: grid; }
+.context-meter:has(:focus-visible) .context-detail {
+  visibility: visible; opacity: 1; transform: none;
+}
 .context-warning { color: var(--danger); }
 
 @media (hover: hover) {
-  .context-meter:hover .context-detail { display: grid; }
+  .context-meter:hover .context-detail { visibility: visible; opacity: 1; transform: none; }
 }
 
 /* Draft actions leave the primary Send/Stop control anchored on the right. */
@@ -1049,7 +1097,7 @@ button.fold-summary:hover {
   font-size: 14px;
 }
 
-.command-suggestion.active { background: var(--panel-2); }
+.command-suggestion:hover { background: var(--panel-2); }
 .command-suggestion-label { flex: 0 0 auto; color: var(--accent); }
 .command-suggestion-desc {
   color: var(--muted);
@@ -1060,32 +1108,47 @@ button.fold-summary:hover {
 
 /* ---------- Palette, confirmation and option panels ---------- */
 
+.modal-layer {
+  --modal-enter: 190ms cubic-bezier(.25, .55, .27, 1);
+  --modal-exit: 165ms cubic-bezier(.36, .04, .57, .96);
+  --dialog-travel: 5px;
+  --dialog-scale: .992;
+  position: fixed;
+  inset: 0;
+  height: var(--app-height, 100dvh);
+  z-index: 40;
+  pointer-events: none;
+}
+
+/* One backdrop per modal stack lets a panel hand off to the next without dimming twice. */
+.modal-layer::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  visibility: hidden;
+  background-color: transparent;
+  backdrop-filter: blur(0px);
+}
+.modal-layer[data-open]::before { visibility: visible; background-color: var(--overlay); }
+.modal-layer:has(> .surface-frame:not([data-closing]) > .overlay:not(.pending-drawer-overlay))::before {
+  backdrop-filter: blur(3px);
+}
+
 .overlay {
   --overlay-top: max(12px, env(safe-area-inset-top));
   --overlay-bottom: max(12px, env(safe-area-inset-bottom));
   --overlay-lift: clamp(12px, 6vh, 56px);
-  position: fixed;
+  position: absolute;
   inset: 0;
   height: var(--app-height, 100vh);
   height: var(--app-height, 100dvh);
-  z-index: 40;
+  pointer-events: auto;
   display: flex;
   align-items: center;
   justify-content: center;
   padding: var(--overlay-top) max(16px, env(safe-area-inset-right))
     calc(var(--overlay-bottom) + var(--overlay-lift)) max(16px, env(safe-area-inset-left));
 }
-
-/* Keep backdrop and surface independent so text stays sharp while the scrim fades. */
-.overlay::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  z-index: -1;
-  pointer-events: none;
-  background: var(--overlay);
-}
-.overlay:not(.pending-drawer-overlay)::before { backdrop-filter: blur(3px); }
 
 .command-palette,
 .confirm-dialog,
@@ -1179,6 +1242,15 @@ button.fold-summary:hover {
 }
 
 .confirm-actions .confirm-ok { border-color: var(--danger); color: var(--danger); }
+
+.dream-panel .confirm-actions { flex-wrap: wrap; }
+.dream-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.dream-panel .dream-run {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.dream-panel button:disabled { opacity: .6; }
 
 /* ---------- Settings panel ---------- */
 
@@ -1372,7 +1444,7 @@ button.fold-summary:hover {
 .action-feedback[data-kind="error"], .action-feedback[data-kind="warning"] { color: var(--danger); }
 .model-refresh[aria-busy="true"] { color: var(--accent); }
 @media (prefers-reduced-motion: no-preference) {
-  .model-refresh[aria-busy="true"] svg { animation: model-refresh-spin .9s linear infinite; }
+  .model-refresh svg { animation: model-refresh-spin .9s linear both paused; }
 }
 @keyframes model-refresh-spin { to { transform: rotate(360deg); } }
 
@@ -1451,6 +1523,7 @@ button.fold-summary:hover {
   overflow-y: auto;
 }
 .pending-header { display: flex; align-items: start; justify-content: space-between; gap: 8px; }
+.review-load-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .pending-meta { color: var(--muted); font-size: 13.5px; }
 .review-search {
   display: flex;
@@ -1536,20 +1609,35 @@ button.fold-summary:hover {
   border-width: 0 0 0 1px;
   border-radius: 0;
 }
-/* Animate newly opened surfaces only. Filtering, typing and streaming reuse the same nodes. */
+.surface-frame { display: contents; }
+.surface-frame[data-closing] > * { pointer-events: none; }
+
 @media (prefers-reduced-motion: no-preference) {
-  .overlay::before {
-    animation: surface-fade-in 150ms ease-out;
+  .modal-layer::before {
+    --backdrop-motion: var(--modal-exit);
+    transition: backdrop-filter var(--backdrop-motion), background-color var(--backdrop-motion), visibility var(--backdrop-motion);
+  }
+  .modal-layer[data-open]::before {
+    --backdrop-motion: var(--modal-enter);
   }
   .overlay > [aria-modal="true"]:not(.pending-drawer) {
-    animation: dialog-in 180ms cubic-bezier(.2, .8, .2, 1);
+    transition: opacity var(--modal-enter), transform var(--modal-enter);
   }
   .overlay > .confirm-dialog {
-    --dialog-travel: 4px;
-    --dialog-scale: .985;
+    --dialog-travel: 3px;
+    --dialog-scale: .996;
   }
   .command-panel.pending-drawer {
-    animation: pending-drawer-in 220ms cubic-bezier(.2, .8, .2, 1);
+    transition: transform 220ms cubic-bezier(.2, .8, .2, 1);
+  }
+  .surface-frame[data-closing] > .overlay > [aria-modal="true"]:not(.pending-drawer) {
+    opacity: 0;
+    transform: translateY(var(--dialog-travel)) scale(var(--dialog-scale));
+    transition: opacity var(--modal-exit), transform var(--modal-exit);
+  }
+  .surface-frame[data-closing] > .overlay > .pending-drawer {
+    transform: translateX(100%);
+    transition: transform 190ms cubic-bezier(.36, .04, .42, 1);
   }
   .pending-drawer .pending-body {
     transition: grid-template-rows 220ms cubic-bezier(.2, .8, .2, 1), row-gap 220ms ease-out;
@@ -1557,24 +1645,25 @@ button.fold-summary:hover {
   .pending-drawer .pending-detail, .pending-drawer .pending-footer {
     animation: pending-detail-in 180ms ease-out;
   }
-  .command-suggestions, .context-detail {
-    animation: popover-in 130ms ease-out;
+  .command-suggestions {
+    transition: opacity 130ms ease-out, transform 130ms ease-out;
+  }
+  .surface-frame[data-closing] > .command-suggestions { opacity: 0; transform: translateY(4px); }
+  .context-detail {
+    transition: opacity 130ms ease-out, transform 130ms ease-out, visibility 130ms;
+  }
+  @starting-style {
+    .command-suggestions { opacity: 0; }
+    .overlay > [aria-modal="true"]:not(.pending-drawer) {
+      opacity: 0;
+      transform: translateY(var(--dialog-travel)) scale(var(--dialog-scale));
+    }
+    .command-panel.pending-drawer { transform: translateX(100%); }
+    .command-suggestions { transform: translateY(4px); }
   }
   .settings-section, .provider-form, .fold-body {
     animation: surface-fade-in 140ms ease-out;
   }
-}
-@keyframes dialog-in {
-  from { opacity: 0; transform: translateY(var(--dialog-travel, 9px)) scale(var(--dialog-scale, .99)); }
-  to { opacity: 1; transform: none; }
-}
-@keyframes popover-in {
-  from { opacity: 0; transform: translateY(4px); }
-  to { opacity: 1; transform: none; }
-}
-@keyframes pending-drawer-in {
-  from { transform: translateX(100%); }
-  to { transform: translateX(0); }
 }
 @keyframes pending-detail-in {
   from { opacity: 0; transform: translateY(10px); }
@@ -1678,6 +1767,8 @@ button.fold-summary:hover {
   .icon-button svg { width: 22px; height: 22px; }
   .topbar-identity { flex-direction: column; align-items: flex-start; gap: 0; }
   .topbar-title { flex: none; max-width: 100%; line-height: 1.3; }
+  .session-name { width: 100%; }
+  .session-name-field { font-size: 16px; }
   .topbar-model { max-width: 100%; gap: 4px; padding-inline-start: 2px; }
   .model-info { min-height: 24px; font-size: 12px; }
   .topbar-actions { padding-inline-start: 0; border: 0; gap: 0; }

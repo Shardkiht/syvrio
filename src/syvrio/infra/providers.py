@@ -9,7 +9,6 @@ from urllib.parse import urlsplit
 from .config import (
     CONFIG_FILENAME,
     CONTEXT_WINDOW_PRESETS,
-    KEYRING_SERVICE,
     MIN_CONTEXT_WINDOW,
     QIANWEN_API_KEY_ENV,
     QIANWEN_BASE_URL,
@@ -24,6 +23,7 @@ from .config import (
 from .config import (
     write_config as write_config,
 )
+from .credentials import delete_password, set_password
 from .tokens import format_tokens
 
 
@@ -239,22 +239,19 @@ def _capabilities(provider: str, base_url: str, model: str, env_name: str):
 
 def save_api_key(env_name: str, api_key: str) -> bool:
     try:
-        import keyring
-
-        keyring.set_password(KEYRING_SERVICE, env_name, api_key)
+        set_password(env_name, api_key)
         return True
     except Exception as exc:
         from .diagnostics import record_once
 
-        record_once("degraded.keyring", exc)
+        # A third-party backend's exception may contain the submitted password.
+        record_once("degraded.keyring", f"Credential save failed ({type(exc).__name__}).")
         return False
 
 
 def delete_api_key(env_name: str) -> bool:
     try:
-        import keyring
-
-        keyring.delete_password(KEYRING_SERVICE, env_name)
+        delete_password(env_name)
         return True
     except Exception as exc:
         from .diagnostics import record_once

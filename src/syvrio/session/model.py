@@ -116,7 +116,7 @@ class Session:
             return record["title"]
         return ""
 
-    def title(self, width: int = 40) -> str:
+    def title(self, width: int | None = None) -> str:
         return (self.saved_title() or "未命名会话")[:width]
 
     def title_exchange(self) -> tuple[dict, dict] | None:

@@ -69,6 +69,17 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+function mockRefreshSpin(button: HTMLElement) {
+  const spin = {
+    currentTime: 0,
+    playState: 'paused',
+    effect: { getTiming: () => ({ duration: 900 }), updateTiming: vi.fn() },
+    play() { this.playState = 'running'; },
+  };
+  Object.defineProperty(button.querySelector('svg'), 'getAnimations', { value: () => [spin] });
+  return spin;
+}
+
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe('settings panel', () => {
@@ -278,6 +289,30 @@ describe('settings panel', () => {
     expect(read).toHaveBeenCalledWith('', true, expect.any(AbortSignal));
   });
 
+  it('shows a slow provider refresh result immediately and finishes the current revolution', async () => {
+    installFetch();
+    const pending = deferred<ModelSearchResponse>();
+    vi.spyOn(api, 'searchModels').mockReturnValueOnce(pending.promise);
+    render(<SettingsPanel health={HEALTH} theme="auto" onTheme={() => {}} onClose={() => {}} onChanged={() => {}} initialSection="providers" />);
+    const button = screen.getByRole('button', { name: 'Refresh model list' });
+    const spin = mockRefreshSpin(button);
+    fireEvent.click(button);
+    expect(spin.playState).toBe('running');
+    expect(spin.effect.updateTiming).toHaveBeenLastCalledWith({ iterations: Infinity });
+    spin.currentTime = 2100;
+    pending.resolve({ items: [], unavailable_providers: [] });
+    expect(await screen.findByText('Model list refreshed.')).toBeTruthy();
+    expect(button.getAttribute('aria-busy')).toBe('false');
+    expect(spin.effect.updateTiming).toHaveBeenLastCalledWith({ iterations: 3 });
+
+    spin.currentTime = 2700;
+    spin.playState = 'finished';
+    fireEvent.click(button);
+    expect(spin.currentTime).toBe(0);
+    expect(await screen.findByText('Model list refreshed.')).toBeTruthy();
+    expect(spin.effect.updateTiming).toHaveBeenLastCalledWith({ iterations: 1 });
+  });
+
   it('keeps existing options after an error and names unavailable providers on retry', async () => {
     installFetch();
     render(<SettingsPanel health={HEALTH} theme="auto" onTheme={() => {}} onClose={() => {}} onChanged={() => {}} />);
@@ -285,11 +320,16 @@ describe('settings panel', () => {
     const read = vi.spyOn(api, 'searchModels').mockRejectedValueOnce(new Error('Offline'))
       .mockResolvedValueOnce({ items: [], unavailable_providers: ['qianwen'] });
     const button = screen.getByRole('button', { name: 'Refresh model list' });
+    const spin = mockRefreshSpin(button);
     fireEvent.click(button);
     expect((await screen.findByRole('alert')).textContent).toContain('Offline');
+    expect(spin.effect.updateTiming).toHaveBeenLastCalledWith({ iterations: 1 });
     expect(screen.getByTestId('model-deepseek-deepseek-pro')).toBeTruthy();
+    spin.currentTime = 350;
     fireEvent.click(button);
     expect(await screen.findByText(/Catalog unavailable for qianwen/)).toBeTruthy();
+    expect(spin.currentTime).toBe(350);
+    expect(spin.effect.updateTiming).toHaveBeenLastCalledWith({ iterations: 2 });
     expect(screen.queryByText('Model list refreshed.')).toBeNull();
     expect(read).toHaveBeenCalledTimes(2);
   });

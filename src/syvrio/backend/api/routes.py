@@ -257,11 +257,8 @@ def create_api(
 
     @app.put("/api/sessions/{session_id}/title", status_code=204, tags=["sessions"])
     def rename_session(request: Request, session_id: str, body: dict):
-        title = body.get("title")
-        if not isinstance(title, str) or not title.strip() or len(title) > 500:
-            raise APIError("invalid_title", "Enter a session title of up to 500 characters.", 422)
         owner._validate_session_id(session_id)
-        owner.directory.rename(view_key(request), session_id, title.strip())
+        owner.directory.rename(view_key(request), session_id, body.get("title"))
 
     @app.post("/api/sessions/{session_id}/archive", tags=["sessions"])
     async def archive_session(request: Request, session_id: str):
@@ -400,7 +397,7 @@ def create_api(
             parse_command(line)[0] != "undo" or not body.session_id
         ):
             raise APIError("invalid_request", "A message target requires /undo and a session.", 422)
-        if parse_command(line)[0] == "new":
+        if parse_command(line) == ("new", ""):
             return await asyncio.to_thread(views.new_command, view_key(request), body.session_id)
         return await asyncio.to_thread(
             channel(request).execute_command,
