@@ -82,6 +82,7 @@ uv run python scripts/build_web.py --wheel dist/*.whl  # 校验实际 wheel 内�
 | GET | `/api/sessions?limit=100` | 会话列表 |
 | POST | `/api/sessions` | 回到新对话首页（返回 `draft=true`、`session_id=null`，不写文件；首条消息才创建会话） |
 | POST | `/api/sessions/{id}/switch` | 切换或恢复会话。传 `include_history=true` 时同时返回 `history_version`。首次请求或 `known_version` 与当前版本不同时，`history` 含目标会话的正文；版本一致时为 `null` |
+| PUT | `/api/sessions/{id}/title` | 用 `title` 修改指定会话的名称，成功返回 204 |
 | GET | `/api/sessions/{id}/deletion-preview` | 读取随会话移除的待确认内容及本次清单版本 |
 | POST | `/api/sessions/{id}/archive`、`/api/sessions/{id}/restore` | 归档或还原。普通 `DELETE /api/sessions/{id}` 也执行归档 |
 | GET | `/api/sessions?archived=true`、`/api/sessions/{id}?archived=true` | 人工浏览归档列表和原始会话。列表可用 `limit`、`offset` 翻页，下载归档附件同样需要 `archived=true` |
@@ -103,7 +104,7 @@ uv run python scripts/build_web.py --wheel dist/*.whl  # 校验实际 wheel 内�
 
 Web、TUI 与 CLI 共用 `SessionStore.list()`：在应用列表条数上限前，按最后一条有效消息的时间倒序。撤销后的消息不计入排序；改名、摘要和沉淀记录不会把旧会话顶到前面。没有有效消息时使用创建时间。
 
-首轮完整问答结束后，后台模型会概括话题，生成与对话语言一致的短标题。页面在标题就绪后更新侧栏和顶部标题。手动命名的会话始终采用你指定的标题。
+首轮完整问答结束后，后台模型会概括话题，生成与对话语言一致的短标题。点击顶栏的会话名可就地改名，输入时侧栏同步预览。按 Enter 或离开输入框保存，按 Esc 取消，留空恢复原标题。手动名称最多 80 个字符，会优先于后台生成的标题。
 
 点击侧栏的归档按钮会显示目标会话标题，默认选中取消。确认后会话移入 Archive。用户可在侧栏底部打开 Archive，查看原始消息、下载附件或还原。目标会话正在写入、消息排队或运行标题、沉淀、上下文补全任务时，服务会说明原因。只读标签页可以同时打开；归档后这些标签页回到空白会话并保留尚未发送的输入。
 
@@ -149,9 +150,9 @@ FastAPI 自动提供 `/openapi.json` 与 `/docs`。
 - `/import` 与输入框附件按钮打开同一个本地多文件选择器。可选择文档和图片，取消不会改变草稿。选好的附件在按发送后才交给当前会话。命令不接受服务器路径。
 - `/git` 显示同步状态，`/git sync` 二次确认后执行同步。`/pending approve|reject|edit <id>` 和 `/inferences confirm|reject|correct <id>` 可从 Web 审查记录。
 - 顶栏右侧的 Pending 与 `/pending` 打开同一待审侧栏，可滚动并按正文、主题或 ID 搜索。选中后可查看问题和关联记忆、编辑多行正文、批准或拒绝。`/pending edit <id>` 直接打开完整原文，保留原文时需单独确认。表单通过 `pending_text` 提交，写入失败保留编辑内容。
-- `/profile` 展示最近生成的画像。`/dream <n>` 提交带有请求预算的后台回顾，`/dream status|cancel|resume` 查询、取消或继续。关闭客户端后，定时任务继续由常驻后端调度。
+- `/profile` 展示最近生成的画像。`/dream` 和 `/dream run` 确认后提交后台回顾，`/dream status` 查看进度。关闭客户端后，定时任务继续由常驻后端调度。
 - 输入 `/undo` 或点击最近一条用户消息上的撤销按钮，会立即发出取消信号。已经开始的写工具先安全收尾，再撤销该回合的对话和有日志的本地文件写入。撤销成功后回填原文，暂停队列直到下一次主动发送。已有输入草稿时，等清空后再回填。受影响的文件后来被改动时，整次撤销会被拒绝。
-- 未识别的 `/` 命令返回 `unknown` 并提示 `/help`；前端把所有 `/` 行发往 `/api/commands`，后端 `/api/chat` 也会拒绝斜杠开头的消息（`422 command_required`），双重保证不会误发给 LLM。
+- 未识别的命令或子命令显示 `Invalid command.`。斜杠输入走命令路径，聊天接口会拒绝斜杠开头的消息（`422 command_required`）。
 - 多标签页：`POST /api/commands` 携带的 `session_id` 与 Runtime 当前会话不一致时返回 `409 session_mismatch`，提示刷新，避免旧标签页操作到别人的会话。
 
 ### 生成期间的命令
@@ -165,7 +166,8 @@ FastAPI 自动提供 `/openapi.json` 与 `/docs`。
 - 中文输入法组字状态（`isComposing`、`keyCode 229`、`Process` / `Unidentified`）不会触发 `Enter`、`Tab` 或任何全局快捷键。
 - 斜杠命令的结果与错误在站内弹窗显示。状态、摘要和主题等使用可滚动的结果窗口；`/sessions` 用弹窗浏览和切换会话，`/help` 打开命令面板，`/rename` 可在弹窗直接编辑标题。
 - `/model`、`/think`、`/context` 打开选项弹窗。选择后在弹窗显示设置结果，模型变更后刷新顶栏。
-- `/inferences` 在完整的可滚动列表上结合状态与关键词搜索。审核按钮与键盘操作触发相同的确认流程。`/git` 可通过弹窗请求同步。
+- `/inferences` 默认打开 Pending，可切换至 Confirmed 或 Deprecated。搜索在当前分类内生效。审核按钮与键盘操作触发相同的确认流程。`/git` 可通过弹窗请求同步。
+- 推断与 Pending 面板会立即打开，首次读取显示加载状态，再次打开先展示本标签页最近一次取得的列表并后台刷新。读取失败可在面板内重试，加载期间可关闭面板。
 - 模型目录是**进程内缓存**（`llm/client.py` 的 `_MODEL_CACHE`），Web 进程刚启动、或供应商未暴露 `/models` 时可能为空。此时 `/model` 仍列出当前配置模型并明确提示，不会输出空白列表；`/model refresh` 会真正向已配置供应商发起一次有界拉取（单供应商 5 秒超时），拉不到时说明原因而不是谎称「需要本地终端」。缓存为空时仍可用 `/model <当前provider>/<模型ID>` 按 ID 切换，未知供应商仍拒绝。
 - 用顶栏 `Commands`、`Ctrl+Shift+P` 或 `Alt+P` 打开命令面板。输入关键词搜索，用方向键选择，按 Enter 执行。Escape 关闭面板并恢复输入框焦点。快捷键列表位于右上角的 **Settings → Shortcuts**。
 

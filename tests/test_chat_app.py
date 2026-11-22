@@ -584,12 +584,13 @@ async def test_inference_review_error_releases_input(tmp_path, monkeypatch):
         assert not app.query_one("#input", Input).disabled
 
 
-async def test_dream_background_allows_session_switch_and_cancellation(
+async def test_dream_background_continues_after_switching_sessions(
     resident_backend, service, monkeypatch
 ):
     from syvrio.background_memory import dream
 
     owner, client = resident_backend
+    service.config.chat.default_budget = 1
     service.note("Synthetic source", topic="preferences")
     other = owner._sessions.create()
     started, release = threading.Event(), threading.Event()
@@ -597,23 +598,24 @@ async def test_dream_background_allows_session_switch_and_cancellation(
     def generate(_, prompt, data, schema):
         started.set()
         assert release.wait(8)
-        return schema(summary="Cancelled summary")
+        return schema(summary="Synthetic summary")
 
     monkeypatch.setattr(dream, "ask", generate)
     app = ResidentChatApp(client)
     async with app.run_test() as pilot:
         try:
-            await app._command("/dream 1", confirmed=True)
+            await app._command("/dream run", confirmed=True)
             assert await asyncio.to_thread(started.wait, 15)
             assert not app.query_one("#input", Input).disabled
             await app._select(other.id)
             assert app.sid == other.id
-            await app._command("/dream cancel")
-            assert owner._background.dream_status()["state"] == "cancelled"
+            assert owner._background.dream_status()["state"] == "running"
         finally:
             release.set()
-        await pilot.pause()
-    assert not service.profile.path.exists()
+        async with asyncio.timeout(8):
+            while owner._background.dream_status()["state"] != "paused":
+                await pilot.pause(0.05)
+    assert service.profile.read_text().strip() == "Synthetic summary"
     assert not service.list_inferences()
 
 
@@ -627,7 +629,8 @@ async def test_profile_view_does_not_invoke_model(resident_backend, service, mon
         dream, "ask", lambda _, prompt, data, schema: schema(summary="Published profile")
     )
     # Stop at the boundary between publishing the profile and generating hypotheses.
-    owner._background.request_dream(1)
+    service.config.chat.default_budget = 1
+    owner._background.request_dream()
     async with asyncio.timeout(8):
         while owner._background.dream_status()["state"] != "paused":
             await asyncio.sleep(0.02)
@@ -742,13 +745,14 @@ async def test_dream_publishes_profile_in_background(resident_backend, service, 
     from syvrio.background_memory import dream
 
     owner, client = resident_backend
+    service.config.chat.default_budget = 1
     service.note("Synthetic preference", topic="preferences")
     monkeypatch.setattr(
         dream, "ask", lambda _, prompt, data, schema: schema(summary="Updated profile")
     )
     app = ResidentChatApp(client)
     async with app.run_test() as pilot:
-        await app._command("/dream 1", confirmed=True)
+        await app._command("/dream", confirmed=True)
         async with asyncio.timeout(8):
             while not service.profile.path.exists():
                 await pilot.pause(0.05)
@@ -763,6 +767,7 @@ async def test_profile_remains_readable_while_dream_runs(resident_backend, servi
     from syvrio.background_memory import dream
 
     _, client = resident_backend
+    service.config.chat.default_budget = 1
     service.note("Synthetic preference", topic="preferences")
     service.profile.path.write_text("Current profile", encoding="utf-8")
     started, release = threading.Event(), threading.Event()
@@ -776,7 +781,7 @@ async def test_profile_remains_readable_while_dream_runs(resident_backend, servi
     app = ResidentChatApp(client)
     async with app.run_test() as pilot:
         try:
-            await app._command("/dream 1", confirmed=True)
+            await app._command("/dream run", confirmed=True)
             assert await asyncio.to_thread(started.wait, 5)
             assert not app.query_one("#input", Input).disabled
             await app._command("/profile")
@@ -1243,9 +1248,13 @@ async def test_command_palette_filter_navigate_execute(tmp_path):
         palette = app.query_one("#cmd-palette", CommandPalette)
         assert palette.display
         assert [m[0] for m in palette.matches] == ["think"]
+        assert palette.current is None
+        await pilot.press("down")
         assert palette.current == "think"
 
-        await pilot.press("enter")  # 执行高亮命令
+        await pilot.press("enter")
+        assert widget.value == "/think"
+        await pilot.press("enter")
         await pilot.pause()
         assert not palette.display
         # /think 要么弹出选择器，要么提示模型不支持；两者都说明命令已执行。
@@ -1272,13 +1281,92 @@ async def test_command_palette_escape_closes(tmp_path):
         assert not palette.display
 
 
+async def test_resident_enter_preserves_unselected_input_and_extra_slashes(
+    resident_backend, monkeypatch
+):
+    from syvrio.app.chat_widgets import CommandPalette, PickScreen
+
+    _, client = resident_backend
+    app = ResidentChatApp(client)
+    calls = []
+    notices = []
+    request = client.request
+    notify = app.notify
+
+    def trace_request(method, path, **values):
+        if method == "POST" and path == "/api/commands":
+            calls.append(values["json"]["line"])
+        return request(method, path, **values)
+
+    def trace_notice(message, **kwargs):
+        notices.append(message)
+        return notify(message, **kwargs)
+
+    monkeypatch.setattr(client, "request", trace_request)
+    monkeypatch.setattr(app, "notify", trace_notice)
+    async with app.run_test() as pilot:
+        widget = app.query_one("#input", Input)
+        palette = app.query_one(CommandPalette)
+        screen = app.screen
+        for line in ("/", "/exi", "/dream r"):
+            widget.value = line
+            await pilot.pause()
+            assert palette.current is None
+            await pilot.press("enter")
+            assert not calls
+            assert notices[-1] == "Complete the command before sending."
+            assert widget.value == line and app.screen is screen
+        await pilot.press("escape", "enter")
+        assert not calls and widget.value == "/dream r"
+        assert notices[-1] == "Complete the command before sending."
+
+        for line in ("//rename", "//inferences", "/import extra", "/exit extra"):
+            widget.value = line
+            await pilot.pause()
+            assert palette.current is None
+            await pilot.press("enter")
+            await app.workers.wait_for_complete()
+            assert calls[-1] == line
+            assert notices[-1] == "Invalid command."
+            assert app.screen is screen
+
+        widget.value = "/dream st"
+        await pilot.pause()
+        before = len(calls)
+        await pilot.press("down", "enter")
+        assert len(calls) == before and widget.value == "/dream status"
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        assert calls[-1] == "/dream status"
+        assert isinstance(app.screen, PickScreen)
+        await pilot.press("escape")
+
+        widget.value = "/dream "
+        await pilot.pause()
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        assert calls[-1] == "/dream"
+        assert isinstance(app.screen, PickScreen)
+        await pilot.press("escape")
+
+        widget.value = "/sta"
+        widget.cursor_position = len(widget.value)
+        await pilot.pause()
+        before = len(calls)
+        await pilot.press("tab")
+        assert widget.value == "/status" and len(calls) == before
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        assert calls[-1] == "/status"
+
+
 async def test_tab_completes_highlighted_command_without_executing(tmp_path, monkeypatch):
     app = build_app(tmp_path, [])
     commands = []
     monkeypatch.setattr(app, "_command", commands.append)
     async with app.run_test() as pilot:
         widget = app.query_one("#input", Input)
-        await pilot.press("slash", "down", "tab")
+        await pilot.press("slash", "down", "down", "tab")
         assert widget.value == "/sessions"
         assert widget.cursor_position == len(widget.value)
         assert not commands
@@ -1289,10 +1377,9 @@ async def test_tab_completes_highlighted_command_without_executing(tmp_path, mon
 @pytest.mark.parametrize(
     ("partial", "completed"),
     [
-        ("/dream r", "/dream resume"),
+        ("/dream r", "/dream run"),
         ("/model re", "/model refresh"),
-        ("/dream ca", "/dream cancel"),
-        ("/dream 3", "/dream 3"),
+        ("/dream st", "/dream status"),
         ("/rename my notes", "/rename my notes"),
         ("ordinary text", "ordinary text"),
     ],
@@ -1352,7 +1439,7 @@ async def test_command_palette_columns_align(tmp_path):
         palette = app.query_one("#cmd-palette", CommandPalette)
         rows = list(palette.query(CommandRow))
         assert len(rows) == len(SLASH_COMMANDS)
-        assert rows[0].has_class("cmd-active")
+        assert not any(row.has_class("cmd-active") for row in rows)
 
         starts = set()
         for row, (_, usage, description) in zip(rows, SLASH_COMMANDS, strict=True):
@@ -1373,7 +1460,7 @@ async def test_command_palette_scrolls_highlighted_command_into_view(tmp_path):
         palette = app.query_one("#cmd-palette", CommandPalette)
         assert palette.listing.max_scroll_y > 0
 
-        for _ in range(len(SLASH_COMMANDS) - 1):
+        for _ in range(len(SLASH_COMMANDS)):
             await pilot.press("down")
         await pilot.pause()
         assert palette.index == len(SLASH_COMMANDS) - 1
@@ -1423,17 +1510,21 @@ async def test_command_palette_prefix_filters(tmp_path, prefix, expected):
         assert [match[0] for match in palette.matches] == expected
 
 
-async def test_command_palette_click_runs_visible_command(tmp_path):
+async def test_command_palette_click_fills_visible_command_before_running(tmp_path):
     import asyncio
 
     from syvrio.app.chat_widgets import CommandPalette
 
     app = build_app(tmp_path, [])
     async with app.run_test(size=(120, 40)) as pilot:
-        app.query_one("#input", Input).value = "/hel"
+        widget = app.query_one("#input", Input)
+        widget.value = "/hel"
         await pilot.pause()
         palette = app.query_one("#cmd-palette", CommandPalette)
         await pilot.click(palette.rows()[0])
+        assert widget.value == "/help"
+        assert not any("Commands" in str(card.content) for card in app.query(".card"))
+        await pilot.press("enter")
         await asyncio.wait_for(app.workers.wait_for_complete(), timeout=30)
         await pilot.pause()
         assert not palette.display
@@ -1455,7 +1546,7 @@ async def test_command_palette_fits_small_viewport_and_input_stays_visible(tmp_p
         assert palette.region.bottom <= widget.region.y
         assert widget.region.height > 0
 
-        for _ in range(len(SLASH_COMMANDS) - 1):
+        for _ in range(len(SLASH_COMMANDS)):
             await pilot.press("down")
         await pilot.pause()
         last = palette.rows()[-1]
@@ -3759,13 +3850,46 @@ async def test_removed_shortcuts_are_not_available(tmp_path, monkeypatch):
     assert not {"resume", "recall", "remember"}.intersection(item[0] for item in SLASH_COMMANDS)
     cards = []
     monkeypatch.setattr(app, "add_card", lambda message, *args: cards.append(message))
-    for command in ("/resume", "/recall 合成查询", "/remember 合成事实"):
+    for command in ("/resume", "/recall 合成查询", "/remember 合成事实", "/dream invalid"):
         app._command(command)
-        assert "Unknown command" in cards[-1]
+        assert cards[-1] == "Invalid command."
     opened = []
     monkeypatch.setattr(app, "open_session_picker", lambda: opened.append(True))
     app._command("/sessions")
     assert opened == [True]
+
+
+async def test_legacy_chat_confirms_dream_through_the_shared_command(tmp_path, monkeypatch):
+    from syvrio.app.chat_widgets import PickScreen
+    from syvrio.application.commands import CommandResult
+
+    app = build_app(tmp_path, [])
+    calls = []
+    cards = []
+
+    def dream(argument):
+        calls.append(argument)
+        return CommandResult("ok", "dream", "dream", "Shared Dream receipt.")
+
+    monkeypatch.setattr(app.application.reflection, "command", dream)
+    monkeypatch.setattr(app, "add_card", lambda text, *args: cards.append(text))
+    async with app.run_test() as pilot:
+        app._command("/dream")
+        await pilot.pause()
+        assert isinstance(app.screen, PickScreen)
+        await pilot.press("escape")
+        assert not calls
+
+        app._command("/dream run")
+        await pilot.pause()
+        await pilot.press("down", "enter")
+        await pilot.pause()
+        assert calls == ["run"]
+        assert cards[-1] == "Shared Dream receipt."
+
+        app._command("/dream status")
+        await pilot.pause()
+        assert calls == ["run", "status"]
 
 
 @pytest.mark.parametrize("width", [80, 120])
@@ -3976,6 +4100,45 @@ async def test_ctrl_enter_inserts_in_current_turn_before_fifo(tmp_path):
         await _wait_idle(app, pilot)
 
 
+async def test_resident_ctrl_enter_routes_slash_commands_during_a_turn(
+    resident_backend, monkeypatch
+):
+    owner, client = resident_backend
+    model = GatedChatModel([AssistantTurn(content="Synthetic reply")])
+    gate = threading.Event()
+    model.gates.append(gate)
+    owner._runtime.model = model
+    session = owner._sessions.create()
+    app = ResidentChatApp(client, session.id)
+    notices = []
+    monkeypatch.setattr(app, "notify", lambda message, **kwargs: notices.append(message))
+    async with app.run_test() as pilot:
+        widget = app.query_one("#input", Input)
+        try:
+            widget.value = "Synthetic turn"
+            await pilot.press("enter")
+            async with asyncio.timeout(5):
+                while not (app._active_id and model.calls):
+                    await pilot.pause(0.02)
+            widget.value = "/undo extra"
+            await pilot.press("ctrl+enter")
+            async with asyncio.timeout(3):
+                while "Invalid command." not in notices:
+                    await pilot.pause(0.02)
+            assert widget.value == ""
+            assert app._active_id and model.calls == ["Synthetic turn"]
+            widget.value = "/status"
+            await pilot.press("ctrl+enter")
+            async with asyncio.timeout(3):
+                while not any(
+                    "Generating: yes" in str(card.content) for card in app.query(".card")
+                ):
+                    await pilot.pause(0.02)
+            assert owner._sessions.load(session.id).user_texts() == ["Synthetic turn"]
+        finally:
+            gate.set()
+
+
 async def test_input_stays_enabled_during_ask(tmp_path):
     # 回归：等待 LLM 期间输入框保持可输入，不再被全局 busy 禁用。
     app = build_app(tmp_path, [])
@@ -4015,19 +4178,30 @@ async def test_slash_commands_during_streaming_use_palette_and_execute(tmp_path,
                     break
             assert app._stream_buffer == "streaming reply"
 
-            await pilot.press("slash", "down", "enter")
+            await pilot.press("slash", "down", "down", "enter")
+            assert widget.value == "/sessions" and not commands
+            await pilot.press("enter")
             assert commands == ["/sessions"]
             assert not app._queue
 
             widget.value = "/th"
             await pilot.pause()
-            await pilot.press("enter")
-            widget.value = "/dream ca"
+            await pilot.press("down", "enter", "enter")
+            widget.value = "/dream st"
             widget.cursor_position = len(widget.value)
             await pilot.press("tab", "enter")
             widget.value = "/not-a-command"
-            await pilot.press("enter")
-            assert commands == ["/sessions", "/think", "/dream cancel", "/not-a-command"]
+            await pilot.press("ctrl+enter")
+            widget.value = "/undo extra"
+            await pilot.press("ctrl+enter")
+            assert commands == [
+                "/sessions",
+                "/think",
+                "/dream status",
+                "/not-a-command",
+                "/undo extra",
+            ]
+            assert app._ask_active
             assert not app._queue
         finally:
             gate.set()
@@ -5744,11 +5918,12 @@ async def test_reflection_status_shows_pending_inference_batch(
     from syvrio.background_memory import dream
 
     owner, client = resident_backend
+    service.config.chat.default_budget = 1
     service.note("Synthetic fact for Dream", topic="preferences")
     monkeypatch.setattr(dream, "ask", lambda _, prompt, data, schema: schema(summary="Profile"))
     app = ResidentChatApp(client)
     async with app.run_test() as pilot:
-        await app._command("/dream 1", confirmed=True)
+        await app._command("/dream run", confirmed=True)
         async with asyncio.timeout(8):
             while owner._background.dream_status()["state"] != "paused":
                 await pilot.pause(0.05)

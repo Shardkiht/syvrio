@@ -5,13 +5,14 @@ import type { SessionInfo } from '../types';
 import { CommandDialog } from './CommandUI';
 import { MessageList } from './MessageList';
 
-export function ArchivePanel({ onClose, onRestore, onDelete }: {
+export function ArchivePanel({ onClose, onRestore, onDelete, initialSelected }: {
+  initialSelected?: SessionInfo;
   onClose: () => void;
   onRestore: () => Promise<void>;
   onDelete: (row: SessionInfo) => void;
 }) {
   const [rows, setRows] = useState<SessionInfo[]>([]);
-  const [selected, setSelected] = useState<SessionInfo | null>(null);
+  const [selected, setSelected] = useState<SessionInfo | null>(initialSelected ?? null);
   const [history, setHistory] = useState<ChatState | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
@@ -58,8 +59,7 @@ export function ArchivePanel({ onClose, onRestore, onDelete }: {
     } finally { setRestoring(false); }
   }
   return (
-    <CommandDialog title="Archive" className="command-panel archive-panel" onClose={onClose}
-      onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); onClose(); } }}>
+    <CommandDialog title="Archive" className="command-panel archive-panel" onClose={onClose}>
       <header className="pending-header">
         <strong>Archive</strong>
         <button type="button" className="icon-button" aria-label="Close Archive" onClick={onClose}>×</button>
@@ -74,7 +74,7 @@ export function ArchivePanel({ onClose, onRestore, onDelete }: {
           onToggle={id => setHistory(prev => prev && toggleSegment(prev, id))} /> : !error && <p>Loading conversation…</p>}
         <footer className="archive-controls">
           <button type="button" disabled={restoring} onClick={() => void restore()}>Restore to chats</button>
-          <button type="button" className="archive-purge" disabled={restoring} onClick={() => onDelete(selected)}>Delete permanently…</button>
+          <button type="button" className="archive-purge" autoFocus={!!initialSelected} disabled={restoring} onClick={() => onDelete(selected)}>Delete permanently…</button>
         </footer>
       </> : <div className="archive-list">
         {loading && !rows.length ? <p>Loading…</p> : !rows.length && !error && <p>No archived conversations.</p>}

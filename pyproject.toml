@@ -28,6 +28,7 @@ dependencies = [
     "openai>=1.60",
     "packaging>=23",
     "pillow>=10",
+    "platformdirs>=4",
     "prompt-toolkit>=3.0",
     "pydantic>=2.9",
     "python-multipart>=0.0.20",

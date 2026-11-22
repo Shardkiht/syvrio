@@ -8,11 +8,40 @@ from datetime import date
 
 from pydantic import BaseModel
 
+from ..errors import SyvrioError
+from ..infra.config import Config
 from ..infra.secrets import contains_secret
 from ..infra.tokens import estimate_tokens
-from ..llm.client import complete, effective_context_window
-from ..memory.models import ProfileSummaryResponse
+from ..llm.client import (
+    complete,
+    effective_context_window,
+    model_metadata,
+    provider_reasoning_levels,
+)
+from ..memory.models import ProfileSummaryResponse, ReflectionResponse
 from ..memory.temporal import resolve_relative
+
+MAX_DREAM_OUTPUT_TOKENS = 16_000
+MESSAGE_OVERHEAD = 64
+
+
+def encode_payload(payload: dict) -> str:
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
+def dream_output_ceiling(config) -> int:
+    metadata = model_metadata(config.litellm_model())
+    maximum = metadata.get("max_output_tokens") or metadata.get("max_tokens")
+    if isinstance(maximum, int) and maximum > 0:
+        return min(MAX_DREAM_OUTPUT_TOKENS, maximum)
+    return MAX_DREAM_OUTPUT_TOKENS
+
+
+class DreamOutputTruncated(SyvrioError):
+    def __init__(self, used_limit: int, next_limit: int):
+        super().__init__("The model reached its output limit before finishing this Dream batch.")
+        self.used_limit = used_limit
+        self.next_limit = next_limit
 
 
 def source_calendar(source: dict, text: str) -> dict:
@@ -43,12 +72,37 @@ def source_calendar(source: dict, text: str) -> dict:
     }
 
 
-def ask(service, prompt: str, payload: dict, schema: type[BaseModel]):
-    config = replace(service.config.llm, num_retries=0)
-    content = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-    limit = 4000 if schema is ProfileSummaryResponse or config.is_spark else 1800
-    window = effective_context_window(config, service.config.chat.context_window)
-    budget = min(limit, window - estimate_tokens(prompt + content) - 64)
+def ask(
+    settings: Config,
+    prompt: str,
+    payload: dict,
+    schema: type[BaseModel],
+    *,
+    output_limit: int | None = None,
+):
+    config = replace(settings.llm, num_retries=0)
+    content = encode_payload(payload)
+    default_limit = 4000 if schema is ProfileSummaryResponse or config.is_spark else 1800
+    dream = schema in (ProfileSummaryResponse, ReflectionResponse)
+    budget_settings = settings.dream if dream else settings.chat
+    window = effective_context_window(config, budget_settings.context_window)
+    available = window - estimate_tokens(prompt + content) - MESSAGE_OVERHEAD
+    if dream:
+        available = min(available, dream_output_ceiling(config))
+        if (
+            output_limit
+            and not config.is_spark
+            and config.reasoning_effort
+            not in {
+                "low",
+                "minimal",
+                "none",
+                "disabled",
+            }
+        ):
+            if "low" in (provider_reasoning_levels(config) or ()):
+                config.reasoning_effort = "low"
+    budget = min(output_limit or default_limit, available)
     if budget < (2048 if config.is_spark else 256):
         raise ValueError("Background task exceeds the model context window.")
     response = complete(
@@ -57,7 +111,11 @@ def ask(service, prompt: str, payload: dict, schema: type[BaseModel]):
         response_format={"type": "json_object"},
         max_tokens=budget,
     )
-    text = (response.choices[0].message.content or "").strip()
+    choice = response.choices[0]
+    if dream and getattr(choice, "finish_reason", None) == "length":
+        # Reasoning can exhaust the output allowance before any JSON is produced.
+        raise DreamOutputTruncated(budget, min(budget * 4, available))
+    text = (choice.message.content or "").strip()
     if text.startswith("```") and text.endswith("```"):
         text = text.partition("\n")[2].removesuffix("```").strip()
     if contains_secret(text):

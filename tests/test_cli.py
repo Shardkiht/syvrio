@@ -64,6 +64,41 @@ def test_bare_invocation_falls_back_to_help_without_tty():
     assert "Usage:" in result.output
 
 
+@pytest.mark.parametrize("args", [[], ["run"]])
+def test_dream_cli_runs_and_reports_resident_status(args, monkeypatch):
+    from syvrio.background_memory import BackgroundMemory
+
+    monkeypatch.setattr(BackgroundMemory, "start", lambda self: None)
+    before = invoke(["dream", "status"])
+    assert before.exit_code == 0 and "State: idle" in before.output
+    submitted = invoke(["dream", *args])
+    assert submitted.exit_code == 0 and "queued" in submitted.output
+    after = invoke(["dream", "status"])
+    assert after.exit_code == 0 and "State: queued" in after.output
+
+
+@pytest.mark.parametrize("args", [["cancel"], ["resume"], ["1"], ["--requests", "1"]])
+def test_dream_cli_rejects_removed_actions_and_overrides(args):
+    assert invoke(["dream", *args]).exit_code == 2
+
+
+def test_resident_dream_rejects_legacy_operations_and_budget_overrides(monkeypatch):
+    from syvrio.app.cli import _service
+    from syvrio.background_memory import BackgroundMemory
+
+    monkeypatch.setattr(BackgroundMemory, "start", lambda self: None)
+    api = _service(None, None).transport
+    for operation in ("dream_status", "cancel_dream"):
+        assert api.post(f"/api/resident/{operation}", json={}).status_code == 404
+    overridden = api.post("/api/resident/dream", json={"max_requests": 1})
+    assert overridden.status_code == 422
+    for action in ("resume", "cancel", "1", None):
+        invalid = api.post("/api/resident/dream", json={"action": action}).json()
+        assert invalid["status"] == "unknown"
+    status = api.post("/api/resident/dream", json={"action": "status"}).json()
+    assert status["data"]["state"] == "idle"
+
+
 def test_format_tokens_uses_km_units():
     from syvrio.infra.tokens import format_tokens
 

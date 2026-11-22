@@ -3,6 +3,7 @@ from __future__ import annotations
 import ipaddress
 import sys
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import Annotated
 
@@ -407,15 +408,22 @@ def profile(
     )
 
 
+class DreamAction(StrEnum):
+    run = "run"
+    status = "status"
+
+
 @app.command("dream")
 def dream(
-    requests: int | None = typer.Option(None, "--requests", min=0, max=20, help="本次模型请求上限"),
+    action: Annotated[DreamAction, typer.Argument()] = DreamAction.run,
     config: Path | None = CONFIG_OPTION,
     vault: Path | None = VAULT_OPTION,
 ) -> None:
-    """增量回顾有效事实，生成待审查假设；默认使用配置中的请求预算。"""
-    job = _service(config, vault).call("dream", max_requests=requests)
-    console.print(f"已提交 Dream 任务 {job}", markup=False)
+    """更新画像并生成待审推断，或查看 Dream 状态。"""
+    result = _service(config, vault).call("dream", action=action.value)
+    if result["status"] != "ok":
+        fail(result["message"])
+    console.print(result["message"], markup=False)
 
 
 @app.command("inferences")

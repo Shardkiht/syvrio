@@ -101,8 +101,10 @@ def isolate_user_config(monkeypatch, tmp_path, tmp_path_factory):
 
 
 @pytest.fixture(autouse=True)
-def isolate_llm_credentials(monkeypatch):
+def isolate_llm_credentials(monkeypatch, tmp_path):
     """测试禁止读取本机 keyring / 真实 Key，避免误调模型和产生费用。"""
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "user-data"))
+    monkeypatch.delenv("SYVRIO_CREDENTIALS_DIR", raising=False)
     fake = types.ModuleType("keyring")
     fake.get_password = lambda service, name: None
     fake.set_password = lambda service, name, value: None

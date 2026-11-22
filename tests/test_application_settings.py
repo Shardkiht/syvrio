@@ -305,6 +305,18 @@ def test_environment_key_takes_priority_and_remove_refuses(tmp_path, monkeypatch
     assert "provided by SPARK_API_KEY" in result.message
 
 
+@pytest.mark.parametrize("action", ["configure_provider", "update_provider_key"])
+def test_environment_key_cannot_be_shadowed_by_settings(tmp_path, monkeypatch, action):
+    _, _, settings = build(tmp_path)
+    monkeypatch.setenv("SPARK_API_KEY", "synthetic-environment-value")
+    monkeypatch.setattr(settings_module, "save_api_key", lambda *_: pytest.fail("unexpected write"))
+
+    result = getattr(settings, action)("spark", "synthetic-new-value")
+
+    assert not result.ok and "provided by SPARK_API_KEY" in result.message
+    assert "synthetic" not in result.message
+
+
 def test_apply_model_reloads_runtime_and_persists(tmp_path):
     service, runtime, settings = build(tmp_path)
     service.config_path = tmp_path / "syvrio.toml"

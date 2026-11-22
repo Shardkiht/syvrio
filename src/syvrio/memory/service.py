@@ -740,11 +740,12 @@ class MemoryService:
         return self.store.entries()
 
     def read_topic(self, topic: str) -> dict:
-        wanted = self.store.topic_path(topic)
-        matches = self.topic_entries(topic)
-        if not matches and not wanted.is_file():
-            raise KeyError(f"主题不存在：{topic}")
-        logical = wanted.relative_to(self.paths.memories_dir).with_suffix("").as_posix()
+        with vault_transaction(self.paths):
+            wanted = self.store.topic_path(topic)
+            if not wanted.is_file():
+                raise KeyError(f"主题不存在：{topic}")
+            matches = self.store.entries(wanted.relative_to(self.paths.vault_dir).as_posix())
+            logical = wanted.relative_to(self.paths.memories_dir).with_suffix("").as_posix()
         return {
             "topic": logical,
             "entries": [entry.as_recall().model_dump(exclude_none=True) for entry in matches],
@@ -836,8 +837,7 @@ class MemoryService:
             return {"status": "found", "memory_id": memory_id, "message": message}
 
     def topic_entries(self, topic: str) -> list[Entry]:
-        wanted = self.store.topic_path(topic).relative_to(self.paths.vault_dir).as_posix()
-        return [entry for entry in self.current_facts() if entry.topic == wanted]
+        return self.store.entries(topic)
 
     def history(self, limit: int = 10) -> list[dict]:
         return self.repo.history(limit)

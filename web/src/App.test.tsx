@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
+import { api } from './api/client';
 import { Markdown } from './components/Markdown';
 import type { CommandInfo, CommandResponse, HistoryResponse, StreamEvent } from './types';
 import { sessionHistory, switchResponse } from './test/sessionHistory';
@@ -41,6 +42,12 @@ const CATALOG: CommandInfo[] = [
   command('import', { support: 'client', intent: 'pick_attachments' }),
   command('help', { shortcut: 'Ctrl+Shift+P / Alt+P' }),
   command('status'),
+  command('topics'),
+  command('dream', {
+    usage: '/dream [run|status]',
+    description: 'Update your profile and generate hypotheses',
+    subcommands: [{ name: 'run', description: 'Run Dream' }, { name: 'status', description: 'Show Dream status' }],
+  }),
   command('pending'),
 ];
 
@@ -193,6 +200,7 @@ function captureScrolling() {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
   // restore the no-op from src/test/setup.ts (captureScrolling replaces it)
   Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
@@ -206,6 +214,78 @@ afterEach(() => {
 });
 
 describe('Web client interactions', () => {
+  it('edits the selected title inline, previews it in the sidebar and saves to that session only', async () => {
+    const titles: string[] = [];
+    const calls = installFetch({
+      '/api/sessions/s-1/switch': () => json(switchResponse(sessionHistory('s-1'))),
+      'PUT /api/sessions/s-1/title': init => {
+        titles.push(JSON.parse(String(init?.body)).title);
+        return new Response(null, { status: 204 });
+      },
+    });
+    render(<App />);
+    await ready();
+    expect(screen.queryByRole('textbox', { name: 'Conversation title' })).toBeNull();
+    const row = await screen.findByTestId('session-s-1');
+    fireEvent.click(row);
+    const input = await screen.findByRole<HTMLInputElement>('textbox', { name: 'Conversation title' });
+    expect(input.value).toBe('Earlier chat');
+    input.focus();
+    fireEvent.change(input, { target: { value: 'Draft' } });
+    expect(row.textContent).toBe('Draft');
+    fireEvent.keyDown(input, { key: 'Enter', isComposing: true });
+    expect(document.activeElement).toBe(input);
+    fireEvent.keyDown(input, { key: 'Escape' });
+    expect(row.textContent).toBe('Earlier chat');
+    expect(titles).toEqual([]);
+    input.focus();
+    const full = '星'.repeat(79) + '🌙';
+    fireEvent.change(input, { target: { value: full } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() => expect(input.readOnly).toBe(false));
+    expect(titles).toEqual([full]);
+    expect(input.value).toBe(full);
+    expect(row.getAttribute('title')).toContain(full);
+    fireEvent.change(input, { target: { value: '   ' } });
+    fireEvent.blur(input);
+    expect(input.value).toBe(full);
+    expect(calls.filter(call => call.startsWith('PUT '))).toHaveLength(1);
+  });
+
+  it('retains a failed title draft for retry and keeps late saves scoped when switching chats', async () => {
+    const other = { ...SESSIONS[0], id: 's-2', title: 'Another chat' };
+    let savedTitle = SESSIONS[0].title;
+    installFetch({
+      'GET /api/sessions': () => json({ items: [{ ...SESSIONS[0], title: savedTitle }, other] }),
+      '/api/sessions/s-1/switch': () => json(switchResponse(sessionHistory('s-1'))),
+      '/api/sessions/s-2/switch': () => json(switchResponse(sessionHistory('s-2'))),
+    });
+    let done!: () => void;
+    const save = vi.spyOn(api, 'renameSession').mockRejectedValueOnce(new Error('Offline'))
+      .mockImplementationOnce((_id, title) => new Promise(resolve => {
+        done = () => { savedTitle = title; resolve(); };
+      }));
+    try {
+      render(<App />);
+      await ready();
+      fireEvent.click(await screen.findByTestId('session-s-1'));
+      const input = await screen.findByRole<HTMLInputElement>('textbox', { name: 'Conversation title' });
+      fireEvent.change(input, { target: { value: 'Retry this title' } });
+      fireEvent.blur(input);
+      expect(await screen.findByText('Offline', { selector: '[role="alert"]' })).toBeTruthy();
+      expect(input.value).toBe('Retry this title');
+      expect(screen.getByTestId('session-s-1').textContent).toBe('Earlier chat');
+      input.focus();
+      fireEvent.keyDown(input, { key: 'Enter' });
+      expect(screen.getByText('Saving…')).toBeTruthy();
+      fireEvent.click(screen.getByTestId('session-s-2'));
+      await act(async () => done());
+      expect(screen.getByTestId('session-s-1').textContent).toBe('Retry this title');
+      expect(screen.getByRole<HTMLInputElement>('textbox', { name: 'Conversation title' }).value).toBe('Another chat');
+      expect(save.mock.calls).toEqual([['s-1', 'Retry this title'], ['s-1', 'Retry this title']]);
+    } finally { save.mockRestore(); }
+  });
+
   it('marks all replying chats in the sidebar, including a new chat from another view', async () => {
     let replying: string[] = [];
     let rows = SESSIONS;
@@ -793,6 +873,91 @@ describe('Slash commands and shortcuts', () => {
     expect(within(drawer).getByText('Current candidate')).toBeTruthy();
   });
 
+  it('opens Dream status immediately and ignores its reply after another window opens', async () => {
+    installFetch();
+    const fetchOther = globalThis.fetch;
+    let finish!: (response: Response) => void;
+    vi.stubGlobal('fetch', (url: string, init?: RequestInit) => {
+      if (url === '/api/commands' && init?.method === 'POST') {
+        return new Promise<Response>(resolve => { finish = resolve; });
+      }
+      return fetchOther(url, init);
+    });
+    render(<App />);
+    await ready();
+    send('/dream status');
+    const dream = screen.getByRole('dialog', { name: 'Dream' });
+    expect(within(dream).getByRole('status').textContent).toBe('Checking status…');
+    fireEvent.keyDown(dream, { key: 'Escape' });
+    fireEvent.click(screen.getByRole('button', { name: 'Open settings' }));
+    await act(async () => finish(json(commandResult({ command: 'dream', intent: 'dream',
+      data: { kind: 'dream', state: 'idle', rows: [] } }))));
+    expect(screen.getByRole('dialog', { name: 'Settings' })).toBeTruthy();
+    expect(screen.queryByRole('dialog', { name: 'Dream' })).toBeNull();
+  });
+
+  it('opens a session query while switching and reads the newly bound session only', async () => {
+    installFetch();
+    let finish!: () => void;
+    const gate = new Promise<void>(resolve => { finish = resolve; });
+    vi.spyOn(api, 'switchSession').mockImplementation(async id => {
+      await gate;
+      return switchResponse(sessionHistory(id));
+    });
+    const run = vi.spyOn(api, 'runCommand').mockResolvedValue(commandResult({
+      command: 'summary', intent: 'summary', message: 'Summary of the selected conversation',
+    }));
+    render(<App />);
+    await ready();
+    fireEvent.click(await screen.findByTestId('session-s-1'));
+    send('/summary');
+    const panel = screen.getByRole('dialog', { name: 'Session summary' });
+    expect(within(panel).getByRole('status').textContent).toBe('Loading…');
+    expect(run).not.toHaveBeenCalled();
+    await act(async () => finish());
+    expect(await screen.findByText('Summary of the selected conversation')).toBeTruthy();
+    expect(run).toHaveBeenCalledWith(expect.objectContaining({ line: '/summary', session_id: 's-1' }));
+  });
+
+  it('opens inference review before the response, retries in place, and ignores a stale refresh', async () => {
+    installFetch();
+    const other = globalThis.fetch;
+    const replies: ((response: Response) => void)[] = [];
+    vi.stubGlobal('fetch', (url: string, init?: RequestInit) => {
+      if (url === '/api/commands' && init?.method === 'POST') {
+        return new Promise<Response>(resolve => replies.push(resolve));
+      }
+      return other(url, init);
+    });
+    const reply = (labels: string[]) => json(commandResult({ command: 'inferences', intent: 'inferences',
+      data: { kind: 'inferences', count: labels.length, rows: labels.map(text => ({ id: text, text, topic: 'test', status: 'hypothesis' })) } }));
+    render(<App />);
+    await ready();
+    const open = () => {
+      send('/inferences');
+      return screen.getByRole('dialog', { name: 'Inference review' });
+    };
+    const first = open();
+    expect(within(first).getByRole('status').textContent).toBe('Loading inferences…');
+    expect(within(first).queryByText('No inferences')).toBeNull();
+    await act(async () => replies[0](json(commandResult({ status: 'error', message: 'Read failed' }))));
+    expect(within(first).getByRole('alert').textContent).toBe('Read failed');
+    fireEvent.click(within(first).getByRole('button', { name: 'Retry' }));
+    expect(within(first).getByRole('status').textContent).toBe('Loading inferences…');
+    await act(async () => replies[1](reply(['Cached inference'])));
+    expect(within(first).getByText('Cached inference')).toBeTruthy();
+    fireEvent.keyDown(first, { key: 'Escape' });
+    const second = open();
+    expect(within(second).getByText('Cached inference')).toBeTruthy();
+    fireEvent.keyDown(second, { key: 'Escape' });
+    const third = open();
+    await act(async () => replies[3](reply([])));
+    expect(within(third).getByRole('status').textContent).toBe('No inferences');
+    await act(async () => replies[2](reply(['Late response'])));
+    expect(within(third).queryByText('Late response')).toBeNull();
+    expect(within(third).getByRole('status').textContent).toBe('No inferences');
+  });
+
   it('combines inference status and search over the full list', async () => {
     const rows = Array.from({ length: 26 }, (_, i) => ({
       id: `inf-${i}`, topic: 'profile', status: i < 24 ? 'confirmed' : 'hypothesis', text: `Synthetic row ${i}`,
@@ -804,8 +969,12 @@ describe('Slash commands and shortcuts', () => {
     await ready();
     send('/inferences');
     const dialog = within(await screen.findByRole('dialog', { name: 'Inference review' }));
-    const list = within(dialog.getByRole('group', { name: 'Inferences' }));
-    expect(list.getAllByRole('button')).toHaveLength(26);
+    const list = within(await dialog.findByRole('group', { name: 'Inferences' }));
+    expect(dialog.queryByRole('button', { name: 'All' })).toBeNull();
+    expect(dialog.getByRole('button', { name: 'Pending', pressed: true })).toBeTruthy();
+    expect(list.getAllByRole('button')).toHaveLength(2);
+    fireEvent.click(dialog.getByRole('button', { name: 'Confirmed' }));
+    expect(list.getAllByRole('button')).toHaveLength(24);
     fireEvent.click(dialog.getByRole('button', { name: 'Pending' }));
     expect(list.getAllByRole('button')).toHaveLength(2);
     const search = dialog.getByRole('searchbox', { name: 'Search inferences' });
@@ -887,6 +1056,9 @@ describe('Slash commands and shortcuts', () => {
     send('/inferences');
     const surface = await screen.findByRole('dialog', { name: 'Inference review' });
     const dialog = within(surface);
+    await dialog.findByRole('group', { name: 'Inferences' });
+    fireEvent.keyDown(surface, { key: 'ArrowLeft' });
+    expect(dialog.getByRole('button', { name: 'Deprecated', pressed: true })).toBeTruthy();
     fireEvent.keyDown(surface, { key: 'ArrowRight' });
     expect(dialog.getByRole('button', { name: 'Pending' }).getAttribute('aria-pressed')).toBe('true');
     fireEvent.keyDown(surface, { key: 'ArrowDown' });
@@ -956,6 +1128,47 @@ describe('Slash commands and shortcuts', () => {
     expect(await screen.findByRole('dialog', { name: 'Command palette' })).toBeTruthy();
   });
 
+  it('opens archive and creates a chat from the Sessions dialog', async () => {
+    const spy = spyCommands(() => commandResult({ status: 'client', intent: 'open_sessions' }));
+    const calls = installFetch(spy.overrides);
+    render(<App />);
+    await ready();
+    send('/sessions');
+    let dialog = within(await screen.findByRole('dialog', { name: 'Sessions' }));
+    fireEvent.click(dialog.getByRole('button', { name: 'Browse archive' }));
+    const archive = await screen.findByRole('dialog', { name: 'Archive' });
+    expect(await within(archive).findByText('Earlier chat')).toBeTruthy();
+    fireEvent.keyDown(archive, { key: 'Escape' });
+    send('/sessions');
+    dialog = within(await screen.findByRole('dialog', { name: 'Sessions' }));
+    fireEvent.click(dialog.getByRole('button', { name: 'New chat' }));
+    await waitFor(() => expect(calls).toContain('POST /api/sessions'));
+    expect(screen.queryByRole('dialog', { name: 'Sessions' })).toBeNull();
+  });
+
+  it('opens full thinking and context settings from their slash commands', async () => {
+    const spy = spyCommands(({ line }) => commandResult({
+      command: line.slice(1).split(' ')[0],
+      data: line === '/think' ? { current: 'auto', options: ['auto', 'high', 'custom'] }
+        : line === '/context' ? { current: 60000, options: [60000, 90000], minimum: 50000 } : {},
+      message: 'Settings saved.',
+    }));
+    installFetch(spy.overrides);
+    render(<App />);
+    await ready();
+    send('/think');
+    let dialog = await screen.findByRole('dialog', { name: 'Settings' });
+    fireEvent.click(await within(dialog).findByRole('button', { name: 'custom' }));
+    await waitFor(() => expect(spy.lines).toContain('/think custom'));
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    send('/context');
+    dialog = await screen.findByRole('dialog', { name: 'Settings' });
+    expect(await within(dialog).findByRole('button', { name: '90,000 tokens' })).toBeTruthy();
+    fireEvent.change(within(dialog).getByRole('spinbutton', { name: 'Custom budget' }), { target: { value: '75751' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Apply' }));
+    await waitFor(() => expect(spy.lines).toContain('/context 75751'));
+  });
+
   it('scrolls the command palette list to follow the arrow-key selection', async () => {
     const spy = spyCommands(() => commandResult());
     installFetch(spy.overrides);
@@ -976,6 +1189,21 @@ describe('Slash commands and shortcuts', () => {
     expect(calls).toHaveLength(scrollCount);
   });
 
+  it('opens pending review from the matching field in Session status', async () => {
+    const spy = spyCommands(({ line }) => line === '/status'
+      ? commandResult({ data: { status: { pending_review: 0 } } })
+      : commandResult({ command: 'pending', intent: 'pending', data: { kind: 'pending', rows: [], count: 0 } }));
+    const calls = installFetch(spy.overrides);
+    render(<App />);
+    await ready();
+    send('/status');
+    const status = await screen.findByRole('dialog', { name: 'Session status' });
+    fireEvent.click(within(status).getByRole('button', { name: 'Review pending' }));
+    expect(await screen.findByRole('dialog', { name: 'Pending review' })).toBeTruthy();
+    await waitFor(() => expect(spy.lines).toEqual(['/status', '/pending']));
+    expect(calls.some((entry) => entry === 'POST /api/chat')).toBe(false);
+  });
+
   it('opens the Git sync confirmation from its dialog with Ctrl+S', async () => {
     const spy = spyCommands((body) => body.line === '/git'
       ? commandResult({ command: 'git', intent: 'git_status', message: 'modified: 1' })
@@ -984,7 +1212,7 @@ describe('Slash commands and shortcuts', () => {
     render(<App />);
     await ready();
     send('/git');
-    const dialog = await screen.findByRole('dialog', { name: '/git' });
+    const dialog = await screen.findByRole('dialog', { name: 'Git status' });
     fireEvent.keyDown(dialog, { key: 's', ctrlKey: true });
     expect(await screen.findByRole('alertdialog', { name: 'Confirm' })).toBeTruthy();
     expect(spy.lines).toEqual(['/git', '/git sync']);
@@ -1001,15 +1229,69 @@ describe('Slash commands and shortcuts', () => {
     fireEvent.change(input, { target: { value: '/mod' } });
     expect(screen.getByTestId('command-suggestions').textContent).toContain('/model');
     fireEvent.keyDown(input, { key: 'Tab' });
-    expect(input.value).toBe('/model ');
+    expect(input.value).toBe('/model');
+    expect(screen.getByTestId('command-suggestions').textContent).not.toContain('[refresh]');
+    fireEvent.change(input, { target: { value: '/model ' } });
     expect(screen.getByTestId('command-suggestions').textContent).toContain('/model refresh');
+    fireEvent.keyDown(input, { key: 'ArrowDown' });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(input.value.trim()).toBe('/model refresh');
+    expect(spy.lines).toEqual([]);
     fireEvent.keyDown(input, { key: 'Enter' });
     await waitFor(() => expect(spy.lines).toEqual(['/model refresh']));
-    const dialog = await screen.findByRole('dialog', { name: '/model' });
+    const dialog = await screen.findByRole('dialog', { name: 'Model' });
     expect(dialog.textContent).toContain('ran /model refresh');
     expect(screen.getByTestId('message-list').textContent).not.toContain('ran /model refresh');
     expect(calls.some((entry) => entry.split('?')[0] === 'POST /api/chat')).toBe(false);
     expect(input.value).toBe('');
+  });
+
+  it('reveals Dream actions after a space and submits the parent with no numeric budget', async () => {
+    const spy = spyCommands(({ confirmed }) => commandResult({
+      command: 'dream', intent: 'dream', status: confirmed ? 'ok' : 'confirm_required',
+      message: confirmed ? 'Dream submitted and queued.' : 'Start Dream?',
+    }));
+    const calls = installFetch(spy.overrides);
+    render(<App />);
+    await ready();
+    const input = screen.getByTestId('composer-input') as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: '/dr' } });
+    const suggestion = screen.getByRole('option', { name: /Update your profile/ });
+    expect(suggestion.textContent).not.toMatch(/cancel|\[/);
+    fireEvent.click(suggestion);
+    expect(input.value).toBe('/dream');
+    expect(screen.queryByRole('option', { name: /Run Dream|Show Dream status/i })).toBeNull();
+    fireEvent.change(input, { target: { value: '/dream ' } });
+    expect(screen.getAllByRole('option')).toHaveLength(2);
+    expect(screen.getByRole('option', { name: /Run Dream/ }).getAttribute('aria-selected')).toBe('false');
+    fireEvent.keyDown(input, { key: 'Enter' });
+    const confirm = await screen.findByRole('alertdialog');
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Confirm' }));
+    await screen.findByText('Dream submitted and queued.');
+    expect(spy.lines).toEqual(['/dream', '/dream']);
+    expect(spy.confirmed).toEqual([false, true]);
+    expect(calls).not.toContain('POST /api/chat');
+  });
+
+  it('reads a selected topic through the same command API and returns to the filtered list', async () => {
+    const topic = 'memories/garden/seed-notes.md';
+    const spy = spyCommands(({ line }) => commandResult({
+      command: 'topics', intent: 'topics',
+      data: line === '/topics' ? { topics: [{ topic, title: 'Seed notes', entries: 1 }] }
+        : { topic: 'garden/seed-notes', entries: [{ id: 'mem-seed', status: 'active', text: 'Sow after frost.' }] },
+    }));
+    installFetch(spy.overrides);
+    render(<App />);
+    await ready();
+    send('/topics');
+    const dialog = await screen.findByRole('dialog', { name: 'Topics' });
+    const search = await within(dialog).findByRole('searchbox');
+    fireEvent.change(search, { target: { value: 'seed' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: /Seed notes/ }));
+    await within(dialog).findByText('Sow after frost.');
+    fireEvent.click(within(dialog).getByRole('button', { name: /back|all topics/i }));
+    expect(within(dialog).getByRole<HTMLInputElement>('searchbox').value).toBe('seed');
+    expect(spy.lines).toEqual(['/topics', `/topics ${topic}`]);
   });
 
   it('selects suggestions with arrows and closes them with Escape', async () => {
@@ -1021,6 +1303,8 @@ describe('Slash commands and shortcuts', () => {
     fireEvent.change(input, { target: { value: '/' } });
     const suggestions = screen.getByTestId('command-suggestions');
     expect(suggestions.querySelectorAll('[role="option"]')).toHaveLength(CATALOG.length);
+    expect(suggestions.querySelector('[aria-selected="true"]')).toBeNull();
+    fireEvent.keyDown(input, { key: 'ArrowDown' });
     fireEvent.keyDown(input, { key: 'ArrowDown' });
     expect(suggestions.querySelector('[aria-selected="true"]')?.textContent).toContain('/sessions');
     fireEvent.keyDown(input, { key: 'ArrowUp' });
@@ -1041,7 +1325,7 @@ describe('Slash commands and shortcuts', () => {
     const suggestions = screen.getByTestId('command-suggestions');
     fireEvent.keyDown(input, { key: 'ArrowDown' });
     const selected = suggestions.querySelector('[aria-selected="true"]');
-    expect(selected?.textContent).toContain('/sessions');
+    expect(selected?.textContent).toContain('/new');
     expect(calls.length).toBeGreaterThan(0);
     expect(calls.at(-1)?.node).toBe(selected);
     expect(calls.at(-1)?.options).toEqual({ block: 'nearest', inline: 'nearest' });
@@ -1050,19 +1334,38 @@ describe('Slash commands and shortcuts', () => {
     expect(calls).toHaveLength(scrollCount);
   });
 
-  it('reports unknown commands explicitly instead of forwarding them to the LLM', async () => {
+  it.each(['/', '/ne', '/dream r', '/Dr', '/dream r '])('keeps the incomplete command %s in the composer on Enter and Send', async line => {
+    const spy = spyCommands(() => commandResult());
+    const calls = installFetch(spy.overrides);
+    render(<App />);
+    await ready();
+    const input = screen.getByRole<HTMLTextAreaElement>('textbox', { name: 'Message' });
+    fireEvent.change(input, { target: { value: line } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(screen.getByText('Complete the command before sending.')).toBeTruthy();
+    fireEvent.keyDown(input, { key: 'Escape' });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    expect(input.value).toBe(line);
+    expect(spy.lines).toEqual([]);
+    expect(calls).not.toContain('POST /api/chat');
+  });
+
+  it.each(['/nope', '/dream 1', '/dream resume', '/dream cancel', '/new extra', '/sessions oops', '/import old-path'])('shows the shared invalid command response for %s', async (line) => {
     const spy = spyCommands(() => commandResult({
-      status: 'unknown', command: 'nope', message: 'Unknown command: /nope.',
+      status: 'unknown', command: line.split(' ')[0].slice(1), message: 'Invalid command.',
     }));
     const calls = installFetch(spy.overrides);
     render(<App />);
     await ready();
     const input = screen.getByTestId('composer-input') as HTMLTextAreaElement;
-    fireEvent.change(input, { target: { value: '/nope' } });
+    fireEvent.change(input, { target: { value: line } });
+    const suggestion = screen.queryAllByRole('option')[0];
+    if (suggestion) fireEvent.mouseEnter(suggestion);
     fireEvent.keyDown(input, { key: 'Enter' });
-    await waitFor(() => expect(spy.lines).toEqual(['/nope']));
-    expect(await screen.findByRole('dialog', { name: 'Unknown command' })).toBeTruthy();
-    expect(screen.getByTestId('message-list').textContent).not.toContain('Unknown command');
+    await waitFor(() => expect(spy.lines).toEqual([line]));
+    expect(await screen.findByRole('dialog', { name: 'Invalid command.' })).toBeTruthy();
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(screen.getByTestId('message-list').textContent).not.toContain('Invalid command.');
     expect(calls.some((entry) => entry.split('?')[0] === 'POST /api/chat')).toBe(false);
   });
 
@@ -1110,7 +1413,7 @@ describe('Slash commands and shortcuts', () => {
   });
 
   it('leaves Ctrl+P to the browser and offers palette / model / sidebar alternatives', async () => {
-    const spy = spyCommands(() => commandResult({ command: 'model', message: 'Model list' }));
+    const spy = spyCommands(() => commandResult({ command: 'model', intent: 'model', message: 'Model list' }));
     installFetch(spy.overrides);
     render(<App />);
     await ready();
@@ -1126,8 +1429,8 @@ describe('Slash commands and shortcuts', () => {
     await waitFor(() => expect(screen.queryByTestId('command-palette-overlay')).toBeNull());
 
     fireEvent.keyDown(window, { key: 'm', altKey: true });
-    await waitFor(() => expect(spy.lines).toContain('/model'));
-    const model = await screen.findByRole('dialog', { name: '/model' });
+    const model = await screen.findByRole('dialog', { name: 'Settings' });
+    expect(within(model).getByTestId('settings-tab-model').getAttribute('aria-current')).toBe('page');
     fireEvent.keyDown(model, { key: 'Escape' });
 
     expect(screen.getByTestId('sidebar').className).toContain('open');
@@ -1144,13 +1447,13 @@ describe('Slash commands and shortcuts', () => {
     render(<App />);
     await ready();
     send('/model');
-    const dialog = await screen.findByRole('dialog', { name: 'Models' });
+    const dialog = await screen.findByRole('dialog', { name: 'Settings' });
     fireEvent.keyDown(dialog, { key: 'p', ctrlKey: true });
-    expect(screen.queryByRole('dialog', { name: 'Settings' })).toBeNull();
+    expect(within(dialog).getByTestId('settings-tab-model').getAttribute('aria-current')).toBe('page');
+    expect(within(dialog).getByRole('button', { name: 'Refresh model list' })).toBeTruthy();
     fireEvent.keyDown(dialog, { key: 's', altKey: true });
     const settings = within(await screen.findByRole('dialog', { name: 'Settings' }));
     expect(settings.getByTestId('settings-tab-providers').getAttribute('aria-current')).toBe('page');
-    expect(screen.queryByRole('dialog', { name: 'Models' })).toBeNull();
   });
 
   it('opens the settings panel from the header and with Alt+S', async () => {
@@ -1227,7 +1530,9 @@ describe('Slash commands and shortcuts', () => {
         }),
       },
     } as unknown as Response;
-    const spy = spyCommands(() => commandResult({ command: 'status', message: 'Generating: yes' }));
+    const spy = spyCommands(() => commandResult({
+      command: 'status', message: 'Generating: yes', data: { status: { generating: true } },
+    }));
     installFetch({ '/api/chat': () => stream, ...spy.overrides });
     render(<App />);
     await ready();
@@ -1241,8 +1546,8 @@ describe('Slash commands and shortcuts', () => {
     expect(screen.queryByTestId('command-suggestions')).toBeNull();
     fireEvent.keyDown(input, { key: 'Enter' });
     await waitFor(() => expect(spy.lines).toContain('/status'));
-    const status = await screen.findByRole('dialog', { name: '/status' });
-    expect(status.textContent).toContain('Generating: yes');
+    const status = await screen.findByRole('dialog', { name: 'Session status' });
+    expect(within(status).getByText('Generating').nextElementSibling?.textContent).toBe('Yes');
     expect(screen.getByTestId('message-list').textContent).not.toContain('Generating: yes');
     fireEvent.keyDown(status, { key: 'Escape' });
 
@@ -1350,7 +1655,9 @@ describe('Session archive', () => {
     expect(screen.getByRole('alertdialog')).toBe(dialog);
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
     expect(screen.queryByRole('alertdialog')).toBeNull();
-    await within(await screen.findByRole('dialog', { name: 'Archive' })).findByText('Earlier chat');
+    const detail = within(await screen.findByRole('dialog', { name: 'Archive' }));
+    expect(await detail.findByText('Earlier chat')).toBeTruthy();
+    expect(document.activeElement).toBe(detail.getByRole('button', { name: 'Delete permanently…' }));
     expect(calls.some(call => call.startsWith('DELETE '))).toBe(false);
   });
 

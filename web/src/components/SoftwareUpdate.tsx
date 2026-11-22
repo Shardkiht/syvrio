@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { api, ApiError } from '../api/client';
 import type { UpdateCheck, UpdateStatus } from '../types';
 import { ConfirmDialog } from './CommandUI';
+import { SurfacePresence } from './SurfacePresence';
 
 const POLL_INTERVAL = 2000;
 const RECONNECT_TIMEOUT = 120_000;
@@ -164,11 +165,11 @@ export function SoftwareUpdate({ version, onChanged, checkOnOpen = false }: {
       {downloaded != null && <small>{downloadSize(downloaded)}
         {measured && ` / ${downloadSize(total)} · ${Math.floor(downloaded * 100 / total)}%`}</small>}
     </div>}
-    {confirm && release && createPortal(
-      <ConfirmDialog title="Install software update?" confirmLabel="Install and restart" focusCancel
+    {createPortal(<SurfacePresence modal>
+      {confirm && release && <ConfirmDialog title="Install software update?" confirmLabel="Install and restart" focusCancel
         message={`Update Syvrio from ${release.current} to ${release.latest}? The service will restart and connected clients will briefly disconnect.`}
         onCancel={() => { setConfirm(false); trigger.current?.focus(); }}
-        onConfirm={() => void install()} />, document.body,
-    )}
+        onConfirm={() => void install()} />}
+    </SurfacePresence>, document.body)}
   </>;
 }

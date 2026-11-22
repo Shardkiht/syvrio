@@ -648,7 +648,7 @@ class CommandRow(Static):
         self.add_class("cmd-row")
 
     def on_click(self) -> None:
-        self.app.run_command_from_palette(self.command)
+        self.app.fill_command(self.command)
 
 
 class CommandPalette(Vertical):
@@ -657,7 +657,7 @@ class CommandPalette(Vertical):
     def __init__(self) -> None:
         super().__init__(id="cmd-palette")
         self.matches: list[tuple[str, str, str]] = []
-        self.index = 0
+        self.index = -1
         self.prefix: str | None = None
 
     def compose(self) -> ComposeResult:
@@ -670,7 +670,7 @@ class CommandPalette(Vertical):
     def open(self, prefix: str) -> None:
         self.prefix = prefix
         self.matches = slash_matches(prefix)
-        self.index = 0
+        self.index = -1
         self.rebuild()
         self.display = bool(self.matches)
 
@@ -682,7 +682,10 @@ class CommandPalette(Vertical):
     def move(self, delta: int) -> None:
         if not self.matches:
             return
-        self.index = (self.index + delta) % len(self.matches)
+        if self.index < 0:
+            self.index = 0 if delta > 0 else len(self.matches) - 1
+        else:
+            self.index = (self.index + delta) % len(self.matches)
         self.refresh_rows()
         self.scroll_current()
 

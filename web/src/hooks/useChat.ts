@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, ApiError, NetworkError, newRequestId, removeQueuedTurn, submitChat, type TurnReceipt } from '../api/client';
+import { useDialogNavigation, type DeleteTarget } from './useDialogNavigation';
 import { useDeliveries } from './useDeliveries';
 import { useSessionActivity } from './useSessionActivity';
 import { useSessionNavigation } from './useSessionNavigation';
@@ -11,14 +12,13 @@ import {
   toggleSegment,
   type ChatState,
 } from '../state/chat';
-import { isCommandLine, panelFor, resultPanelFor, type CommandPanel, type PendingAction, type ReviewPanel } from '../state/commands';
-import type { CommandInfo, CompactionPhase, ContextUsage, HealthResponse, SessionDeletionPreview, SessionInfo } from '../types';
+import { isCommandLine, panelFor, resultPanelFor, readPanelTitle, panelMatches, type PendingAction, type ReviewPanel } from '../state/commands';
+import type { CommandInfo, CompactionPhase, ContextUsage, HealthResponse, SessionInfo } from '../types';
 
 import { readEditFiles, saveEditFiles } from '../state/editFiles';
 import { forgetEdit, loadEdits, missingFiles, persistEdit, tabOnly, type EditedDraft, type FailedEdit } from '../state/editRecovery';
 
 type MessageAction = { sessionId: string; messageId: string };
-type DeleteTarget = SessionInfo & { preview: SessionDeletionPreview | null; notice: string };
 
 export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, sessionId: string) => void) {
   const [chat, setChat] = useState<ChatState>(initialChatState);
@@ -50,11 +50,9 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
     }
   }, [sidebarOpen]);
   const [catalog, setCatalog] = useState<CommandInfo[]>([]);
-  const [paletteOpen, setPaletteOpen] = useState(false);
-  const [confirm, setConfirm] = useState<{ line: string; message: string } | null>(null);
-  const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
-  const [settingsOpen, setSettingsOpen] = useState<false | 'model' | 'providers' | 'about'>(false);
-  const [panel, setPanel] = useState<CommandPanel | null>(null);
+  const { dialog, open, close, setPanel, setDialog } = useDialogNavigation();
+  const confirm = dialog?.kind === 'confirm' ? dialog : null;
+  const deleteTarget = dialog?.kind === 'delete' ? dialog.target : null;
   const [focusSignal, setFocusSignal] = useState(0);
   const [queued, setQueued] = useState<TurnReceipt[]>([]);
   const queueRef = useRef<TurnReceipt[]>([]);
@@ -100,6 +98,8 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
   const navigationHistory = useRef<Promise<void> | null>(null);
   const sessionsVersion = useRef(0);
   const commandSequence = useRef(0);
+  const commandWaitingForSwitch = useRef<number | null>(null);
+  const reviewCache = useRef<Partial<Record<ReviewPanel['kind'], Pick<ReviewPanel, 'rows' | 'count'>>>>({});
 
   // Crossing the mobile breakpoint must fold the drawer away; otherwise a
   // desktop window narrowed to phone width leaves the scrim covering the chat.
@@ -139,6 +139,12 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
   }, []);
 
   const { replyingSessionIds, readQueue } = useSessionActivity(sessions, refreshSessions);
+
+  const renameSession = useCallback(async (id: string, title: string) => {
+    await api.renameSession(id, title);
+    ++sessionsVersion.current;
+    setSessions(rows => rows.map(row => row.id === id ? { ...row, title, title_pending: false } : row));
+  }, []);
 
   const refreshHealth = useCallback(async () => {
     try {
@@ -196,8 +202,13 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
     revision.current = null;
     changeQueue([]);
     setQueuePaused(false);
-    setPanel(null);
-    setConfirm(null);
+    const keepWaitingPanel = commandWaitingForSwitch.current === commandSequence.current;
+    setDialog(current => {
+      if (current?.kind === 'confirm') return null;
+      if (current?.kind !== 'panel') return current;
+      const p = current.panel;
+      return keepWaitingPanel || 'rows' in p || ('kind' in p && p.kind === 'topics') ? current : null;
+    });
     setCompaction(null);
     const prior = latest ? finishPreview(true) : undefined;
     const snapshot = confirmed ?? prior;
@@ -220,6 +231,30 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
     currentSession, onRequested, switchHistory, onSelected, onFailure: onNavigationFailure, onSettled: onNavigationSettled, onDeliveryError: deliveryFailed,
   });
 
+  const openReview = useCallback(async (kind: ReviewPanel['kind']) => {
+    const sequence = ++commandSequence.current;
+    const opening: ReviewPanel = {
+      kind, title: kind === 'pending' ? 'Pending review' : 'Inference review',
+      rows: [], count: 0, ...reviewCache.current[kind], loading: true,
+    };
+    setPanel(opening);
+    try {
+      // Both lists belong to the Vault and can be read while a chat switch is pending.
+      const result = await api.runCommand({ line: '/' + kind, session_id: null, confirmed: false });
+      const next = panelFor(result);
+      if (result.status !== 'ok' || !next || !('rows' in next) || next.kind !== kind) {
+        throw new Error(result.message || 'Unable to load the list.');
+      }
+      if (sequence !== commandSequence.current) return;
+      reviewCache.current[kind] = { rows: next.rows, count: next.count };
+      setPanel(current => current === opening ? next : current);
+    } catch (error) {
+      if (sequence !== commandSequence.current) return;
+      const loadError = error instanceof Error ? error.message : 'Unable to load the list.';
+      setPanel(current => current === opening ? { ...opening, loading: false, loadError } : current);
+    }
+  }, []);
+
   const runCommand = useCallback(async (
     line: string,
     confirmed = false,
@@ -228,7 +263,10 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
   ) => {
     const requestLine = line.trim();
     if (!requestLine) return;
-    const name = requestLine.split(/\s+/, 1)[0].toLowerCase();
+    const bare = requestLine.toLowerCase();
+    if (bare === '/pending' || bare === '/inferences') {
+      return openReview(bare === '/pending' ? 'pending' : 'inferences');
+    }
     // Native file selection must happen inside the keyboard or pointer gesture.
     const native = catalog.find((entry) => entry.support === 'client' && entry.intent === 'pick_attachments'
       && requestLine.toLowerCase() === '/' + entry.name);
@@ -236,28 +274,60 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
       openFiles();
       return;
     }
-    if (name === '/new') {
+    if (bare === '/new') {
       await navigate(null, requestLine);
       return;
     }
-    const target = navigation.current;
-    if (target ? !await target || (navigation.current && navigation.current !== target) : checkingSelection) return;
-    const version = navigationVersion.current;
     const sequence = ++commandSequence.current;
+    const settingsSections = { '/model': 'model', '/think': 'thinking', '/context': 'context' } as const;
+    if (bare === '/model' || bare === '/think' || bare === '/context') {
+      open({ kind: 'settings', section: settingsSections[bare] });
+      return;
+    }
+    if (requestLine.toLowerCase() === '/topics') {
+      // Show the browser immediately; it loads the shared command result and owns retries.
+      setPanel({ kind: 'topics' });
+      return;
+    }
+    const readTitle = readPanelTitle(bare);
+    const trigger = document.activeElement;
+    const parent = dialog?.kind === 'panel' ? dialog.panel : undefined;
+    const triggerLabel = trigger?.closest('[role="dialog"]') && trigger instanceof HTMLButtonElement
+      ? trigger.getAttribute('aria-label') || trigger.textContent?.trim() : undefined;
+    if (bare === '/sessions') {
+      setPanel({ kind: 'sessions' });
+    } else if (readTitle && !(dialog?.kind === 'panel' && panelMatches(dialog.panel, readTitle))) {
+      setPanel(bare === '/dream status'
+        ? { kind: 'dream', state: 'loading' }
+        : { title: readTitle, message: 'Loading…' });
+    } else if (!readTitle && !review && !messageAction && (confirmed || !parent)) {
+      setPanel({ title: requestLine.split(/\s+/, 1)[0], message: 'Submitting…' });
+    }
+    const target = navigation.current;
+    if (target && readTitle) commandWaitingForSwitch.current = sequence;
+    const selected = target ? await target && (!navigation.current || navigation.current === target) : !checkingSelection;
+    if (commandWaitingForSwitch.current === sequence) commandWaitingForSwitch.current = null;
+    if (!selected) {
+      if (!review && !messageAction && sequence === commandSequence.current) {
+        setPanel({ title: readTitle ?? 'Command not sent', message: 'The conversation changed. Try again.', feedback: 'error',
+          actions: readTitle ? [{ label: 'Retry', line: requestLine }] : undefined });
+      }
+      return;
+    }
+    if (sequence !== commandSequence.current) return;
+    const version = navigationVersion.current;
     const sessionId = chatRef.current.sessionId;
     if (messageAction && sessionId !== messageAction.sessionId) return;
-    const isCompact = name === '/compact';
-    const isUndo = name === '/undo';
+    const isCompact = bare === '/compact';
+    const isUndo = bare === '/undo';
     if (isUndo && editing.current) return;
     const finishEdit = isUndo ? beginEdit() : undefined;
     if (isCompact) setCompaction('running');
-    const opening: ReviewPanel | null = requestLine.toLowerCase() === '/pending' && !review
-      ? { kind: 'pending', title: 'Pending review', rows: [], count: 0, loading: true }
-      : null;
-    if (opening) setPanel(opening);
-    // A dismissed drawer may have another request in flight by the time this one settles.
-    const present = (next: CommandPanel) =>
-      setPanel(current => opening && current !== opening ? current : next);
+    if (review) {
+      setPanel(current => current && 'rows' in current && current.kind === review.kind && current.loading
+        ? { ...current, loading: false } : current);
+    }
+    const canPresent = () => sequence === commandSequence.current && version === navigationVersion.current;
     try {
       const result = await api.runCommand({
         line: requestLine,
@@ -271,23 +341,22 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
       if (isCompact) {
         setCompaction(result.status !== 'ok' ? 'failed' : result.data?.compacted === true ? 'done' : null);
       }
+      const commandPanel = panelFor(result);
+      if (result.status === 'ok' && commandPanel && 'rows' in commandPanel && canPresent()) {
+        reviewCache.current[commandPanel.kind] = { rows: commandPanel.rows, count: commandPanel.count };
+      }
       if (review) {
-        const refreshed = panelFor(result);
-        if (result.status !== 'ok' || !refreshed || !('rows' in refreshed) || refreshed.kind !== review.kind) {
+        if (result.status !== 'ok' || !commandPanel || !('rows' in commandPanel) || commandPanel.kind !== review.kind) {
           throw new Error(result.message || 'Unable to update the candidate.');
         }
-        setPanel(refreshed);
+        if (canPresent()) setPanel(commandPanel);
         return result;
       }
-      const canPresent = () => sequence === commandSequence.current && version === navigationVersion.current;
-      const commandPanel = panelFor(result);
       if (result.status === 'confirm_required' && !(commandPanel && 'rows' in commandPanel && commandPanel.edit)) {
         if (!canPresent()) return;
-        setPanel(null);
-        setConfirm({ line: requestLine, message: result.message });
+        open({ kind: 'confirm', line: requestLine, message: result.message, parent, triggerLabel });
         return;
       }
-      if (canPresent()) setConfirm(null);
 
       if (result.status === 'client') {
         if (!canPresent()) return;
@@ -296,8 +365,7 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
         } else if (result.intent === 'open_sessions') {
           setPanel({ kind: 'sessions' });
         } else if (result.intent === 'open_settings' || result.intent === 'open_update') {
-          setPanel(null);
-          setSettingsOpen(result.intent === 'open_update' ? 'about' : 'model');
+          open({ kind: 'settings', section: result.intent === 'open_update' ? 'about' : 'providers' });
         } else if (result.intent === 'leave') {
           if (await navigate(null)) setPanel(resultPanelFor(result));
         } else {
@@ -307,11 +375,16 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
       }
       if (result.status === 'ok' && result.intent === 'help') {
         if (!canPresent()) return;
-        setPanel(null);
-        setPaletteOpen(true);
+        open({ kind: 'palette' });
         return;
       }
-      if (commandPanel && canPresent()) present(commandPanel);
+      if (result.status === 'ok' && result.intent === 'model' && Array.isArray(result.data?.options)) {
+        if (canPresent()) {
+          open({ kind: 'settings', section: { section: 'model', notice: String(result.data?.refresh_message || 'Model catalog checked.') } });
+        }
+        return;
+      }
+      if (commandPanel && canPresent()) setPanel(commandPanel);
       // /model, /think and /context can change the active model; keep the
       // header label in sync without a full page reload.
       if (result.data?.model_changed === true) void refreshHealth();
@@ -334,23 +407,30 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
         const output = resultPanelFor(result);
         if (result.status === 'ok' && result.intent === 'rename' && requestLine.toLowerCase() === '/rename') {
           setPanel({ ...output, title: 'Rename session', message: '', rename: true });
+        } else if (result.intent === 'rename' && result.status === 'error' && bare.startsWith('/rename ')) {
+          setPanel({ ...output, title: 'Rename session', rename: true, draft: requestLine.slice(7).trim() });
         } else {
-          present(output);
+          setPanel(output);
         }
       }
     } catch (error) {
       if (review) throw error;
       if (isCompact && version === navigationVersion.current) setCompaction('failed');
       if (version === navigationVersion.current && sequence === commandSequence.current) {
-        present({
-          title: 'Command failed',
-          message: error instanceof Error ? error.message : 'unknown error',
+        const message = error instanceof Error ? error.message : 'The request failed.';
+        setPanel(bare.startsWith('/rename ') ? {
+          title: 'Rename session', rename: true, draft: requestLine.slice(7).trim(), message, feedback: 'error',
+        } : {
+          title: readTitle ?? 'Command failed',
+          actions: readTitle ? [{ label: 'Retry', line: requestLine }] : undefined,
+          feedback: 'error',
+          message,
         });
       }
     } finally {
       finishEdit?.();
     }
-  }, [beginEdit, catalog, checkingSelection, navigate, openFiles, refreshHealth, refreshSessions, reloadHistory, update]);
+  }, [beginEdit, catalog, dialog, open, checkingSelection, navigate, openFiles, openReview, refreshHealth, refreshSessions, reloadHistory, update]);
 
   const syncQueue = useCallback(async () => {
     if (navigation.current) return;
@@ -605,34 +685,40 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
     }
   }, [changeQueue, forget, refreshSessions, update]);
 
-  const requestDeleteSession = useCallback((session: SessionInfo, notice = '') => {
+  const requestDeleteSession = useCallback((session: SessionInfo, notice = '', previous?: DeleteTarget) => {
     const target: DeleteTarget = { ...session, preview: null, notice };
-    setDeleteTarget(target);
+    if (previous) {
+      setDialog(current => current?.kind === 'delete' && current.target === previous ? { kind: 'delete', target } : current);
+    } else {
+      open({ kind: 'delete', target });
+    }
     void api.deletionPreview(session.id).then(
-      preview => setDeleteTarget(current => current === target ? { ...target, preview } : current),
-      error => setDeleteTarget(current => current === target
-        ? { ...target, notice: error instanceof Error ? error.message : 'Could not load related pending items.' }
+      preview => setDialog(current => current?.kind === 'delete' && current.target === target
+        ? { kind: 'delete', target: { ...target, preview } } : current),
+      error => setDialog(current => current?.kind === 'delete' && current.target === target
+        ? { kind: 'delete', target: { ...target, notice: error instanceof Error ? error.message : 'Could not load related pending items.' } }
         : current),
     );
-  }, []);
+  }, [open, setDialog]);
 
   const confirmDeleteSession = useCallback(async () => {
     const target = deleteTarget;
     if (!target?.preview) return;
-    setDeleteTarget({ ...target, preview: null, notice: 'Deleting…' });
+    const deleting = { ...target, preview: null, notice: 'Deleting…' };
+    open({ kind: 'delete', target: deleting });
     try {
       await api.deleteSession(target.id, target.preview.revision);
       forget(target.id);
-      setDeleteTarget(null);
+      setDialog(current => current?.kind === 'delete' && current.target === deleting ? { kind: 'archive' } : current);
       discardFailedEdit(target.id);
       await refreshSessions();
     } catch (error) {
       if (error instanceof ApiError && error.code === 'pending_changed') {
-        requestDeleteSession({ ...target, current: target.id === chatRef.current.sessionId }, error.message);
+        requestDeleteSession(target, error.message, deleting);
         return;
       }
-      setDeleteTarget(current => current?.id === target.id
-        ? { ...target, notice: error instanceof Error ? error.message : 'Deletion failed.' }
+      setDialog(current => current?.kind === 'delete' && current.target === deleting
+        ? { kind: 'delete', target: { ...target, notice: error instanceof Error ? error.message : 'Deletion failed.' } }
         : current);
     }
   }, [deleteTarget, discardFailedEdit, forget, refreshSessions, requestDeleteSession]);
@@ -707,22 +793,25 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
   }, [detach, loadSelectionHistory, navigate, observe, readQueue, remember, update]);
 
   const toggleSidebar = useCallback(() => setSidebarOpen((open) => !open), []);
+  const openDialog = useCallback((next: Parameters<typeof open>[0], trigger?: HTMLElement) => {
+    ++commandSequence.current;
+    open(next, trigger);
+  }, [open]);
   const focusComposer = useCallback(() => setFocusSignal((value) => value + 1), []);
-
+  const closeDialog = useCallback(() => {
+    ++commandSequence.current;
+    close();
+  }, [close]);
   const handleEscape = useCallback(() => {
-    if (settingsOpen) { setSettingsOpen(false); return true; }
-    if (deleteTarget) { setDeleteTarget(null); return true; }
-    if (confirm) { setConfirm(null); return true; }
-    if (paletteOpen) { setPaletteOpen(false); return true; }
-    if (panel) { setPanel(null); return true; }
+    if (dialog) { closeDialog(); return true; }
     if (!navigation.current && chatRef.current.busy) { void stop(); return true; }
     return false;
-  }, [confirm, deleteTarget, navigation, paletteOpen, panel, settingsOpen, stop]);
+  }, [dialog, closeDialog, navigation, stop]);
 
   const confirmCommand = useCallback(async () => {
     if (!confirm) return;
     const { line } = confirm;
-    setConfirm(null);
+    setDialog(null);
     await runCommand(line, true);
   }, [confirm, runCommand]);
 
@@ -733,11 +822,6 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
     const verb = kind === 'pending' ? action : inferenceAction[action];
     const result = await runCommand(`/${kind} ${verb} ${id}`, true, { kind, text });
     if (!result) throw new Error('The current session changed. Reopen the review.');
-  }, [runCommand]);
-
-  const runPanelCommand = useCallback(async (line: string) => {
-    setPanel(null);
-    await runCommand(line);
   }, [runCommand]);
 
   return {
@@ -756,6 +840,7 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
     setSidebarOpen,
     toggleSidebar,
     refreshSessions,
+    renameSession,
     send,
     insert,
     queued: queued.map(item => item.text),
@@ -773,22 +858,14 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
     newSession,
     selectSession,
     catalog,
-    paletteOpen,
-    setPaletteOpen,
-    panel,
-    setPanel,
-    confirm,
-    setConfirm,
+    dialog,
+    openDialog,
+    closeDialog,
     confirmCommand,
-    deleteTarget,
-    setDeleteTarget,
     requestDeleteSession,
     archiveSession,
     confirmDeleteSession,
-    settingsOpen,
-    setSettingsOpen,
     refreshHealth,
-    runPanelCommand,
     reviewMemory,
     runCommand,
     handleEscape,

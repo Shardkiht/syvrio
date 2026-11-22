@@ -4,16 +4,17 @@ import { CommandDialog, moveOption } from './CommandUI';
 import { SearchIcon } from './Icons';
 
 const INFERENCE_FILTERS = [
-  ['all', 'All'], ['hypothesis', 'Pending'], ['confirmed', 'Confirmed'],
-  ['deprecated', 'Deprecated'],
+  ['hypothesis', 'Pending'], ['confirmed', 'Confirmed'], ['deprecated', 'Deprecated'],
 ] as const;
 
 export function PendingReview({
   panel,
+  onRetry,
   onResolve,
   onClose,
 }: {
   panel: ReviewPanel;
+  onRetry: () => void;
   onResolve: (action: PendingAction, id: string, text?: string) => Promise<void>;
   onClose: () => void;
 }) {
@@ -32,7 +33,7 @@ export function PendingReview({
   const editing = draft !== null;
   const needle = query.trim().toLowerCase();
   const rows = panel.rows.filter(row =>
-    (!filter || row.status === INFERENCE_FILTERS[filter][0])
+    (pending || row.status === INFERENCE_FILTERS[filter][0])
     && (!needle || [row.text, row.topic, row.id, row.question].some(value => value?.toLowerCase().includes(needle))));
   const selected = rows.find((row) => row.id === selectedId);
   const reviewable = selected && (pending || selected.status === 'hypothesis' || selected.status === 'confirmed');
@@ -118,7 +119,8 @@ export function PendingReview({
           <div>
             <div className="confirm-title">{panel.title}</div>
             <div className="pending-meta" role="status">
-              {panel.loading ? 'Loading candidates…' : pending
+              {panel.loading ? (pending ? 'Loading candidates…' : 'Loading inferences…')
+                : panel.loadError && !panel.rows.length ? null : pending
                 ? (panel.count === 0 ? 'No pending candidates' : `${panel.count} pending`)
                 : (panel.count === 0 ? 'No inferences' : `${panel.count} inferences`)}
             </div>
@@ -126,6 +128,12 @@ export function PendingReview({
           <button type="button" className="icon-button" aria-label={`Close ${panel.title.toLowerCase()}`}
             disabled={busy} onClick={onClose}>×</button>
         </header>
+        {panel.loadError && (
+          <div className="review-load-error">
+            <span role="alert">{panel.loadError}</span>
+            <button type="button" onClick={onRetry}>Retry</button>
+          </div>
+        )}
         {panel.rows.length > 0 && (
           <label className="review-search">
             <SearchIcon size={16} />

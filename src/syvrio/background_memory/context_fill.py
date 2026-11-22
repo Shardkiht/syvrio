@@ -57,7 +57,7 @@ def fill(service, path: Path, stop: Event) -> None:
             **source_calendar(message, entry.text + " " + str(message.get("content", ""))),
         }
         try:
-            context = ask(service, PROMPT, payload, MemoryContext)
+            context = ask(service.config, PROMPT, payload, MemoryContext)
         except Exception as exc:
             record_event("catchup.failed", exc)
             context = MemoryContext()

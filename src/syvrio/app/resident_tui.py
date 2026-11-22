@@ -291,15 +291,10 @@ class ResidentChatApp(ResidentCommands, ChatViewMixin, App):
         files = self._uploads.get(self.sid, ())
         if not text and not files:
             return
-        palette = self.query_one(CommandPalette)
-        if text.startswith("/") and palette.display and palette.current and " " not in text:
-            self.run_command_from_palette(palette.current)
-            return
-        palette.close()
         if text.startswith("/"):
-            event.input.value = ""
-            self._submit_command(text)
+            self._submit_command_input(event)
             return
+        self.query_one(CommandPalette).close()
         event.input.value = ""
         self._uploads.pop(self.sid, None)
         self._run_request(self._send(text or "Analyze the attached files.", files, self._version))
@@ -334,13 +329,15 @@ class ResidentChatApp(ResidentCommands, ChatViewMixin, App):
 
     async def action_insert_message(self):
         widget = self.query_one("#input", BarInput)
-        if not self._active_id:
+        text = widget.value.strip()
+        if text.startswith("/") and (len(self.screen_stack) != 1 or not widget.has_focus):
+            return
+        if not self._active_id or text.startswith("/"):
             await widget.action_submit()
             return
         if self._uploads.get(self.sid):
             self.notify("Press Enter to queue attachments.")
             return
-        text = widget.value.strip()
         if not text:
             return
         sid, turn_id = self.sid, self._active_id

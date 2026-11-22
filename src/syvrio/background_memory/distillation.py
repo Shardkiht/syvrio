@@ -100,7 +100,7 @@ def process(
             "already_saved": already,
             "earlier": [draft.text for draft in proposed],
         }
-        proposed.extend(ask(service, PROMPT, payload, Result).memories)
+        proposed.extend(ask(service.config, PROMPT, payload, Result).memories)
     with vault_transaction(service.paths) as tx:
         latest_job = read_job(path)
         if not latest_job:

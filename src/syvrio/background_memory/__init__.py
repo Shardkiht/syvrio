@@ -73,8 +73,8 @@ class BackgroundMemory:
         distillation.request(self.sessions, session_id, through)
         self._signals["distillation"].set()
 
-    def request_dream(self, max_requests: int | None = None) -> str:
-        job_id = self.dream.request(max_requests)
+    def request_dream(self, *, retry_now: bool = False) -> str:
+        job_id = self.dream.request(retry_now=retry_now)
         self._signals["dream"].set()
         return job_id
 
@@ -93,13 +93,9 @@ class BackgroundMemory:
                 record_event("session.title_failed", exc)
         return pending
 
-    def cancel_dream(self) -> None:
-        self.dream.cancel()
-        self._signals["dream"].set()
-
     def dream_status(self) -> dict:
         return {
-            **self.dream.status(),
+            **self.dream.status(live=True),
             "enabled": self.service.config.chat.auto_reflect,
             "next_at": self.schedule.next_at(),
         }

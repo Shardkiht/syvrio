@@ -1,15 +1,18 @@
 from __future__ import annotations
 
+import asyncio
 from functools import partial
 
 from textual.widgets import Input, Static
 
+from ..application.commands import CommandResult, CommandUseCases, is_command_form, parse_command
 from ..infra.diagnostics import record_event
 from ..infra.tokens import format_tokens
 from ..memory.models import PendingItem
 from .chat_widgets import (
     ModelPickerScreen,
     PickScreen,
+    ProfileScreen,
     SessionPickerScreen,
     TextInputScreen,
 )
@@ -25,9 +28,11 @@ class ChatCommandsMixin:
     # ---------- 斜杠命令 ----------
 
     def _command(self, line: str) -> None:
-        command, _, argument = line.partition(" ")
-        command = command.lower()
-        argument = argument.strip()
+        name, argument = parse_command(line)
+        if not is_command_form(name, argument):
+            self.add_card(CommandResult.invalid(name).message)
+            return
+        command = "/" + name
 
         if command in ("/exit", "/quit"):
             self.exit()
@@ -76,20 +81,49 @@ class ChatCommandsMixin:
             else:
                 self._open_rename_prompt()
         elif command == "/import":
-            if argument:
-                self.add_card("Use /import without a path to choose local files.")
-            else:
-                self.action_attach_files()
+            self.action_attach_files()
         elif command == "/pending":
             self._open_pending()
         elif command == "/inferences":
             self._run_inference_review()
         elif command in ("/profile", "/dream"):
-            self._reflection_command(command[1:], argument)
+            self.run_worker(self._reflection_command(line), exit_on_error=False)
         elif command == "/topics":
             self._show_topics(argument.strip() or None)
         else:
-            self.add_card(f"Unknown command: {command}. Type /help for help.")
+            self.add_card(CommandResult.invalid(name).message)
+
+    async def _reflection_command(self, line: str, confirmed: bool = False) -> None:
+        result = await asyncio.to_thread(
+            CommandUseCases(self.application).execute, line, busy=self.busy, confirmed=confirmed
+        )
+        if result.status == "confirm_required":
+            self.push_screen(
+                PickScreen(
+                    result.message,
+                    [("Cancel", False), ("Run Dream", True)],
+                    lambda accepted: (
+                        accepted
+                        and self.run_worker(
+                            self._reflection_command(line, confirmed=True), exit_on_error=False
+                        )
+                    ),
+                )
+            )
+        elif result.status == "ok" and result.intent == "profile":
+            data = result.data or {}
+            self.push_screen(
+                ProfileScreen(
+                    result.message,
+                    data.get("status", "Profile"),
+                    generated_at=data.get("generated_at"),
+                    fact_count=data.get("fact_count"),
+                    unique_count=data.get("unique_count"),
+                ),
+                lambda _: self.query_one("#input", Input).focus(),
+            )
+        else:
+            self.add_card(result.message, result.command.title())
 
     # ---------- Pending交互处理（issue #1） ----------
 

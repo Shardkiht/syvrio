@@ -21,6 +21,7 @@ extract_on_exit = true
 recall_limit = 7
 
 [dream]
+context_window = 200000
 auto_reflect = true
 dream_auto_interval_hours = 24.0
 default_budget = 20

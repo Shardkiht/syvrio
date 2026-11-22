@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from 'react';
-import { CommandDialog } from './CommandUI';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { CommandDialog, moveOption } from './CommandUI';
 import { api } from '../api/client';
 import { thinkingOptions } from '../state/commands';
 import { SHORTCUT_HELP } from '../state/shortcuts';
@@ -75,6 +75,7 @@ export function SettingsPanel({
   onClose,
   onChanged,
   initialSection = 'model',
+  initialNotice = '',
 }: {
   health: HealthResponse | null;
   theme: ThemeMode;
@@ -82,6 +83,7 @@ export function SettingsPanel({
   onClose: () => void;
   onChanged: () => void;
   initialSection?: SectionKey;
+  initialNotice?: string;
 }) {
   const [selectedSection, setSection] = useState<SectionKey | null>(null);
   const section = selectedSection ?? initialSection;
@@ -90,12 +92,29 @@ export function SettingsPanel({
   const [customContext, setCustomContext] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const [notice, setNotice] = useState('');
+  const [notice, setNotice] = useState(initialNotice);
   const [modelQuery, setModelQuery] = useState('');
   const query = modelQuery.trim();
   const catalog = useModelCatalog(section === 'model', query, health);
   const { results, loading: loadingModel } = catalog;
   const refreshing = catalog.feedback?.kind === 'pending';
+  const refreshControl = useRef<HTMLButtonElement>(null);
+  const earliestStop = useRef(1);
+
+  useLayoutEffect(() => {
+    const spin = refreshControl.current?.querySelector('svg')?.getAnimations?.()[0];
+    if (!spin?.effect) return;
+    if (refreshing && spin.playState === 'finished') spin.currentTime = 0;
+    const turns = Number(spin.currentTime) / Number(spin.effect.getTiming().duration);
+    if (refreshing) {
+      // A retry during the previous turn continues from its current angle.
+      earliestStop.current = Math.ceil(turns) + 1;
+      spin.effect.updateTiming({ iterations: Infinity });
+      spin.play();
+    } else if (spin.playState === 'running') {
+      spin.effect.updateTiming({ iterations: Math.max(earliestStop.current, Math.ceil(turns)) });
+    }
+  }, [refreshing, section]);
 
   const loadThinking = useCallback(async () => {
     try {
@@ -151,7 +170,7 @@ export function SettingsPanel({
 
   const currentLabel = health ? `${health.provider}/${health.model}` : '(loading)';
   const refreshButton = (
-    <button type="button" className={section === 'model' ? 'model-refresh icon-button' : 'model-refresh'}
+    <button ref={refreshControl} type="button" className={section === 'model' ? 'model-refresh icon-button' : 'model-refresh'}
       aria-label="Refresh model list" title="Refresh model list" aria-busy={refreshing}
       disabled={busy} aria-disabled={busy || refreshing} onClick={() => void catalog.refresh()}>
       <RefreshIcon size={17} />
@@ -161,7 +180,17 @@ export function SettingsPanel({
 
   return (
     <CommandDialog title="Settings" className="settings-dialog" overlayClass="settings-overlay"
-      testId="settings-overlay" onClose={onClose}>
+      testId="settings-overlay" onClose={onClose} onKeyDown={event => {
+        if (section === 'model' && event.altKey && !event.ctrlKey && !event.metaKey && event.key.toLowerCase() === 's') {
+          event.preventDefault();
+          setSection('providers');
+        } else if (event.target === event.currentTarget || (event.target as Element).closest('.model-choices, .setting-options')) {
+          const choices = event.currentTarget.querySelectorAll<HTMLButtonElement>(
+            '.model-choices button:not(:disabled), .setting-options button:not(:disabled)',
+          );
+          moveOption(event, Array.from(choices));
+        }
+      }}>
         <div className="settings-head">
           <h2 className="confirm-title">Settings</h2>
           <button type="button" className="icon-button" onClick={onClose} aria-label="Close settings" title="Close settings">

@@ -20,6 +20,8 @@ from .config_files import (
 from .config_files import (
     toml_literal as toml_literal,
 )
+from .credentials import KEYRING_SERVICE as KEYRING_SERVICE
+from .credentials import get_password
 from .paths import SyvrioPaths, runtime_path, syvrio_home
 
 DEFAULTS = package_defaults()
@@ -39,7 +41,6 @@ RECENT_MODEL_LIMIT = 5
 _TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 
 
-KEYRING_SERVICE = "syvrio"
 _keyring_error_reporter: Callable[[Exception], None] | None = None
 
 
@@ -51,9 +52,7 @@ def set_keyring_error_reporter(reporter: Callable[[Exception], None] | None) -> 
 
 def _stored_key(env_name: str) -> str | None:
     try:
-        import keyring
-
-        return keyring.get_password(KEYRING_SERVICE, env_name) or None
+        return get_password(env_name)
     except Exception as error:
         reporter = _keyring_error_reporter
         if reporter is not None:
@@ -111,7 +110,7 @@ class LLMConfig:
         return f"{provider}/{model}"
 
     def requires_api_key(self) -> bool:
-        """本地 provider 可以不带 Key；其余走 keyring/环境变量。"""
+        """本地 provider 可以不带 Key；其余走环境变量或系统凭据。"""
         return (self.provider or "").strip().lower() not in {"ollama", "local", "lmstudio"}
 
     def api_key(self) -> str | None:
@@ -199,7 +198,7 @@ class SearchConfig:
 
 
 def read_api_key(env_name: str) -> str:
-    """读取厂商 API Key：环境变量优先，其次系统凭据（Keyring）。"""
+    """读取厂商 API Key，环境变量优先，其次读取已保存的系统凭据。"""
     value = os.environ.get(env_name, "").strip()
     if value:
         return value
@@ -247,6 +246,11 @@ class WebShareConfig:
 
 
 @dataclass(slots=True)
+class DreamConfig:
+    context_window: int = DEFAULTS["dream"]["context_window"]
+
+
+@dataclass(slots=True)
 class Config:
     vault: Path
     llm: LLMConfig = field(default_factory=LLMConfig)
@@ -258,6 +262,7 @@ class Config:
     auto_push: bool = DEFAULTS["auto_push"]
     runtime: str = DEFAULTS["runtime"]
     web_share: WebShareConfig = field(default_factory=WebShareConfig, kw_only=True)
+    dream: DreamConfig = field(default_factory=DreamConfig, kw_only=True)
     _baseline: dict | None = field(default=None, repr=False, compare=False, kw_only=True)
 
     def paths(self, config_file: Path | None = None) -> SyvrioPaths:
@@ -398,6 +403,7 @@ def _validate_config(data: dict) -> None:
         "recall.rewrite_timeout",
         "retrieval.default_limit",
         "distillation.recall_limit",
+        "dream.context_window",
         "search.max_engines",
         "search.timeout_budget",
         "search.max_requests",
@@ -437,6 +443,7 @@ def _settings_data(config: Config) -> dict:
     llm["recent_models"] = [list(pair) for pair in llm["recent_models"]]
     for section, names in MEMORY_SECTIONS.items():
         data[section] = {name: data["chat"].pop(name) for name in names}
+    data["dream"].update(asdict(config.dream))
     data["search"]["usage_limits"] = {
         key: {"daily": value.daily, "monthly": value.monthly}
         for key, value in config.search.usage_limits.items()
@@ -464,8 +471,8 @@ def _build(overrides: dict, defaults: dict, paths: ConfigFiles) -> Config:
     llm["reasoning_effort"] = llm["reasoning_effort"].strip() or None
     llm["recent_models"] = [tuple(pair) for pair in llm["recent_models"]]
     chat = dict(data["chat"])
-    for section in MEMORY_SECTIONS:
-        chat.update(data[section])
+    for section, names in MEMORY_SECTIONS.items():
+        chat.update({name: data[section][name] for name in names})
     chat["context_window"] = max(MIN_CONTEXT_WINDOW, chat["context_window"])
     retrieval = _options(RetrievalConfig, data["retrieval"])
     retrieval["embedding"] = EmbeddingConfig(**_options(EmbeddingConfig, retrieval["embedding"]))
@@ -504,6 +511,7 @@ def _build(overrides: dict, defaults: dict, paths: ConfigFiles) -> Config:
         auto_push=data["auto_push"],
         llm=LLMConfig(**llm),
         chat=ChatConfig(**_options(ChatConfig, chat)),
+        dream=DreamConfig(**_options(DreamConfig, data["dream"])),
         git=GitConfig(**_options(GitConfig, data["git"])),
         retrieval=RetrievalConfig(**retrieval),
         search=SearchConfig(**search),

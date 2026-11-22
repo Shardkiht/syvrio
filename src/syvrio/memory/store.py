@@ -188,7 +188,7 @@ class MemoryStore:
         with vault_transaction(self.paths):
             ids = set()
             result = []
-            for path in [self.topic_path(topic)] if topic else self._files():
+            for path in [self.topic_path(topic)] if topic is not None else self._files():
                 for record in self.document(path).records:
                     entry = record.entry
                     if entry.id in ids:
@@ -281,6 +281,27 @@ class MemoryStore:
                     )
                 )
             return result
+
+    def topic_directory(self) -> list[dict[str, str]]:
+        """Read headings for the browser without decoding every memory record."""
+        with vault_transaction(self.paths):
+            rows = []
+            for path in self._files():
+                self._assert_path(path)
+                title = path.stem
+                try:
+                    with path.open(encoding="utf-8") as markdown:
+                        for line in markdown:
+                            if line.startswith("# "):
+                                title = line[2:].strip() or title
+                                break
+                            if line.strip() and not line.startswith("#"):
+                                break
+                except UnicodeDecodeError as exc:
+                    raise SchemaError(f"{path}: invalid UTF-8. Save the file as UTF-8.") from exc
+                modified = datetime.fromtimestamp(path.stat().st_mtime).date().isoformat()
+                rows.append({"topic": self._topic(path), "title": title, "updated": modified})
+            return rows
 
     def has_text(self, text: str) -> bool:
         target = normalize_text(text)

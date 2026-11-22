@@ -19,6 +19,7 @@ from textual.worker import Worker, WorkerState
 
 from ..agent.insertion import InsertionRequest
 from ..agent.runtime import AgentRuntime
+from ..application.commands import is_command_form, parse_command
 from ..application.service import ApplicationService
 from ..errors import SessionProtectedError
 from ..infra.attachments import AttachmentBatch
@@ -32,7 +33,6 @@ from .chat_commands import ChatCommandsMixin
 from .chat_flow import ChatFlowMixin
 from .chat_git import ChatGitMixin
 from .chat_input import BarInput
-from .chat_reflection import ChatReflectionMixin
 from .chat_theme import APP_CSS
 from .chat_view import ChatViewMixin
 from .chat_widgets import (
@@ -43,13 +43,10 @@ from .chat_widgets import (
     SessionPickerScreen,
     TranscriptView,
 )
-from .command_catalog import SLASH_COMMANDS
 from .session_ui import visible_sessions
 
 
-class ChatApp(
-    ChatViewMixin, ChatGitMixin, ChatReflectionMixin, ChatFlowMixin, ChatCommandsMixin, App
-):
+class ChatApp(ChatViewMixin, ChatGitMixin, ChatFlowMixin, ChatCommandsMixin, App):
     TITLE = "Syvrio — Personal Memory"
 
     CSS = APP_CSS
@@ -180,8 +177,7 @@ class ChatApp(
             )
 
     def _submit_command(self, line: str) -> None:
-        name = line[1:].partition(" ")[0].lower()
-        if self._ask_active and any(name == command for command, _, _ in SLASH_COMMANDS):
+        if self._ask_active and is_command_form(*parse_command(line)):
             self._submit_during_ask(line)
         else:
             self._command(line)
@@ -590,6 +586,9 @@ class ChatApp(
         text = widget.value.strip()
         if not text:
             return
+        if text.startswith("/"):
+            await widget.action_submit()
+            return
         conversation = self.application.conversation
         if conversation.active_turn_id and self._attachments.get(conversation.current_id):
             self.notify("Press Enter to queue the message with its attachments.")
@@ -615,23 +614,14 @@ class ChatApp(
             line = "Analyze the attached files."
         if self._safe_insert and self._safe_insert.text == line:
             return
-        event.input.value = ""
         if not line:
+            event.input.value = ""
             return
-        palette = self.query_one("#cmd-palette", CommandPalette)
         if line.startswith("/"):
-            if (
-                palette.display
-                and palette.current
-                and palette.prefix == event.value[1:]
-                and " " not in event.value
-            ):
-                self.run_command_from_palette(palette.current)
-                return
-            palette.close()
-            self._submit_command(line)
+            self._submit_command_input(event)
             return
-        palette.close()
+        self.query_one("#cmd-palette", CommandPalette).close()
+        event.input.value = ""
         attachments = self._attachments.pop(session_id, None)
         if self._ask_active:
             self._submit_during_ask(line, attachments)

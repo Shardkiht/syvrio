@@ -60,7 +60,7 @@ def generate(service, user: str, answer: str) -> str:
         "question": truncate_to_tokens(user, budget),
         "answer": truncate_to_tokens(answer, budget),
     }
-    result = ask(service, PROMPT, payload, Title)
+    result = ask(service.config, PROMPT, payload, Title)
     return " ".join(result.title.split())
 
 

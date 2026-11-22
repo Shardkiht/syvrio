@@ -1,9 +1,10 @@
 import { useEffect, useLayoutEffect, useRef, useState, type MutableRefObject, type RefObject, type KeyboardEvent } from 'react';
-import { isCommandLine, suggestionsFor, type Suggestion } from '../state/commands';
+import { canOpenDuringSelection, isCommandLine, suggestionsFor, type Suggestion } from '../state/commands';
 import { isComposing } from '../state/shortcuts';
 import type { CommandInfo, CompactionPhase, ContextUsage } from '../types';
 import { ContextMeter, type MeterReading } from './ContextMeter';
 import { CommandSuggestions } from './CommandUI';
+import { SurfacePresence } from './SurfacePresence';
 import { ArrowUpIcon, FileIcon, PlusIcon, StopIcon } from './Icons';
 
 /** Starter commands shown under the home composer, in display order. */
@@ -76,7 +77,8 @@ export function Composer({
   const [inserting, setInserting] = useState<string | null>(null);
   const deferredSend = useRef(false);
   const [waitingToSend, setWaitingToSend] = useState(false);
-  const [index, setIndex] = useState(0);
+  const [index, setIndex] = useState(-1);
+  const [commandHint, setCommandHint] = useState('');
   const [dismissed, setDismissed] = useState(false);
   const ref = useRef<HTMLTextAreaElement>(null);
   const lastFocusSignal = useRef(focusSignal);
@@ -130,11 +132,12 @@ export function Composer({
 
   const suggestions = suggestionsFor(value, catalog);
   const showSuggestions = !dismissed && suggestions.length > 0;
-  const active = suggestions[Math.min(index, Math.max(0, suggestions.length - 1))];
+  const active = suggestions[index];
 
   const applyCompletion = (suggestion: Suggestion) => {
     setValue(suggestion.insert);
-    setIndex(0);
+    setCommandHint('');
+    setIndex(-1);
     setDismissed(false);
     ref.current?.focus();
     ref.current?.setSelectionRange(suggestion.insert.length, suggestion.insert.length);
@@ -144,8 +147,15 @@ export function Composer({
     if (deferredSend.current) return;
     const text = value.trim() || (files.length ? 'Analyze the attached files.' : '');
     if (!text) return;
+    if (isCommandLine(text)) {
+      const matches = suggestionsFor(text, catalog);
+      if (text === '/' || (matches.length && !matches.some(row => row.key === text.slice(1).toLowerCase()))) {
+        setCommandHint('Complete the command before sending.');
+        return;
+      }
+    }
     if (text === inserting) return;
-    if (checkingSelection) {
+    if (checkingSelection && !canOpenDuringSelection(text)) {
       if (!onSendAfterSelection || isCommandLine(text)) return;
       deferredSend.current = true;
       setWaitingToSend(true);
@@ -170,7 +180,7 @@ export function Composer({
     } else onSend(text);
     setValue('');
     setDismissed(false);
-    setIndex(0);
+    setIndex(-1);
   };
 
   const insert = async () => {
@@ -216,7 +226,7 @@ export function Composer({
       }
       if (event.key === 'Tab') {
         event.preventDefault();
-        if (active) applyCompletion(active);
+        applyCompletion(active ?? suggestions[0]);
         return;
       }
       if (event.key === 'Escape') {
@@ -227,10 +237,8 @@ export function Composer({
       }
       if (event.key === 'Enter' && !event.shiftKey && active) {
         event.preventDefault();
-        setValue('');
-        setDismissed(false);
-        setIndex(0);
-        onSend(active.insert);
+        if (value.trim().toLowerCase() === active.insert.trim().toLowerCase()) submit();
+        else applyCompletion(active);
         return;
       }
     }
@@ -248,9 +256,10 @@ export function Composer({
     : [];
 
   const fillCommand = (name: string) => {
-    setValue(`/${name} `);
+    setValue(`/${name}`);
+    setCommandHint('');
     setDismissed(false);
-    setIndex(0);
+    setIndex(-1);
     ref.current?.focus();
   };
 
@@ -275,12 +284,10 @@ export function Composer({
         </section>
       )}
       <div className="composer-lane">
-        <CommandSuggestions
-          suggestions={showSuggestions ? suggestions : []}
-          index={Math.min(index, Math.max(0, suggestions.length - 1))}
-          onHover={setIndex}
-          onPick={applyCompletion}
-        />
+        <SurfacePresence>
+          {showSuggestions && suggestions.length > 0 && <CommandSuggestions
+            suggestions={suggestions} index={index} onPick={applyCompletion} />}
+        </SurfacePresence>
         <div className="composer-card">
           <input ref={picker} type="file" multiple hidden disabled={waitingToSend} aria-label="Select attachments"
             accept=".md,.markdown,.txt,.text,.log,.json,.jsonl,.ndjson,.csv,.tsv,.yaml,.yml,.xml,.pdf,.docx,.xlsx,.xls,.pptx,.html,.htm,.epub,.msg,.ipynb,.png,.jpg,.jpeg,.webp,.gif"
@@ -324,11 +331,13 @@ export function Composer({
             placeholder="Message Syvrio"
             onChange={(event) => {
               setValue(event.target.value);
+              setCommandHint('');
               setDismissed(false);
-              setIndex(0);
+              setIndex(-1);
             }}
             onKeyDown={onKeyDown}
           />
+          {commandHint && <div className="confirm-message" role="status">{commandHint}</div>}
           <div className="composer-bar">
             <button type="button" className="icon-button composer-attach"
               disabled={waitingToSend} aria-label="Attach files" title="Attach files" onClick={openFiles ?? (() => picker.current?.click())}>
@@ -336,7 +345,7 @@ export function Composer({
             </button>
             <div className="composer-actions">
               {busy && commandDraft && (
-                <button type="button" className="composer-secondary" disabled={checkingSelection} onClick={submit}>Run</button>
+                <button type="button" className="composer-secondary" disabled={checkingSelection && !canOpenDuringSelection(value)} onClick={submit}>Run</button>
               )}
               {busy && hasDraft && !commandDraft && (
                 <>
@@ -352,7 +361,7 @@ export function Composer({
               )}
               <ContextMeter reading={meterReading} usage={contextUsage} compaction={compaction} />
               <button type="button" className={busy ? 'stop' : 'send'} onClick={busy ? onStop : submit}
-                disabled={waitingToSend || (checkingSelection && (!onSendAfterSelection || busy || commandDraft)) || (!busy && !hasDraft)}
+                disabled={waitingToSend || (checkingSelection && !canOpenDuringSelection(value) && (!onSendAfterSelection || busy || commandDraft)) || (!busy && !hasDraft)}
                 aria-label={busy ? 'Stop' : 'Send'} title={busy ? 'Stop generating' : 'Send'}>
                 {busy ? <StopIcon size={20} /> : <ArrowUpIcon size={23} />}
               </button>

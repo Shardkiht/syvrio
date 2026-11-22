@@ -175,15 +175,5 @@ class ModelOption:
 
 
 @dataclass
-class ReflectionSchedule:
-    running: bool
-    enabled: bool
-    profile_next: str | None = None
-    dream_next: str | None = None
-    profile_pending: str | None = None
-    dream_pending: bool = False
-
-
-@dataclass
 class PendingSnapshot:
     items: list[PendingItem]

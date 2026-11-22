@@ -101,6 +101,12 @@ export const api = {
     ),
 
   listSessions: () => jsonRequest<SessionListResponse>('/api/sessions?limit=100'),
+  renameSession: async (id: string, title: string) => {
+    const response = await fetchChecked(`/api/sessions/${encodeURIComponent(id)}/title`, {
+      method: 'PUT', headers: jsonHeaders, body: JSON.stringify({ title }),
+    });
+    if (!response.ok) throw await readError(response);
+  },
   listArchive: (offset = 0) => jsonRequest<SessionListResponse>('/api/sessions?archived=true&limit=500' + (offset ? `&offset=${offset}` : '')),
   archiveSession: (id: string) => jsonRequest(`/api/sessions/${encodeURIComponent(id)}/archive`, { method: 'POST' }),
   restoreSession: (id: string) => jsonRequest(`/api/sessions/${encodeURIComponent(id)}/restore`, { method: 'POST' }),
