@@ -81,11 +81,15 @@ def prepare_restart(
 
 
 def run_worker(version: str, root: Path, paths: SyvrioPaths) -> None:
+    def report(progress: update.UpdateProgress) -> None:
+        _save(root, "running", progress.message, progress)
+
     try:
         result = update.update(
             root,
             *update.config_options(root),
             expected_version=version,
+            on_progress=report,
             prepare_restart=partial(prepare_restart, paths=paths),
         )
     except Exception as exc:

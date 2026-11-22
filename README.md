@@ -52,6 +52,8 @@ Syvrio 只维护 `main` 正式版，安装和更新共用 PyPI 的 `syvrio` 包�
 
 在 Web 或 TUI 中输入 `/update` 即可检查 PyPI 正式版。也可以在 Web 的 **Settings → About** 点击 **Check for updates**。对于由用户级 systemd 管理的安装，检查到新版后，选择安装并在确认框核对目标版本，确认后才开始升级。服务重启时连接会短暂中断。部署步骤见[软件更新](docs/web.md#pypi-自动更新)。
 
+`syvrio update` 会实时显示下载、校验、安装依赖和服务重启的进度。下载大小已知时显示百分比，安装依赖等步骤显示当前阶段和终端等待时间。通过 Web 或 TUI 启动的更新也可在更新面板查看进度。
+
 ## 配置
 
 默认入口是 `~/.syvrio/config.toml`，也可以通过 `--config` 或 `SYVRIO_CONFIG` 指定。四份内置 TOML 提供完整默认值，本地只需写要覆盖的字段。[查看内置配置](src/syvrio/defaults/)

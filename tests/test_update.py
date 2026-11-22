@@ -105,6 +105,30 @@ def test_download_rejects_corrupt_wheel(tmp_path):
         update._download(client, asset, tmp_path / "test.whl")
 
 
+@pytest.mark.parametrize("size_source", ["metadata", "header", "unknown", "mismatch"])
+def test_download_reports_actual_bytes_before_verification(tmp_path, size_source):
+    data = b"synthetic wheel"
+    asset = {
+        "url": "https://files.pythonhosted.org/packages/test.whl",
+        "digests": {"sha256": hashlib.sha256(data).hexdigest()},
+    }
+    if size_source == "metadata":
+        asset["size"] = len(data)
+    elif size_source == "mismatch":
+        asset["size"] = len(data) + 3
+    headers = {"Content-Length": str(len(data))} if size_source == "header" else {}
+    transport = httpx.MockTransport(
+        lambda _: httpx.Response(200, headers=headers, stream=httpx.ByteStream(data))
+    )
+    events = []
+    with httpx.Client(transport=transport) as client:
+        update._download(client, asset, tmp_path / "test.whl", events.append)
+    assert events[0].downloaded == 0
+    assert events[-2].downloaded == len(data)
+    assert events[-2].total == (len(data) if size_source in {"metadata", "header"} else None)
+    assert events[-1].stage == "checksum"
+
+
 # --- 解释器选择（任务一）：只用本地解释器，绝不触发 uv 联网下载。 ---
 
 
@@ -189,7 +213,7 @@ def test_install_builds_venv_from_explicit_local_interpreter(tmp_path, monkeypat
     local.mkdir()
     interpreter = fake_interpreter(local)  # 机器上只有这一个 3.13，没有 3.12
     monkeypatch.setattr(update, "_interpreter", lambda python, spec: str(interpreter))
-    monkeypatch.setattr(update, "_download", lambda client, wheel, target: None)
+    monkeypatch.setattr(update, "_download", lambda client, wheel, target, on_progress: None)
     calls: list[tuple[tuple, dict]] = []
 
     def run(*args, **kwargs):
@@ -212,7 +236,7 @@ def test_install_builds_venv_from_explicit_local_interpreter(tmp_path, monkeypat
 
 def test_install_venv_failure_cleans_up(tmp_path, monkeypatch):
     monkeypatch.setattr(update, "_interpreter", lambda python, spec: "/usr/bin/python3.13")
-    monkeypatch.setattr(update, "_download", lambda client, wheel, target: None)
+    monkeypatch.setattr(update, "_download", lambda client, wheel, target, on_progress: None)
 
     def run(*args, **kwargs):
         if args[:2] == ("uv", "venv"):
@@ -229,7 +253,7 @@ def test_install_venv_failure_cleans_up(tmp_path, monkeypatch):
 
 def test_install_dependency_failure_cleans_up(tmp_path, monkeypatch):
     monkeypatch.setattr(update, "_interpreter", lambda python, spec: "/usr/bin/python3.13")
-    monkeypatch.setattr(update, "_download", lambda client, wheel, target: None)
+    monkeypatch.setattr(update, "_download", lambda client, wheel, target, on_progress: None)
 
     def run(*args, **kwargs):
         if args[:2] == ("uv", "venv"):
@@ -249,7 +273,7 @@ def test_install_dependency_failure_cleans_up(tmp_path, monkeypatch):
 def test_install_verify_timeout_cleans_up(tmp_path, monkeypatch):
     # verify 阶段的 TimeoutExpired 不得落进 CalledProcessError 分支（否则丢阶段与超时信息）。
     monkeypatch.setattr(update, "_interpreter", lambda python, spec: "/usr/bin/python3.13")
-    monkeypatch.setattr(update, "_download", lambda client, wheel, target: None)
+    monkeypatch.setattr(update, "_download", lambda client, wheel, target, on_progress: None)
 
     def run(*args, **kwargs):
         if args[:2] == ("uv", "venv") or args[:3] == ("uv", "pip", "install"):
@@ -291,15 +315,26 @@ def test_update_switches_or_restores_service(tmp_path, monkeypatch, healthy):
         return ""
 
     monkeypatch.setattr(update, "_run", run)
+    stages = []
+
+    def observe(event):
+        stages.append(event.stage)
+        if event.stage == "switch":
+            raise BrokenPipeError("Display disconnected")
+
     if healthy:
-        assert "0.6.0" in update.update(tmp_path, "evo", "syvrio-web.service", 8765)
+        assert "0.6.0" in update.update(
+            tmp_path, "evo", "syvrio-web.service", 8765, on_progress=observe
+        )
         assert link.resolve() == new
         assert events == [("stop", old), ("start", new)]
     else:
         with pytest.raises(ValueError, match="restored"):
-            update.update(tmp_path, "evo", "syvrio-web.service", 8765)
+            update.update(tmp_path, "evo", "syvrio-web.service", 8765, on_progress=observe)
         assert link.resolve() == old
         assert events == [("stop", old), ("start", new), ("stop", new), ("start", old)]
+    expected = ["preflight", "check", "pre_restart", "stop", "switch", "start", "health"]
+    assert stages == (expected if healthy else [*expected, "rollback"])
 
 
 def test_update_forwards_python_and_uv_to_install(tmp_path, monkeypatch):
@@ -313,7 +348,7 @@ def test_update_forwards_python_and_uv_to_install(tmp_path, monkeypatch):
     monkeypatch.setattr(update, "_healthy", lambda *args, **kwargs: True)
     seen: dict[str, str | None] = {}
 
-    def install(client, root, version, wheel, python=None, uv=None):
+    def install(client, root, version, wheel, python=None, uv=None, on_progress=None):
         seen.update(python=python, uv=uv)
         return new
 
@@ -717,7 +752,7 @@ def test_install_uses_configured_uv_path(tmp_path, monkeypatch):
     uv.write_text("", encoding="utf-8")
     uv.chmod(0o755)
     monkeypatch.setattr(update, "_interpreter", lambda python, spec: "/usr/bin/python3.13")
-    monkeypatch.setattr(update, "_download", lambda client, wheel, target: None)
+    monkeypatch.setattr(update, "_download", lambda client, wheel, target, on_progress: None)
     calls: list[tuple] = []
 
     def run(*args, **kwargs):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import re
 import shutil
@@ -11,6 +12,7 @@ import time
 import tomllib
 from collections.abc import Callable
 from contextlib import ExitStack
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -27,6 +29,32 @@ VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)(?:rc(\d+))?")
 STOP_TIMEOUT = 360
 # Warm starts may run slow initialization or memory catch-up before /api/health responds.
 STARTUP_SECONDS = 120
+
+
+@dataclass(frozen=True)
+class UpdateProgress:
+    stage: str
+    message: str
+    downloaded: int | None = None
+    total: int | None = None
+
+
+ProgressCallback = Callable[[UpdateProgress], None]
+
+
+def _report(
+    callback: ProgressCallback | None,
+    stage: str,
+    message: str,
+    downloaded: int | None = None,
+    total: int | None = None,
+) -> None:
+    if callback is not None:
+        try:
+            callback(UpdateProgress(stage, message, downloaded, total))
+        except Exception:
+            # A disconnected display or unwritable status file must never interrupt a handover.
+            logging.getLogger(__name__).debug("Update progress delivery failed", exc_info=True)
 
 
 class UpdateError(SyvrioError, ValueError):
@@ -162,7 +190,9 @@ def _detail(error: subprocess.CalledProcessError) -> str:
     return output[-200:] or f"exit code {error.returncode}"
 
 
-def _download(client: httpx.Client, wheel: dict, target: Path) -> None:
+def _download(
+    client: httpx.Client, wheel: dict, target: Path, on_progress: ProgressCallback | None = None
+) -> None:
     url = urlsplit(wheel["url"])
     digest = wheel["digests"]["sha256"]
     if url.scheme != "https" or url.netloc != "files.pythonhosted.org":
@@ -170,15 +200,39 @@ def _download(client: httpx.Client, wheel: dict, target: Path) -> None:
     if not re.fullmatch(r"[0-9a-f]{64}", digest):
         raise ValueError("PyPI wheel has no valid SHA-256 digest.")
     checksum = hashlib.sha256()
+    message = f"Downloading {target.name}"
+    total = wheel.get("size")
+    if type(total) is not int or total <= 0:
+        total = None
+    _report(on_progress, "download", message, 0, total)
     with client.stream("GET", url.geturl()) as response, target.open("wb") as output:
         response.raise_for_status()
+        if total is None and response.headers.get("content-encoding", "identity") == "identity":
+            try:
+                length = int(response.headers.get("content-length", "0"))
+            except ValueError:
+                length = 0
+            total = length if length > 0 else None
         size = 0
+        last_reported = 0
+        last_update = time.monotonic()
         for chunk in response.iter_bytes():
             size += len(chunk)
             if size > 50 * 1024 * 1024:
                 raise ValueError("PyPI wheel exceeds the download limit.")
             checksum.update(chunk)
             output.write(chunk)
+            if total is not None and size > total:
+                total = None
+            now = time.monotonic()
+            if now - last_update >= 0.3:
+                _report(on_progress, "download", message, size, total)
+                last_update, last_reported = now, size
+        if total is not None and size != total:
+            _report(on_progress, "download", message, size)
+        elif size != last_reported:
+            _report(on_progress, "download", message, size, total)
+    _report(on_progress, "checksum", "Verifying the wheel's SHA-256 checksum")
     if checksum.hexdigest() != digest:
         raise ValueError("PyPI wheel checksum mismatch.")
 
@@ -239,8 +293,10 @@ def _install(
     wheel: dict,
     python: str | None = None,
     uv: str | None = None,
+    on_progress: ProgressCallback | None = None,
 ) -> Path:
     # uv and the interpreter are checked before the download: neither may fail after it.
+    _report(on_progress, "prepare", f"Preparing to install Syvrio {version}")
     command = _uv(uv)
     interpreter = _interpreter(python, wheel.get("requires_python"))
     versions = root / "versions"
@@ -251,13 +307,14 @@ def _install(
         with tempfile.TemporaryDirectory(dir=root) as temp:
             target = Path(temp) / wheel["filename"]
             try:
-                _download(client, wheel, target)
+                _download(client, wheel, target, on_progress)
             except (httpx.HTTPError, OSError, ValueError) as error:
                 raise UpdateError("download", f"{wheel['filename']}: {error}") from error
             # An explicit local interpreter plus --no-python-downloads (and the matching env
             # var, so no uv step can ever fetch a managed CPython) keeps the install strictly
             # local: the old hard-coded 3.12 hung 120 s on 3.13-only hosts.
             no_downloads = {"UV_PYTHON_DOWNLOADS": "never"}
+            _report(on_progress, "venv", "Creating the Python environment")
             try:
                 _run(
                     command,
@@ -273,6 +330,7 @@ def _install(
             except subprocess.CalledProcessError as error:
                 raise UpdateError("venv", f"uv venv failed: {_detail(error)}") from error
             venv_python = environment / "bin" / "python"
+            _report(on_progress, "install", f"Installing Syvrio {version} and its dependencies")
             try:
                 requirement = str(target)
                 previous_python = (root / "current").resolve().with_name("python")
@@ -306,6 +364,7 @@ def _install(
             except subprocess.CalledProcessError as error:
                 raise UpdateError("install", f"uv pip install failed: {_detail(error)}") from error
         executable = environment / "bin" / "syvrio"
+        _report(on_progress, "verify", "Verifying the executable and Web assets")
         try:
             output = _run(str(executable), "--version")
             if output != f"Syvrio {version}":
@@ -385,6 +444,7 @@ def update(
     uv: str | None = None,
     *,
     expected_version: str | None = None,
+    on_progress: ProgressCallback | None = None,
     prepare_restart: Callable[[httpx.Client, int, ExitStack], Callable[[], None] | None]
     | None = None,
 ) -> str:
@@ -396,6 +456,7 @@ def update(
         raise ValueError("Invalid Web health port.")
     if not link.is_symlink():
         raise ValueError(f"Set up the managed Web service and executable symlink at {link} first.")
+    _report(on_progress, "preflight", "Checking the managed installation")
     with VaultLock(root / "update.lock"), httpx.Client(timeout=20, follow_redirects=False) as pypi:
         previous = link.resolve(strict=True)
         output = _run(str(previous), "--version")
@@ -404,6 +465,7 @@ def update(
         installed = output.removeprefix("Syvrio ")
         if expected_version == installed:
             return f"Syvrio {installed} is already installed."
+        _report(on_progress, "check", f"Checking PyPI for updates to Syvrio {installed}")
         release = check_release(pypi, installed, channel)
         if expected_version is not None and (not release or release[0] != expected_version):
             raise UpdateError("version", "The available version changed; check for updates again.")
@@ -411,7 +473,7 @@ def update(
             return f"Syvrio {installed} is up to date."
         version, wheel = release
         # Built and verified while the old service keeps serving.
-        new = _install(pypi, root, version, wheel, python, uv)
+        new = _install(pypi, root, version, wheel, python, uv, on_progress)
         new_environment = new.parent.parent
 
         def discard_install() -> None:
@@ -426,11 +488,13 @@ def update(
         service = ("systemctl", "--user")
         url = f"http://127.0.0.1:{port}/api/health"
         with httpx.Client(trust_env=False) as local, ExitStack() as cleanup:
+            _report(on_progress, "pre_restart", "Checking the running service before restart")
             if not _healthy(local, url, installed):
                 discard_install()
                 raise ValueError("The existing Web service is not healthy for this installation.")
             try:
                 finish_stop = prepare_restart(local, port, cleanup) if prepare_restart else None
+                _report(on_progress, "stop", "Stopping the current service")
                 _stop_service(unit)
             except BaseException:
                 discard_install()
@@ -439,10 +503,12 @@ def update(
                 if finish_stop:
                     finish_stop()
                 try:
+                    _report(on_progress, "switch", f"Switching to Syvrio {version}")
                     _switch(link, new)
                 except OSError as error:
                     raise UpdateError("switch", f"could not repoint {link}: {error}") from error
                 try:
+                    _report(on_progress, "start", "Starting the updated service")
                     _run(*service, "start", unit)
                 except subprocess.TimeoutExpired as error:
                     raise UpdateError(
@@ -452,12 +518,14 @@ def update(
                     raise UpdateError(
                         "start", f"systemctl start failed: {_detail(error)}"
                     ) from error
+                _report(on_progress, "health", "Waiting for the updated Web service to be ready")
                 if not _healthy(local, url, version, seconds=STARTUP_SECONDS):
                     raise UpdateError(
                         "health",
                         f"Syvrio {version} did not pass the Web health check within {STARTUP_SECONDS} s",
                     )
             except (UpdateError, OSError, KeyboardInterrupt) as error:
+                _report(on_progress, "rollback", f"Restoring Syvrio {installed}")
                 try:
                     # A failed switch may leave the old executable selected.
                     # Inspect the actual target before changing the link again.

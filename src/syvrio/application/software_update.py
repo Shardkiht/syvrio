@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import sys
+from dataclasses import asdict
 from pathlib import Path
 
 import httpx
@@ -36,13 +37,17 @@ def _managed(root: Path) -> bool:
     )
 
 
-def _save(root: Path, state: str, message: str) -> dict[str, str]:
-    data = {"state": state, "message": message}
+def _save(
+    root: Path, state: str, message: str, progress: update.UpdateProgress | None = None
+) -> dict:
+    data: dict = {"state": state, "message": message}
+    if progress is not None:
+        data["progress"] = asdict(progress)
     atomic_write(root / "job.json", json.dumps(data).encode())
     return data
 
 
-def _status(root: Path) -> dict[str, str]:
+def _status(root: Path) -> dict:
     try:
         result = json.loads((root / "job.json").read_bytes())
     except FileNotFoundError:
@@ -55,7 +60,7 @@ def _status(root: Path) -> dict[str, str]:
     return result
 
 
-def status() -> dict[str, str]:
+def status() -> dict:
     root = _root()
     if not (root / "job.json").is_file():
         return {"state": "idle", "message": ""}

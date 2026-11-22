@@ -273,6 +273,55 @@ def test_terminal_update_shows_saved_result_when_pypi_is_unavailable(resident_ba
     asyncio.run(reopen())
 
 
+def test_terminal_displays_download_bytes_then_clears_meter(resident_backend, monkeypatch):
+    from textual.widgets import ProgressBar, Static
+
+    _, client = resident_backend
+    original = client.request
+    downloading = {
+        "state": "running",
+        "message": "Downloading wheel",
+        "progress": {
+            "stage": "download",
+            "message": "Downloading wheel",
+            "downloaded": 2,
+            "total": 8,
+        },
+    }
+
+    def request(method, path, **values):
+        if path == "/api/update":
+            return {
+                **downloading,
+                "current": "1.0.0",
+                "latest": "1.1.0",
+                "managed": True,
+                "available": True,
+            }
+        if path == "/api/update/status":
+            return downloading
+        return original(method, path, **values)
+
+    monkeypatch.setattr(client, "request", request)
+
+    async def run():
+        ui = ResidentChatApp(client)
+        async with ui.run_test() as pilot:
+            await ui._command("/update")
+            await pilot.pause()
+            meter = ui.screen.query_one("#update-progress", ProgressBar)
+            assert meter.display and (meter.progress, meter.total) == (2, 8)
+            assert "25%" in str(ui.screen.query_one("#update-status", Static).render())
+            downloading.clear()
+            downloading.update(state="completed", message="Update complete")
+            async with asyncio.timeout(5):
+                while meter.display:
+                    await asyncio.sleep(0.05)
+            assert "Update complete" in str(ui.screen.query_one("#update-status", Static).render())
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("available,managed", [(True, False), (False, True)])
 def test_terminal_update_shows_read_only_status(resident_backend, monkeypatch, available, managed):
     from textual.widgets import Button, Static
