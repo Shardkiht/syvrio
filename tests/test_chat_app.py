@@ -2700,7 +2700,7 @@ async def test_session_picker_rail_stays_aligned_for_long_titles_and_widths(tmp_
     app = build_app(tmp_path, [])
     store = app.sessions
     titles = (
-        "超长会话标题" * 12 + " https://github.com/example/repository",
+        ("超长会话标题" * 12 + " https://github.com/example/repository")[:80],
         "短标题",
         "第三条会话",
     )
