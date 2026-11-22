@@ -1,97 +1,109 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { api } from '../api/client';
 import type { ProviderAction, ProviderActionRequest, ProviderInfo } from '../types';
+import { FeedbackMessage, type ActionFeedback } from './ActionFeedback';
 
-/**
- * Provider management shared by the settings panel (Web equivalent of the
- * TUI provider manager). A saved API key is write-only: it never comes back.
- */
-export function ProvidersSection({
-  onChanged,
-  onNotice,
-}: {
+type EditorAction = ProviderAction | 'model';
+type Editor = { key: string; action: EditorAction };
+type ProviderFeedback = ActionFeedback & { target: string };
+
+const editorLabels = {
+  set_key: { field: 'API key', submit: 'Save', pending: 'Saving key…' },
+  update_key: { field: 'API key', submit: 'Save', pending: 'Saving key…' },
+  set_endpoint: { field: 'Base URL', submit: 'Save', pending: 'Saving Base URL…' },
+  model: { field: 'model ID', submit: 'Apply model', pending: 'Applying model…' },
+  remove: { field: '', submit: 'Remove permanently', pending: 'Removing provider…' },
+};
+
+async function submitProviderEdit(provider: string, action: EditorAction, value: string) {
+  if (action === 'model') {
+    const result = await api.runCommand({ line: `/model ${provider}/${value}`, session_id: null, confirmed: false });
+    if (result.status !== 'ok') throw new Error(result.message);
+    return result.message;
+  }
+  const body: ProviderActionRequest = { action };
+  if (action === 'remove') body.confirmed = true;
+  else if (action === 'set_endpoint') body.endpoint = value;
+  else body.api_key = value;
+  const result = await api.providerAction(provider, body);
+  if (!result.ok) throw new Error(result.message);
+  return result.message;
+}
+
+export function ProvidersSection({ onChanged, refreshControl }: {
   onChanged: () => void;
-  onNotice: (message: string) => void;
+  refreshControl: ReactNode;
 }) {
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
   const [loaded, setLoaded] = useState(false);
-  const [target, setTarget] = useState<{ provider: ProviderInfo; action: ProviderAction } | null>(null);
+  const [loadError, setLoadError] = useState('');
+  const [editor, setEditor] = useState<Editor | null>(null);
   const [value, setValue] = useState('');
-  const [confirmRemove, setConfirmRemove] = useState<ProviderInfo | null>(null);
-  const [customModel, setCustomModel] = useState('');
+  const [feedback, setFeedback] = useState<ProviderFeedback | null>(null);
+  const busy = feedback?.kind === 'pending';
+  const opener = useRef<HTMLButtonElement | null>(null);
+  const restoreFocus = useRef(false);
 
-  const load = useCallback(() => {
-    void api.providers()
-      .then((result) => {
+  const load = useCallback(async (signal?: AbortSignal) => {
+    try {
+      const result = await api.providers(signal);
+      if (!signal?.aborted) {
         setProviders(result.items);
-        setError('');
-      })
-      .catch((failure: unknown) =>
-        setError(failure instanceof Error ? failure.message : 'Could not load providers'))
-      .finally(() => setLoaded(true));
-  }, []);
-
-  useEffect(load, [load]);
-
-  const apply = async (provider: string, body: ProviderActionRequest) => {
-    setBusy(true);
-    setError('');
-    try {
-      const result = await api.providerAction(provider, body);
-      onNotice(result.message);
-      if (!result.ok) setError(result.message);
-      load();
-      onChanged();
-      setTarget(null);
-      setConfirmRemove(null);
-      setValue('');
-    } catch (failure) {
-      setError(failure instanceof Error ? failure.message : 'Provider action failed');
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const refreshModels = async () => {
-    setBusy(true);
-    setError('');
-    try {
-      const result = await api.runCommand({ line: '/model refresh', session_id: null, confirmed: false });
-      onNotice(result.message);
-      if (result.status === 'error') setError(result.message);
-    } catch (failure) {
-      setError(failure instanceof Error ? failure.message : 'Model refresh failed');
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const applyCustomModel = async () => {
-    const current = providers.find((item) => item.current) ?? providers[0];
-    if (!current || !customModel.trim()) return;
-    setBusy(true);
-    setError('');
-    try {
-      const result = await api.runCommand({
-        line: `/model ${current.key}/${customModel.trim()}`,
-        session_id: null,
-        confirmed: false,
-      });
-      onNotice(result.message);
-      if (result.status !== 'ok') setError(result.message);
-      else {
-        setCustomModel('');
-        onChanged();
-        load();
+        setLoadError('');
       }
     } catch (failure) {
-      setError(failure instanceof Error ? failure.message : 'Could not apply the model');
+      if (!signal?.aborted) {
+        setLoadError(failure instanceof Error ? failure.message : 'Could not load providers.');
+      }
     } finally {
-      setBusy(false);
+      if (!signal?.aborted) setLoaded(true);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    const request = new AbortController();
+    void load(request.signal);
+    return () => request.abort();
+  }, [load]);
+
+  useLayoutEffect(() => {
+    if (!editor && restoreFocus.current) {
+      restoreFocus.current = false;
+      opener.current?.focus();
+    }
+  }, [editor]);
+
+  function closeEditor() {
+    restoreFocus.current = true;
+    setEditor(null);
+    setValue('');
+  }
+
+  function openEditor(provider: ProviderInfo, action: EditorAction, button: HTMLButtonElement) {
+    setFeedback(null);
+    if (editor?.key === provider.key && editor.action === action) {
+      closeEditor();
+      return;
+    }
+    opener.current = button;
+    setValue(action === 'set_endpoint' ? provider.endpoint : '');
+    setEditor({ key: provider.key, action });
+  }
+
+  async function apply(provider: ProviderInfo, action: EditorAction) {
+    if (busy || (action !== 'remove' && !value.trim())) return;
+    const target = provider.key;
+    setFeedback({ target, kind: 'pending', message: editorLabels[action].pending });
+    try {
+      const message = await submitProviderEdit(target, action, value.trim());
+      await load();
+      closeEditor();
+      setFeedback({ target, kind: 'success', message });
+      onChanged();
+    } catch (failure) {
+      setFeedback({ target, kind: 'error', message: failure instanceof Error ? failure.message : 'Provider action failed.' });
+    }
+  }
 
   return (
     <div className="settings-section" data-testid="providers-section">
@@ -100,123 +112,77 @@ export function ProvidersSection({
         API keys are stored in the system credential store and are never sent back
         to the browser. Removing a provider deletes its saved key.
       </p>
-      <div className="providers-actions">
-        <button type="button" onClick={() => void refreshModels()} disabled={busy}>
-          Refresh model list
-        </button>
-      </div>
+      {refreshControl}
       <div className="providers-list" data-testid="providers-list">
-        {!loaded && <div className="empty">Loading providers…</div>}
-        {loaded && providers.length === 0 && <div className="empty">No providers available.</div>}
-        {providers.map((provider) => (
-          <div className="provider-row" key={provider.key} data-testid={`provider-${provider.key}`}>
-            <div className="provider-head">
-              <span>{provider.label}{provider.current ? ' · current' : ''}</span>
-              <span className="provider-state">{provider.configured ? 'configured' : 'no key'}</span>
+        {!loaded && <div className="empty" role="status">Loading providers…</div>}
+        {loadError && <p className="provider-error" role="alert">{loadError}</p>}
+        {loaded && !loadError && providers.length === 0 && <div className="empty">No providers available.</div>}
+        {providers.map((provider) => {
+          const action = editor?.key === provider.key ? editor.action : null;
+          const editorId = `provider-editor-${provider.key}`;
+          const actions: [EditorAction, string][] = [
+            provider.configured ? ['update_key', 'Update key'] : ['set_key', 'Add key'],
+            ['set_endpoint', 'Base URL'],
+          ];
+          if (provider.configured || provider.current) actions.push(['model', 'Use model ID']);
+          actions.push(['remove', 'Remove']);
+          const keyField = action === 'set_key' || action === 'update_key';
+          return (
+            <div className="provider-row" key={provider.key} data-testid={`provider-${provider.key}`}>
+              <div className="provider-head">
+                <span>{provider.label}{provider.current ? ' · current' : ''}</span>
+                <span className="provider-state">{provider.configured ? 'configured' : 'no key'}</span>
+              </div>
+              <div className="provider-endpoint">{provider.endpoint}</div>
+              <div className="provider-buttons">
+                {actions.map(([choice, label]) => (
+                  <button key={choice === 'update_key' ? 'set_key' : choice} type="button"
+                    className={choice === 'remove' ? 'danger' : undefined} disabled={busy}
+                    aria-expanded={action === choice} aria-controls={action === choice ? editorId : undefined}
+                    onClick={(event) => openEditor(provider, choice, event.currentTarget)}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+              {action && (
+                <form key={action} id={editorId} className="provider-form provider-editor"
+                  role={action === 'remove' ? 'alertdialog' : undefined}
+                  aria-label={action === 'remove' ? `Remove ${provider.label}` : `Edit ${provider.label}`}
+                  aria-describedby={action === 'remove' ? `${editorId}-warning` : undefined}
+                  data-testid={action === 'remove' ? 'provider-remove' : 'provider-form'}
+                  onKeyDown={(event) => {
+                    if (event.key !== 'Escape' || event.nativeEvent.isComposing) return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    if (!busy) { closeEditor(); setFeedback(null); }
+                  }}
+                  onSubmit={(event) => { event.preventDefault(); void apply(provider, action); }}>
+                  {action === 'remove' ? (
+                    <div id={`${editorId}-warning`}>Remove {provider.label}? Its saved API key will be deleted.</div>
+                  ) : (
+                    <label>
+                      {provider.label} {editorLabels[action].field}
+                      <input autoFocus type={keyField ? 'password' : 'text'}
+                        value={value} readOnly={busy} autoComplete="off" spellCheck={false}
+                        data-testid={action === 'model' ? 'custom-model' : 'provider-value'}
+                        onChange={(event) => setValue(event.target.value)} />
+                    </label>
+                  )}
+                  <div className="confirm-actions">
+                    <button type="button" autoFocus={action === 'remove'} disabled={busy}
+                      onClick={() => { closeEditor(); setFeedback(null); }}>Cancel</button>
+                    <button type="submit" className={action === 'remove' ? 'danger' : undefined}
+                      disabled={action !== 'remove' && !value.trim()} aria-disabled={busy || (action !== 'remove' && !value.trim())}>
+                      {busy ? editorLabels[action].pending : editorLabels[action].submit}
+                    </button>
+                  </div>
+                </form>
+              )}
+              <FeedbackMessage feedback={feedback?.target === provider.key ? feedback : null} />
             </div>
-            <div className="provider-endpoint">{provider.endpoint}</div>
-            <div className="provider-buttons">
-              <button
-                type="button"
-                onClick={() => {
-                  setTarget({ provider, action: provider.configured ? 'update_key' : 'set_key' });
-                  setValue('');
-                }}
-              >
-                {provider.configured ? 'Update key' : 'Add key'}
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setTarget({ provider, action: 'set_endpoint' });
-                  setValue(provider.endpoint);
-                }}
-              >
-                Base URL
-              </button>
-              <button
-                type="button"
-                className="danger"
-                onClick={() => setConfirmRemove(provider)}
-              >
-                Remove
-              </button>
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
-
-      {target && (
-        <div className="provider-form" data-testid="provider-form">
-          <label>
-            {target.action === 'set_endpoint'
-              ? `${target.provider.label} Base URL`
-              : `${target.provider.label} API key`}
-            <input
-              type={target.action === 'set_endpoint' ? 'text' : 'password'}
-              value={value}
-              onChange={(event) => setValue(event.target.value)}
-              data-testid="provider-value"
-              autoComplete="off"
-            />
-          </label>
-          <div className="confirm-actions">
-            <button type="button" onClick={() => setTarget(null)}>Cancel</button>
-            <button
-              type="button"
-              disabled={busy || !value.trim()}
-              onClick={() => void apply(target.provider.key, {
-                action: target.action,
-                api_key: target.action === 'set_endpoint' ? '' : value,
-                endpoint: target.action === 'set_endpoint' ? value : '',
-              })}
-            >
-              Save
-            </button>
-          </div>
-        </div>
-      )}
-
-      {confirmRemove && (
-        <div className="provider-form" role="alertdialog" data-testid="provider-remove">
-          <div>Remove {confirmRemove.label}? Its saved API key will be deleted.</div>
-          <div className="confirm-actions">
-            <button type="button" onClick={() => setConfirmRemove(null)}>Cancel</button>
-            <button
-              type="button"
-              className="danger"
-              disabled={busy}
-              onClick={() => void apply(confirmRemove.key, { action: 'remove', confirmed: true })}
-            >
-              Remove permanently
-            </button>
-          </div>
-        </div>
-      )}
-
-      <div className="provider-form">
-        <label>
-          Custom model ID
-          <input
-            type="text"
-            value={customModel}
-            onChange={(event) => setCustomModel(event.target.value)}
-            data-testid="custom-model"
-            placeholder="model-name"
-          />
-        </label>
-        <div className="confirm-actions">
-          <button
-            type="button"
-            onClick={() => void applyCustomModel()}
-            disabled={busy || !customModel.trim()}
-          >
-            Apply model
-          </button>
-        </div>
-      </div>
-
-      {error && <div className="provider-error" data-testid="provider-error">{error}</div>}
     </div>
   );
 }

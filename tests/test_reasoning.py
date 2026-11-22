@@ -157,6 +157,14 @@ def test_stream_multi_tool_reasoning_survives_session_reload(tmp_path, monkeypat
             ["current"],
         ),
         ("dashscope", "qwen-plus", "https://dashscope.aliyuncs.com/compatible-mode/v1", []),
+        (
+            "qianwen",
+            "qwen3.8-max",
+            "https://maas.qianwenaiapi.com/compatible-mode/v1",
+            ["earlier", "current"],
+        ),
+        ("qianwen", "qwen3.8-max", "https://example.test/v1", []),
+        ("qianwen", "glm-5.3", "https://maas.qianwenaiapi.com/compatible-mode/v1", ["current"]),
         ("openai", "gpt-4o-mini", "https://api.openai.com/v1", []),
         ("siliconflow", "deepseek-ai/DeepSeek-V4-Flash", "https://api.siliconflow.cn/v1", []),
         ("deepseek", "deepseek-v4-flash", "https://example.test/v1", []),
@@ -201,6 +209,38 @@ def test_reasoning_replay_respects_route_and_turn(monkeypatch, provider, model_i
     ] == expected
     assert "fallbacks" not in wire
     assert messages[-1]["reasoning_content"] == "foreign"
+
+
+def test_qianwen_max_preserves_reasoning_for_follow_up_without_tools(monkeypatch):
+    model = _model(
+        monkeypatch,
+        "qianwen",
+        model="qwen4-max",
+        base_url="https://maas.qianwenaiapi.com/compatible-mode/v1",
+    )
+    sent = []
+
+    def complete(**kwargs):
+        sent.append(kwargs["messages"])
+        message = {"content": "answer", "reasoning_content": "synthetic reasoning"}
+        return SimpleNamespace(choices=[SimpleNamespace(message=message)], usage=None)
+
+    monkeypatch.setattr(client, "_litellm", lambda: SimpleNamespace(completion=complete))
+    first = model.chat([{"role": "user", "content": "example"}], [])
+    assert first.reasoning_source
+    model.chat(
+        [
+            {
+                "role": "assistant",
+                "content": first.content,
+                "reasoning_source": first.reasoning_source,
+                "reasoning_content": first.reasoning_content,
+            },
+            {"role": "user", "content": "follow-up"},
+        ],
+        [],
+    )
+    assert sent[1][0]["reasoning_content"] == "synthetic reasoning"
 
 
 @pytest.mark.parametrize(

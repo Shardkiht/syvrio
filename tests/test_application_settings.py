@@ -9,6 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from syvrio.application import settings as settings_module
@@ -55,6 +56,143 @@ def test_model_options_only_show_discovered_models(tmp_path):
     assert options[0].current
     assert options[0].provider == "deepseek"
     assert {option.model for option in options} == {"deepseek-flash"}
+
+
+def test_qianwen_catalog_and_chat_use_dedicated_credentials_on_the_wire(tmp_path, monkeypatch):
+    from syvrio.llm.client import LiteLLMChatModel
+
+    service, _, settings = build(tmp_path)
+    service.config_path = tmp_path / "config.toml"
+    monkeypatch.setenv("QIANWEN_API_KEY", "synthetic-qianwen")
+    model_id = "qwen3.8-max"
+    bodies = []
+    base = "https://maas.qianwenaiapi.com/compatible-mode/v1"
+
+    def transport(_transport, request):
+        assert request.headers["authorization"] == "Bearer synthetic-qianwen"
+        if request.method == "GET":
+            assert str(request.url) == base + "/models"
+            return httpx.Response(
+                200, json={"object": "list", "data": [{"id": model_id, "object": "model"}]}
+            )
+        assert str(request.url) == base + "/chat/completions"
+        body = json.loads(request.content)
+        bodies.append(body)
+        common = {"id": "chatcmpl-test", "created": 1, "model": model_id}
+        if body.get("stream"):
+            chunk = {
+                **common,
+                "object": "chat.completion.chunk",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"role": "assistant", "content": "Done"},
+                        "finish_reason": "stop",
+                    }
+                ],
+            }
+            return httpx.Response(
+                200,
+                headers={"Content-Type": "text/event-stream"},
+                text=f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n",
+            )
+        message = {
+            "role": "assistant",
+            "content": "",
+            "reasoning_content": "synthetic reasoning",
+            "tool_calls": [
+                {
+                    "id": "lookup",
+                    "type": "function",
+                    "function": {"name": "lookup", "arguments": "{}"},
+                }
+            ],
+        }
+        return httpx.Response(
+            200,
+            json={
+                **common,
+                "object": "chat.completion",
+                "choices": [{"index": 0, "message": message, "finish_reason": "tool_calls"}],
+            },
+        )
+
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", transport)
+    options, unavailable = settings.search_models(model_id, refresh=True)
+    assert [(item.provider, item.model) for item in options] == [("qianwen", model_id)]
+    assert not unavailable
+    assert settings.apply_model("qianwen", model_id).ok
+    config = load_config(service.config_path).llm
+    assert (config.provider, config.base_url, config.api_key_env) == (
+        "qianwen",
+        base,
+        "QIANWEN_API_KEY",
+    )
+    chat = LiteLLMChatModel(config)
+    messages = [{"role": "user", "content": "Test"}]
+    tools = [
+        {
+            "type": "function",
+            "function": {"name": "lookup", "parameters": {"type": "object", "properties": {}}},
+        }
+    ]
+    first = chat.chat(messages, tools)
+    assert first.tool_calls[0].name == "lookup" and first.reasoning_source
+    messages.extend(
+        [
+            {
+                "role": "assistant",
+                "content": first.content,
+                "reasoning_content": first.reasoning_content,
+                "reasoning_source": first.reasoning_source,
+                "tool_calls": [
+                    {
+                        "id": "lookup",
+                        "type": "function",
+                        "function": {"name": "lookup", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "lookup", "content": "Synthetic result"},
+        ]
+    )
+    deltas = []
+    assert chat.chat(messages, tools, on_delta=deltas.append).content == "Done"
+    assert deltas == ["Done"]
+    assert [body["model"] for body in bodies] == [model_id, model_id]
+    assert bodies[1]["messages"][1]["reasoning_content"] == "synthetic reasoning"
+    assert bodies[1]["messages"][2]["tool_call_id"] == "lookup"
+    assert "synthetic-qianwen" not in service.config_path.with_name("models.toml").read_text()
+
+
+def test_qianwen_config_does_not_reuse_another_provider_key(tmp_path, monkeypatch):
+    from syvrio.infra.config import infer_provider
+
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "synthetic-bailian")
+    path = tmp_path / "config.toml"
+    path.write_text('[llm]\nprovider = "qianwen"\nmodel = "vendor/model"\n', encoding="utf-8")
+    llm = load_config(path).llm
+    assert llm.base_url == "https://maas.qianwenaiapi.com/compatible-mode/v1"
+    assert infer_provider(llm.base_url + "/") == "qianwen"
+    assert llm.api_key_env == "QIANWEN_API_KEY" and llm.api_key() is None
+    assert llm.litellm_model() == "openai/vendor/model"
+
+
+def test_qianwen_glm_efforts_use_catalog_or_platform_defaults(monkeypatch):
+    from syvrio.llm import client
+
+    model = "glm-5.3"
+    config = LLMConfig(
+        provider="qianwen", model=model, base_url="https://maas.qianwenaiapi.com/compatible-mode/v1"
+    )
+    catalog = {model: None}
+    monkeypatch.setattr(client, "_provider_catalog", lambda *args, **kwargs: catalog)
+    assert client.provider_reasoning_levels(config) == ("low", "high", "max")
+    catalog[model] = ("high",)
+    assert client.provider_reasoning_levels(config) == ("high",)
+    catalog.clear()
+    config.base_url = "https://other.invalid/v1"
+    assert client.provider_reasoning_levels(config) is None
 
 
 def test_discover_models_for_inactive_provider_at_saved_endpoint(tmp_path, monkeypatch):

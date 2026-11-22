@@ -144,6 +144,8 @@ MCP 提供检索、主题阅读、记录、更正、状态变化、弃用和待�
 
 `syvrio setup` 可配置模型、API Base URL 和 Vault；可用 `SYVRIO_CONFIG`、`SYVRIO_VAULT`、`SYVRIO_RUNTIME` 分别指定配置文件、Vault 和 Runtime。支持本地向量、模型 API 向量和关键词检索。`SOUL.md` 可保存用户编写的助手人设。已有远端的 Vault 可以用 `/git` 查看状态及同步；附件备份仍独立于 Git。
 
+千问 AI 平台的按量付费入口在 **Settings → Providers → 千问 AI 平台**。选择 **Add key** 保存凭据，再到 **Model** 刷新并选择模型。也可在千问卡片选择 **Use model ID**，输入平台提供的模型 ID，例如 `glm-5.3`。终端可用 `syvrio setup` 或通过 `QIANWEN_API_KEY` 提供密钥。千问和百炼分别保存凭据。[千问平台 API 说明](https://platform.qianwenai.com/docs/api-reference/preparation/api-key)
+
 ## 联网搜索
 
 `search` 工具默认通过本地 [open-websearch](https://github.com/Aas-ee/open-webSearch) daemon 查询公开网页，不需要 API Key。先单独启动 daemon：

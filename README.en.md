@@ -139,6 +139,8 @@ The CLI supports `syvrio sessions --archived`, `--archive ID`, `--restore ID` an
 
 Use `syvrio setup` to configure the model, API base URL and Vault. `SYVRIO_CONFIG`, `SYVRIO_VAULT` and `SYVRIO_RUNTIME` select the configuration file, Vault and Runtime respectively. Retrieval supports keywords, local embeddings and embedding APIs. An optional `SOUL.md` holds a user-written assistant persona. For a Vault with a Git remote, `/git` shows status and synchronization actions. Back up attachments separately.
 
+For Qianwen AI Platform pay-as-you-go, open **Settings → Providers → 千问 AI 平台** and select **Add key**. Refresh the **Model** list and select a model, or choose **Use model ID** on the Qianwen card and enter a platform model ID such as `glm-5.3`. Terminal users can use `syvrio setup` or set `QIANWEN_API_KEY`. Syvrio stores Qianwen and Bailian credentials separately. [Qianwen API key guide](https://platform.qianwenai.com/docs/api-reference/preparation/api-key)
+
 ## Web search
 
 The `search` tool queries public web pages through a local [open-websearch](https://github.com/Aas-ee/open-webSearch) daemon by default and needs no API key. Start the daemon in a separate terminal:
