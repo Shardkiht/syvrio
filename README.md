@@ -50,7 +50,7 @@ Syvrio 只维护 `main` 正式版，安装和更新共用 PyPI 的 `syvrio` 包�
 
 开发前端使用 `http://127.0.0.1:7987/`。运行 `syvrio web --port 8746` 启动配套网关，也可用环境变量 `SYVRIO_WEB_PORT` 设置网关端口。
 
-在 Web 的 **Settings → About** 点 **Check for updates**，或在 TUI 中输入 `/update`，可检查 PyPI 正式版。由用户级 systemd 管理的安装可以在界面确认目标版本后升级。服务重启时连接会短暂中断。部署步骤见[软件更新](docs/web.md#pypi-自动更新)。
+在 Web 或 TUI 中输入 `/update` 即可检查 PyPI 正式版。也可以在 Web 的 **Settings → About** 点击 **Check for updates**。对于由用户级 systemd 管理的安装，检查到新版后，选择安装并在确认框核对目标版本，确认后才开始升级。服务重启时连接会短暂中断。部署步骤见[软件更新](docs/web.md#pypi-自动更新)。
 
 ## 配置
 

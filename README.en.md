@@ -50,7 +50,7 @@ With a PyPI installation and a configured ngrok v3 agent, run `syvrio web share 
 
 The development frontend runs at `http://127.0.0.1:7987/`. Start its gateway with `syvrio web --port 8746`. You can also set the gateway port with `SYVRIO_WEB_PORT`.
 
-In the Web app, open **Settings → About** and choose **Check for updates**. In the TUI, enter `/update`. Both check stable releases on PyPI. Installations managed by a systemd user service can install the selected release after confirmation. Connected clients briefly disconnect during the restart. See the [update guide](docs/web.md#pypi-自动更新).
+Enter `/update` in the Web app or TUI to check for stable releases on PyPI. In the Web app, you can also choose **Settings → About → Check for updates**. If a systemd user service manages the installation, choose Install and confirm the target version to start the upgrade. Connected clients briefly disconnect during the restart. See the [update guide](docs/web.md#pypi-自动更新).
 
 ## Configuration
 

@@ -909,16 +909,35 @@ describe('Slash commands and shortcuts', () => {
     expect(screen.getByTestId('message-list').textContent).not.toContain('Edited');
   });
 
-  it('opens software updates from the shared /update command', async () => {
+  it('checks once for /update and requires a separate confirmation to install', async () => {
     const spy = spyCommands(body => body.line === '/update'
       ? commandResult({ status: 'client', command: 'update', intent: 'open_update' })
       : commandResult());
-    installFetch({ ...spy.overrides, '/api/update/status': () => json({ state: 'idle', message: '' }) });
+    const calls = installFetch({
+      ...spy.overrides,
+      '/api/update/status': () => json({ state: 'idle', message: '' }),
+      'GET /api/update': () => json({
+        current: '1.0.0', latest: '1.0.1', available: true, managed: true, state: 'idle', message: '',
+      }),
+    });
     render(<App />);
     await ready();
     send('/update');
     const about = await screen.findByTestId('settings-about');
-    expect(within(about).getByRole('button', { name: 'Check for updates' })).toBeTruthy();
+    const install = await within(about).findByRole('button', { name: 'Install 1.0.1' });
+    expect(calls.filter(call => call === 'GET /api/update')).toHaveLength(1);
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    fireEvent.click(install);
+    const prompt = within(screen.getByRole('alertdialog'));
+    expect(prompt.getByText(/from 1\.0\.0 to 1\.0\.1/)).toBeTruthy();
+    fireEvent.click(prompt.getByRole('button', { name: 'Cancel' }));
+    expect(calls).not.toContain('POST /api/update');
+
+    fireEvent.click(screen.getByTestId('settings-tab-shortcuts'));
+    fireEvent.click(screen.getByTestId('settings-tab-about'));
+    const check = screen.getByRole<HTMLButtonElement>('button', { name: 'Check for updates' });
+    await waitFor(() => expect(check.disabled).toBe(false));
+    expect(calls.filter(call => call === 'GET /api/update')).toHaveLength(1);
   });
 
   it('opens /sessions in a modal with keyboard navigation and /help in the palette', async () => {

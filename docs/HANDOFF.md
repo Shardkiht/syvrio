@@ -56,7 +56,7 @@ Web 顶栏的 Pending 和 `/pending` 共用右侧审核面板。待审与推断�
 
 只维护 main，PyPI 手动发布工作流只接受该分支的正式版本 X.Y.Z。升版时只改 `src/syvrio/__init__.py` 中的 `__version__`。Hatchling 从这里生成 wheel 和源码包的版本信息，`uv sync --frozen` 会刷新开发环境的包信息。历史分支和已有分发包保留。
 
-Web 设置的 About 和 TUI 的 `/update` 共用常驻后端的版本检查、安装确认和任务状态接口。后台通过独立的 systemd 用户任务复用 CLI 的 PyPI 更新器，端到端验证需区分开发源码环境与受管理的安装。
+Web 和 TUI 的 `/update` 共用常驻后端的版本检查、安装确认和任务状态接口。两端输入指令都会检查新版，手动打开 Web 设置的 About 时由用户点击检查。安装须另行确认目标版本。后台通过独立的 systemd 用户任务复用 CLI 的 PyPI 更新器，端到端验证需区分开发源码环境与受管理的安装。
 
 ## 回归入口
 

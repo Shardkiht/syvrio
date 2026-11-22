@@ -81,7 +81,8 @@ export function SettingsPanel({
   onChanged: () => void;
   initialSection?: SectionKey;
 }) {
-  const [section, setSection] = useState<SectionKey>(initialSection);
+  const [selectedSection, setSection] = useState<SectionKey | null>(null);
+  const section = selectedSection ?? initialSection;
   const [catalog, setCatalog] = useState<(ModelSearchResponse & { query: string }) | null>(null);
   const [think, setThink] = useState<ThinkState | null>(null);
   const [context, setContext] = useState<ContextState | null>(null);
@@ -197,7 +198,7 @@ export function SettingsPanel({
                 aria-current={section === item.key ? 'page' : undefined}
                 title={item.description}
                 data-testid={`settings-tab-${item.key}`}
-                onClick={() => setSection(item.key)}
+                onClick={() => { if (item.key !== section) setSection(item.key); }}
               >
                 {item.label}
               </button>
@@ -396,7 +397,8 @@ export function SettingsPanel({
               <div className="settings-section" data-testid="settings-about">
                 <div className="settings-section-title">About</div>
                 <dl className="settings-facts">
-                  <dt>Version</dt><dd><SoftwareUpdate version={health?.version} onChanged={onChanged} /></dd>
+                  <dt>Version</dt><dd><SoftwareUpdate version={health?.version} onChanged={onChanged}
+                    checkOnOpen={selectedSection === null && initialSection === 'about'} /></dd>
                   <dt>Provider</dt><dd>{health?.provider ?? 'unknown'}</dd>
                   <dt>Model</dt><dd>{health?.model ?? 'unknown'}</dd>
                   <dt>Generating</dt><dd>{health?.busy ? 'yes' : 'no'}</dd>

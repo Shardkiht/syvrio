@@ -87,7 +87,7 @@ export const api = {
   },
   disconnect: () => fetchChecked('/api/view/disconnect', { method: 'POST', keepalive: true }),
   health: () => jsonRequest<HealthResponse>('/api/health'),
-  checkUpdate: () => jsonRequest<UpdateCheck>('/api/update', { cache: 'no-store' }),
+  checkUpdate: (signal?: AbortSignal) => jsonRequest<UpdateCheck>('/api/update', { cache: 'no-store', signal }),
   updateStatus: (signal: AbortSignal) =>
     jsonRequest<UpdateStatus>('/api/update/status', { cache: 'no-store', signal }),
   installUpdate: (version: string) => jsonRequest<UpdateStatus>('/api/update', {
