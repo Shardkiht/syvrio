@@ -111,6 +111,7 @@ def isolate_llm_credentials(monkeypatch):
         "DEEPSEEK_API_KEY",
         "SILICONFLOW_API_KEY",
         "DASHSCOPE_API_KEY",
+        "QIANWEN_API_KEY",
         "OPENAI_API_KEY",
         "OPENROUTER_API_KEY",
         "SPARK_API_KEY",

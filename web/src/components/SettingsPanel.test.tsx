@@ -1,8 +1,9 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SettingsPanel } from './SettingsPanel';
+import { api } from '../api/client';
 import { SHORTCUT_HELP } from '../state/shortcuts';
-import type { CommandResponse } from '../types';
+import type { ActionResponse, CommandResponse, ModelSearchResponse } from '../types';
 
 const HEALTH = {
   status: 'ok', version: '0.4.0.dev0', provider: 'deepseek', model: 'deepseek-flash',
@@ -62,7 +63,13 @@ function installFetch(initialBudget = 100000) {
   return lines;
 }
 
-afterEach(() => vi.unstubAllGlobals());
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>(done => { resolve = done; });
+  return { promise, resolve };
+}
+
+afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe('settings panel', () => {
   it('searches and refreshes the filtered catalog without submitting typed model IDs', async () => {
@@ -166,6 +173,138 @@ describe('settings panel', () => {
     fireEvent.click(screen.getByTestId('settings-tab-providers'));
     await waitFor(() => expect(screen.getByTestId('provider-deepseek').textContent).toContain('DeepSeek'));
     expect(screen.getByTestId('provider-deepseek').textContent).toContain('configured');
+  });
+
+  it('opens one editor in its own provider card, focuses it and cancels without writing', async () => {
+    installFetch();
+    vi.spyOn(api, 'providers').mockResolvedValue({ items: [
+      { key: 'first', label: 'First', endpoint: 'https://first.invalid/v1', current: true, configured: true },
+      { key: 'second', label: 'Second', endpoint: 'https://second.invalid/v1', current: false, configured: false },
+    ] });
+    const write = vi.spyOn(api, 'providerAction');
+    const close = vi.fn();
+    render(<SettingsPanel health={HEALTH} theme="auto" onTheme={() => {}} onClose={close} onChanged={() => {}} initialSection="providers" />);
+    const first = within(await screen.findByTestId('provider-first'));
+    const second = within(screen.getByTestId('provider-second'));
+    const add = second.getByRole('button', { name: 'Add key' });
+    fireEvent.click(add);
+    const input = second.getByLabelText('Second API key') as HTMLInputElement;
+    expect(document.activeElement).toBe(input);
+    expect(input.type).toBe('password');
+    fireEvent.change(input, { target: { value: 'test-draft' } });
+    fireEvent.click(first.getByRole('button', { name: 'Update key' }));
+    expect(second.queryByLabelText('Second API key')).toBeNull();
+    expect((first.getByLabelText('First API key') as HTMLInputElement).value).toBe('');
+    const endpoint = first.getByRole('button', { name: 'Base URL' });
+    fireEvent.click(endpoint);
+    const url = first.getByLabelText('First Base URL') as HTMLInputElement;
+    expect(url.value).toBe('https://first.invalid/v1');
+    fireEvent.keyDown(url, { key: 'Escape' });
+    expect(document.activeElement).toBe(endpoint);
+    expect(close).not.toHaveBeenCalled();
+    const remove = first.getByRole('button', { name: 'Remove' });
+    fireEvent.click(remove);
+    const cancel = within(first.getByRole('alertdialog', { name: 'Remove First' })).getByText('Cancel');
+    expect(document.activeElement).toBe(cancel);
+    fireEvent.click(cancel);
+    expect(document.activeElement).toBe(remove);
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it('retains a rejected key for retry, then reports the saved result on the same card', async () => {
+    installFetch();
+    const provider = { key: 'qianwen', label: 'Qianwen', endpoint: 'https://example.invalid/v1', current: false, configured: false };
+    const list = vi.spyOn(api, 'providers').mockResolvedValue({ items: [provider] });
+    const pending = deferred<ActionResponse>();
+    const write = vi.spyOn(api, 'providerAction').mockReturnValueOnce(pending.promise)
+      .mockResolvedValueOnce({ ok: true, message: 'Key saved.', refresh_health: false });
+    const changed = vi.fn();
+    render(<SettingsPanel health={HEALTH} theme="auto" onTheme={() => {}} onClose={() => {}} onChanged={changed} initialSection="providers" />);
+    const row = within(await screen.findByTestId('provider-qianwen'));
+    fireEvent.click(row.getByRole('button', { name: 'Add key' }));
+    const input = row.getByLabelText('Qianwen API key') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: 'synthetic-value' } });
+    fireEvent.click(row.getByRole('button', { name: 'Save' }));
+    expect(row.getByRole('status').textContent).toMatch(/Saving/);
+    fireEvent.submit(row.getByRole('form'));
+    expect(write).toHaveBeenCalledTimes(1);
+    pending.resolve({ ok: false, message: 'Credential store is unavailable.', refresh_health: false });
+    expect((await row.findByRole('alert')).textContent).toBe('Credential store is unavailable.');
+    expect(input.value).toBe('synthetic-value');
+    expect(changed).not.toHaveBeenCalled();
+    list.mockResolvedValue({ items: [{ ...provider, configured: true }] });
+    fireEvent.click(row.getByRole('button', { name: 'Save' }));
+    expect(await row.findByText('Key saved.')).toBeTruthy();
+    expect(write).toHaveBeenLastCalledWith('qianwen', { action: 'set_key', api_key: 'synthetic-value' });
+    expect(row.queryByRole('form')).toBeNull();
+    expect(document.activeElement).toBe(row.getByRole('button', { name: 'Update key' }));
+    expect(screen.queryByText('synthetic-value')).toBeNull();
+    expect(changed).toHaveBeenCalledTimes(1);
+    fireEvent.click(row.getByRole('button', { name: 'Use model ID' }));
+    fireEvent.change(row.getByLabelText('Qianwen model ID'), { target: { value: 'qwen3.8-max' } });
+    fireEvent.click(row.getByRole('button', { name: 'Apply model' }));
+    expect(await row.findByText('applied /model qianwen/qwen3.8-max')).toBeTruthy();
+  });
+
+  it('sends removal only on confirmation and keeps a declined removal in its card', async () => {
+    installFetch();
+    const write = vi.spyOn(api, 'providerAction').mockResolvedValue({ ok: false, message: 'Switch models first.', refresh_health: false });
+    render(<SettingsPanel health={HEALTH} theme="auto" onTheme={() => {}} onClose={() => {}} onChanged={() => {}} initialSection="providers" />);
+    const row = within(await screen.findByTestId('provider-deepseek'));
+    fireEvent.click(row.getByRole('button', { name: 'Remove' }));
+    expect(write).not.toHaveBeenCalled();
+    fireEvent.click(row.getByRole('button', { name: 'Remove permanently' }));
+    expect((await row.findByRole('alert')).textContent).toBe('Switch models first.');
+    expect(write).toHaveBeenCalledWith('deepseek', { action: 'remove', confirmed: true });
+    expect(row.getByRole('alertdialog')).toBeTruthy();
+  });
+
+  it('shares refresh progress across tabs, prevents repeat requests and confirms unchanged results', async () => {
+    installFetch();
+    const pending = deferred<ModelSearchResponse>();
+    const read = vi.spyOn(api, 'searchModels').mockReturnValue(pending.promise);
+    render(<SettingsPanel health={HEALTH} theme="auto" onTheme={() => {}} onClose={() => {}} onChanged={() => {}} initialSection="providers" />);
+    const button = screen.getByRole('button', { name: 'Refresh model list' });
+    fireEvent.click(button);
+    const providers = within(screen.getByTestId('providers-section'));
+    expect(providers.getByText('Refreshing model list…')).toBeTruthy();
+    fireEvent.click(button);
+    fireEvent.click(screen.getByTestId('settings-tab-model'));
+    expect(screen.getByRole('button', { name: 'Refresh model list' }).getAttribute('aria-busy')).toBe('true');
+    pending.resolve({ items: [], unavailable_providers: [] });
+    expect(await screen.findByText('Model list refreshed.')).toBeTruthy();
+    expect(screen.getByText('No models available.')).toBeTruthy();
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(read).toHaveBeenCalledWith('', true, expect.any(AbortSignal));
+  });
+
+  it('keeps existing options after an error and names unavailable providers on retry', async () => {
+    installFetch();
+    render(<SettingsPanel health={HEALTH} theme="auto" onTheme={() => {}} onClose={() => {}} onChanged={() => {}} />);
+    await screen.findByTestId('model-deepseek-deepseek-pro');
+    const read = vi.spyOn(api, 'searchModels').mockRejectedValueOnce(new Error('Offline'))
+      .mockResolvedValueOnce({ items: [], unavailable_providers: ['qianwen'] });
+    const button = screen.getByRole('button', { name: 'Refresh model list' });
+    fireEvent.click(button);
+    expect((await screen.findByRole('alert')).textContent).toContain('Offline');
+    expect(screen.getByTestId('model-deepseek-deepseek-pro')).toBeTruthy();
+    fireEvent.click(button);
+    expect(await screen.findByText(/Catalog unavailable for qianwen/)).toBeTruthy();
+    expect(screen.queryByText('Model list refreshed.')).toBeNull();
+    expect(read).toHaveBeenCalledTimes(2);
+  });
+
+  it('uses the latest filter if it changes while a refresh is in flight', async () => {
+    const lines = installFetch();
+    render(<SettingsPanel health={HEALTH} theme="auto" onTheme={() => {}} onClose={() => {}} onChanged={() => {}} />);
+    await screen.findByTestId('model-deepseek-deepseek-pro');
+    const pending = deferred<ModelSearchResponse>();
+    vi.spyOn(api, 'searchModels').mockReturnValueOnce(pending.promise);
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh model list' }));
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'distant' } });
+    pending.resolve({ items: [], unavailable_providers: [] });
+    expect(await screen.findByTestId('model-other-distant')).toBeTruthy();
+    expect(lines).toContain('search:distant');
   });
 
   it('offers automatic, light and dark appearance choices', async () => {

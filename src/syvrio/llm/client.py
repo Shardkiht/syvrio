@@ -88,6 +88,15 @@ def _reasoning_route(config: LLMConfig) -> tuple[str, str]:
         not endpoint or (url.scheme == "https" and url.hostname == "api.deepseek.com")
     ):
         policy = "history"
+    elif config.uses_qianwen_api:
+        model = config.model.removeprefix("openai/")
+        if model in {"qwen4-max", "qwen3.8-max", "qwen3.8-max-0902"}:
+            policy = "history"
+        elif model == "glm-5.3":
+            # GLM clears prior turns by default but retains the current tool chain.
+            policy = "turn"
+        else:
+            return "", ""
     elif (
         provider == "dashscope"
         and url.scheme == "https"
@@ -300,7 +309,14 @@ def fetch_provider_models(
 
 def provider_reasoning_levels(config: LLMConfig) -> tuple[str, ...] | None:
     """Return the active model's advertised choices, or None for an unspecified list."""
-    return _provider_catalog(config, timeout=3.0).get(config.model)
+    levels = _provider_catalog(config, timeout=3.0).get(config.model)
+    if (
+        levels is None
+        and config.uses_qianwen_api
+        and config.model.removeprefix("openai/") == "glm-5.3"
+    ):
+        return ("low", "high", "max")
+    return levels
 
 
 def _provider_catalog(
@@ -450,7 +466,9 @@ class LiteLLMChatModel:
                 raise ChatModelError(
                     "This model cannot read images. Select a vision-capable model."
                 )
-        source = source if tools else ""
+        # Qianwen Max also expects previous assistant reasoning in ordinary follow-ups.
+        if not tools and not self.config.uses_qianwen_api:
+            source = ""
         if on_delta is None and on_reasoning is None:
             response = complete(self.config, primary, tools=tools or None)
             choice = response.choices[0]

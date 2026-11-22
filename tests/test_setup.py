@@ -933,13 +933,21 @@ def test_run_setup_routes_to_search_wizard(tmp_path, monkeypatch):
     assert data["search"]["providers"] == ["open_websearch"]
 
 
-def test_llm_setup_discovers_models_using_the_entered_workspace_and_key(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("provider", "model", "env_name"),
+    [
+        ("dashscope", "deepseek-v4.1-flash-1017", "DASHSCOPE_API_KEY"),
+        ("qianwen", "qwen3.8-max", "QIANWEN_API_KEY"),
+    ],
+)
+def test_llm_setup_discovers_models_using_the_entered_workspace_and_key(
+    tmp_path, monkeypatch, provider, model, env_name
+):
     import syvrio.llm
     from syvrio.infra import providers
 
-    preset = next(item for item in PRESETS if item.key == "dashscope")
+    preset = next(item for item in PRESETS if item.key == provider)
     endpoint = "https://workspace.example.invalid/compatible-mode/v1"
-    model = "deepseek-v4.1-flash-1017"
     _script_answers(
         monkeypatch, ["llm", preset, endpoint, "synthetic-key", model, 32000, False, False]
     )
@@ -948,7 +956,7 @@ def test_llm_setup_discovers_models_using_the_entered_workspace_and_key(tmp_path
     monkeypatch.setattr(providers, "_capabilities", lambda *_: ({}, ()))
 
     def fetch(source, *, refresh, api_key):
-        assert source.provider == "dashscope" and source.base_url == endpoint
+        assert source.provider == provider and source.base_url == endpoint
         assert refresh and api_key == "synthetic-key" and not keys
         return [model]
 
@@ -956,8 +964,8 @@ def test_llm_setup_discovers_models_using_the_entered_workspace_and_key(tmp_path
     path = tmp_path / "config.toml"
     result = providers.run_setup(path, tmp_path / "vault")
     assert result["model"] == model
-    assert load_config(path).llm.provider_urls["dashscope"] == endpoint
-    assert keys == {"DASHSCOPE_API_KEY": "synthetic-key"}
+    assert load_config(path).llm.provider_urls[provider] == endpoint
+    assert keys == {env_name: "synthetic-key"}
     assert "synthetic-key" not in path.read_text(encoding="utf-8")
 
 

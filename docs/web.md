@@ -171,15 +171,15 @@ FastAPI 自动提供 `/openapi.json` 与 `/docs`。
 
 ### 设置面板
 
-顶栏 `Settings` 按钮、`Alt+S` 或 `/setup` 打开同一个设置面板（`web/src/components/SettingsPanel.tsx`）。模型相关读写仍走 `POST /api/commands`，供应商管理走 `GET/POST /api/settings/providers`，复用 TUI 相同的 Application 用例，React 端不保存设置副本：
+顶栏 `Settings` 按钮、`Alt+S` 或 `/setup` 打开同一个设置面板（`web/src/components/SettingsPanel.tsx`）。模型目录通过设置接口读取，模型切换通过 `/model` 执行。Web 与 TUI 复用同一套 Application 用例。
 
 | 分区 | 数据来源 | 说明 |
 | --- | --- | --- |
-| Model | `GET /api/settings/models?q=…`、`/model <provider>/<model>` | 可在模型列表上方按名称搜索所有已配置厂商的目录。首次自动获取，右侧的刷新按钮可重新拉取。点选结果才切换 |
+| Model | `GET /api/settings/models?q=…`、`/model <provider>/<model>` | 可按名称搜索所有已配置厂商的目录。Model 和 Providers 的刷新按钮共用目录请求，在按钮旁显示进度、完成或不可用的厂商。点选模型后切换 |
 | Appearance | 浏览器 `localStorage` | 默认跟随系统 / 浏览器明暗主题，也可固定亮色或暗色；只保存在当前浏览器 |
 | Thinking | `/think` | 优先读取模型目录为当前模型公布的档位，缺少有效档位或查询失败时采用预设。`auto` 置顶，`default` 表示使用供应商默认设置 |
 | Context | `/context` | 最小和默认值为 50,000 tokens。可选 50K、100K、200K、400K、600K 或输入自定义值。旧配置低于下限时按 50K 读取。更大的值按原值保存，实际请求受当前模型容量限制。 |
-| Providers | `GET/POST /api/settings/providers/{provider}` | 添加/更新 Key、修改 Base URL、删除供应商、自定义模型；**保存的 Key 永不回传浏览器** |
+| Providers | `GET /api/settings/providers`、`POST /api/settings/providers/{provider}`、`/model <provider>/<model>` | 在供应商卡片内编辑 Key 或 Base URL、确认移除、查看结果。配置凭据后可在同一卡片手动输入模型 ID。保存的 Key 由服务端保管 |
 | Shortcuts | `web/src/state/shortcuts.ts` | 网页快捷键、浏览器保留键及替代组合键 |
 | About | `/api/health` | 版本、当前 provider/model、是否生成中、单客户端锁与静态资源状态 |
 

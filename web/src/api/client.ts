@@ -150,7 +150,7 @@ export const api = {
       body: JSON.stringify({ turn_id: turnId }),
     }),
 
-  providers: () => jsonRequest<ProviderListResponse>('/api/settings/providers'),
+  providers: (signal?: AbortSignal) => jsonRequest<ProviderListResponse>('/api/settings/providers', { signal }),
 
   providerAction: (provider: string, body: ProviderActionRequest) =>
     jsonRequest<ActionResponse>(`/api/settings/providers/${encodeURIComponent(provider)}`, {

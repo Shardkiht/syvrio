@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { CommandDialog } from './CommandUI';
 import { api } from '../api/client';
 import { thinkingOptions } from '../state/commands';
 import { SHORTCUT_HELP } from '../state/shortcuts';
 import type { ThemeMode } from '../state/theme';
-import type { CommandResponse, HealthResponse, ModelSearchResponse } from '../types';
+import type { CommandResponse, HealthResponse } from '../types';
+import { useModelCatalog } from '../hooks/useModelCatalog';
+import { FeedbackMessage } from './ActionFeedback';
 import { ProvidersSection } from './ProvidersSection';
 import { SoftwareUpdate } from './SoftwareUpdate';
 import { CheckIcon, RefreshIcon, SearchIcon } from './Icons';
@@ -83,46 +85,17 @@ export function SettingsPanel({
 }) {
   const [selectedSection, setSection] = useState<SectionKey | null>(null);
   const section = selectedSection ?? initialSection;
-  const [catalog, setCatalog] = useState<(ModelSearchResponse & { query: string }) | null>(null);
   const [think, setThink] = useState<ThinkState | null>(null);
   const [context, setContext] = useState<ContextState | null>(null);
   const [customContext, setCustomContext] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
-  const [loadingModel, setLoadingModel] = useState(true);
   const [modelQuery, setModelQuery] = useState('');
-  const searchRequest = useRef<AbortController | null>(null);
   const query = modelQuery.trim();
-
-  const loadModel = useCallback(async (refresh = false) => {
-    searchRequest.current?.abort();
-    const request = new AbortController();
-    searchRequest.current = request;
-    setLoadingModel(true);
-    setError('');
-    try {
-      const result = await api.searchModels(query, refresh, request.signal);
-      if (!request.signal.aborted) setCatalog({ ...result, query });
-    } catch (failure) {
-      if (!request.signal.aborted) {
-        setError(failure instanceof Error ? failure.message : 'Could not load models');
-        setCatalog(null);
-      }
-    } finally {
-      if (!request.signal.aborted) setLoadingModel(false);
-    }
-  }, [query]);
-
-  useEffect(() => {
-    if (section !== 'model') return;
-    setLoadingModel(true);
-    const timer = window.setTimeout(() => void loadModel(), query ? 160 : 0);
-    return () => {
-      window.clearTimeout(timer);
-      searchRequest.current?.abort();
-    };
-  }, [section, query, loadModel, health?.provider, health?.model]);
+  const catalog = useModelCatalog(section === 'model', query, health);
+  const { results, loading: loadingModel } = catalog;
+  const refreshing = catalog.feedback?.kind === 'pending';
 
   const loadThinking = useCallback(async () => {
     try {
@@ -176,8 +149,15 @@ export function SettingsPanel({
   const validCustomContext = /^\d+$/.test(customContext.trim())
     && Number.isSafeInteger(customContextValue) && customContextValue >= minimumContext;
 
-  const results = catalog?.query === query ? catalog : null;
   const currentLabel = health ? `${health.provider}/${health.model}` : '(loading)';
+  const refreshButton = (
+    <button type="button" className={section === 'model' ? 'model-refresh icon-button' : 'model-refresh'}
+      aria-label="Refresh model list" title="Refresh model list" aria-busy={refreshing}
+      disabled={busy} aria-disabled={busy || refreshing} onClick={() => void catalog.refresh()}>
+      <RefreshIcon size={17} />
+      {section === 'providers' && 'Refresh model list'}
+    </button>
+  );
 
   return (
     <CommandDialog title="Settings" className="settings-dialog" overlayClass="settings-overlay"
@@ -198,7 +178,13 @@ export function SettingsPanel({
                 aria-current={section === item.key ? 'page' : undefined}
                 title={item.description}
                 data-testid={`settings-tab-${item.key}`}
-                onClick={() => { if (item.key !== section) setSection(item.key); }}
+                onClick={() => {
+                  if (item.key !== section) {
+                    setNotice('');
+                    setError('');
+                    setSection(item.key);
+                  }
+                }}
               >
                 {item.label}
               </button>
@@ -261,19 +247,12 @@ export function SettingsPanel({
                         onChange={event => setModelQuery(event.target.value)}
                       />
                     </label>
-                    <button
-                      type="button"
-                      className="icon-button"
-                      aria-label="Refresh model list"
-                      title="Refresh model list"
-                      disabled={busy || loadingModel}
-                      onClick={() => void loadModel(true)}
-                    >
-                      <RefreshIcon size={17} />
-                    </button>
+                    {refreshButton}
                   </div>
+                  <FeedbackMessage feedback={catalog.feedback} />
+                  {catalog.error && <p className="provider-error" role="alert">{catalog.error}</p>}
                   <div className="model-choices" id="settings-model-list" data-testid="settings-models">
-                    {loadingModel && !results && <div className="empty" role="status">Searching models…</div>}
+                    {loadingModel && !refreshing && !results && <div className="empty" role="status">Searching models…</div>}
                     {results?.items.map((item) => (
                       <button
                         key={`${item.provider}/${item.model}`}
@@ -293,7 +272,7 @@ export function SettingsPanel({
                         {query ? 'No matching models.' : 'No models available.'}
                       </div>
                     )}
-                    {results && results.unavailable_providers.length > 0 && (
+                    {results && results.unavailable_providers.length > 0 && catalog.feedback?.kind !== 'warning' && (
                       <p className="settings-hint">Model catalog unavailable for {results.unavailable_providers.join(', ')}.</p>
                     )}
                   </div>
@@ -375,7 +354,10 @@ export function SettingsPanel({
             {section === 'providers' && (
               <ProvidersSection
                 onChanged={onChanged}
-                onNotice={setNotice}
+                refreshControl={<div className="providers-actions">
+                  {refreshButton}
+                  <FeedbackMessage feedback={catalog.feedback} />
+                </div>}
               />
             )}
 

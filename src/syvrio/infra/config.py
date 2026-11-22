@@ -26,6 +26,8 @@ DEFAULTS = package_defaults()
 DEFAULT_BASE_URL = DEFAULTS["llm"]["base_url"]
 DEFAULT_MODEL = DEFAULTS["llm"]["model"]
 DEFAULT_API_KEY_ENV = DEFAULTS["llm"]["api_key_env"]
+QIANWEN_BASE_URL = "https://maas.qianwenaiapi.com/compatible-mode/v1"
+QIANWEN_API_KEY_ENV = "QIANWEN_API_KEY"
 MIN_CONTEXT_WINDOW = 50_000
 CONTEXT_WINDOW_PRESETS = (MIN_CONTEXT_WINDOW, 100_000, 200_000, 400_000, 600_000)
 DEFAULT_CONTEXT_WINDOW = DEFAULTS["chat"]["context_window"]
@@ -91,11 +93,18 @@ class LLMConfig:
     def is_spark(self) -> bool:
         return self.provider.strip().lower() == "spark"
 
+    @property
+    def uses_qianwen_api(self) -> bool:
+        return (
+            self.provider.strip().lower() == "qianwen"
+            and self.base_url.rstrip("/") == QIANWEN_BASE_URL
+        )
+
     def litellm_model(self) -> str:
         provider = (self.provider or "").strip().lower()
         model = (self.model or "").strip()
-        # 硅基流动与 Spark MaaS 使用 OpenAI 兼容协议，不走旧版 Spark 鉴权适配。
-        if provider in ("", "custom", "openai-compatible", "siliconflow", "spark"):
+        # These endpoints use OpenAI's wire protocol, including namespaced model IDs.
+        if provider in ("", "custom", "openai-compatible", "siliconflow", "spark", "qianwen"):
             return model if model.startswith("openai/") else f"openai/{model}"
         if model.startswith(f"{provider}/"):
             return model
@@ -288,6 +297,8 @@ def default_vault_path() -> Path:
 
 def infer_provider(base_url: str) -> str:
     lowered = (base_url or "").lower()
+    if lowered.rstrip("/") == QIANWEN_BASE_URL:
+        return "qianwen"
     hints = (
         ("api.deepseek.com", "deepseek"),
         ("siliconflow.cn", "siliconflow"),
@@ -445,6 +456,10 @@ def _build(overrides: dict, defaults: dict, paths: ConfigFiles) -> Config:
             raise ConfigError(f"{paths.paths[file_for(key)]} ({key}): {exc}") from exc
     data = merge(defaults, overrides)
     llm = _options(LLMConfig, data["llm"])
+    if llm["provider"] == "qianwen":
+        configured = overrides.get("llm", {})
+        llm["base_url"] = configured.get("base_url", QIANWEN_BASE_URL)
+        llm["api_key_env"] = configured.get("api_key_env", QIANWEN_API_KEY_ENV)
     llm["base_url"] = llm["provider_urls"].get(llm["provider"], llm["base_url"])
     llm["reasoning_effort"] = llm["reasoning_effort"].strip() or None
     llm["recent_models"] = [tuple(pair) for pair in llm["recent_models"]]
