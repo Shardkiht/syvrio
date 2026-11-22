@@ -1346,6 +1346,9 @@ button.fold-summary:hover {
 .software-update { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
 .software-update .setting-choice { font-size: 13px; }
 .settings-facts .update-result { margin-block-start: 5px; }
+.update-progress { display: grid; gap: 4px; max-width: 26rem; margin-top: 6px; }
+.update-progress progress { width: 100%; height: 6px; accent-color: var(--accent); }
+.update-progress small { color: var(--muted); font-variant-numeric: tabular-nums; }
 
 .settings-keys { margin: 0; font-size: 13px; }
 .settings-key-row {

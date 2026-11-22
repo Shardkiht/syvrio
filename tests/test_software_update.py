@@ -93,6 +93,25 @@ def test_update_api_requires_authenticated_confirmation(resident_backend, monkey
     assert len(started) == 2
 
 
+def test_gateway_exposes_progress_written_by_the_worker(resident_backend, tmp_path, monkeypatch):
+    _, resident = resident_backend
+    monkeypatch.setattr(jobs, "_root", lambda: tmp_path)
+    monkeypatch.setattr(update, "_service_state", lambda _: "active")
+    jobs._save(
+        tmp_path,
+        "running",
+        "Downloading wheel",
+        update.UpdateProgress("download", "Downloading wheel", 12, 30),
+    )
+    gateway = create_gateway(resident.base, "127.0.0.1", token=resident.token)
+    with TestClient(gateway, base_url="http://127.0.0.1") as browser:
+        payload = browser.get("/api/update/status").json()
+        assert payload["progress"]["downloaded"] == 12 and payload["progress"]["total"] == 30
+        jobs._save(tmp_path, "failed", "Update interrupted")
+        payload = browser.get("/api/update/status").json()
+        assert payload["state"] == "failed" and not payload.get("progress")
+
+
 def test_worker_survives_service_handover_and_uses_confirmed_version(tmp_path, monkeypatch):
     paths = SyvrioPaths(tmp_path / "vault", tmp_path / "runtime")
     calls = []
@@ -117,8 +136,18 @@ def test_worker_survives_service_handover_and_uses_confirmed_version(tmp_path, m
         update, "config_options", lambda root: ("stable", "demo.service", 8765, None, None)
     )
 
-    def execute(root, *options, expected_version, prepare_restart):
+    def execute(root, *options, expected_version, prepare_restart, on_progress):
         assert expected_version == "1.0.0" and root == tmp_path and callable(prepare_restart)
+        on_progress(update.UpdateProgress("download", "Downloading wheel", 12, 30))
+        assert jobs.status()["progress"] == {
+            "stage": "download",
+            "message": "Downloading wheel",
+            "downloaded": 12,
+            "total": 30,
+        }
+        on_progress(update.UpdateProgress("install", "Installing dependencies"))
+        assert jobs.status()["message"] == "Installing dependencies"
+        assert jobs.status()["progress"]["total"] is None
         return "Verified version"
 
     monkeypatch.setattr(update, "update", execute)

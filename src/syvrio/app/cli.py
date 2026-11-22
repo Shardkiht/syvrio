@@ -96,6 +96,7 @@ def update() -> None:
     from ..infra.paths import syvrio_home
     from ..infra.update import config_options
     from ..infra.update import update as apply_update
+    from .ui import show_update_progress
 
     root = syvrio_home() / "update"
     config_path = root / "config.toml"
@@ -111,7 +112,10 @@ def update() -> None:
     # raised while updating means a missing executable (uv, previously the service binary), and
     # must not be reported as an unconfigured service.
     try:
-        result = apply_update(root, *options, prepare_restart=prepare_restart)
+        with show_update_progress() as display:
+            result = apply_update(
+                root, *options, prepare_restart=prepare_restart, on_progress=display
+            )
     except SyvrioError as exc:
         # Deliberate, staged failure (missing uv, broken venv, failed switch…):
         # the message already tells the user what to do.

@@ -8,9 +8,11 @@ import httpx
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Button, Static
+from textual.widgets import Button, ProgressBar, Static
 
+from ..infra.update import UpdateProgress
 from .chat_widgets import PickScreen
+from .ui import update_progress_text
 
 
 class UpdateScreen(ModalScreen):
@@ -24,6 +26,9 @@ class UpdateScreen(ModalScreen):
             yield Static("Software update", classes="pick-title")
             yield Static("Checking PyPI…", id="update-version", markup=False)
             yield Static("", id="update-status", markup=False)
+            meter = ProgressBar(id="update-progress", show_percentage=False, show_eta=False)
+            meter.display = False
+            yield meter
             with Horizontal(id="update-actions"):
                 yield Button("Close", id="update-close")
                 yield Button("Install", id="update-install", disabled=True)
@@ -51,6 +56,7 @@ class UpdateScreen(ModalScreen):
             details.append("Update this installation with its package manager.")
         self.query_one("#update-status", Static).update("\n".join(details))
         if result["state"] == "running":
+            self._show_job(result)
             await self._watch()
         else:
             self.query_one("#update-install", Button).disabled = not (
@@ -73,7 +79,7 @@ class UpdateScreen(ModalScreen):
     def _confirmed(self, install: bool | None) -> None:
         if install and self.is_mounted:
             self.query_one("#update-install", Button).disabled = True
-            self.query_one("#update-status", Static).update("Requesting installation…")
+            self._show_job({"state": "running", "message": "Requesting installation…"})
             # The confirmed submission belongs to the app even if this screen is dismissed.
             self.app._run_request(self._install())
 
@@ -90,27 +96,38 @@ class UpdateScreen(ModalScreen):
             return
         except Exception as exc:
             if self.is_mounted:
+                self.query_one("#update-progress", ProgressBar).display = False
                 self.query_one("#update-status", Static).update(
                     f"{exc}\nReopen /update to check the installation status."
                 )
                 return
             raise
         if self.is_mounted:
-            self.query_one("#update-status", Static).update(result["message"])
+            self._show_job(result)
             self.run_worker(self._watch())
+
+    def _show_job(self, result: dict) -> None:
+        meter = self.query_one("#update-progress", ProgressBar)
+        meter.display = result["state"] == "running"
+        message = result["message"] or "No active update. Reopen /update to check again."
+        progress = result.get("progress")
+        if meter.display:
+            event = UpdateProgress(**progress) if progress else UpdateProgress("waiting", message)
+            message = update_progress_text(event)
+            meter.update(total=event.total, progress=event.downloaded or 0)
+        self.query_one("#update-status", Static).update(message)
 
     async def _watch(self) -> None:
         while self.is_mounted:
             try:
                 result = await self.app._request("GET", "/api/update/status")
             except Exception:
+                self.query_one("#update-progress", ProgressBar).display = False
                 self.query_one("#update-status", Static).update(
                     "Connection interrupted. Reopen Syvrio and use /update to check the result."
                 )
                 return
-            self.query_one("#update-status", Static).update(
-                result["message"] or "No active update. Reopen /update to check again."
-            )
+            self._show_job(result)
             if result["state"] != "running":
                 return
             await asyncio.sleep(2)

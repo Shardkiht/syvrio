@@ -10,6 +10,26 @@ const release = {
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 
 describe('software update', () => {
+  it('restores measured download progress and clears it on install and failure', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(api, 'updateStatus')
+      .mockResolvedValueOnce({ state: 'running', message: 'Downloading wheel',
+        progress: { stage: 'download', message: 'Downloading wheel', downloaded: 256, total: 1024 } })
+      .mockResolvedValueOnce({ state: 'running', message: 'Installing dependencies',
+        progress: { stage: 'install', message: 'Installing dependencies' } })
+      .mockResolvedValue({ state: 'failed', message: 'The previous version is running again.' });
+    render(<SoftwareUpdate version={release.current} onChanged={vi.fn()} />);
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(screen.getByRole('progressbar', { name: 'Downloading wheel' }).getAttribute('value')).toBe('256');
+    expect(screen.getByText(/256 B.*25%/)).toBeTruthy();
+    await act(() => vi.advanceTimersByTimeAsync(2000));
+    expect(screen.getByRole('progressbar', { name: 'Installing dependencies' }).hasAttribute('value')).toBe(false);
+    expect(screen.queryByText(/25%/)).toBeNull();
+    await act(() => vi.advanceTimersByTimeAsync(2000));
+    expect(screen.queryByRole('progressbar')).toBeNull();
+    expect(screen.getByRole('status').textContent).toMatch(/previous version/);
+  });
+
   it('reports the latest version without offering installation when /update finds no upgrade', async () => {
     vi.spyOn(api, 'updateStatus').mockResolvedValue({ state: 'idle', message: '' });
     const check = vi.spyOn(api, 'checkUpdate').mockResolvedValue({

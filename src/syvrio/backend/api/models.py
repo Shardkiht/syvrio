@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field, StrictBool
 
 from ...application.contracts import ModelOption
 from ...application.turns import TurnEvent
+from ...infra.update import UpdateProgress
 
 
 class ErrorDetail(BaseModel):
@@ -34,6 +35,7 @@ class HealthResponse(BaseModel):
 class UpdateJobResponse(BaseModel):
     state: Literal["idle", "running", "failed", "completed"]
     message: str
+    progress: UpdateProgress | None = None
 
 
 class UpdateCheckResponse(UpdateJobResponse):

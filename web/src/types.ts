@@ -229,6 +229,7 @@ export interface CommandResponse {
 export interface UpdateStatus {
   state: 'idle' | 'running' | 'completed' | 'failed';
   message: string;
+  progress?: { stage: string; message: string; downloaded?: number | null; total?: number | null } | null;
 }
 
 export interface UpdateCheck extends UpdateStatus {

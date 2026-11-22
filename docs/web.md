@@ -373,6 +373,8 @@ uv run python scripts/build_web.py --check  # 校验已暂存静态资源
 
 `syvrio update` 切换由 Linux/WSL 用户级 systemd 管理的 Web 服务。需要本机已装有 Python ≥ 3.12（任意补丁版本即可，不要求 3.12）、`uv`、可访问的用户 systemd 实例以及带 Web 资源的 PyPI wheel。
 
+命令运行期间会显示当前步骤。下载 wheel 时按实际收到的字节更新，已知总大小时同时显示百分比。创建环境、安装依赖、等待新版通过 Web 健康检查和失败后的回滚都有独立提示。交互式终端显示动态指示和已用时间；重定向时进度逐行写入标准错误，最终版本结果写入标准输出。Web 或 TUI 发起安装后可在更新面板查看同一任务，重新打开面板可读取最近状态。
+
 新版环境基于「当前版本 venv 的基础解释器」创建：更新器先在本机验证解释器存在、可执行且满足目标 wheel 的 `requires-python`，再以显式路径调用 `uv venv --no-python-downloads`，uv 绝不联网下载解释器。找不到兼容解释器时立即报错（错误中会列出尝试过的候选），可通过更新配置指定其他本地 Python。
 
 首次接入时，在 `~/.syvrio/update/` 下创建 `current` 符号链接，指向已安装且包含 Web 前端的版本的 `bin/syvrio`。建立用户级服务（如 `syvrio-web.service`），让其 `ExecStart` 使用该链接，例如：

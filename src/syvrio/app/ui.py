@@ -1,17 +1,23 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+from time import monotonic
 from typing import NoReturn
 
 import click
 import typer
 from rich import box
 from rich.console import Console
+from rich.filesize import decimal
 from rich.padding import Padding
+from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 from rich.table import Table
 from rich.theme import Theme
 
 from ..infra.diagnostics import record_event
 from ..infra.layout import widths
+from ..infra.update import ProgressCallback, UpdateProgress
 
 # 主题色：石板蓝（与个人主页 slate-blue 同族）；警告用暖琥珀，区别于灰色与错误红。
 ACCENT = "#8FAECB"
@@ -41,6 +47,69 @@ def padded(renderable, cols: int | None = None):
     # 不向右铺满终端（expand=False 并少补 2 列），避免整行恰好占满带来的折行问题。
     left, _, right = layout_widths(cols)
     return Padding(renderable, (0, max(0, right - 2), 0, left), expand=False)
+
+
+def update_progress_text(event: UpdateProgress) -> str:
+    if event.downloaded is None:
+        return event.message
+    amount = decimal(event.downloaded)
+    if event.total:
+        amount += f" / {decimal(event.total)} ({event.downloaded * 100 // event.total}%)"
+    return f"{event.message} · {amount}"
+
+
+class _UpdateConsole(Console):
+    def on_broken_pipe(self) -> None:
+        # Rich normally exits the process. Losing a progress reader must not stop an upgrade.
+        self.quiet = True
+
+
+@contextmanager
+def show_update_progress() -> Iterator[ProgressCallback]:
+    output = _UpdateConsole(stderr=True, markup=False, highlight=False)
+    live = Progress(
+        SpinnerColumn(),
+        TextColumn("{task.description}", markup=False),
+        TimeElapsedColumn(),
+        console=output,
+        transient=True,
+        redirect_stdout=False,
+        redirect_stderr=False,
+        disable=not output.is_interactive,
+    )
+    last_stage = last_text = printed_text = ""
+    printed_at = 0.0
+    with live:
+        task = live.add_task("", total=None, visible=False)
+
+        def display(event: UpdateProgress) -> None:
+            nonlocal last_stage, last_text, printed_at, printed_text
+            text = update_progress_text(event)
+            if output.is_interactive:
+                if last_stage and event.stage != last_stage:
+                    output.print(last_text)
+                live.update(task, description=text, visible=True, refresh=True)
+            else:
+                if (
+                    last_stage == "download"
+                    and event.stage != last_stage
+                    and last_text != printed_text
+                ):
+                    output.print(last_text)
+                if (
+                    event.stage != last_stage
+                    or monotonic() - printed_at >= 5
+                    or (event.downloaded is not None and event.downloaded == event.total)
+                ):
+                    output.print(text)
+                    printed_at, printed_text = monotonic(), text
+            last_stage, last_text = event.stage, text
+
+        try:
+            yield display
+        finally:
+            if output.is_interactive and last_text:
+                output.print(last_text)
 
 
 def styled_table(title: str) -> Table:

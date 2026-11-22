@@ -7,6 +7,12 @@ import { ConfirmDialog } from './CommandUI';
 const POLL_INTERVAL = 2000;
 const RECONNECT_TIMEOUT = 120_000;
 
+function downloadSize(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+}
+
 export function SoftwareUpdate({ version, onChanged, checkOnOpen = false }: {
   version?: string; onChanged: () => void; checkOnOpen?: boolean;
 }) {
@@ -17,6 +23,7 @@ export function SoftwareUpdate({ version, onChanged, checkOnOpen = false }: {
   const [canReload, setCanReload] = useState(false);
   const [confirm, setConfirm] = useState(false);
   const [message, setMessage] = useState('');
+  const [progress, setProgress] = useState<UpdateStatus['progress']>(null);
   const trigger = useRef<HTMLButtonElement>(null);
   const changed = useRef(onChanged);
   useEffect(() => { changed.current = onChanged; }, [onChanged]);
@@ -31,12 +38,14 @@ export function SoftwareUpdate({ version, onChanged, checkOnOpen = false }: {
     setRelease(null);
     setCanReload(false);
     setMessage('');
+    setProgress(null);
     try {
       const result = await api.checkUpdate(signal);
       if (signal?.aborted) return;
       setRelease(result);
       if (result.state === 'running') {
         setMessage(result.message);
+        setProgress(result.progress);
         watchUpdate();
       }
       else if (!result.available) setMessage('You’re up to date.');
@@ -62,6 +71,7 @@ export function SoftwareUpdate({ version, onChanged, checkOnOpen = false }: {
       } catch (error) {
         if (controller.signal.aborted) return;
         setBusy(null);
+        setProgress(null);
         const code = error instanceof ApiError ? error.status : undefined;
         const retryable = !code || code === 404 || code >= 500;
         disconnectedAt ??= Date.now();
@@ -79,6 +89,7 @@ export function SoftwareUpdate({ version, onChanged, checkOnOpen = false }: {
       if (controller.signal.aborted) return;
       setBusy(null);
       disconnectedAt = undefined;
+      setProgress(status.state === 'running' ? status.progress : null);
       if (status.state === 'running') {
         tracking = true;
         setRunning(true);
@@ -102,10 +113,13 @@ export function SoftwareUpdate({ version, onChanged, checkOnOpen = false }: {
     if (!release || !confirm) return;
     setConfirm(false);
     setBusy('install');
+    setMessage('Requesting installation…');
+    setProgress(null);
     setRelease(null);
     try {
       const accepted = await api.installUpdate(release.latest);
       setMessage(accepted.message);
+      setProgress(accepted.progress);
       watchUpdate();
     } catch (error) {
       if (error instanceof ApiError && error.status && error.status < 500) {
@@ -120,6 +134,10 @@ export function SoftwareUpdate({ version, onChanged, checkOnOpen = false }: {
     }
   };
 
+  const active = running || busy === 'install';
+  const downloaded = progress?.downloaded;
+  const total = progress?.total;
+  const measured = downloaded != null && total != null && total > 0;
   return <>
     <div className="software-update">
       <span>{release?.current ?? version ?? 'unknown'}</span>
@@ -137,7 +155,15 @@ export function SoftwareUpdate({ version, onChanged, checkOnOpen = false }: {
         </button>
       )}
     </div>
-    {message && <p role="status" className="settings-hint update-result">{message}</p>}
+    {message && <p role="status" className="settings-hint update-result">
+      {active && progress ? progress.message : message}
+    </p>}
+    {active && <div className="update-progress">
+      <progress aria-label={progress?.message || message || 'Updating Syvrio'}
+        value={measured ? downloaded : undefined} max={measured ? total : undefined} />
+      {downloaded != null && <small>{downloadSize(downloaded)}
+        {measured && ` / ${downloadSize(total)} · ${Math.floor(downloaded * 100 / total)}%`}</small>}
+    </div>}
     {confirm && release && createPortal(
       <ConfirmDialog title="Install software update?" confirmLabel="Install and restart" focusCancel
         message={`Update Syvrio from ${release.current} to ${release.latest}? The service will restart and connected clients will briefly disconnect.`}

@@ -403,14 +403,21 @@ def test_update_forwards_python_and_uv_paths(tmp_path, monkeypatch):
     )
     seen: dict[str, object] = {}
 
-    def fake(root, channel, service, port, python=None, uv=None, *, prepare_restart):
+    def fake(root, channel, service, port, python=None, uv=None, *, prepare_restart, on_progress):
         seen.update(root=root, channel=channel, service=service, port=port, python=python, uv=uv)
+        on_progress(update_module.UpdateProgress("check", "Checking PyPI"))
+        on_progress(update_module.UpdateProgress("download", "Downloading wheel", 0, 10))
+        on_progress(update_module.UpdateProgress("download", "Downloading wheel", 10, 10))
+        on_progress(update_module.UpdateProgress("install", "Installing dependencies"))
         return "ok"
 
     monkeypatch.setattr(update_module, "update", fake)
     result = invoke(["update"])
 
     assert result.exit_code == 0
+    assert result.stdout.strip() == "ok"
+    assert "Checking PyPI" in result.stderr and "100%" in result.stderr
+    assert "Installing dependencies" in result.stderr and "\x1b[" not in result.stderr
     assert seen["uv"] == "/opt/uv/bin/uv"
     assert seen["python"] == "/usr/bin/python3.13"
     assert seen["port"] == 8765
@@ -439,3 +446,26 @@ def test_update_failure_reaches_diagnostics(tmp_path, monkeypatch):
     assert result.exit_code == 1
     assert [event for event, _ in recorded] == ["update.failed"]
     assert isinstance(recorded[0][1], update_module.UpdateError)
+
+
+def test_update_continues_when_progress_reader_closes(tmp_path, monkeypatch):
+    import io
+
+    from syvrio.app import ui
+    from syvrio.infra import update as update_module
+
+    class ClosedPipe(io.StringIO):
+        def write(self, text):
+            raise BrokenPipeError()
+
+    console = ui._UpdateConsole(file=ClosedPipe(), force_terminal=False)
+    monkeypatch.setattr(ui, "_UpdateConsole", lambda **kwargs: console)
+    _update_home(tmp_path, monkeypatch, service="syvrio-web.service")
+
+    def apply(*args, on_progress, **kwargs):
+        on_progress(update_module.UpdateProgress("install", "Installing"))
+        return "Verified update"
+
+    monkeypatch.setattr(update_module, "update", apply)
+    result = invoke(["update"])
+    assert result.exit_code == 0 and result.stdout.strip() == "Verified update"
