@@ -116,7 +116,6 @@ class LLMConfig:
 class ChatConfig:
     context_window: int = DEFAULTS["chat"]["context_window"]
     reserve_output_tokens: int = DEFAULTS["chat"]["reserve_output_tokens"]
-    keep_recent_tokens: int = DEFAULTS["chat"]["keep_recent_tokens"]
     compact_threshold: float = DEFAULTS["chat"]["compact_threshold"]
     max_tool_steps: int = DEFAULTS["chat"]["max_tool_steps"]
     tool_timeout: float = DEFAULTS["chat"]["tool_timeout"]
@@ -398,7 +397,6 @@ def _validate_config(data: dict) -> None:
         "llm.num_retries",
         "llm.temperature",
         "chat.reserve_output_tokens",
-        "chat.keep_recent_tokens",
         "recall.auto_recall",
         "recall.recall_context_turns",
         "search.cache_ttl",
@@ -509,7 +507,7 @@ def load_config(path: Path | str | None = None) -> Config:
     if required and not entry.exists() and not layout.journal.exists():
         raise ConfigError(f"指定的入口配置文件不存在：{entry}")
     with layout.lock:
-        overrides, legacy = layout.read()
+        overrides, legacy, removed_chat_fields = layout.read()
         if required and not entry.exists():
             raise ConfigError(f"指定的入口配置文件不存在：{entry}")
         if legacy:
@@ -529,6 +527,8 @@ def load_config(path: Path | str | None = None) -> Config:
             if "vault" in overrides:
                 migrated["vault"] = overrides["vault"]
             layout.write(migrated, initialize=True)
+        elif removed_chat_fields:
+            layout.write(overrides)
         return config
 
 
@@ -554,7 +554,7 @@ def write_config(path: Path, config: Config) -> None:
     defaults = package_defaults()
     current = _settings_data(config)
     with layout.lock:
-        local, legacy = layout.read()
+        local, legacy, _ = layout.read()
         if config._baseline is None:
             before = _settings_data(_build(local, defaults, layout))
             _apply_changes(local, before, current, defaults)

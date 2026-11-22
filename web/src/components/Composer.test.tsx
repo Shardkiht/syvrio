@@ -8,6 +8,31 @@ function renderComposer() {
   );
 }
 
+it('replays the context ball rebound on activation and respects reduced motion', () => {
+  renderComposer();
+  const dial = screen.getByRole('button', { name: /Context estimate/ });
+  const orb = dial.querySelector<HTMLElement>('.context-orb')!;
+  const cancel = vi.fn();
+  orb.animate = vi.fn().mockReturnValue({ cancel });
+  const media = window.matchMedia('(prefers-reduced-motion: no-preference)');
+  const preference = vi.spyOn(window, 'matchMedia').mockReturnValue({ ...media, matches: true });
+  try {
+    fireEvent.click(dial);
+    expect(orb.animate).toHaveBeenCalledTimes(1);
+    expect(dial.getAttribute('aria-expanded')).toBe('true');
+    fireEvent.pointerDown(dial);
+    expect(cancel).toHaveBeenCalled();
+    fireEvent.click(dial);
+    expect(orb.animate).toHaveBeenCalledTimes(2);
+    preference.mockReturnValue({ ...media, matches: false });
+    fireEvent.click(dial);
+    expect(orb.animate).toHaveBeenCalledTimes(2);
+    expect(dial.getAttribute('aria-expanded')).toBe('true');
+  } finally {
+    preference.mockRestore();
+  }
+});
+
 it('uses the same primary button to send, stop, and send again', () => {
   const props = { progress: '', onSend: vi.fn(), onStop: vi.fn(), onInsert: vi.fn() };
   const { rerender } = render(<Composer {...props} busy={false} />);
@@ -53,7 +78,12 @@ it('uses the plus button to pick and send multiple attachments', () => {
   expect(openPicker).toHaveBeenCalledOnce();
   expect(picker.multiple).toBe(true);
   const files = [new File(['a'], 'one.txt'), new File(['b'], 'two.md')];
-  fireEvent.change(picker, { target: { files } });
+  const extra = new File(['c'], 'meeting-notes-with-a-long-name.pdf');
+  fireEvent.change(picker, { target: { files: [...files, extra] } });
+  fireEvent.click(screen.getByTitle(extra.name));
+  expect(screen.getAllByRole('listitem')).toHaveLength(3);
+  fireEvent.click(screen.getByRole('button', { name: `Remove ${extra.name}` }));
+  expect(screen.getAllByRole('listitem')).toHaveLength(2);
   fireEvent.click(screen.getByRole('button', { name: 'Send' }));
   expect(onSend).toHaveBeenCalledWith('Analyze the attached files.', files);
 });

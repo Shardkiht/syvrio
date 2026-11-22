@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 224 66" role="img" aria-labelledby="title">
+  <title id="title">Syvrio</title>
+  <style>
+    svg { color: #343943; }
+    @media (prefers-color-scheme: dark) { svg { color: #dce0e7; } }
+    @keyframes drift {
+      to { transform: translateX(-32px); }
+    }
+    @media (prefers-reduced-motion: no-preference) {
+      .wave-front { animation: drift 3.6s linear infinite; }
+      .wave-back { animation: drift 5.4s linear infinite reverse; }
+    }
+    #still:target > g { animation: none; }
+  </style>
+  <defs>
+    <linearGradient id="water" x2="0" y2="100%">
+      <stop stop-color="#b5deff"/>
+      <stop offset="1" stop-color="#6cb6ff"/>
+    </linearGradient>
+    <clipPath id="orb">
+      <ellipse cx="163.5" cy="32.75" rx="14.3" ry="14.7"/>
+    </clipPath>
+    <path id="wave" d="M144 34q8-5 16 0t16 0t16 0t16 0t16 0v16h-80Z"/>
+  </defs>
+  <g transform="translate(13 -3.3) scale(1.1)" fill="currentColor">
+    <path d="M29.4 11.5l-2.6 3.1C23.3 11.6 19.4 9.8 14.7 9.8
+      8.5 9.8 4.6 12.9 4.6 17.4c0 4.3 3.1 6.4 11.5 8.4
+      9.2 2.2 14.1 5.3 14.1 12.1 0 7-5.9 11.7-15.1 11.7-6.5 0-12.3-2.4-16.9-6.7
+      l2.8-3.1c4 3.8 8.8 6 14.3 6 6.6 0 10.8-3.2 10.8-7.8
+      0-4.4-3-6.7-11.4-8.7C5.5 27 0.6 24.4 0.6 17.5
+      C0.6 10.8 6.4 6 14.8 6c5.7 0 10.5 2 14.6 5.5Z"/>
+    <path d="M33.6 17h4.2L50 43l12.2-26h4.2L46.2 60H42l6-12.8Z"/>
+    <path d="M71.6 17h4.2l11.7 27.4L99.2 17h4.2L89.6 49h-4.2Z"/>
+    <path d="M110.6 17h3.8v7.1c2.8-5.3 7.2-8 13.1-7.9v4.1h-1c-7.4 0-12.1 5.4-12.1 13.8V49h-3.8Z"/>
+    <path d="M134.6 17h3.8v32h-3.8z"/>
+    <g id="still" clip-path="url(#orb)">
+      <g class="wave-back"><use href="#wave" x="-8" y="-0.8" fill="#6cb6ff" opacity=".32"/></g>
+      <g class="wave-front"><use href="#wave" fill="url(#water)"/></g>
+    </g>
+    <path fill-rule="evenodd" d="M163.5 16c9.6 0 16.5 7.1 16.5 16.7s-6.9 16.8-16.5 16.8S147 42.3 147 32.7 153.9 16 163.5 16Zm0 3.7c-7.2 0-12.4 5.5-12.4 13s5.2 13.1 12.4 13.1 12.4-5.6 12.4-13.1-5.2-13-12.4-13Z"/>
+    <circle cx="136.5" cy="8.6" r="2.6" fill="#6cb6ff"/>
+  </g>
+</svg>

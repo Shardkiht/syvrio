@@ -20,6 +20,7 @@ from .command_catalog import SLASH_COMMANDS
 from .git_screen import GitScreen
 from .inference_screen import InferenceScreen
 from .pending_screen import PendingScreen
+from .update_screen import UpdateScreen
 
 
 class ResidentCommands:
@@ -101,6 +102,8 @@ class ResidentCommands:
                 )
             elif intent == "open_settings":
                 await self._providers()
+            elif intent == "open_update" and not isinstance(self.screen, UpdateScreen):
+                self.push_screen(UpdateScreen())
             return
         if status != "ok":
             if isinstance(self.screen, (PendingScreen, InferenceScreen)):

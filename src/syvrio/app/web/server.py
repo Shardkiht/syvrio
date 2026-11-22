@@ -75,8 +75,8 @@ def run_server(
     from .gateway import create_gateway
 
     _, paths = client_paths(config_path, vault_path)
-    base, _ = connect(paths)
-    gateway = create_gateway(base, host, domains, locate=lambda: discover(paths))
+    base, token = connect(paths)
+    gateway = create_gateway(base, host, domains, locate=lambda: discover(paths), token=token)
     if share is not None:
         from .share import run_shared_gateway
 

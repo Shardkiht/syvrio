@@ -139,7 +139,10 @@ APP_CSS = """
     .cmd-usage { color: $accent; }
     .cmd-desc { color: #a3a3a3; }
 
-    PickScreen, SessionPickerScreen, TextInputScreen, ProfileScreen { align: center middle; background: #0d0d0d 75%; }
+    PickScreen, SessionPickerScreen, TextInputScreen, ProfileScreen, UpdateScreen { align: center middle; background: #0d0d0d 75%; }
+    UpdateScreen #pick-card { max-width: 90%; }
+    #update-actions { height: auto; margin-top: 1; }
+    #update-actions Button { min-width: 0; margin-right: 1; }
     #profile-card { width: 78; max-width: 92%; height: auto; max-height: 85%; background: $panel; border: round #484848; padding: 1 2; }
     #profile-title { color: $accent; text-style: bold; }
     #profile-subtitle { color: $faint; margin-bottom: 1; }

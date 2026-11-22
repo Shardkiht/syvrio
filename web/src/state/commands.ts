@@ -87,6 +87,7 @@ export interface ReviewPanel {
   kind: 'pending' | 'inferences';
   title: string;
   rows: PendingCandidate[];
+  loading?: boolean;
   count: number;
   edit?: { id: string; text?: string };
 }

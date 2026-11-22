@@ -133,6 +133,7 @@ function renderSegments(segments: Segment[], onToggle: (id: string) => void): Re
 export function MessageList({
   messages,
   sessionId,
+  selectionVersion,
   onToggle,
   onMessageAction,
   onEdit,
@@ -142,6 +143,7 @@ export function MessageList({
 }: {
   messages: ChatMessage[];
   sessionId: string | null;
+  selectionVersion?: number;
   onToggle: (segmentId: string) => void;
   onMessageAction?: MessageActionHandler;
   onEdit?: OpenEditor;
@@ -155,6 +157,27 @@ export function MessageList({
   const following = useRef(true);
   const lastTop = useRef(0);
   const previousSession = useRef<string | null | undefined>(undefined);
+  // A first receipt assigns a session ID without a navigation. Only a new selection enters.
+  const lastShownSelection = useRef(selectionVersion ?? 0);
+  const contentReady = !loading || messages.length > 0;
+
+  useLayoutEffect(() => {
+    if (!contentReady || selectionVersion === undefined || selectionVersion <= lastShownSelection.current) return;
+    lastShownSelection.current = selectionVersion;
+    const content = contentRef.current;
+    const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)');
+    if (!content?.animate || !reducedMotion || reducedMotion.matches) return;
+    const entrance = content.animate([
+      { opacity: 0.8, transform: 'translateY(-3px)' },
+      { opacity: 1, transform: 'none' },
+    ], { duration: 150, easing: 'ease-out' });
+    const stop = () => entrance.cancel();
+    reducedMotion.addEventListener?.('change', stop);
+    return () => {
+      reducedMotion.removeEventListener?.('change', stop);
+      stop();
+    };
+  }, [contentReady, selectionVersion]);
 
   const updateFollow = useCallback((element: HTMLDivElement) => {
     const top = element.scrollTop;
@@ -208,11 +231,12 @@ export function MessageList({
       <div className="messages-content" ref={contentRef}>
         {messages.length === 0 && loading && <p className="history-loading" role="status">Loading conversation…</p>}
         {messages.length === 0 && !loading && (
-          <div className="welcome">
-            <img className="welcome-mark" src="/syvrio.svg" alt="" width={54} height={54} />
-            <h1>Syvrio</h1>
-            <p>Private conversations with persistent local memory.</p>
-          </div>
+          <h1 className="welcome">
+            <picture>
+              <source media="(prefers-reduced-motion: reduce)" srcSet="/syvrio-wordmark.svg#still" />
+              <img src="/syvrio-wordmark.svg" alt="Syvrio" width="224" height="66" />
+            </picture>
+          </h1>
         )}
         {messages.map((message) => {
           if (message.role === 'user') {

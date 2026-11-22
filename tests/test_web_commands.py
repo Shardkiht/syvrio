@@ -336,6 +336,8 @@ def test_running_tool_turn_keeps_settings_and_queued_and_new_sessions_pick_up_ch
         provider="spark", model="first-model", spark_thinking="enabled", base_url=old_endpoint
     )
     config.chat.context_window = 96000
+    config.chat.reserve_output_tokens = 6000
+    config.chat.compact_threshold = 0.8
     backend._runtime.reload_llm(config)
     monkeypatch.setattr("syvrio.application.settings.model_metadata", lambda _: {})
     monkeypatch.setattr(
@@ -390,6 +392,7 @@ def test_running_tool_turn_keeps_settings_and_queued_and_new_sessions_pick_up_ch
         assert changed.json()["ok"]
         meter = client.get("/api/context-usage", headers=view, params={"session_id": sid})
         assert meter.json()["limit"] == 96000
+        assert meter.json()["compaction_trigger_tokens"] == 72000
         other = client.post(
             "/api/chat", headers={"X-Syvrio-View": str(uuid4())}, json={"message": "fresh"}
         )
@@ -405,10 +408,9 @@ def test_running_tool_turn_keeps_settings_and_queued_and_new_sessions_pick_up_ch
         ("queued", "second-model", "disabled", new_endpoint),
     ]
     assert budgets == {"running": 96000, "queued": 64000, "fresh": 64000}
-    assert (
-        client.get("/api/context-usage", headers=view, params={"session_id": sid}).json()["limit"]
-        == 64000
-    )
+    meter = client.get("/api/context-usage", headers=view, params={"session_id": sid}).json()
+    assert meter["limit"] == 64000
+    assert meter["compaction_trigger_tokens"] == 46400
 
 
 def test_busy_allows_read_only_commands_and_blocks_mutating_ones(backend):

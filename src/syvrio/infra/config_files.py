@@ -15,6 +15,7 @@ from .locking import VaultLock
 
 NAMES = ("models.toml", "chat.toml", "memory.toml", "config.toml")
 REMOVED_CHAT = {
+    "keep_recent_tokens",
     "reflect_idle_seconds",
     "reflect_interval_seconds",
     "profile_auto_interval_hours",
@@ -95,8 +96,6 @@ def normalize_legacy(root: dict) -> dict:
     data.pop("confidence_threshold", None)
     chat = data.get("chat", {})
     if isinstance(chat, dict):
-        for key in REMOVED_CHAT:
-            chat.pop(key, None)
         for section, names in MEMORY_SECTIONS.items():
             for key in names:
                 if key in chat:
@@ -139,7 +138,7 @@ class ConfigFiles:
         self.lock = VaultLock(entry.with_name(".syvrio-config.lock"))
         self.journal = entry.with_name(".syvrio-config-transaction.json")
 
-    def read(self) -> tuple[dict, bool]:
+    def read(self) -> tuple[dict, bool, bool]:
         self.recover()
         data = {}
         root = self.paths["config.toml"]
@@ -154,7 +153,11 @@ class ConfigFiles:
                     if file_for(k) != name:
                         raise ConfigError(f"{path}: {k} 应位于 {file_for(k)}")
                 data = merge(data, overrides)
-        return data, legacy
+        chat = data.get("chat")
+        removed = REMOVED_CHAT.intersection(chat) if isinstance(chat, dict) else set()
+        for key in removed:
+            del chat[key]
+        return data, legacy, bool(removed)
 
     def recover(self) -> None:
         if not self.journal.exists():

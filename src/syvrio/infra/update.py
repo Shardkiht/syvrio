@@ -8,10 +8,14 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
+from collections.abc import Callable
+from contextlib import ExitStack
 from pathlib import Path
 from urllib.parse import urlsplit
 
 import httpx
+from packaging.specifiers import InvalidSpecifier, SpecifierSet
 
 from ..errors import SyvrioError
 from .locking import VaultLock
@@ -31,6 +35,26 @@ class UpdateError(SyvrioError, ValueError):
     def __init__(self, stage: str, detail: str):
         super().__init__(f"{stage} failed: {detail}")
         self.stage = stage
+
+
+def config_options(root: Path) -> tuple:
+    with (root / "config.toml").open("rb") as file:
+        config = tomllib.load(file)
+    if not config.get("service"):
+        raise UpdateError("config", "更新配置缺少 service，请先配置受管理的服务。")
+    return (
+        config.get("channel", "stable"),
+        config["service"],
+        config.get("port", 8765),
+        config.get("python"),
+        config.get("uv"),
+    )
+
+
+def check_release(client: httpx.Client, installed: str, channel: str) -> tuple[str, dict] | None:
+    response = client.get(PYPI)
+    response.raise_for_status()
+    return select_release(response.json()["releases"], installed, channel)
 
 
 def select_release(releases: dict, current: str, channel: str) -> tuple[str, dict] | None:
@@ -64,32 +88,12 @@ def select_release(releases: dict, current: str, channel: str) -> tuple[str, dic
 
 
 def _satisfies(version: tuple[int, int, int], requires_python: str | None) -> bool:
-    """Evaluate the plain comparison clauses PyPI ships; exotic ones stay with uv."""
-    if not requires_python:
-        return True
-    for clause in requires_python.split(","):
-        match = re.fullmatch(
-            r"(>=|<=|==|!=|>|<)\s*(\d+)(?:\.(\d+))?(?:\.(\d+))?(\.\*)?", clause.strip()
-        )
-        if match is None:
-            continue
-        operator, major, minor, patch, wildcard = match.groups()
-        bound = (int(major), int(minor or 0), int(patch or 0))
-        if wildcard:
-            specified = 1 + (minor is not None) + (patch is not None)
-            equal = version[:specified] == bound[:specified]
-            if (operator == "==" and not equal) or (operator == "!=" and equal):
-                return False
-        elif not {
-            ">=": version >= bound,
-            ">": version > bound,
-            "<=": version <= bound,
-            "<": version < bound,
-            "==": version == bound,
-            "!=": version != bound,
-        }[operator]:
-            return False
-    return True
+    """Apply the distribution's Requires-Python before downloading its wheel."""
+    try:
+        allowed = SpecifierSet(requires_python or "")
+    except InvalidSpecifier as exc:
+        raise UpdateError("interpreter", f"Invalid Requires-Python: {requires_python!r}") from exc
+    return allowed.contains(".".join(map(str, version)))
 
 
 def _probe(candidate: Path) -> tuple[int, int, int] | None:
@@ -270,13 +274,28 @@ def _install(
                 raise UpdateError("venv", f"uv venv failed: {_detail(error)}") from error
             venv_python = environment / "bin" / "python"
             try:
+                requirement = str(target)
+                previous_python = (root / "current").resolve().with_name("python")
+                if previous_python.is_file():
+                    # Restore installed extras from the managed installation even if
+                    # the CLI doing the upgrade is from a different environment.
+                    extras = _run(
+                        str(previous_python),
+                        "-I",
+                        "-c",
+                        "from importlib.util import find_spec; "
+                        "print(','.join(e for m,e in [('fastembed','local-embed'),"
+                        "('markitdown','documents')] if find_spec(m)))",
+                    )
+                    if extras:
+                        requirement = f"syvrio[{extras}] @ {target.as_uri()}"
                 _run(
                     command,
                     "pip",
                     "install",
                     "--python",
                     str(venv_python),
-                    str(target),
+                    requirement,
                     timeout=300,
                     env=no_downloads,
                 )
@@ -364,6 +383,10 @@ def update(
     port: int,
     python: str | None = None,
     uv: str | None = None,
+    *,
+    expected_version: str | None = None,
+    prepare_restart: Callable[[httpx.Client, int, ExitStack], Callable[[], None] | None]
+    | None = None,
 ) -> str:
     """Update the executable behind the configured user systemd service."""
     link = root / "current"
@@ -379,9 +402,11 @@ def update(
         if not output.startswith("Syvrio "):
             raise ValueError("The current executable is not a Syvrio installation.")
         installed = output.removeprefix("Syvrio ")
-        response = pypi.get(PYPI)
-        response.raise_for_status()
-        release = select_release(response.json()["releases"], installed, channel)
+        if expected_version == installed:
+            return f"Syvrio {installed} is already installed."
+        release = check_release(pypi, installed, channel)
+        if expected_version is not None and (not release or release[0] != expected_version):
+            raise UpdateError("version", "The available version changed; check for updates again.")
         if release is None:
             return f"Syvrio {installed} is up to date."
         version, wheel = release
@@ -400,16 +425,19 @@ def update(
 
         service = ("systemctl", "--user")
         url = f"http://127.0.0.1:{port}/api/health"
-        with httpx.Client(trust_env=False) as local:
+        with httpx.Client(trust_env=False) as local, ExitStack() as cleanup:
             if not _healthy(local, url, installed):
                 discard_install()
                 raise ValueError("The existing Web service is not healthy for this installation.")
             try:
+                finish_stop = prepare_restart(local, port, cleanup) if prepare_restart else None
                 _stop_service(unit)
             except BaseException:
                 discard_install()
                 raise
             try:
+                if finish_stop:
+                    finish_stop()
                 try:
                     _switch(link, new)
                 except OSError as error:
@@ -472,5 +500,7 @@ def update(
                 # Rollback succeeded: current is back on the old version, so the fresh
                 # environment is unreachable and safe to remove.
                 discard_install()
-                raise ValueError(f"Update failed; restored Syvrio {installed}.") from error
+                raise UpdateError(
+                    "restored", f"Update failed; restored Syvrio {installed}."
+                ) from error
     return f"Updated Syvrio {installed} → {version}."

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { searchCommands, type OptionPanel, type ResultPanel, type Suggestion } from '../state/commands';
-import { isComposing, SHORTCUT_HELP } from '../state/shortcuts';
+import { isComposing } from '../state/shortcuts';
 import type { CommandInfo, SessionInfo } from '../types';
 
 export function CommandDialog({
@@ -166,21 +166,12 @@ export function CommandPalette({
             >
               <span className="palette-usage">{command.usage}</span>
               <span className="palette-description">{command.description}</span>
-              {command.shortcut && <span className="palette-shortcut">{command.shortcut}</span>}
               {command.support === 'unsupported' && (
                 <span className="palette-note">unsupported</span>
               )}
             </button>
           ))}
           {!matches.length && <div className="palette-empty">No matching commands</div>}
-        </div>
-        <div className="palette-help">
-          {SHORTCUT_HELP.map((item) => (
-            <div key={item.keys} className="palette-help-row" title={item.note}>
-              <span>{item.keys}</span>
-              <span>{item.description}{item.note ? ` · ${item.note}` : ''}</span>
-            </div>
-          ))}
         </div>
     </CommandDialog>
   );

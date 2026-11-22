@@ -85,7 +85,8 @@ class ResidentChatApp(ResidentCommands, ChatViewMixin, App):
             self._stream.cancel()
         try:
             await self._request("POST", "/api/view/disconnect")
-        except (ValueError, OSError):
+        except (ValueError, OSError, httpx.TransportError):
+            # During a software update the old resident may already have stopped.
             pass
 
     async def _request(self, method, path, **values):

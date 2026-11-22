@@ -167,7 +167,7 @@ FastAPI 自动提供 `/openapi.json` 与 `/docs`。
 - `/model`、`/think`、`/context` 打开选项弹窗。选择后在弹窗显示设置结果，模型变更后刷新顶栏。
 - `/inferences` 在完整的可滚动列表上结合状态与关键词搜索。审核按钮与键盘操作触发相同的确认流程。`/git` 可通过弹窗请求同步。
 - 模型目录是**进程内缓存**（`llm/client.py` 的 `_MODEL_CACHE`），Web 进程刚启动、或供应商未暴露 `/models` 时可能为空。此时 `/model` 仍列出当前配置模型并明确提示，不会输出空白列表；`/model refresh` 会真正向已配置供应商发起一次有界拉取（单供应商 5 秒超时），拉不到时说明原因而不是谎称「需要本地终端」。缓存为空时仍可用 `/model <当前provider>/<模型ID>` 按 ID 切换，未知供应商仍拒绝。
-- 命令面板（`Ctrl+Shift+P` / `Alt+P`，或顶栏 `Commands` 按钮）复用同一目录与分发逻辑：搜索、方向键、Enter 执行、Escape 关闭并恢复输入框焦点，同时列出快捷键和浏览器保留键说明。
+- 用顶栏 `Commands`、`Ctrl+Shift+P` 或 `Alt+P` 打开命令面板。输入关键词搜索，用方向键选择，按 Enter 执行。Escape 关闭面板并恢复输入框焦点。快捷键列表位于右上角的 **Settings → Shortcuts**。
 
 ### 设置面板
 
@@ -180,7 +180,8 @@ FastAPI 自动提供 `/openapi.json` 与 `/docs`。
 | Thinking | `/think` | 优先读取模型目录为当前模型公布的档位，缺少有效档位或查询失败时采用预设。`auto` 置顶，`default` 表示使用供应商默认设置 |
 | Context | `/context` | 最小和默认值为 50,000 tokens。可选 50K、100K、200K、400K、600K 或输入自定义值。旧配置低于下限时按 50K 读取。更大的值按原值保存，实际请求受当前模型容量限制。 |
 | Providers | `GET/POST /api/settings/providers/{provider}` | 添加/更新 Key、修改 Base URL、删除供应商、自定义模型；**保存的 Key 永不回传浏览器** |
-| About | `/api/health` | 版本、当前 provider/model、是否生成中、单客户端锁、静态资源状态与快捷键 |
+| Shortcuts | `web/src/state/shortcuts.ts` | 网页快捷键、浏览器保留键及替代组合键 |
+| About | `/api/health` | 版本、当前 provider/model、是否生成中、单客户端锁与静态资源状态 |
 
 打开面板只读取当前设置；删除供应商仍需二次确认，服务端复用 `SettingsUseCases` 的「当前供应商不可删」等守卫，失败原因以 `provider-error` 原样展示。
 
@@ -216,7 +217,7 @@ FastAPI 自动提供 `/openapi.json` 与 `/docs`。
 | `← / →` | 相同 | 推断弹窗切换状态筛选 |
 | `Ctrl+S` | `Ctrl+S` / `⌘S` | 审核或重命名弹窗保存，Git 弹窗请求同步 |
 
-`KEY_BINDINGS` 是唯一映射表；`Ctrl+Q`、`Ctrl+P` 明确列在 `RESERVED_KEYS` 中不做拦截，避免破坏浏览器正常功能，并在命令面板里显示替代组合键。
+`KEY_BINDINGS` 定义全局快捷键。`RESERVED_KEYS` 记录交由浏览器处理的 `Ctrl+Q` 和 `Ctrl+P`。可在 **Settings → Shortcuts** 查看替代组合键。
 
 ## 跨客户端会话与并发
 
@@ -367,6 +368,8 @@ uv run python scripts/build_web.py --check  # 校验已暂存静态资源
 
 
 ## PyPI 自动更新
+
+在 **Settings → About → Check for updates** 检查 PyPI 上的正式版。TUI 提供 `/update`。界面显示当前版本和可用版本；受管理的安装可以确认目标版本，启动独立的 systemd 用户任务执行更新。升级会保留旧环境已安装的本地向量检索和文档解析组件。服务准备重启时会检查所有会话的活动请求，忙时可稍后重试。重启期间连接可能暂时中断，可在服务恢复后重新打开更新界面查看结果。直接监听局域网地址的 Web 网关只提供版本检查；确认安装可使用本机 TUI、本机环回网关或带 GitHub 登录的 ngrok 共享入口。
 
 `syvrio update` 切换由 Linux/WSL 用户级 systemd 管理的 Web 服务。需要本机已装有 Python ≥ 3.12（任意补丁版本即可，不要求 3.12）、`uv`、可访问的用户 systemd 实例以及带 Web 资源的 PyPI wheel。
 

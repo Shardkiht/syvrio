@@ -92,36 +92,26 @@ def verify_attachments(
 @app.command()
 def update() -> None:
     """从 PyPI 更新受管理的 Syvrio Web 服务。"""
-    import tomllib
-
+    from ..backend.update_worker import prepare_restart
     from ..infra.paths import syvrio_home
+    from ..infra.update import config_options
     from ..infra.update import update as apply_update
 
     root = syvrio_home() / "update"
     config_path = root / "config.toml"
     try:
-        with config_path.open("rb") as file:
-            config = tomllib.load(file)
+        options = config_options(root)
     except FileNotFoundError:
         fail(f"更新配置缺失（{config_path}），请先按 Web 文档配置受管理的服务。")
-    except (OSError, tomllib.TOMLDecodeError) as exc:
+    except (OSError, ValueError) as exc:
         record_event("update.failed", exc)
         typer.echo(f"更新失败：{exc}", err=True)
         raise typer.Exit(code=1) from exc
-    if not config.get("service"):
-        fail("更新配置缺少 service，请先按 Web 文档配置受管理的服务。")
     # Only the config lookup above owns the "missing configuration" wording: a FileNotFoundError
     # raised while updating means a missing executable (uv, previously the service binary), and
     # must not be reported as an unconfigured service.
     try:
-        result = apply_update(
-            root,
-            config.get("channel", "stable"),
-            config["service"],
-            config.get("port", 8765),
-            config.get("python"),
-            config.get("uv"),
-        )
+        result = apply_update(root, *options, prepare_restart=prepare_restart)
     except SyvrioError as exc:
         # Deliberate, staged failure (missing uv, broken venv, failed switch…):
         # the message already tells the user what to do.

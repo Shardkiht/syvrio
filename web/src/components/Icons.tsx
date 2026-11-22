@@ -51,6 +51,13 @@ export function SearchIcon(props: IconProps) {
   return <Svg {...props}><circle cx="10.5" cy="10.5" r="6.5" /><path d="m16 16 4.5 4.5" /></Svg>;
 }
 
+export function FileIcon(props: IconProps) {
+  return <Svg {...props}>
+    <path d="M13.5 3H6a1.5 1.5 0 0 0-1.5 1.5v15A1.5 1.5 0 0 0 6 21h12a1.5 1.5 0 0 0 1.5-1.5v-10Z" />
+    <path d="M13.5 3v6.5h6M8.5 14h7M8.5 17h4" />
+  </Svg>;
+}
+
 export function RefreshIcon(props: IconProps) {
   return <Svg {...props}><path d="M20 5v5h-5M19.5 9a8 8 0 1 0 .1 6" /></Svg>;
 }

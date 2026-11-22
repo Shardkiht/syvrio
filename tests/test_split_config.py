@@ -19,6 +19,7 @@ def test_migrate_then_remove_each_override(tmp_path):
         f'vault = "{vault.as_posix()}"\nconfidence_threshold = 0.7\n'
         '[llm]\nprovider = "spark"\nmodel = "custom-model"\n'
         "[chat]\ncontext_window = 80000\nauto_recall = 0\nauto_reflect = false\n"
+        "keep_recent_tokens = 3000\n"
         "reflect_idle_seconds = 13\nreflect_interval_seconds = 77\n"
         "profile_auto_interval_hours = 123\nprofile_min_cooldown_hours = 4\n"
         'profile_min_changes = 17\n[retrieval]\nmethod = "keyword"\n'
@@ -53,6 +54,23 @@ def test_migrate_then_remove_each_override(tmp_path):
         load_config(entry)
     with pytest.raises(ConfigError, match="config.toml"):
         load_config()
+
+
+def test_remove_retired_chat_override_without_resplitting_existing_files(tmp_path):
+    entry = tmp_path / "config.toml"
+    chat = tmp_path / "chat.toml"
+    model = tmp_path / "models.toml"
+    entry.write_text("# Existing split configuration\n")
+    model.write_text('# Keep this explicit override\n[llm]\nprovider = "deepseek"\n')
+    original_model = model.read_bytes()
+    chat.write_text("[chat]\nkeep_recent_tokens = 3000\ncontext_window = 87000\n")
+
+    config = load_config(entry)
+    assert config.chat.context_window == 87000
+    assert tomllib.loads(chat.read_text()) == {"chat": {"context_window": 87000}}
+    assert model.read_bytes() == original_model
+    assert not (tmp_path / "memory.toml").exists()
+    assert load_config(entry) == config
 
 
 def test_saving_one_setting_preserves_independent_edits_and_follows_deleted_group(tmp_path):

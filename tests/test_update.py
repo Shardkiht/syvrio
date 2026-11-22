@@ -172,7 +172,10 @@ def test_satisfies_handles_common_requires_python_ranges():
     assert not update._satisfies((3, 13, 0), "!=3.13")
     assert update._satisfies((3, 12, 1), ">=3.12,<3.13")
     assert not update._satisfies((3, 13, 0), ">=3.12,<3.13")
-    assert update._satisfies((3, 13, 5), "~=3.12")  # 异型子句交给 uv 安装期裁决
+    assert update._satisfies((3, 13, 5), "~=3.12")
+    assert not update._satisfies((3, 13, 5), "~=3.12.2")
+    with pytest.raises(update.UpdateError, match="Invalid Requires-Python"):
+        update._satisfies((3, 13, 5), ">=wrong")
     # 边界与空格：不得错误拒绝合法版本。
     assert update._satisfies((3, 12, 1), ">3.12")
     assert not update._satisfies((3, 12, 0), ">3.12")

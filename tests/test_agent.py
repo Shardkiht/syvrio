@@ -1464,6 +1464,59 @@ def test_usage_meter_reuses_tool_cost_until_settings_change(tmp_path, monkeypatc
     assert len(builds) == 2
 
 
+@pytest.mark.parametrize(
+    ("turns", "above_threshold"), [(1, 0), (1, 1), (2, 0)], ids=["at", "above", "all-turns"]
+)
+def test_manual_compaction_summarizes_all_history_at_the_context_threshold(
+    tmp_path, turns, above_threshold
+):
+    responses = [
+        AssistantTurn(
+            tool_calls=[ToolCall(id="topic", name="read_topic", arguments={"topic": "sample"})]
+        ),
+        AssistantTurn(content="已读完合成资料。"),
+    ]
+    if turns == 2:
+        responses.append(AssistantTurn(content="标记是蓝色。"))
+    model = FakeChatModel(responses)
+    runtime, service = build_runtime(tmp_path, model)
+    runtime.config.auto_recall = 0
+    service.note("蓝色样本标记", topic="sample")
+    runtime.ask("请阅读样本主题。")
+    if turns == 2:
+        runtime.ask("标记是什么颜色？")
+    session = runtime.current
+    original = runtime.sessions.load(session.id).active_records()
+    assert len(session.user_texts()) == turns
+    assert original[2]["ok"] and "蓝色样本标记" in original[2]["content"]
+
+    messages_only = runtime.context.estimate_usage(session, runtime._system_prompt())
+    full_input = messages_only + schema_cost(runtime)
+    assert full_input == runtime.context_usage()
+    runtime.config.compact_threshold = 0.5
+    runtime.config.context_window = runtime.config.reserve_output_tokens + 2 * (full_input + 1)
+    assert runtime.turn_settings().context.trigger_tokens == full_input + 1
+    phases = []
+    notice = " ".join(runtime.force_compact(on_compaction=phases.append)).replace(",", "")
+    assert str(full_input) in notice and str(full_input + 1) in notice
+    assert phases == [] and session.latest_summary() is None
+
+    runtime.config.context_window -= 2 * (1 + above_threshold)
+    threshold = runtime.turn_settings().context.trigger_tokens
+    assert messages_only < threshold == full_input - above_threshold
+    runtime.force_compact(on_compaction=phases.append)
+    assert phases == ["running", "done"]
+    saved = runtime.sessions.load(session.id)
+    assert saved.summary_text() == "会话摘要"
+    assert saved.active_records() == [*original, saved.latest_summary()]
+    assert saved.records_after_summary() == []
+
+    phases.clear()
+    runtime.force_compact(on_compaction=phases.append)
+    assert phases == []
+    assert runtime.sessions.load(session.id).records == saved.records
+
+
 def test_small_window_rechecks_tool_followup_before_contacting_model(tmp_path, monkeypatch):
     path = tmp_path / "sample.txt"
     path.write_text("合成参考材料" * 700, encoding="utf-8")
@@ -1583,14 +1636,15 @@ def test_failed_compaction_extraction_can_be_resumed_without_losing_progress(tmp
 
     runtime, service = build_runtime(tmp_path, FakeChatModel([]), extract_on_exit=True)
     owner = _resident_for_test(runtime, service, monkeypatch)
-    runtime.config.keep_recent_tokens = 100
     session = runtime.ensure_session()
     for n in range(8):
         _user(runtime.sessions, session, str(n), "一条很长的历史。" * 100)
         runtime.sessions.append(
             session, {"type": "assistant", "id": f"reply{n}", "content": "收到"}
         )
-    assert runtime.force_compact()
+    runtime.config.context_window = runtime.config.reserve_output_tokens + runtime.context_usage()
+    runtime.force_compact()
+    assert session.latest_summary()["records"] == 16
     path = job_path(service.paths, "distillation", session.id)
     assert path.exists()
     with monkeypatch.context() as patch:

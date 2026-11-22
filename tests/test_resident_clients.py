@@ -178,6 +178,137 @@ def test_terminal_reloads_saved_state_when_a_stream_is_no_longer_available(resid
     asyncio.run(revisit())
 
 
+@pytest.mark.parametrize("lose_receipt", [False, True])
+def test_terminal_update_requires_confirmation_for_the_checked_version(
+    resident_backend, monkeypatch, lose_receipt
+):
+    from textual.widgets import Button, ListView, Static
+
+    from syvrio.app.chat_widgets import PickScreen
+    from syvrio.app.update_screen import UpdateScreen
+
+    _, client = resident_backend
+    original = client.request
+    requests = []
+
+    def request(method, path, **values):
+        if path == "/api/update":
+            requests.append((method, values.get("json")))
+            if method == "GET":
+                return {
+                    "current": "1.0.0",
+                    "latest": "1.1.0",
+                    "managed": True,
+                    "available": True,
+                    "state": "idle",
+                    "message": "",
+                }
+            if lose_receipt:
+                raise httpx.ReadError("Disconnected after the update was accepted")
+            return {"state": "running", "message": "Installation started"}
+        if path == "/api/update/status":
+            assert method == "GET"
+            return {"state": "completed", "message": "Installation completed"}
+        return original(method, path, **values)
+
+    monkeypatch.setattr(client, "request", request)
+
+    async def install():
+        ui = ResidentChatApp(client)
+        async with ui.run_test() as pilot:
+            await ui._command("/update")
+            await pilot.pause()
+            screen = ui.screen
+            assert isinstance(screen, UpdateScreen)
+            assert not screen.query_one("#update-install", Button).disabled
+            await pilot.click("#update-install")
+            assert isinstance(ui.screen, PickScreen)
+            assert ui.screen.query_one("#pick-list", ListView).index == 0
+            await pilot.press("enter")
+            await pilot.pause()
+            assert ui.screen is screen and requests == [("GET", None)]
+            await pilot.click("#update-install")
+            await pilot.press("down", "enter")
+            await pilot.pause()
+            assert screen.query_one("#update-install", Button).disabled
+            async with asyncio.timeout(6):
+                status = screen.query_one("#update-status", Static)
+                while "Installation completed" not in str(status.render()):
+                    await asyncio.sleep(0.05)
+            assert requests == [("GET", None), ("POST", {"version": "1.1.0", "confirmed": True})]
+
+    asyncio.run(install())
+
+
+def test_terminal_update_shows_saved_result_when_pypi_is_unavailable(resident_backend, monkeypatch):
+    from textual.widgets import Button, Static
+
+    _, client = resident_backend
+    original = client.request
+
+    def request(method, path, **values):
+        if path == "/api/update":
+            assert method == "GET"
+            raise ValueError("PyPI unavailable")
+        if path == "/api/update/status":
+            assert method == "GET"
+            return {"state": "completed", "message": "Updated Syvrio 1.0.0 → 1.1.0."}
+        return original(method, path, **values)
+
+    monkeypatch.setattr(client, "request", request)
+
+    async def reopen():
+        ui = ResidentChatApp(client)
+        async with ui.run_test() as pilot:
+            await ui._command("/update")
+            await pilot.pause()
+            assert "PyPI unavailable" in str(
+                ui.screen.query_one("#update-version", Static).render()
+            )
+            assert "Updated Syvrio 1.0.0 → 1.1.0." in str(
+                ui.screen.query_one("#update-status", Static).render()
+            )
+            assert ui.screen.query_one("#update-install", Button).disabled
+
+    asyncio.run(reopen())
+
+
+@pytest.mark.parametrize("available,managed", [(True, False), (False, True)])
+def test_terminal_update_shows_read_only_status(resident_backend, monkeypatch, available, managed):
+    from textual.widgets import Button, Static
+
+    _, client = resident_backend
+    original = client.request
+
+    def request(method, path, **values):
+        if path == "/api/update":
+            assert method == "GET"
+            return {
+                "current": "1.0.0",
+                "latest": "1.1.0" if available else "1.0.0",
+                "managed": managed,
+                "available": available,
+                "state": "idle",
+                "message": "",
+            }
+        return original(method, path, **values)
+
+    monkeypatch.setattr(client, "request", request)
+
+    async def check():
+        ui = ResidentChatApp(client)
+        async with ui.run_test() as pilot:
+            await ui._command("/update")
+            await pilot.pause()
+            assert ui.screen.query_one("#update-install", Button).disabled
+            status = str(ui.screen.query_one("#update-status", Static).render())
+            assert ("package manager" if available else "No newer stable release") in status
+            await pilot.press("escape")
+            assert len(ui.screen_stack) == 1
+
+    asyncio.run(check())
+
+
 def test_terminal_reconciles_a_lost_switch_reply_without_touching_the_new_draft(
     resident_backend, monkeypatch
 ):

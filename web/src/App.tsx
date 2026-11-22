@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { CommandPalette, CommandPanelDialog, CommandResultDialog, ConfirmDialog, SessionCommandDialog } from './components/CommandUI';
 import { Composer, type ComposerDraft } from './components/Composer';
+import type { MeterReading } from './components/ContextMeter';
 import { CommandsIcon, InboxIcon, PanelIcon, SettingsIcon } from './components/Icons';
 import { RecoveredEdit } from './components/MessageActions';
 import { MessageList } from './components/MessageList';
@@ -16,6 +17,7 @@ import type { SessionInfo } from './types';
 export default function App() {
   const picker = useRef<HTMLInputElement>(null);
   const drafts = useRef(new Map<string | null, ComposerDraft>());
+  const meterReading = useRef<MeterReading | null>(null);
   const assignDraft = useCallback((blank: string, id: string) => {
     const draft = drafts.current.get(blank);
     if (draft) { drafts.current.set(id, draft); drafts.current.delete(blank); }
@@ -83,7 +85,6 @@ export default function App() {
   const empty = chat.messages.length === 0 && !loadingHistory;
   const title = sessions.find((session) => session.id === chat.sessionId)?.title || 'New chat';
 
-  const [settingsStart, setSettingsStart] = useState<'model' | 'providers'>('model');
   const [theme, setTheme] = useState<ThemeMode>(readTheme);
   const themeBooted = useRef(false);
   useEffect(() => {
@@ -145,7 +146,6 @@ export default function App() {
         if (handleEscape()) {
           event.preventDefault();
           if (modalOpen) focusComposer();
-          if (settingsOpen) setSettingsStart('model');
         }
         return;
       }
@@ -153,8 +153,7 @@ export default function App() {
         if (action === 'settings' && panel && 'prefix' in panel && panel.prefix === '/model') {
           event.preventDefault();
           setPanel(null);
-          setSettingsStart('providers');
-          setSettingsOpen(true);
+          setSettingsOpen('providers');
         }
         return;
       }
@@ -167,19 +166,19 @@ export default function App() {
       } else if (action === 'model') {
         void runCommand('/model');
       } else if (action === 'settings') {
-        setSettingsOpen(true);
+        setSettingsOpen('model');
       } else if (action === 'stop' && chat.busy) {
         void stop();
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [archivePrompt, cancelArchive, chat.busy, focusComposer, handleEscape, modalOpen, panel, runCommand, setPaletteOpen, setPanel, setSettingsOpen, settingsOpen, stop, toggleSidebar]);
+  }, [archivePrompt, cancelArchive, chat.busy, focusComposer, handleEscape, modalOpen, panel, runCommand, setPaletteOpen, setPanel, setSettingsOpen, stop, toggleSidebar]);
 
   const closePalette = () => { setPaletteOpen(false); focusComposer(); };
   const closeConfirm = () => { setConfirm(null); focusComposer(); };
   const closeDelete = () => setDeleteTarget(null);
-  const closeSettings = () => { setSettingsOpen(false); setSettingsStart('model'); focusComposer(); };
+  const closeSettings = () => { setSettingsOpen(false); focusComposer(); };
   const closePanel = () => { setPanel(null); focusComposer(); };
 
   return (
@@ -210,17 +209,35 @@ export default function App() {
             >
               <PanelIcon size={20} />
             </button>
-            <div className="topbar-title" title={title}>{title}</div>
+            <div className="topbar-identity">
+              <div className="topbar-title" title={title}>{title}</div>
+              <div className="topbar-model">
+                <div
+                  className={`connection ${online ? 'online' : 'offline'}`}
+                  data-testid="connection"
+                  title={online ? 'Connected' : 'Offline'}
+                >
+                  <span className="dot" />
+                  <span className="connection-label">{online ? 'Connected' : 'Offline'}</span>
+                </div>
+                <button
+                  type="button"
+                  className="model-info"
+                  data-testid="model-info"
+                  aria-label={`Open model choices: ${model}`}
+                  title={`${model} · Open model choices (Alt+M)`}
+                  onClick={() => void runCommand('/model')}
+                >
+                  <span>{health?.model || model}</span>
+                  <svg className="model-chevron" width="12" height="8" viewBox="0 0 12 8"
+                    fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"
+                    strokeLinejoin="round" aria-hidden="true" focusable="false">
+                    <path d="m2 2 4 4 4-4" />
+                  </svg>
+                </button>
+              </div>
+            </div>
             <div className="topbar-actions">
-              <button
-                type="button"
-                className="model-info"
-                data-testid="model-info"
-                title="Open model choices (/model, Alt+M)"
-                onClick={() => void runCommand('/model')}
-              >
-                {model}
-              </button>
               <button
                 type="button"
                 className="icon-button commands-toggle"
@@ -229,29 +246,21 @@ export default function App() {
                 title="Commands (Alt+P)"
                 data-testid="commands-toggle"
               >
-                <CommandsIcon size={20} />
+                <CommandsIcon size={24} />
               </button>
               <button
                 type="button"
                 className="icon-button commands-toggle"
-                onClick={() => setSettingsOpen(true)}
+                onClick={() => setSettingsOpen('model')}
                 aria-label="Open settings"
                 title="Settings (Alt+S)"
                 data-testid="settings-toggle"
               >
-                <SettingsIcon size={20} />
+                <SettingsIcon size={24} />
               </button>
-              <div
-                className={`connection ${online ? 'online' : 'offline'}`}
-                data-testid="connection"
-                title={online ? 'Connected' : 'Offline'}
-              >
-                <span className="dot" />
-                <span className="connection-label">{online ? 'Connected' : 'Offline'}</span>
-              </div>
-              <button type="button" className="pending-toggle" aria-haspopup="dialog"
+              <button type="button" className="icon-button pending-toggle" aria-haspopup="dialog"
                 aria-label="Open pending review" title="Pending review" onClick={() => void runCommand('/pending')}>
-                <InboxIcon size={18} /><span>Pending</span>
+                <InboxIcon size={22} /><span>Pending</span>
               </button>
             </div>
           </header>
@@ -262,7 +271,7 @@ export default function App() {
             </div>
           )}
           <div className="thread">
-            <MessageList messages={chat.messages} sessionId={chat.sessionId} onToggle={toggle} loading={loadingHistory}
+            <MessageList messages={chat.messages} sessionId={chat.sessionId} selectionVersion={selectionVersion} onToggle={toggle} loading={loadingHistory}
               undoing={checkingSelection || undoing || Boolean(failedEdit)} onMessageAction={checkingSelection ? undefined : actOnLastMessage} onEdit={openMessageEditor} />
             {!preview && deliveries.items.filter(item => item.error && item.sessionId === chat.sessionId).map(item => (
               <section key={item.id} className="delivery-notice" aria-label="Unconfirmed delivery">
@@ -290,7 +299,8 @@ export default function App() {
               openFiles={openFiles}
               busy={chat.busy}
               progress={chat.progress}
-              contextUsage={preview ? null : contextUsage}
+              contextUsage={preview ? undefined : contextUsage}
+              meterReading={meterReading}
               compaction={preview ? null : compaction}
               onSend={(text, files) => void send(text, files)}
               onInsert={insert}
@@ -366,7 +376,7 @@ export default function App() {
       {settingsOpen && !archivePrompt && (
         <SettingsPanel
           health={health}
-          initialSection={settingsStart}
+          initialSection={settingsOpen}
           theme={theme}
           onTheme={setTheme}
           onClose={closeSettings}

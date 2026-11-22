@@ -109,11 +109,13 @@ class APIChannel(ResidentChannel):
                 except KeyError as exc:
                     raise APIError("not_found", "Session not found.", 404) from exc
             used = self._conversation.estimate_usage(session)
+        limits = self._conversation.context_limits(session_id)
         return ContextUsageResponse(
             session_id=session_id,
             used=used,
-            limit=self._conversation.context_limit(session_id),
-            compact_threshold=self._conversation.compact_threshold(),
+            limit=limits.window,
+            compact_threshold=limits.compact_threshold,
+            compaction_trigger_tokens=limits.trigger_tokens,
         )
 
     # ---------- slash commands ----------

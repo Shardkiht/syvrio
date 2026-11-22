@@ -22,6 +22,13 @@ class SessionSnapshot:
 
 
 @dataclass(frozen=True)
+class ContextLimits:
+    window: int
+    compact_threshold: float
+    trigger_tokens: int
+
+
+@dataclass(frozen=True)
 class QueuedItem:
     session_id: str
     line: str

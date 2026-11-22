@@ -276,7 +276,6 @@ def test_write_config_roundtrip(tmp_path):
         ),
         chat=ChatConfig(
             context_window=65001,
-            keep_recent_tokens=3000,
             recall_rewrite=False,
             recall_context_turns=4,
         ),
