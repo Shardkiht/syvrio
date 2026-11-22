@@ -1,6 +1,6 @@
 [project]
 name = "syvrio"
-version = "0.6.1"
+dynamic = ["version"]
 description = "Local-first personal AI agent with persistent memory"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -67,6 +67,13 @@ Repository = "https://github.com/Shardkiht/syvrio"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "src/syvrio/__init__.py"
+
+[tool.uv]
+cache-dir = ".cache/uv"
+cache-keys = [{ file = "pyproject.toml" }, { file = "src/syvrio/__init__.py" }]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/syvrio"]
