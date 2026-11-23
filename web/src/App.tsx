@@ -37,7 +37,7 @@ export default function App() {
   const openFiles = useCallback(() => picker.current?.click(), []);
   const {
     chat: boundChat, preview, loadingHistory, sendAfterSelection, composerDraftId,
-    selectionVersion,
+    selectionVersion, sendRevision,
     checkingSelection,
     deliveries,
     contextUsage,
@@ -252,7 +252,7 @@ export default function App() {
             </div>
           )}
           <div className="thread">
-            <MessageList messages={chat.messages} sessionId={chat.sessionId} selectionVersion={selectionVersion} onToggle={toggle} loading={loadingHistory}
+            <MessageList sendRevision={sendRevision} messages={chat.messages} sessionId={chat.sessionId} selectionVersion={selectionVersion} onToggle={toggle} loading={loadingHistory}
               undoing={checkingSelection || undoing || Boolean(failedEdit)} onMessageAction={checkingSelection ? undefined : actOnLastMessage} onEdit={openMessageEditor} />
             {!preview && deliveries.items.filter(item => item.error && item.sessionId === chat.sessionId).map(item => (
               <section key={item.id} className="delivery-notice" aria-label="Unconfirmed delivery">

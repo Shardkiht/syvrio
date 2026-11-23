@@ -335,24 +335,21 @@ describe('Web client interactions', () => {
     });
     render(<App />);
     const empty = await screen.findByRole('button', { name: 'Context estimate: 0 / 4,000 tokens (0%)' });
-    expect(empty.textContent).toBe('0');
+    expect(empty.textContent).toBe('0%');
     expect(empty.getAttribute('data-wave')).toBe('still');
     expect(empty.parentElement?.nextElementSibling).toBe(screen.getByRole('button', { name: 'Send' }));
     fireEvent.click(screen.getByTestId('session-s-1'));
     const dial = await screen.findByRole('button', { name: 'Context estimate: 2,400 / 4,000 tokens (60%)' });
-    expect(dial.textContent).toBe('2.4k');
-    expect(dial.querySelector('small')?.textContent).toBe('k');
+    expect(dial.textContent).toBe('60%');
     expect(dial.querySelector('circle')?.getAttribute('stroke-width')).toBe('2');
     expect(dial.getAttribute('data-wave')).toBe('moving');
     fireEvent.click(dial);
-    expect(dial.getAttribute('aria-expanded')).toBe('true');
+    expect(dial.hasAttribute('aria-expanded')).toBe(false);
     expect(dial.parentElement?.querySelector('.context-detail')?.textContent).toContain('2,400 / 4,000 tokens (60%)');
-    fireEvent.blur(dial);
-    expect(dial.getAttribute('aria-expanded')).toBe('false');
     expect(seen).toEqual([null, current.id]);
   });
 
-  it('shows small token counts and starts the context wave at 10% used', async () => {
+  it('shows usage percentages and starts the context wave at 10% used', async () => {
     const sessions = [
       { ...SESSIONS[0], id: 's-10', title: 'Ten percent' },
       { ...SESSIONS[0], id: 's-9', title: 'Nine percent' },
@@ -385,16 +382,16 @@ describe('Web client interactions', () => {
 
     fireEvent.click(screen.getByTestId('session-s-10'));
     const ten = await screen.findByRole('button', { name: /Context estimate: 400 \/ 4,000 tokens/ });
-    expect(ten.textContent).toBe('400');
+    expect(ten.textContent).toBe('10%');
     expect(ten.getAttribute('data-wave')).toBe('moving');
 
     fireEvent.click(screen.getByTestId('session-s-9'));
     const loading = await screen.findByRole('button', { name: /Context estimate: Loading estimate/ });
-    expect(loading.textContent).toBe('400');
+    expect(loading.textContent).toBe('10%');
     expect(loading.style.getPropertyValue('--context-fill')).toBe('10%');
     await act(async () => releaseEstimate());
     const nine = await screen.findByRole('button', { name: /Context estimate: 360 \/ 4,000 tokens/ });
-    expect(nine.textContent).toBe('360');
+    expect(nine.textContent).toBe('9%');
     expect(nine.getAttribute('data-wave')).toBe('still');
   });
 

@@ -149,7 +149,7 @@ export function reduceChat(state: ChatState, event: StreamEvent): ChatState {
         ...base.messages.slice(0, saved), ...base.messages.slice(base.messages.indexOf(user)),
       ];
       return { ...base, messages: messages.map((message) =>
-        message === user ? { ...message, savedId: event.message_id } : message) };
+        message === user ? { ...user, savedId: event.message_id, attachments: event.attachments ?? user.attachments } : message) };
     }
 
     case 'message_inserted': {

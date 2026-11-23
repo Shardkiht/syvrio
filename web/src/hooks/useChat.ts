@@ -53,6 +53,7 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
   const { dialog, open, close, setPanel, setDialog } = useDialogNavigation();
   const confirm = dialog?.kind === 'confirm' ? dialog : null;
   const deleteTarget = dialog?.kind === 'delete' ? dialog.target : null;
+  const [sendRevision, setSendRevision] = useState(0);
   const [focusSignal, setFocusSignal] = useState(0);
   const [queued, setQueued] = useState<TurnReceipt[]>([]);
   const queueRef = useRef<TurnReceipt[]>([]);
@@ -555,6 +556,7 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
       warning = persistEdit({
         sessionId, messageId, draft: { ...draft, receiptUnknown: true }, mode: 'retry', error: pending, warning,
       }).warning;
+      if (!navigation.current && chatRef.current.sessionId === sessionId) setSendRevision(value => value + 1);
       await submitChat({ session_id: sessionId, message: draft.text }, files, messageId, editId);
       discardFailedEdit(sessionId, editId);
     } catch (error) {
@@ -602,7 +604,11 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
     });
   }, [assignDraft, blankDraftId, changeQueue, navigation, observe, readQueue, reloadHistory, stream, update]);
   const deliveries = useDeliveries(currentSession, showReceipt, deliveryFailed, queueSubmission);
-  const sendDelivery = deliveries.send;
+  const deliver = deliveries.send;
+  const sendDelivery = useCallback((...args: Parameters<typeof deliver>) => {
+    setSendRevision(value => value + 1);
+    return deliver(...args);
+  }, [deliver]);
   const sendAfterSelection = preview?.chat.sessionId ? (text: string, files: readonly File[], handedOff: () => void) => {
     const id = preview.chat.sessionId!;
     return submitWhenSelected(() => committedKey.current === preview.key && currentSession() === id, async () => {
@@ -640,6 +646,7 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
     }
     try {
       await api.insertMessage(turnId, chatRef.current.sessionId, text);
+      if (version === navigationVersion.current) setSendRevision(value => value + 1);
       return true;
     } catch (error) {
       if (version === navigationVersion.current) {
@@ -826,7 +833,7 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
 
   return {
     chat,
-    preview: preview?.chat, loadingHistory, selectionVersion: preview?.key ?? committedKey.current, sendAfterSelection,
+    sendRevision, preview: preview?.chat, loadingHistory, selectionVersion: preview?.key ?? committedKey.current, sendAfterSelection,
     composerDraftId: preview?.draftId ?? chat.sessionId ?? blankDraftId.current,
     checkingSelection,
     deliveries,

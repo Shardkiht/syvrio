@@ -20,7 +20,7 @@ from starlette.types import Lifespan
 from ...application import software_update
 from ...application.commands import parse_command
 from ...errors import ConversationError
-from ...infra.attachments import MAX_BATCH_BYTES, MAX_FILES, AttachmentBatch
+from ...infra.attachments import IMAGE_TYPES, MAX_BATCH_BYTES, MAX_FILES, AttachmentBatch
 from ...infra.diagnostics import record_event
 from ...infra.documents import DocumentError
 from ...infra.update import UpdateError
@@ -332,7 +332,11 @@ def create_api(
         "/api/sessions/{session_id}/messages/{message_id}/attachments/{attachment_id}", tags=["web"]
     )
     def download_attachment(
-        session_id: str, message_id: str, attachment_id: str, archived: bool = False
+        session_id: str,
+        message_id: str,
+        attachment_id: str,
+        archived: bool = False,
+        preview: bool = False,
     ):
         owner._validate_session_id(session_id)
         try:
@@ -358,9 +362,17 @@ def create_api(
                             404,
                         ) from exc
                     item = batch.files[0]
+                    path = batch.folder / item.filename
+                    image_format = IMAGE_TYPES.get(path.suffix)
+                    inline = (
+                        preview
+                        and image_format is not None
+                        and item.media_type == f"image/{image_format}"
+                    )
                     return FileResponse(
-                        batch.folder / item.filename,
-                        media_type="application/octet-stream",
+                        path,
+                        media_type=item.media_type if inline else "application/octet-stream",
+                        content_disposition_type="inline" if inline else "attachment",
                         filename=item.name,
                         headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
                     )

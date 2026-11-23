@@ -1,7 +1,22 @@
-import { useState } from 'react';
+import { createContext, useContext, useState } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeSanitize from 'rehype-sanitize';
+
+import { ImagePreview } from './AttachmentImage';
+
+const InsideLink = createContext(false);
+
+const chatReferences: Components = {
+  a({ href, title, children }) {
+    return <InsideLink.Provider value={true}><a href={href} title={title}>{children}</a></InsideLink.Provider>;
+  },
+  img: function MarkdownImage({ src, alt, title }) {
+    const linked = useContext(InsideLink);
+    return src ? <ImagePreview key={src} src={src} name={alt || 'Image'} title={title} linked={linked} />
+      : <span>{alt || 'Image unavailable'}</span>;
+  },
+};
 
 function CodeBlock({ language, content }: { language: string; content: string }) {
   const [copied, setCopied] = useState(false);
@@ -43,7 +58,7 @@ export function Markdown({ text, reading = false }: { text: string; reading?: bo
         remarkPlugins={[remarkGfm]}
         rehypePlugins={[rehypeSanitize]}
         components={{
-          ...(reading ? readingReferences : {}),
+          ...(reading ? readingReferences : chatReferences),
           code({ className, children }) {
             if (reading) return <code className={className}>{children}</code>;
             const language = /language-([\w+-]+)/.exec(className || '')?.[1] || '';

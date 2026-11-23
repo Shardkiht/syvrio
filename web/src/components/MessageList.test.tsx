@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { ChatMessage } from '../state/chat';
 import { MessageList } from './MessageList';
@@ -18,6 +18,28 @@ function measureList() {
   const scrollTo = vi.spyOn(list, 'scrollTo');
   return { list, scrollTo };
 }
+
+it.each([false, true])('previews stored images and keeps their download links (archived=%s)', archived => {
+  const attachments = [
+    { id: 'i', name: 'photo.jpg', size: 42, media_type: 'image/jpeg' },
+    { id: 'p', name: 'notes.pdf', size: 3, media_type: 'application/pdf' },
+  ];
+  render(<MessageList messages={[{ id: 'local', savedId: 'saved', role: 'user', content: 'Look', attachments }]}
+    sessionId="session" archived={archived} onToggle={() => {}} />);
+  const thumb = screen.getByRole('button', { name: 'Preview photo.jpg' });
+  const file = screen.getByRole('link', { name: 'photo.jpg' });
+  const url = '/api/sessions/session/messages/saved/attachments/i';
+  expect(file.getAttribute('href')).toBe(url + (archived ? '?archived=true' : ''));
+  const src = url + (archived ? '?archived=true&' : '?') + 'preview=true';
+  expect(thumb.querySelector('img')?.getAttribute('src')).toBe(src);
+  expect(screen.queryByRole('button', { name: 'Preview notes.pdf' })).toBeNull();
+  fireEvent.click(thumb);
+  expect(screen.getByRole('img', { name: 'photo.jpg' }).getAttribute('src')).toBe(src);
+  fireEvent.click(screen.getByRole('button', { name: 'Close image preview' }));
+  fireEvent.error(thumb.querySelector('img')!);
+  expect(screen.getByText('Preview unavailable')).toBeTruthy();
+  expect(screen.getByRole('link', { name: 'photo.jpg' })).toBe(file);
+});
 
 describe('conversation entry motion', () => {
   function select(version: number, session: string | null, entries: ChatMessage[], loading = false) {
@@ -84,6 +106,57 @@ describe('conversation entry motion', () => {
 });
 
 describe('message list scrolling', () => {
+  it('returns on send with smooth motion, preserves focus and follows the new bottom', () => {
+    const view = (revision: number) => <><textarea aria-label="Draft" /><MessageList messages={messages}
+      sessionId="s" sendRevision={revision} onToggle={() => {}} /></>;
+    const { rerender } = render(view(0));
+    const { list, scrollTo } = measureList();
+    list.scrollTop = 2000;
+    fireEvent.scroll(list);
+    list.scrollTop = 800;
+    fireEvent.scroll(list);
+    const input = screen.getByRole('textbox');
+    input.focus();
+    const media = window.matchMedia('(prefers-reduced-motion: no-preference)');
+    const motion = vi.spyOn(window, 'matchMedia').mockReturnValue({ ...media, matches: true });
+    let frame: FrameRequestCallback;
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(callback => { frame = callback; return 1; });
+    const clock = vi.spyOn(performance, 'now').mockReturnValue(0);
+    scrollTo.mockImplementation(options => { list.scrollTop = (options as ScrollToOptions).top!; });
+    try {
+      rerender(view(1));
+      act(() => frame(80));
+      expect(list.scrollTop).toBeGreaterThan(800);
+      expect(list.scrollTop).toBeLessThan(2000);
+      expect(document.activeElement).toBe(input);
+      Object.defineProperty(list, 'scrollHeight', { value: 3000 });
+      act(() => frame(180));
+      expect(list.scrollTop).toBeLessThan(2600);
+      act(() => frame(550));
+      expect(scrollTo).toHaveBeenLastCalledWith({ top: 3000, behavior: 'instant' });
+      expect(screen.getByText('At latest message')).toBeTruthy();
+    } finally { raf.mockRestore(); clock.mockRestore(); motion.mockRestore(); }
+  });
+
+  it('offers a jump only beyond half a viewport and resumes following on click', () => {
+    const { rerender } = render(<MessageList messages={messages} sessionId="s" onToggle={() => {}} />);
+    const { list, scrollTo } = measureList();
+    const button = () => screen.queryByRole('button', { name: 'Scroll to bottom' });
+    list.scrollTop = 2000;
+    fireEvent.scroll(list);
+    list.scrollTop = 1800;
+    fireEvent.scroll(list);
+    expect(button()).toBeNull();
+    list.scrollTop = 1799;
+    fireEvent.scroll(list);
+    fireEvent.click(button()!);
+    expect(scrollTo).toHaveBeenLastCalledWith({ top: 2400, behavior: 'instant' });
+    expect(button()).toBeNull();
+    Object.defineProperty(list, 'scrollHeight', { value: 3000 });
+    rerender(<MessageList messages={[...messages]} sessionId="s" onToggle={() => {}} />);
+    expect(scrollTo).toHaveBeenLastCalledWith({ top: 3000, behavior: 'instant' });
+  });
+
   it('jumps straight to the latest message when the session changes', () => {
     const { rerender } = render(
       <MessageList messages={[]} sessionId="s-old" onToggle={() => {}} />,

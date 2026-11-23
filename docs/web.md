@@ -98,7 +98,7 @@ uv run python scripts/build_web.py --wheel dist/*.whl  # 校验实际 wheel 内�
 | DELETE | `/api/chat/queue/{turn_id}` | 移除尚未开始的排队消息 |
 | GET | `/api/chat/turns/{turn_id}?after=<seq>` | 订阅回合更新，从指定序号后重放已发出的事件 |
 | POST | `/api/chat/attachments` | 发送带附件的消息；同样支持 `?receipt=1`。使用 multipart 表单，可重复提交 `files`，可选字段为 `message` 和 `session_id` |
-| GET | `/api/sessions/{id}/messages/{message_id}/attachments/{attachment_id}` | 下载该消息对应的本地原件；文件缺失或校验失败时返回 404 |
+| GET | `/api/sessions/{id}/messages/{message_id}/attachments/{attachment_id}` | 下载该消息对应的本地原件。`preview=true` 可内联显示 PNG、JPEG、WebP 和 GIF，可与 `archived=true` 同用。文件缺失或校验失败时返回 404 |
 | POST | `/api/chat/insert` | 提交 `turn_id`、`session_id` 和 `message`；回合加入补充消息后返回 204，时机不可用返回 409 |
 | POST | `/api/chat/cancel` | 按 `turn_id` 取消当前请求 |
 
@@ -147,7 +147,8 @@ FastAPI 自动提供 `/openapi.json` 与 `/docs`。
 | `server` | Web 后端通过 `CommandUseCases` 执行，复用 `ConversationUseCases` / `SettingsUseCases` / `MemoryUseCases` 等 | `/new`、`/model`、`/status`、`/undo` |
 | `client` | 纯浏览器交互 | `/sessions` 展开会话栏；`/setup` 打开设置面板；`/exit`、`/quit` 返回入口视图，**不会关闭后台 Web Server** |
 
-- `/import` 与输入框附件按钮打开同一个本地多文件选择器。可选择文档和图片，取消不会改变草稿。选好的附件在按发送后才交给当前会话。命令不接受服务器路径。
+- **会话图片布局**。Markdown 正文图片与已发送图片附件共用 4:3 缩略图框，桌面上限 192 × 144 CSS 像素，视口宽度不超过 767 像素时为 144 × 108。容器更窄时继续等比缩小。缩略图完整显示原图并保留长宽比，小图保持原始尺寸，多张附件自动换行。点图先按视口缩放，选择 **Actual size** 可按原始尺寸滚动查看细节，**Fit to screen** 恢复全图。Esc、关闭按钮或点背景均可退出。带跳转链接的 Markdown 图片保留原链接目标。草稿图片采用 44 × 44 的方形缩略图，便于同时核对多张附件。
+- `/import` 与输入框附件按钮打开同一个本地多文件选择器。可选择文档和图片，取消不会改变草稿。图片选中后在草稿中显示缩略图，按发送后才交给当前会话。消息保存后即可在对话中点图放大。归档也可预览，点文件名可下载原件。命令不接受服务器路径。
 - `/git` 显示同步状态，`/git sync` 二次确认后执行同步。`/pending approve|reject|edit <id>` 和 `/inferences confirm|reject|correct <id>` 可从 Web 审查记录。
 - 顶栏右侧的 Pending 与 `/pending` 打开同一待审侧栏，可滚动并按正文、主题或 ID 搜索。选中后可查看问题和关联记忆、编辑多行正文、批准或拒绝。`/pending edit <id>` 直接打开完整原文，保留原文时需单独确认。表单通过 `pending_text` 提交，写入失败保留编辑内容。
 - `/profile` 展示最近生成的画像。`/dream` 和 `/dream run` 确认后提交后台回顾，`/dream status` 查看进度。关闭客户端后，定时任务继续由常驻后端调度。
@@ -189,7 +190,7 @@ FastAPI 自动提供 `/openapi.json` 与 `/docs`。
 
 ### 上下文占用
 
-发送键左侧的水球用水位表示上下文占用比例，中央常显估算的已用 token 数，例如 `850` 或 `3.2k`。鼠标移入、键盘聚焦或触屏点按时，详情显示精确到整数的估算用量、上限与百分比。达到压缩阈值会出现提示。占用介于 10% 到 85% 时水波流动，系统开启减少动态效果时保持静止。自动压缩开始时显示压缩状态，摘要保存后按重新估算的用量降低水位。手动执行 `/compact` 也会显示状态。Web 与 TUI 共用历史上下文估算，计算时无需调用模型，统计范围为已保存的会话内容。
+发送键左侧的水球用水位和百分比表示上下文占用。鼠标悬停在水球上时显示估算用量、上限与百分比，移开后收起。点击水球会有轻微缩放反馈。达到压缩阈值时，详情中会显示提示。占用介于 10% 到 85% 时水波流动，系统开启减少动态效果时保持静止。自动压缩开始时显示压缩状态，摘要保存后按重新估算的用量降低水位。手动执行 `/compact` 也会显示状态。Web 与 TUI 共用历史上下文估算，计算时无需调用模型，统计范围为已保存的会话内容。
 
 ### 主题、侧栏与消息滚动
 

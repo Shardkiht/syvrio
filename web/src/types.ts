@@ -22,6 +22,7 @@ export interface StreamEvent {
   turn_id?: number | null;
   session_id?: string | null;
   message_id?: string;
+  attachments?: HistoryItem['attachments'] | null;
   text?: string;
   name?: string | null;
   seconds?: number | null;

@@ -79,6 +79,8 @@ The first load migrates a legacy single file in place and drops obsolete options
 
 Open **Commands** in the top-right corner to find and run a command. Open **Settings → Shortcuts** for key bindings and alternatives to browser-reserved keys.
 
+Select images with `+` or `/import` to preview them in the web composer. In chats and archived conversations, select a thumbnail to see the full image or its filename to download the original. Markdown images use the same thumbnail size. Choose **Actual size** to inspect details in a long diagram or screenshot.
+
 Each outgoing message keeps its delivery ID across retries. The web app retains the text and attachments when a connection drops and retries on reconnect. You can also choose Retry delivery. In the terminal, Ctrl+R retries a delivery while preserving the next draft. Replies already in progress resume from the same turn.
 
 - **Sending and undoing.** In the browser, Send becomes Stop in the same position while a reply is in progress. Press Enter during a reply to queue a message for the end of the turn. Ctrl+Enter requests insertion at a safe point in the current turn. Tool calls must finish before insertion. `/undo` interrupts the latest turn, restores eligible local file changes and puts the sent text back in the composer. In the browser, hover over the latest user message to undo or edit and resend it. The edit replaces the original turn when it is saved. If saving fails, the original messages, attachments and memory changes remain available. You can revise or retry the draft after refreshing. Later edits or references from another session can block the entire undo.

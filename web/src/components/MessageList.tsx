@@ -1,9 +1,12 @@
 import { useCallback, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { ImagePreview, isPreviewImage } from './AttachmentImage';
 import { attachmentUrl } from '../api/client';
 import type { ChatMessage, Segment } from '../state/chat';
 import { Collapsible } from './Collapsible';
 import { Markdown } from './Markdown';
 import { MessageActions, type MessageActionHandler, type OpenEditor } from './MessageActions';
+import { ArrowUpIcon } from './Icons';
+import { SurfacePresence } from './SurfacePresence';
 import { Thinking } from './Thinking';
 
 type ToolSegment = Extract<Segment, { kind: 'tool' }>;
@@ -134,6 +137,7 @@ export function MessageList({
   messages,
   sessionId,
   selectionVersion,
+  sendRevision = 0,
   onToggle,
   onMessageAction,
   onEdit,
@@ -144,6 +148,7 @@ export function MessageList({
   messages: ChatMessage[];
   sessionId: string | null;
   selectionVersion?: number;
+  sendRevision?: number;
   onToggle: (segmentId: string) => void;
   onMessageAction?: MessageActionHandler;
   onEdit?: OpenEditor;
@@ -155,6 +160,9 @@ export function MessageList({
   const ref = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const following = useRef(true);
+  const [showJump, setShowJump] = useState(false);
+  const returnFrame = useRef<number | null>(null);
+  const [announcement, setAnnouncement] = useState('');
   const lastTop = useRef(0);
   const previousSession = useRef<string | null | undefined>(undefined);
   // A first receipt assigns a session ID without a navigation. Only a new selection enters.
@@ -180,18 +188,25 @@ export function MessageList({
   }, [contentReady, selectionVersion]);
 
   const updateFollow = useCallback((element: HTMLDivElement) => {
+    if (returnFrame.current !== null) return;
     const top = element.scrollTop;
-    const nearBottom = element.scrollHeight - top - element.clientHeight < 48;
+    const distance = element.scrollHeight - top - element.clientHeight;
+    const nearBottom = distance < 48;
     // An event can arrive after content grows, while the scroll offset still
     // equals the previous bottom. Only upward movement pauses following.
     if (nearBottom || top < lastTop.current) following.current = nearBottom;
     lastTop.current = top;
+    setShowJump(!following.current && element.clientHeight > 0 && distance > element.clientHeight / 2);
   }, []);
 
   const followLatest = useCallback((element: HTMLDivElement, sessionChanged = false) => {
     if (sessionChanged) {
+      if (returnFrame.current !== null) cancelAnimationFrame(returnFrame.current);
+      returnFrame.current = null;
       following.current = true;
+      setShowJump(false);
     } else {
+      if (returnFrame.current !== null) return;
       updateFollow(element);
     }
     const bottom = element.scrollHeight - element.clientHeight;
@@ -210,6 +225,75 @@ export function MessageList({
     followLatest(element, sessionChanged);
   }, [followLatest, messages, sessionId]);
 
+  const jumpToBottom = useCallback((button?: HTMLButtonElement) => {
+    const list = ref.current;
+    if (!list) return;
+    if (button) {
+      button.dataset.activated = 'true';
+      list.focus({ preventScroll: true });
+    }
+    if (returnFrame.current !== null) cancelAnimationFrame(returnFrame.current);
+    const distance = list.scrollHeight - list.clientHeight - list.scrollTop;
+    const motion = window.matchMedia?.('(prefers-reduced-motion: no-preference)');
+    if (distance <= 1 || !motion?.matches) {
+      followLatest(list, true);
+      setAnnouncement('At latest message');
+      return;
+    }
+
+    following.current = false;
+    setShowJump(false);
+    setAnnouncement('Scrolling to latest message');
+    const start = performance.now();
+    const duration = Math.min(540, 260 + 70 * Math.log1p(distance / Math.max(1, list.clientHeight)));
+    let previous = 0;
+    const advance = (now: number) => {
+      const t = Math.min(1, Math.max(0, (now - start) / duration));
+      if (t >= 1 || !motion.matches) {
+        returnFrame.current = null;
+        followLatest(list, true);
+        setAnnouncement('At latest message');
+        return;
+      }
+      // Apply the eased fraction of the remaining distance to the live bottom.
+      const eased = t * t * (3 - 2 * t);
+      const remaining = list.scrollHeight - list.clientHeight - list.scrollTop;
+      list.scrollTo({ top: list.scrollTop + remaining * (eased - previous) / (1 - previous), behavior: 'instant' });
+      previous = eased;
+      returnFrame.current = requestAnimationFrame(advance);
+    };
+    returnFrame.current = requestAnimationFrame(advance);
+  }, [followLatest]);
+
+  const lastSend = useRef(sendRevision);
+  useLayoutEffect(() => {
+    if (lastSend.current === sendRevision) return;
+    lastSend.current = sendRevision;
+    jumpToBottom();
+  }, [sendRevision, jumpToBottom]);
+
+  useLayoutEffect(() => {
+    const list = ref.current;
+    if (!list) return;
+    const interrupt = () => {
+      if (returnFrame.current === null) return;
+      cancelAnimationFrame(returnFrame.current);
+      returnFrame.current = null;
+      updateFollow(list);
+      setAnnouncement('');
+    };
+    list.addEventListener('wheel', interrupt, { passive: true });
+    list.addEventListener('pointerdown', interrupt);
+    list.addEventListener('keydown', interrupt);
+    return () => {
+      if (returnFrame.current !== null) cancelAnimationFrame(returnFrame.current);
+      returnFrame.current = null;
+      list.removeEventListener('wheel', interrupt);
+      list.removeEventListener('pointerdown', interrupt);
+      list.removeEventListener('keydown', interrupt);
+    };
+  }, [followLatest, updateFollow]);
+
   useLayoutEffect(() => {
     const element = ref.current;
     const content = contentRef.current;
@@ -222,50 +306,73 @@ export function MessageList({
   }, [followLatest]);
 
   return (
-    <div
-      className="messages"
-      ref={ref}
-      onScroll={(event) => updateFollow(event.currentTarget)}
-      data-testid="message-list"
-    >
-      <div className="messages-content" ref={contentRef}>
-        {messages.length === 0 && loading && <p className="history-loading" role="status">Loading conversation…</p>}
-        {messages.length === 0 && !loading && (
-          <h1 className="welcome">
-            <picture>
-              <source media="(prefers-reduced-motion: reduce)" srcSet="/syvrio-wordmark.svg#still" />
-              <img src="/syvrio-wordmark.svg" alt="Syvrio" width="224" height="66" />
-            </picture>
-          </h1>
-        )}
-        {messages.map((message) => {
-          if (message.role === 'user') {
+    <>
+      <div
+        className="messages"
+        ref={ref}
+        tabIndex={-1}
+        onScroll={(event) => updateFollow(event.currentTarget)}
+        data-testid="message-list"
+      >
+        <div className="messages-content" ref={contentRef}>
+          {messages.length === 0 && loading && <p className="history-loading" role="status">Loading conversation…</p>}
+          {messages.length === 0 && !loading && (
+            <h1 className="welcome">
+              <picture>
+                <source media="(prefers-reduced-motion: reduce)" srcSet="/syvrio-wordmark.svg#still" />
+                <img src="/syvrio-wordmark.svg" alt="Syvrio" width="224" height="66" />
+              </picture>
+            </h1>
+          )}
+          {messages.map((message) => {
+            if (message.role === 'user') {
+              return (
+                <div className="turn user" key={message.id} data-testid="user-message">
+                  <div className="bubble">{message.content}</div>
+                  {sessionId && !!message.attachments?.length && (
+                    <ul className="message-attachments" aria-label="Message attachments">
+                      {message.attachments.map(file => {
+                        const messageId = message.savedId || message.id;
+                        return <li key={file.id}>
+                          {isPreviewImage(file.media_type) && <ImagePreview name={file.name}
+                            src={attachmentUrl(sessionId, messageId, file.id, archived, true)} />}
+                          <a download={file.name} href={attachmentUrl(sessionId, messageId, file.id, archived)}>
+                            {file.name}
+                          </a>
+                        </li>;
+                      })}
+                    </ul>
+                  )}
+                  {message === latestUser && message.savedId && sessionId && onMessageAction && (
+                    <MessageActions key={sessionId + '/' + message.savedId} sessionId={sessionId}
+                      messageId={message.savedId} undoing={undoing} onAction={onMessageAction} onEdit={onEdit} />
+                  )}
+                </div>
+              );
+            }
+            if (message.role === 'info') {
+              return <InfoLine key={message.id} message={message} />;
+            }
             return (
-              <div className="turn user" key={message.id} data-testid="user-message">
-                <div className="bubble">{message.content}</div>
-                {sessionId && message.attachments?.map(file =>
-                  <a key={file.id} download={file.name}
-                    href={attachmentUrl(sessionId, message.savedId || message.id, file.id, archived)}>
-                    {file.name}
-                  </a>)}
-                {message === latestUser && message.savedId && sessionId && onMessageAction && (
-                  <MessageActions key={sessionId + '/' + message.savedId} sessionId={sessionId}
-                    messageId={message.savedId} undoing={undoing} onAction={onMessageAction} onEdit={onEdit} />
-                )}
+              <div className="turn assistant" key={message.id} data-testid="assistant-message">
+                {renderSegments(message.segments, onToggle)}
+                {message.interrupted && <div className="stopped">Stopped</div>}
               </div>
             );
-          }
-          if (message.role === 'info') {
-            return <InfoLine key={message.id} message={message} />;
-          }
-          return (
-            <div className="turn assistant" key={message.id} data-testid="assistant-message">
-              {renderSegments(message.segments, onToggle)}
-              {message.interrupted && <div className="stopped">Stopped</div>}
-            </div>
-          );
-        })}
+          })}
+        </div>
       </div>
-    </div>
+      <div className="jump-to-bottom">
+        <SurfacePresence>
+          {showJump && (
+            <button type="button" aria-label="Scroll to bottom" title="Scroll to bottom"
+              onClick={event => jumpToBottom(event.currentTarget)}>
+              <ArrowUpIcon size={20} />
+            </button>
+          )}
+        </SurfacePresence>
+        <span className="sr-only" aria-live="polite">{announcement}</span>
+      </div>
+    </>
   );
 }

@@ -236,6 +236,11 @@ def test_mixed_attachments_reach_model_and_survive_move(client, backend, tmp_pat
     sid = events[-1]["session_id"]
     record = client.get(f"/api/sessions/{sid}").json()["items"][0]
     assert [file["name"] for file in record["attachments"]] == ["notes.txt", "picture.png"]
+    saved = next(event for event in events if event["type"] == "message_saved")
+    assert saved["attachments"] == [
+        {key: item[key] for key in ("id", "name", "media_type", "size")}
+        for item in record["attachments"]
+    ]
     file_id = record["attachments"][1]["id"]
     draft = client.get(f"/api/sessions/{sid}/messages/{record['id']}/draft")
     assert draft.status_code == 200
@@ -243,11 +248,23 @@ def test_mixed_attachments_reach_model_and_survive_move(client, backend, tmp_pat
     assert [item["name"] for item in draft.json()["attachments"]] == ["notes.txt", "picture.png"]
     assert all(item["message_id"] == record["id"] for item in draft.json()["attachments"])
     url = f"/api/sessions/{sid}/messages/{record['id']}/attachments/{file_id}"
-    assert client.get(url).content == data
+    download = client.get(url)
+    assert download.content == data and download.headers["content-disposition"].startswith(
+        "attachment;"
+    )
+    preview = client.get(url, params={"preview": True})
+    assert preview.content == data and preview.headers["content-type"] == "image/png"
+    assert preview.headers["content-disposition"].startswith("inline;")
+    assert preview.headers["x-content-type-options"] == "nosniff"
+    doc_url = url.rsplit("/", 1)[0] + "/" + record["attachments"][0]["id"]
+    assert (
+        client.get(doc_url + "?preview=true").headers["content-type"] == "application/octet-stream"
+    )
     backend._background.stop()
     assert client.post(f"/api/sessions/{sid}/archive").status_code == 200
     assert client.get(url).status_code == 404
     assert client.get(url, params={"archived": True}).content == data
+    assert client.get(url + "?archived=true&preview=true").headers["content-type"] == "image/png"
     assert client.post(f"/api/sessions/{sid}/restore").status_code == 200
     assert client.get(url).content == data
     paths = backend._service.paths
@@ -264,6 +281,11 @@ def test_mixed_attachments_reach_model_and_survive_move(client, backend, tmp_pat
     assert result.exit_code == 0 and "Verified 2 attachment(s)" in result.output
     assert not moved.runtime_dir.exists()
     path = moved.vault_dir / "attachments" / sid / record["id"] / (file_id + ".png")
+    live_file = paths.attachments_dir / sid / record["id"] / path.name
+    live_file.write_bytes(b"x" * len(data))
+    assert client.get(url + "?preview=true").status_code == 404
+    live_file.unlink()
+    assert client.get(url + "?preview=true").status_code == 404
     path.write_bytes(b"x" * len(data))
     count, errors = sessions.verify_attachments()
     assert count == 1 and len(errors) == 1 and "checksum" in errors[0]

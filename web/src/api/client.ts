@@ -68,8 +68,11 @@ function messagePath(sessionId: string, messageId: string): string {
   return `/api/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}`;
 }
 
-export function attachmentUrl(sessionId: string, messageId: string, fileId: string, archived = false): string {
-  return `${messagePath(sessionId, messageId)}/attachments/${encodeURIComponent(fileId)}${archived ? '?archived=true' : ''}`;
+export function attachmentUrl(sessionId: string, messageId: string, fileId: string, archived = false, preview = false): string {
+  const query = new URLSearchParams();
+  if (archived) query.set('archived', 'true');
+  if (preview) query.set('preview', 'true');
+  return `${messagePath(sessionId, messageId)}/attachments/${encodeURIComponent(fileId)}${query.size ? '?' + query : ''}`;
 }
 
 export const api = {

@@ -1,8 +1,9 @@
 import { useLayoutEffect, useRef, useState, type CSSProperties, type MutableRefObject } from 'react';
 import type { CompactionPhase, ContextUsage } from '../types';
-import { isComposing } from '../state/shortcuts';
 
-const compactTokens = new Intl.NumberFormat('en', { notation: 'compact' });
+function formatPercent(value: number) {
+  return value > 0 && value < 1 ? '<1%' : `${Math.floor(value)}%`;
+}
 
 const COMPACTION_LABEL = {
   running: 'Compressing context…',
@@ -62,16 +63,10 @@ export function ContextMeter({ usage, compaction, reading }: {
   reading?: MutableRefObject<MeterReading | null>;
 }) {
   const shown = useMeterReading(usage, reading);
-  const [open, setOpen] = useState(false);
   const orb = useRef<HTMLSpanElement>(null);
   const rebound = useRef<Animation | undefined>(undefined);
-  const ratio = usage && usage.limit > 0 ? usage.used / usage.limit : 0;
   const percent = shown?.percent ?? 0;
-  const actualPercent = Math.min(100, ratio * 100);
-  const share = actualPercent > 0 && actualPercent < 1 ? '<1%' : `${Math.floor(actualPercent)}%`;
-  const parts = shown ? compactTokens.formatToParts(shown.used) : [];
-  const amount = shown ? parts.filter(part => part.type !== 'compact').map(part => part.value).join('') : '—';
-  const unit = parts.find(part => part.type === 'compact')?.value.toLowerCase();
+  const share = formatPercent(usage && usage.limit > 0 ? Math.min(100, 100 * usage.used / usage.limit) : 0);
   const nearLimit = usage && usage.limit > 0 &&
     usage.used >= (usage.compaction_trigger_tokens ?? usage.limit * usage.compact_threshold);
   const waveCeiling = compaction === 'running' ? 99 : 85;
@@ -79,35 +74,27 @@ export function ContextMeter({ usage, compaction, reading }: {
     ? `${usage.used.toLocaleString()} / ${usage.limit.toLocaleString()} tokens (${share})`
     : usage === undefined ? 'Loading estimate…' : 'Estimate unavailable';
   return (
-    <div className={`context-meter${open ? ' expanded' : ''}`} data-compaction={compaction ?? undefined}>
-      <button type="button" className="context-dial" aria-expanded={open}
+    <div className="context-meter" data-compaction={compaction ?? undefined}>
+      <button type="button" className="context-dial"
         aria-label={`Context estimate: ${detail}`}
         data-fill={percent === 0 ? 'empty' : percent === 100 ? 'full' : 'partial'}
         data-wave={percent >= 10 && percent <= waveCeiling ? 'moving' : 'still'}
         style={{ '--context-fill': `${percent}%` } as CSSProperties}
         onPointerDown={() => rebound.current?.cancel()}
         onClick={() => {
-          setOpen(value => !value);
           if (!window.matchMedia?.('(prefers-reduced-motion: no-preference)').matches) return;
           rebound.current?.cancel();
           rebound.current = orb.current?.animate?.(
             [{ scale: '.92' }, { scale: '1.045', offset: .58 }, { scale: '1' }],
             { duration: 240, easing: 'ease-out' },
           );
-        }}
-        onBlur={() => setOpen(false)}
-        onKeyDown={(event) => {
-          if (!open || event.key !== 'Escape' || isComposing(event)) return;
-          event.preventDefault();
-          event.stopPropagation();
-          setOpen(false);
         }}>
         <span className="context-orb" ref={orb} aria-hidden="true">
           <svg className="context-ring" viewBox="0 0 32 32" fill="none" focusable="false">
             <circle cx="16" cy="16" r="15" stroke="currentColor" strokeWidth="2" />
           </svg>
           <span className="context-value">
-            {amount}{unit && <small>{unit}</small>}
+            {shown ? formatPercent(percent) : '—'}
           </span>
         </span>
       </button>

@@ -51,6 +51,13 @@ EventType = Literal[
 ]
 
 
+class MessageAttachment(BaseModel):
+    id: str
+    name: str
+    media_type: str
+    size: int
+
+
 class TurnEvent(BaseModel):
     """A provider-independent conversation event. Sequence numbers are local to each turn."""
 
@@ -59,6 +66,7 @@ class TurnEvent(BaseModel):
     turn_id: int | None = None
     session_id: str | None = None
     message_id: str | None = None
+    attachments: list[MessageAttachment] | None = None
     # Short-lived deltas (content/reasoning), tool display and error messages.
     text: str = ""
     name: str | None = None
@@ -285,7 +293,13 @@ class TurnEvents:
         self._session_id = session_id
 
     def on_user_message(self, message_id: str) -> None:
-        self.send("message_saved", message_id=message_id)
+        batch = self._turn.attachments
+        files = (
+            [MessageAttachment.model_validate(item, from_attributes=True) for item in batch.files]
+            if batch
+            else None
+        )
+        self.send("message_saved", message_id=message_id, attachments=files)
 
     def callbacks(self) -> TurnCallbacks:
         return TurnCallbacks(

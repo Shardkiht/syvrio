@@ -51,6 +51,14 @@ describe('chat reducer', () => {
     expect(state.messages.map(m => m.role === 'user' ? m.savedId : m.role)).toEqual(['earlier', 'live', 'assistant']);
   });
 
+  it('adds saved attachments to the live message before the reply finishes', () => {
+    const attachments = [{ id: 'photo', name: 'picture.png', size: 12, media_type: 'image/png' }];
+    const state = reduceChat(startTurn(initialChatState, 'Look', 's-1'),
+      event('message_saved', { message_id: 'saved', attachments }));
+    expect(state.busy).toBe(true);
+    expect(state.messages[0]).toMatchObject({ role: 'user', savedId: 'saved', attachments });
+  });
+
   it('streams content deltas in order and folds thinking when the answer starts', () => {
     let state = startTurn(initialChatState, 'hi', 's-1');
     state = reduceChat(state, event('reasoning_delta', { text: 'line one\n', phase: 1 }));

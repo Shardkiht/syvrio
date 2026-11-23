@@ -5,7 +5,8 @@ import type { CommandInfo, CompactionPhase, ContextUsage } from '../types';
 import { ContextMeter, type MeterReading } from './ContextMeter';
 import { CommandSuggestions } from './CommandUI';
 import { SurfacePresence } from './SurfacePresence';
-import { ArrowUpIcon, FileIcon, PlusIcon, StopIcon } from './Icons';
+import { DraftAttachmentIcon } from './AttachmentImage';
+import { ArrowUpIcon, PlusIcon, StopIcon } from './Icons';
 
 /** Starter commands shown under the home composer, in display order. */
 const STARTER_COMMANDS = ['model', 'status', 'help', 'sessions'];
@@ -268,7 +269,11 @@ export function Composer({
 
   return (
     <div className={`composer${hero ? ' composer-hero' : ''}`}>
-      {busy && <div className="progress" data-testid="progress">{progress || 'Working...'}</div>}
+      {busy && (
+        <div className="progress" data-testid="progress">
+          <span>{progress || 'Working...'}</span>
+        </div>
+      )}
       {queued.length > 0 && (
         <section className="web-send-queue" aria-label="Send queue">
           <div role="status">{queued.length} queued{queuePaused ? ' · paused until you send again' : ''}</div>
@@ -306,7 +311,7 @@ export function Composer({
                 const stem = file.name.slice(0, file.name.length - extension.length);
                 return (
                   <li className="attachment-preview" key={index}>
-                    <FileIcon size={18} />
+                    <DraftAttachmentIcon file={file} />
                     <span className="attachment-name" title={file.name}>
                       <bdi className="attachment-stem">{stem}</bdi>{extension}
                     </span>

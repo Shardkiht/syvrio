@@ -19,7 +19,7 @@ it('replays the context ball rebound on activation and respects reduced motion',
   try {
     fireEvent.click(dial);
     expect(orb.animate).toHaveBeenCalledTimes(1);
-    expect(dial.getAttribute('aria-expanded')).toBe('true');
+    expect(dial.hasAttribute('aria-expanded')).toBe(false);
     fireEvent.pointerDown(dial);
     expect(cancel).toHaveBeenCalled();
     fireEvent.click(dial);
@@ -27,7 +27,7 @@ it('replays the context ball rebound on activation and respects reduced motion',
     preference.mockReturnValue({ ...media, matches: false });
     fireEvent.click(dial);
     expect(orb.animate).toHaveBeenCalledTimes(2);
-    expect(dial.getAttribute('aria-expanded')).toBe('true');
+    expect(dial.hasAttribute('aria-expanded')).toBe(false);
   } finally {
     preference.mockRestore();
   }
@@ -67,6 +67,39 @@ it('preserves unfinished input while the destination of a switch is unconfirmed'
   rerender(<Composer {...props} />);
   fireEvent.keyDown(input, { key: 'Enter' });
   expect(props.onSend).toHaveBeenCalledWith('still drafting');
+});
+
+it('previews draft images locally and releases their URLs when removed or sent', () => {
+  const create = vi.fn((file: File) => 'blob:' + file.name);
+  const revoke = vi.fn();
+  class PreviewURL extends URL {
+    static createObjectURL = create;
+    static revokeObjectURL = revoke;
+  }
+  vi.stubGlobal('URL', PreviewURL);
+  try {
+    const onSend = vi.fn();
+    render(<Composer busy={false} progress="" onSend={onSend} onStop={() => {}} />);
+    const png = new File(['a'], 'one.png', { type: 'image/png' });
+    const gif = new File(['b'], 'two.gif');
+    const note = new File(['c'], 'notes.txt');
+    fireEvent.change(screen.getByLabelText('Select attachments'), { target: { files: [png, gif, note] } });
+    expect(create).toHaveBeenCalledTimes(2);
+    const thumb = screen.getByRole('button', { name: 'Preview one.png' });
+    fireEvent.click(thumb);
+    const dialog = screen.getByRole('dialog', { name: 'Preview one.png' });
+    expect(dialog.querySelector('img')?.getAttribute('src')).toBe('blob:one.png');
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    expect(document.activeElement).toBe(thumb);
+    expect(onSend).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Remove two.gif' }));
+    expect(revoke).toHaveBeenCalledWith('blob:two.gif');
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    expect(onSend).toHaveBeenCalledWith('Analyze the attached files.', [png, note]);
+    expect(revoke).toHaveBeenCalledWith('blob:one.png');
+  } finally {
+    vi.unstubAllGlobals();
+  }
 });
 
 it('uses the plus button to pick and send multiple attachments', () => {

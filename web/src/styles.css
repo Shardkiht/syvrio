@@ -34,6 +34,7 @@
 
   /* Reading column; the composer card uses the same width so the two align. */
   --content: 720px;
+  --chat-image-width: 192px;
   --sidebar-w: 236px;
 }
 
@@ -505,6 +506,48 @@ textarea, input, select { touch-action: manipulation; }
   -webkit-overflow-scrolling: touch;
 }
 
+.jump-to-bottom { position: relative; flex: 0 0 0; z-index: 1; }
+.jump-to-bottom button {
+  position: absolute;
+  bottom: 8px;
+  inset-inline: 0;
+  margin-inline: auto;
+  transform-origin: center;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 50%;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: var(--shadow-md);
+}
+.jump-to-bottom button:hover, .jump-to-bottom button:focus-visible {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.jump-to-bottom button:active, .jump-to-bottom button[data-activated] {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .jump-to-bottom button { animation: jump-enter 180ms ease-out both; }
+  .jump-to-bottom button:active { scale: .94; }
+  .jump-to-bottom .surface-frame[data-closing] button { animation: jump-exit 150ms ease-in both; }
+}
+@keyframes jump-enter {
+  from { opacity: 0; translate: 0 5px; }
+  to { opacity: 1; translate: 0 0; }
+}
+@keyframes jump-exit {
+  from { opacity: 1; }
+  to { opacity: 0; scale: .86; }
+}
+.jump-to-bottom svg { transform: rotate(180deg); }
+
 .messages-content { display: flow-root; }
 .history-loading { margin-block: 1rem; color: var(--muted); }
 
@@ -522,7 +565,43 @@ textarea, input, select { touch-action: manipulation; }
 
 .turn { max-width: var(--content); margin: 0 auto 26px; }
 .turn.user { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
-.turn.user > a { max-width: 82%; overflow-wrap: anywhere; }
+.message-attachments {
+  display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: flex-start; gap: 8px;
+  max-width: 100%; margin: 2px 0; padding: 0; list-style: none;
+}
+.message-attachments li { display: grid; gap: 4px; max-width: min(100%, 13rem); }
+.message-attachments a { overflow-wrap: anywhere; font-size: .875rem; }
+.draft-image, .message-image {
+  display: grid; place-items: center; overflow: hidden; padding: 0; cursor: zoom-in;
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--radius-sm);
+}
+.draft-image { flex: none; width: 44px; height: 44px; }
+.message-image {
+  display: inline-grid; width: min(100%, var(--chat-image-width)); aspect-ratio: 4 / 3;
+  vertical-align: middle;
+}
+.message-attachments li:has(.message-image) { width: var(--chat-image-width); }
+.markdown .message-image { margin: 2px 0; }
+.markdown a .message-image { cursor: pointer; }
+.draft-image img, .message-image img { display: block; width: 100%; height: 100%; }
+.draft-image img { object-fit: cover; }
+.message-image img { min-height: 0; min-width: 0; object-fit: scale-down; }
+.draft-image:focus-visible, .message-image:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.draft-image:hover, .message-image:hover { border-color: var(--accent); }
+.image-unavailable { color: var(--muted); font-size: .8rem; }
+.command-panel.attachment-viewer {
+  width: fit-content; max-width: 100%; max-height: 100%; padding: 10px; gap: 8px;
+}
+.attachment-viewer header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.attachment-viewer strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attachment-viewer .icon-button { flex: none; }
+.attachment-viewer .image-size-toggle {
+  flex: none; margin-left: auto; padding: 6px 10px; color: var(--text); background: var(--panel-2);
+  border: 1px solid var(--border); border-radius: var(--radius-sm); font-size: .875rem;
+}
+.image-viewport { min-height: 0; min-width: 0; max-height: 76dvh; overflow: auto; overscroll-behavior: contain; }
+.image-viewport img { display: block; margin-inline: auto; max-width: 100%; max-height: 76dvh; object-fit: contain; }
+.image-viewport[data-actual-size] img { max-width: none; max-height: none; }
 .message-actions { display: flex; gap: 4px; }
 .message-actions .icon-button { width: 32px; height: 32px; }
 @media (hover: hover) and (pointer: fine) {
@@ -531,15 +610,25 @@ textarea, input, select { touch-action: manipulation; }
     opacity: 1; pointer-events: auto;
   }
 }
-.message-editor { width: min(100%, 38rem); }
+.message-editor {
+  width: min(100%, 38rem);
+  padding: 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 16px;
+  background: var(--panel);
+}
 .thread > .message-editor { align-self: center; width: min(calc(100% - 2rem), 38rem); max-height: 46%; overflow-y: auto; }
-.turn.user:has(.message-editor) > .bubble, .turn.user:has(.message-editor) > a { display: none; }
+.turn.user:has(.message-editor) > .bubble, .turn.user:has(.message-editor) > .message-attachments { display: none; }
 .message-editor textarea {
-  width: 100%; box-sizing: border-box; resize: vertical; min-height: 4.5rem;
+  display: block; width: 100%; box-sizing: border-box; resize: vertical; min-height: 4.5rem;
   padding: 10px 14px; border: 1px solid var(--border); border-radius: 12px;
   background: var(--panel-2); color: var(--text); font: inherit;
 }
-.message-editor-buttons { display: flex; justify-content: flex-end; gap: 8px; }
+.message-editor textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.message-editor-buttons { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 8px; }
 .message-editor-buttons button {
   border: 1px solid var(--border); border-radius: 8px; background: var(--panel);
   color: var(--text); padding: 5px 12px; cursor: pointer;
@@ -769,6 +858,16 @@ button.fold-summary:hover {
   font-size: 13.5px;
 }
 
+.progress > span {
+  display: inline-block;
+  max-width: 100%;
+  padding: 2px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--panel);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
 .web-send-queue {
   max-width: var(--content);
   margin: 0 auto 6px;
@@ -986,6 +1085,16 @@ button.fold-summary:hover {
 }
 .context-value small { font-size: 8px; font-weight: 500; }
 
+@media (min-width: 768px) and (hover: hover) and (pointer: fine) {
+  .composer-actions {
+    --composer-control-size: 38px;
+    margin-inline-end: 6px;
+  }
+  .composer-actions .context-meter { margin-inline-end: 6px; }
+  .context-value { font-size: 12px; }
+  .composer .send svg { width: 25px; height: 25px; }
+}
+
 .context-detail {
   display: grid;
   visibility: hidden;
@@ -1008,15 +1117,10 @@ button.fold-summary:hover {
   pointer-events: none;
 }
 
-.context-meter[data-compaction] .context-detail,
-.context-meter.expanded .context-detail,
-.context-meter:has(:focus-visible) .context-detail {
-  visibility: visible; opacity: 1; transform: none;
-}
 .context-warning { color: var(--danger); }
 
 @media (hover: hover) {
-  .context-meter:hover .context-detail { visibility: visible; opacity: 1; transform: none; }
+  .context-dial:hover + .context-detail { visibility: visible; opacity: 1; transform: none; }
 }
 
 /* Draft actions leave the primary Send/Stop control anchored on the right. */
@@ -1705,6 +1809,7 @@ button.fold-summary:hover {
 /* ---------- Mobile ---------- */
 
 @media (max-width: 767px) {
+  :root { --chat-image-width: 144px; }
   .sidebar {
     position: fixed;
     inset: 0 auto 0 0;
@@ -1746,6 +1851,10 @@ button.fold-summary:hover {
   /* 16px stops iOS Safari from zooming the page when an input is focused. */
   .composer textarea, .palette-input, .provider-form input, .settings-content input {
     font-size: 16px;
+  }
+  .composer textarea {
+    height: calc(1.5em + 16px);
+    min-height: calc(1.5em + 16px);
   }
   .composer-card { border-radius: 18px; }
   .composer-actions { --composer-control-size: 34px; }
