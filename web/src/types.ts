@@ -239,3 +239,22 @@ export interface UpdateCheck extends UpdateStatus {
   available: boolean;
   managed: boolean;
 }
+
+export interface ChatSearchHit {
+  session_id: string;
+  title: string;
+  message_id: string;
+  role: 'title' | 'assistant' | 'user';
+  excerpt: string;
+}
+
+export interface SearchContext {
+  title: string;
+  messages: Array<{ message_id: string; role: 'user' | 'assistant'; content: string; at: string }>;
+}
+
+export interface PendingEvidence {
+  state: 'found' | 'unrecorded' | 'unavailable';
+  source: { title: string; content: string; at: string; archived: boolean } | null;
+  related: Array<{ id: string; text: string | null }>;
+}

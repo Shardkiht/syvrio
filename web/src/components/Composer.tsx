@@ -6,7 +6,7 @@ import { ContextMeter, type MeterReading } from './ContextMeter';
 import { CommandSuggestions } from './CommandUI';
 import { SurfacePresence } from './SurfacePresence';
 import { DraftAttachmentIcon } from './AttachmentImage';
-import { ArrowUpIcon, PlusIcon, StopIcon } from './Icons';
+import { PlusIcon, SendIcon, StopIcon } from './Icons';
 
 /** Starter commands shown under the home composer, in display order. */
 const STARTER_COMMANDS = ['model', 'status', 'help', 'sessions'];
@@ -19,6 +19,7 @@ export function Composer({
   checkingSelection = false,
   onSendAfterSelection,
   progress,
+  newChat = false,
   contextUsage,
   meterReading,
   compaction = null,
@@ -42,6 +43,7 @@ export function Composer({
   checkingSelection?: boolean;
   onSendAfterSelection?: (text: string, files: readonly File[], handedOff: () => void) => Promise<void>;
   progress: string;
+  newChat?: boolean;
   contextUsage?: ContextUsage | null;
   meterReading?: MutableRefObject<MeterReading | null>;
   compaction?: CompactionPhase | null;
@@ -364,11 +366,11 @@ export function Composer({
                     title="Send after the current reply (Enter)">Queue</button>
                 </>
               )}
-              <ContextMeter reading={meterReading} usage={contextUsage} compaction={compaction} />
+              <ContextMeter reading={meterReading} usage={contextUsage} newChat={newChat} compaction={compaction} />
               <button type="button" className={busy ? 'stop' : 'send'} onClick={busy ? onStop : submit}
                 disabled={waitingToSend || (checkingSelection && !canOpenDuringSelection(value) && (!onSendAfterSelection || busy || commandDraft)) || (!busy && !hasDraft)}
                 aria-label={busy ? 'Stop' : 'Send'} title={busy ? 'Stop generating' : 'Send'}>
-                {busy ? <StopIcon size={20} /> : <ArrowUpIcon size={23} />}
+                {busy ? <StopIcon size={18} /> : <SendIcon />}
               </button>
             </div>
           </div>

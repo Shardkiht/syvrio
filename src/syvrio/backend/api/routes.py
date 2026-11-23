@@ -221,6 +221,28 @@ def create_api(
     async def context_usage(request: Request, session_id: str | None = None):
         return await asyncio.to_thread(channel(request).context_usage, session_id)
 
+    @app.get("/api/pending/{item_id}/evidence", tags=["web"])
+    def pending_evidence(item_id: str):
+        try:
+            return owner._app_service.memory.pending_evidence(item_id)
+        except KeyError as exc:
+            raise APIError("not_found", "This candidate is no longer pending.", 404) from exc
+
+    @app.get("/api/sessions/search", tags=["web"])
+    def search_chats(
+        q: str = Query(min_length=1, max_length=160), limit: int = Query(20, ge=1, le=50)
+    ):
+        if not q.strip():
+            raise APIError("invalid_query", "Enter a keyword.", 422)
+        return owner._service.session_query.search_chats(q, limit)
+
+    @app.get("/api/sessions/{session_id}/messages/{message_id}/context", tags=["web"])
+    def search_message(session_id: str, message_id: str):
+        try:
+            return owner._service.session_query.search_message(session_id, message_id)
+        except KeyError as exc:
+            raise APIError("not_found", "This message is no longer available.", 404) from exc
+
     @app.get("/api/sessions", response_model=SessionListResponse, tags=["web"])
     async def sessions(
         request: Request,

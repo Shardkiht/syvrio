@@ -23,7 +23,7 @@ it('warns at the server trigger and falls back to the ratio for older servers', 
   expect(warning()).toBeTruthy();
 });
 
-it('retains the visible frame while switching, then animates toward the latest session, including zero', () => {
+it('animates between saved chats but immediately zeroes a new chat label while its water drains', () => {
   const media = window.matchMedia('(prefers-reduced-motion: no-preference)');
   vi.spyOn(window, 'matchMedia').mockReturnValue({ ...media, matches: true });
   let now = 0;
@@ -43,8 +43,8 @@ it('retains the visible frame while switching, then animates toward the latest s
     act(() => frame.forEach(callback => callback(now)));
   };
   const reading = { current: null as MeterReading | null };
-  const meter = (key: string, usage?: ContextUsage) =>
-    <ContextMeter key={key} usage={usage} reading={reading} compaction={null} />;
+  const meter = (key: string, usage?: ContextUsage | null) =>
+    <ContextMeter key={key} usage={usage} newChat={key === 'new'} reading={reading} compaction={null} />;
   const dial = () => screen.getByRole<HTMLButtonElement>('button', { name: /Context estimate/ });
   const { rerender } = render(meter('a', estimate('a', 800)));
   expect(dial().textContent).toBe('80%');
@@ -60,14 +60,26 @@ it('retains the visible frame while switching, then animates toward the latest s
   expect(Math.floor(water)).toBe(intermediate);
 
   rerender(meter('new'));
-  advance(250);
-  expect(Number.parseInt(dial().textContent!, 10)).toBe(intermediate);
+  expect(dial().textContent).toBe('0%');
   expect(dial().style.getPropertyValue('--context-fill')).toBe(`${water}%`);
+  advance(250);
+  const draining = Number.parseFloat(dial().style.getPropertyValue('--context-fill'));
+  expect(draining).toBeGreaterThan(0);
+  expect(draining).toBeLessThan(water);
+  expect(dial().textContent).toBe('0%');
+  rerender(meter('new', null));
+  expect(dial().textContent).toBe('0%');
+  expect(dial().getAttribute('aria-label')).toContain('Limit unavailable');
   rerender(meter('new', estimate(null, 0)));
   advance(350);
-  expect(Number.parseInt(dial().textContent!, 10)).toBeGreaterThan(0);
-  expect(Number.parseInt(dial().textContent!, 10)).toBeLessThan(intermediate);
+  expect(dial().textContent).toBe('0%');
+  expect(Number.parseFloat(dial().style.getPropertyValue('--context-fill'))).toBeLessThan(draining);
+  rerender(meter('c'));
+  expect(dial().textContent).toBe('0%');
+  expect(callbacks.size).toBe(0);
+  rerender(meter('new'));
   advance(750);
+  advance(850);
   expect(dial().textContent).toBe('0%');
   expect(dial().dataset.fill).toBe('empty');
   expect(callbacks.size).toBe(0);

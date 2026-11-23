@@ -9,6 +9,7 @@ import { PendingReview } from './components/PendingReview';
 import { SettingsPanel } from './components/SettingsPanel';
 import { SurfacePresence } from './components/SurfacePresence';
 import { Sidebar } from './components/Sidebar';
+import { ChatSearchPanel } from './components/ChatSearchPanel';
 import { SessionTitle, useSessionTitleEdits } from './components/SessionTitle';
 import { ArchivePanel } from './components/ArchivePanel';
 import { DreamPanel } from './components/DreamPanel';
@@ -169,6 +170,7 @@ export default function App() {
           currentId={chat.sessionId}
           open={sidebarOpen}
           onNew={() => void newSession()}
+          onSearch={() => openDialog({ kind: 'search-chats' })}
           onSelect={(id) => void selectSession(id)}
           onArchive={(session, trigger) => openDialog({ kind: 'archive-confirm', session }, trigger)}
           onOpenArchive={() => openDialog({ kind: 'archive' })}
@@ -280,6 +282,7 @@ export default function App() {
               openFiles={openFiles}
               busy={chat.busy}
               progress={chat.progress}
+              newChat={chat.sessionId === null}
               contextUsage={preview ? undefined : contextUsage}
               meterReading={meterReading}
               compaction={preview ? null : compaction}
@@ -316,6 +319,8 @@ export default function App() {
             }}
           />
         )}
+        {dialog?.kind === 'search-chats' && <ChatSearchPanel key="search-chats" onClose={closeDialog}
+          onOpen={id => { closeDialog(); void selectSession(id); }} />}
         {dialog?.kind === 'palette' && (
           <CommandPalette
             key="palette"

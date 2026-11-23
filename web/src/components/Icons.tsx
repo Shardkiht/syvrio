@@ -108,6 +108,19 @@ export function ArrowUpIcon(props: IconProps) {
   );
 }
 
+export function SendIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path
+        fill="currentColor"
+        stroke="none"
+        d="M3.15 10.1 20.1 3.4c.82-.33 1.53.33 1.3 1.17l-4.28 15.26c-.22.8-.98 1.05-1.64.54l-4.02-3.11-2.48 2.31c-.37.34-.87.17-.91-.33l-.35-4.57
+           L16 7.95c.53-.43.02-1.17-.56-.8L7.32 12.66l-4.12-1.24c-.7-.21-.75-1.04-.05-1.32Z"
+      />
+    </Svg>
+  );
+}
+
 export function StopIcon(props: IconProps) {
   return (
     <Svg {...props}>

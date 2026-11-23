@@ -1,4 +1,4 @@
-import { useCallback, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { ImagePreview, isPreviewImage } from './AttachmentImage';
 import { attachmentUrl } from '../api/client';
 import type { ChatMessage, Segment } from '../state/chat';
@@ -131,6 +131,15 @@ function renderSegments(segments: Segment[], onToggle: (id: string) => void): Re
   }
   flush();
   return nodes;
+}
+
+function HistoryLoading() {
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setVisible(true), 200);
+    return () => window.clearTimeout(timer);
+  }, []);
+  return visible ? <p className="history-loading" role="status">Loading conversation…</p> : null;
 }
 
 export function MessageList({
@@ -315,7 +324,7 @@ export function MessageList({
         data-testid="message-list"
       >
         <div className="messages-content" ref={contentRef}>
-          {messages.length === 0 && loading && <p className="history-loading" role="status">Loading conversation…</p>}
+          {!contentReady && <HistoryLoading key={selectionVersion ?? sessionId} />}
           {messages.length === 0 && !loading && (
             <h1 className="welcome">
               <picture>

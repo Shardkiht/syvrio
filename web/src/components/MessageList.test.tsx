@@ -72,11 +72,39 @@ describe('conversation entry motion', () => {
 
     rerender(select(2, 'cold', [], true));
     expect(entrance.cancel).toHaveBeenCalledOnce();
-    expect(screen.getByRole('status').textContent).toContain('Loading');
+    expect(screen.queryByText('Loading conversation…')).toBeNull();
     rerender(select(3, 'latest', [], true));
     expect(animate).toHaveBeenCalledTimes(1);
     rerender(select(3, 'latest', messages));
     expect(animate).toHaveBeenCalledTimes(2);
+  });
+
+  it('skips the hint on fast reads and times it from the latest selection on slow reads', () => {
+    vi.useFakeTimers();
+    try {
+      const hint = () => screen.queryByText('Loading conversation…');
+      const tick = (ms: number) => act(() => { vi.advanceTimersByTime(ms); });
+      const { rerender } = render(select(1, 'a', [], true));
+      tick(40);
+      expect(hint()).toBeNull();
+      rerender(select(1, 'a', messages));
+      expect(screen.getByText('latest answer')).toBeTruthy();
+      tick(200);
+      expect(hint()).toBeNull();
+
+      rerender(select(2, 'b', [], true));
+      tick(150);
+      rerender(select(3, 'c', [], true));
+      tick(199);
+      expect(hint()).toBeNull();
+      tick(1);
+      expect(screen.getByRole('status').textContent).toBe('Loading conversation…');
+      rerender(select(3, 'c', messages));
+      expect(hint()).toBeNull();
+      expect(screen.getByText('latest answer')).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('animates the new conversation once and keeps its first receipt and streaming messages steady', () => {

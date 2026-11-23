@@ -2,10 +2,40 @@ import { useEffect, useRef, useState } from 'react';
 import type { PendingAction, ReviewPanel } from '../state/commands';
 import { CommandDialog, moveOption } from './CommandUI';
 import { SearchIcon } from './Icons';
+import { api } from '../api/client';
+import { usePanelRead } from '../hooks/usePanelRead';
+import { formatLocalTimestamp } from '../time';
 
 const INFERENCE_FILTERS = [
   ['hypothesis', 'Pending'], ['confirmed', 'Confirmed'], ['deprecated', 'Deprecated'],
 ] as const;
+
+function EvidenceDetails({ id }: { id: string }) {
+  const { value: result, error, retry } = usePanelRead(undefined, signal => api.pendingEvidence(id, signal));
+  if (error) return <div className="review-load-error"><span role="alert">{error}</span>
+    <button type="button" onClick={retry}>Retry</button></div>;
+  if (!result) return <p className="pending-meta" role="status">Loading evidence…</p>;
+  const { source, related } = result;
+  return <>
+    {source ? <>
+      <div className="pending-meta">{source.title}{source.archived && ' · Archived'}
+        {source.at && <> · <time dateTime={source.at}>{formatLocalTimestamp(source.at)}</time></>}</div>
+      <blockquote>{source.content || 'This message contains no text.'}</blockquote>
+    </> : <p className="pending-meta">{result.state === 'unrecorded'
+      ? 'No original message was recorded.' : 'The original message is unavailable.'}</p>}
+    {related.length > 0 && <><strong>Related memories</strong><ul>
+      {related.map(item => <li key={item.id}>{item.text ?? `Memory unavailable (${item.id})`}</li>)}
+    </ul></>}
+  </>;
+}
+
+function CandidateEvidence({ id }: { id: string }) {
+  const [open, setOpen] = useState(false);
+  return <details className="candidate-evidence" onToggle={event => setOpen(event.currentTarget.open)}>
+    <summary tabIndex={0}>View evidence</summary>
+    {open && <EvidenceDetails id={id} />}
+  </details>;
+}
 
 export function PendingReview({
   panel,
@@ -168,7 +198,6 @@ export function PendingReview({
                 <>
                   <div className="pending-meta">{selected.topic}</div>
                   {selected.question && <p className="pending-meta">{selected.question}</p>}
-                  {!!selected.related_ids?.length && <p className="pending-meta">{selected.related_ids.join(', ')}</p>}
                   {draft === null ? (
                     <p className="pending-text">{selected.text}</p>
                   ) : (
@@ -176,6 +205,7 @@ export function PendingReview({
                       value={draft} readOnly={busy || action !== null}
                       onChange={(event) => setDraft(event.target.value)} />
                   )}
+                  {pending && <CandidateEvidence key={selected.id} id={selected.id} />}
                 </>
               ) : <p className="pending-meta">Select an item to review.</p>}
             </div>}

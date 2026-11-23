@@ -535,6 +535,25 @@ def test_reopening_session_with_interrupted_tool_results_does_not_reexecute(tmp_
     ]
 
 
+def test_chat_search_tool_reads_other_sessions_without_echoing_query(tmp_path):
+    model = FakeChatModel(
+        [
+            AssistantTurn(
+                tool_calls=[ToolCall(id="s1", name="search_chats", arguments={"query": "信封"})]
+            ),
+            AssistantTurn(content="在第七层。"),
+        ]
+    )
+    runtime, service = build_runtime(tmp_path, model)
+    store = SessionStore(service.paths)
+    other = store.create()
+    store.append(other, {"type": "message", "id": "m7", "role": "user", "content": "信封在第七层"})
+    runtime.ask("以前在哪提过信封？")
+    payload = next(m["content"] for m in model.calls[1][0] if m["role"] == "tool")
+    assert "第七层" in payload and "m7" in payload
+    assert "以前在哪" not in payload
+
+
 def test_read_topic_tool_result_reaches_model(tmp_path):
     model = FakeChatModel(
         [

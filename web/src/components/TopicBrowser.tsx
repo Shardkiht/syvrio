@@ -1,4 +1,5 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
+import { usePanelRead } from '../hooks/usePanelRead';
 import type { TopicDocument, TopicListItem } from '../state/commands';
 import { CommandDialog, moveOption } from './CommandUI';
 import { ArrowUpIcon, FileIcon, SearchIcon } from './Icons';
@@ -22,31 +23,6 @@ function entryCount(n: number) {
   return n === 1 ? '1 entry' : `${n} entries`;
 }
 
-function useTopicRead<T>(initial: T | undefined, read: () => Promise<T>, enabled = true) {
-  const [loaded, setLoaded] = useState<T>();
-  const [error, setError] = useState<string | null>(null);
-  const [attempt, setAttempt] = useState(0);
-  const reader = useRef(read);
-  useEffect(() => { reader.current = read; }, [read]);
-  useEffect(() => {
-    if (!enabled || initial !== undefined) return;
-    let active = true;
-    reader.current().then(
-      (value) => { if (active) setLoaded(value); },
-      (reason: unknown) => {
-        if (active) setError(reason instanceof Error ? reason.message : String(reason));
-      },
-    );
-    return () => { active = false; };
-  }, [initial, attempt, enabled]);
-
-  function retry() {
-    setError(null);
-    setAttempt((previous) => previous + 1);
-  }
-  return { value: initial ?? loaded, error, retry };
-}
-
 function ReadError({ label, detail, retry }: { label: string; detail: string; retry: () => void }) {
   return (
     <div className="topics-error">
@@ -65,7 +41,7 @@ function TopicReader({ topic, title, initial, readTopic }: {
   initial?: TopicDocument;
   readTopic: (topic: string) => Promise<TopicDocument>;
 }) {
-  const { value: doc, error, retry } = useTopicRead(initial, () => readTopic(topic));
+  const { value: doc, error, retry } = usePanelRead(initial, () => readTopic(topic));
   const labels = topicLabels(doc?.topic ?? topic, title);
   return (
     <>
@@ -101,7 +77,7 @@ export function TopicBrowser({ initialTopics, initialDocument, readTopics, readT
   onClose: () => void;
 }) {
   const [directoryOpened, setDirectoryOpened] = useState(!initialDocument);
-  const { value: topics, error, retry } = useTopicRead(initialTopics, readTopics, directoryOpened);
+  const { value: topics, error, retry } = usePanelRead(initialTopics, readTopics, directoryOpened);
   const [selected, setSelected] = useState(initialDocument?.topic ?? null);
   const [filter, setFilter] = useState('');
   const back = useRef<HTMLButtonElement>(null);
