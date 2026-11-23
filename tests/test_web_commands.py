@@ -466,7 +466,11 @@ def test_inference_list_and_review_receipt_read_only_the_displayed_data(
     memory = backend._app_service.memory
     source = memory.service.note("Synthetic source")
     item = memory.service.propose_inference("Synthetic inference", [source.id], kind="profile")
-    monkeypatch.setattr(memory, "_sources", lambda *_: pytest.fail("Web requested unused sources"))
+
+    def unexpected_fact_read(*args, **kwargs):
+        pytest.fail("Inference list and confirmation must not read unused source facts")
+
+    monkeypatch.setattr(memory.service.store, "entries", unexpected_fact_read)
     assert run(client, "/inferences").json()["data"]["count"] == 1
     result = run(client, f"/inferences confirm {item.id}", confirmed=True).json()
     assert result["status"] == "ok" and result["data"]["rows"][0]["status"] == "confirmed"
