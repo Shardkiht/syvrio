@@ -98,6 +98,7 @@ exclude = ["/web/node_modules", "/web/dist"]
 "src/syvrio/app/web/static" = "src/syvrio/app/web/static"
 
 [tool.pytest.ini_options]
+cache_dir = ".cache/pytest"
 testpaths = ["tests"]
 pythonpath = ["."]
 asyncio_mode = "auto"
@@ -115,6 +116,7 @@ markers = [
 
 
 [tool.ruff]
+cache-dir = ".cache/ruff"
 target-version = "py312"
 line-length = 100
 
