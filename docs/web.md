@@ -87,6 +87,9 @@ uv run python scripts/build_web.py --wheel dist/*.whl  # 校验实际 wheel 内�
 | POST | `/api/sessions/{id}/archive`、`/api/sessions/{id}/restore` | 归档或还原。普通 `DELETE /api/sessions/{id}` 也执行归档 |
 | GET | `/api/sessions?archived=true`、`/api/sessions/{id}?archived=true` | 人工浏览归档列表和原始会话。列表可用 `limit`、`offset` 翻页，下载归档附件同样需要 `archived=true` |
 | DELETE | `/api/sessions/{id}?permanent=true&confirmed=true` | 仅可永久删除已归档会话，存在相关候选时提交已查看的 `pending_revision` |
+| GET | `/api/sessions/search?q=关键词` | 按连续文本搜索活动会话的标题和对话正文 |
+| GET | `/api/sessions/{id}/messages/{message_id}/context` | 读取命中消息及前后各一条可见对话 |
+| GET | `/api/pending/{item_id}/evidence` | 按候选的已存引用读取原话与关联记忆，包括手动追溯的归档原话 |
 | GET | `/api/sessions/{id}?limit=300` | 最近的结构化历史，思考正文默认折叠。读取活动会话的默认 300 条窗口时可传 `include_version=true`，从响应头 `X-Syvrio-History-Version` 取得下次切换可用的版本 |
 | GET | `/api/sessions/{id}/messages/{message_id}/draft` | 读取最近回合的原文及附件清单供编辑；消息已变更时返回 409 |
 | GET | `/api/settings/providers` | 供应商、端点和配置状态；不返回已保存的 Key |

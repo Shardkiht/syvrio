@@ -133,6 +133,8 @@ The MCP server exposes recall, topic reading, recording, correction, transitions
 
 ## Vault and backups
 
+Search chats from the sidebar by entering a keyword or an exact text fragment. Select a message to read it in context. The agent uses the same case-insensitive search through `search_chats` for other conversations. Archived chats, undone turns, reasoning and tool records are excluded. In Pending, expand **View evidence** to read the original user message, its conversation and timestamp, and any related memories.
+
 | Data | Location |
 | --- | --- |
 | Formal memories and active candidates | `memories/<topic>.md` and `memories/pending.md` |

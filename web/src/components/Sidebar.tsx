@@ -1,5 +1,5 @@
 import type { SessionInfo } from '../types';
-import { ArchiveIcon, PanelIcon, PlusIcon } from './Icons';
+import { ArchiveIcon, PanelIcon, PlusIcon, SearchIcon } from './Icons';
 
 export function Sidebar({
   sessions,
@@ -8,6 +8,7 @@ export function Sidebar({
   currentId,
   open,
   onNew,
+  onSearch,
   onSelect,
   onArchive,
   onOpenArchive,
@@ -19,6 +20,7 @@ export function Sidebar({
   currentId: string | null;
   open: boolean;
   onNew: () => void;
+  onSearch: () => void;
   onSelect: (sessionId: string) => void;
   onArchive: (session: SessionInfo, trigger: HTMLButtonElement) => void;
   onOpenArchive: () => void;
@@ -50,7 +52,11 @@ export function Sidebar({
           <span className="new-chat-hint" aria-hidden="true">/new</span>
         </button>
 
-        <div className="sidebar-section">Chats</div>
+        <div className="sidebar-section chats-heading">Chats
+          <button type="button" className="icon-button" aria-label="Search chats" title="Search chats" onClick={onSearch}>
+            <SearchIcon />
+          </button>
+        </div>
         <div className="session-list">
           {sessions.length === 0 && <div className="empty">No conversations yet</div>}
           {sessions.map((session) => (

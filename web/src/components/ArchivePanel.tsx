@@ -70,8 +70,9 @@ export function ArchivePanel({ onClose, onRestore, onDelete, initialSelected }: 
           <button type="button" onClick={() => { setSelected(null); setError(''); }}>Back</button>
           <strong>{selected.title}</strong>
         </div>
-        {history ? <MessageList archived messages={history.messages} sessionId={selected.id}
-          onToggle={id => setHistory(prev => prev && toggleSegment(prev, id))} /> : !error && <p>Loading conversation…</p>}
+        {(history || !error) && <MessageList archived loading={!history}
+          messages={history?.messages ?? initialChatState.messages} sessionId={selected.id}
+          onToggle={id => setHistory(prev => prev && toggleSegment(prev, id))} />}
         <footer className="archive-controls">
           <button type="button" disabled={restoring} onClick={() => void restore()}>Restore to chats</button>
           <button type="button" className="archive-purge" autoFocus={!!initialSelected} disabled={restoring} onClick={() => onDelete(selected)}>Delete permanently…</button>

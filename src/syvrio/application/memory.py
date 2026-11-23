@@ -32,6 +32,25 @@ class MemoryUseCases:
     def pending_item(self, item_id: str):
         return next((item for item in self.service.pending() if item.id == item_id), None)
 
+    def pending_evidence(self, item_id: str) -> dict:
+        item = self.pending_item(item_id)
+        if item is None:
+            raise KeyError(item_id)
+        source = None
+        state = "unrecorded"
+        if item.session_id and item.message_id:
+            try:
+                source = self.service.session_query.review_source(item.session_id, item.message_id)
+                state = "found"
+            except (KeyError, ValueError):
+                state = "unavailable"
+        related = self._source_texts(set(item.related_ids))
+        return {
+            "state": state,
+            "source": source,
+            "related": [{"id": key, "text": related.get(key)} for key in item.related_ids],
+        }
+
     def approve(self, item_id: str, text_override: str | None = None):
         return self.service.approve(item_id, text_override=text_override)
 
@@ -42,7 +61,10 @@ class MemoryUseCases:
 
     def load_inference_review(self, *, include_sources: bool = True) -> InferenceReview:
         items = self.service.list_inferences()
-        return InferenceReview(items, self._sources(items) if items and include_sources else {})
+        source_ids = (
+            {key for item in items for key in item.source_ids} if include_sources else set()
+        )
+        return InferenceReview(items, self._source_texts(source_ids))
 
     def review_inference(
         self, item_id: str, action: str, text: str | None = None, *, include_sources: bool = True
@@ -64,9 +86,9 @@ class MemoryUseCases:
             feedback=feedback,
         )
 
-    def _sources(self, items) -> dict[str, str]:
-        source_ids = {source_id for item in items for source_id in item.source_ids}
-        # 来源摘要共用一次事实库读取，避免每个来源 ID 都重复解析全部主题文件。
+    def _source_texts(self, source_ids: set[str]) -> dict[str, str]:
+        if not source_ids:
+            return {}
         return {
             entry.id: entry.text
             for entry in self.service.store.entries(include_inactive=True)

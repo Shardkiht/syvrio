@@ -12,18 +12,15 @@ const COMPACTION_LABEL = {
 };
 
 export interface MeterReading {
-  used: number;
   percent: number;
+  fill: number;
 }
 
 type Usage = ContextUsage | null | undefined;
 
-function useMeterReading(usage: Usage, retained?: MutableRefObject<MeterReading | null>) {
+function useMeterReading(target: number | null | undefined, newChat: boolean, retained?: MutableRefObject<MeterReading | null>) {
   const local = useRef<MeterReading | null>(null);
   const reading = retained ?? local;
-  const used = usage?.used;
-  const percent = usage && usage.limit > 0 ? Math.min(100, 100 * usage.used / usage.limit) : 0;
-  const unavailable = usage === null;
   const [shown, setShown] = useState<MeterReading | null>(() => reading.current);
 
   useLayoutEffect(() => {
@@ -31,14 +28,17 @@ function useMeterReading(usage: Usage, retained?: MutableRefObject<MeterReading 
       reading.current = value;
       setShown(value);
     };
-    if (unavailable) { show(null); return; }
-    if (used === undefined) return; // Navigation is awaiting the target session's estimate.
+    if (target === null) { show(null); return; }
+    if (target === undefined) return; // Navigation is awaiting the target session's estimate.
     const from = reading.current;
-    const to = { used, percent };
-    if (from?.used === used && from.percent === percent) return;
+    const to = { percent: target, fill: target };
+    if (from?.percent === target && from.fill === target) return;
     const motion = window.matchMedia?.('(prefers-reduced-motion: no-preference)');
     if (!from || !motion?.matches) { show(to); return; }
 
+    // A blank chat is already at zero. Only the water drains from the previous level.
+    const startPercent = newChat ? target : from.percent;
+    if (startPercent !== from.percent) show({ percent: startPercent, fill: from.fill });
     const start = performance.now();
     let frame: number;
     const advance = (now: number) => {
@@ -46,40 +46,42 @@ function useMeterReading(usage: Usage, retained?: MutableRefObject<MeterReading 
       if (elapsed >= 1 || !motion.matches) { show(to); return; }
       const progress = 1 - (1 - elapsed) ** 3;
       show({
-        used: Math.round(from.used + (to.used - from.used) * progress),
-        percent: from.percent + (to.percent - from.percent) * progress,
+        percent: startPercent + (target - startPercent) * progress,
+        fill: from.fill + (target - from.fill) * progress,
       });
       frame = requestAnimationFrame(advance);
     };
     frame = requestAnimationFrame(advance);
     return () => cancelAnimationFrame(frame);
-  }, [used, percent, unavailable, reading]);
+  }, [target, newChat, reading]);
   return shown;
 }
 
-export function ContextMeter({ usage, compaction, reading }: {
+export function ContextMeter({ usage, compaction, reading, newChat = false }: {
   usage: Usage;
   compaction: CompactionPhase | null;
   reading?: MutableRefObject<MeterReading | null>;
+  newChat?: boolean;
 }) {
-  const shown = useMeterReading(usage, reading);
+  const percent = usage && (usage.limit > 0 ? Math.min(100, 100 * usage.used / usage.limit) : 0);
+  const shown = useMeterReading(newChat ? 0 : percent, newChat, reading);
   const orb = useRef<HTMLSpanElement>(null);
   const rebound = useRef<Animation | undefined>(undefined);
-  const percent = shown?.percent ?? 0;
-  const share = formatPercent(usage && usage.limit > 0 ? Math.min(100, 100 * usage.used / usage.limit) : 0);
+  const fill = shown?.fill ?? 0;
   const nearLimit = usage && usage.limit > 0 &&
     usage.used >= (usage.compaction_trigger_tokens ?? usage.limit * usage.compact_threshold);
   const waveCeiling = compaction === 'running' ? 99 : 85;
   const detail = usage
-    ? `${usage.used.toLocaleString()} / ${usage.limit.toLocaleString()} tokens (${share})`
+    ? `${usage.used.toLocaleString()} / ${usage.limit.toLocaleString()} tokens (${formatPercent(percent ?? 0)})`
+    : newChat ? (usage === null ? '0 tokens (0%) · Limit unavailable' : '0 tokens (0%)')
     : usage === undefined ? 'Loading estimate…' : 'Estimate unavailable';
   return (
     <div className="context-meter" data-compaction={compaction ?? undefined}>
       <button type="button" className="context-dial"
         aria-label={`Context estimate: ${detail}`}
-        data-fill={percent === 0 ? 'empty' : percent === 100 ? 'full' : 'partial'}
-        data-wave={percent >= 10 && percent <= waveCeiling ? 'moving' : 'still'}
-        style={{ '--context-fill': `${percent}%` } as CSSProperties}
+        data-fill={fill === 0 ? 'empty' : fill === 100 ? 'full' : 'partial'}
+        data-wave={fill >= 10 && fill <= waveCeiling ? 'moving' : 'still'}
+        style={{ '--context-fill': `${fill}%` } as CSSProperties}
         onPointerDown={() => rebound.current?.cancel()}
         onClick={() => {
           if (!window.matchMedia?.('(prefers-reduced-motion: no-preference)').matches) return;
@@ -94,7 +96,7 @@ export function ContextMeter({ usage, compaction, reading }: {
             <circle cx="16" cy="16" r="15" stroke="currentColor" strokeWidth="2" />
           </svg>
           <span className="context-value">
-            {shown ? formatPercent(percent) : '—'}
+            {shown ? formatPercent(shown.percent) : '—'}
           </span>
         </span>
       </button>

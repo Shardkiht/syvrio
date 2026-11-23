@@ -347,6 +347,28 @@ describe('Web client interactions', () => {
     expect(dial.hasAttribute('aria-expanded')).toBe(false);
     expect(dial.parentElement?.querySelector('.context-detail')?.textContent).toContain('2,400 / 4,000 tokens (60%)');
     expect(seen).toEqual([null, current.id]);
+
+    let confirmNew!: () => void;
+    const selection = new Promise<void>(resolve => { confirmNew = resolve; });
+    vi.spyOn(api, 'createSession').mockImplementation(async () => {
+      await selection;
+      return { session_id: null, title: 'New chat' };
+    });
+    let finishEstimate!: () => void;
+    const delayed = new Promise<void>(resolve => { finishEstimate = resolve; });
+    const estimate = vi.spyOn(api, 'contextUsage').mockImplementation(async id => {
+      await delayed;
+      return { session_id: id, used: 0, limit: 4000, compact_threshold: .8 };
+    });
+    fireEvent.click(screen.getByRole('button', { name: /^New chat/ }));
+    const label = () => screen.getByRole('button', { name: /Context estimate/ }).textContent;
+    expect(label()).toBe('0%');
+    expect(estimate).not.toHaveBeenCalled();
+    await act(async () => confirmNew());
+    expect(estimate).toHaveBeenCalledWith(null, expect.any(AbortSignal));
+    expect(label()).toBe('0%');
+    await act(async () => finishEstimate());
+    expect(screen.getByRole('button', { name: 'Context estimate: 0 / 4,000 tokens (0%)' }).textContent).toBe('0%');
   });
 
   it('shows usage percentages and starts the context wave at 10% used', async () => {
@@ -982,12 +1004,40 @@ describe('Slash commands and shortcuts', () => {
     expect(list.getByText('No matches.')).toBeTruthy();
   });
 
+  it('searches from the chat sidebar and shows the exact message with its neighbors', async () => {
+    const hit = { session_id: 's-1', message_id: 'm-2', title: 'Earlier chat', role: 'user', excerpt: 'locker B-417' };
+    const context = vi.fn(() => json({ messages: [
+      { message_id: 'm-2', role: 'user', content: 'The blue locker B-417 was reserved.' },
+      { message_id: 'm-3', role: 'assistant', content: 'Understood.' },
+    ] }));
+    installFetch({
+      'GET /api/sessions/search?q=locker': () => json({ results: [hit] }),
+      '/api/sessions/s-1/messages/m-2/context': context,
+    });
+    render(<App />);
+    await ready();
+    fireEvent.click(screen.getByRole('button', { name: 'Search chats' }));
+    const panel = within(await screen.findByRole('dialog', { name: 'Search chats' }));
+    fireEvent.change(panel.getByRole('searchbox'), { target: { value: 'locker' } });
+    fireEvent.click(panel.getByRole('button', { name: 'Search' }));
+    const result = await panel.findByRole('button', { name: /Earlier chat.*locker B-417/ });
+    expect(context).not.toHaveBeenCalled();
+    fireEvent.click(result);
+    expect((await panel.findByText('The blue locker B-417 was reserved.')).closest('article')?.classList.contains('matched')).toBe(true);
+    expect(panel.getByText('Understood.')).toBeTruthy();
+    fireEvent.click(panel.getByRole('button', { name: 'Back' }));
+    expect((panel.getByRole('searchbox') as HTMLInputElement).value).toBe('locker');
+  });
+
   it('selects a pending candidate once, edits it, and refreshes after confirmed writes', async () => {
     const first = { id: 'p-1', text: 'First candidate\nSecond line', topic: 'food', question: 'Check the wording' };
     const second = { id: 'p-2', text: 'Another candidate', topic: 'food', question: '' };
     const requests: { line: string; confirmed: boolean; pending_text?: string }[] = [];
     let fail = true;
+    const evidence = vi.fn(() => json({ state: 'found', related: [],
+      source: { title: 'Earlier chat', at: '', archived: false, content: 'Exact source wording.' } }));
     installFetch({
+      '/api/pending/p-1/evidence': evidence,
       'POST /api/commands': (init) => {
         const body = JSON.parse(String(init?.body)) as (typeof requests)[number];
         requests.push(body);
@@ -1011,6 +1061,9 @@ describe('Slash commands and shortcuts', () => {
     expect(dialog.queryByRole('button', { name: 'Reject' })).toBeNull();
     fireEvent.click(list.getByRole('button', { name: /First candidate/ }));
     expect(dialog.getByText('Check the wording')).toBeTruthy();
+    expect(evidence).not.toHaveBeenCalled();
+    fireEvent.click(dialog.getByText('View evidence'));
+    expect(await dialog.findByText('Exact source wording.')).toBeTruthy();
     fireEvent.click(dialog.getByRole('button', { name: 'Edit' }));
     const editor = dialog.getByRole('textbox', { name: 'Edit candidate' }) as HTMLTextAreaElement;
     expect(editor.value).toBe(first.text);

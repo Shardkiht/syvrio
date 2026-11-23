@@ -42,7 +42,7 @@ it('renders cached history immediately, validates its version in the switch, and
   const shortcuts = 'Enter to send or queue · Ctrl+Enter to insert';
   expect(screen.getByText(shortcuts)).toBeTruthy();
   await select('a');
-  expect(screen.getByText('Loading conversation…')).toBeTruthy();
+  expect(await screen.findByText('Loading conversation…')).toBeTruthy();
   expect(document.querySelector('.main.is-empty')).toBeNull();
   expect(document.querySelector('.composer-hint')?.textContent).toBe(shortcuts);
   const old = sessionHistory('a', 'Old answer');
@@ -116,7 +116,7 @@ it.each(['confirmed', 'failed', 'superseded'] as const)(
     await screen.findByRole('button', { name: 'Stop' });
     await click('b');
     expect(screen.getByTestId('session-b').getAttribute('aria-current')).toBe('page');
-    expect(screen.getByText('Loading conversation…')).toBeTruthy();
+    expect(screen.queryByText('Loading conversation…')).toBeNull();
     expect(history).not.toHaveBeenCalled();
     fireEvent.keyDown(window, { key: 'Escape' });
     expect(cancel).not.toHaveBeenCalled();

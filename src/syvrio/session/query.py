@@ -321,6 +321,73 @@ class SessionQuery:
         found.sort(key=lambda item: _session_sort_time(item[0]), reverse=True)
         return [session for _, session in found[:limit]]
 
+    @staticmethod
+    def _chat_messages(session: Session):
+        for record in session.active_records():
+            kind = record["type"]
+            if (
+                kind == "assistant"
+                or kind == "message"
+                and record.get("role") in {"user", "assistant"}
+            ):
+                if record.get("content"):
+                    yield {
+                        "message_id": record.get("id", ""),
+                        "role": record.get("role", "assistant"),
+                        "content": record["content"],
+                        "at": record.get("at", ""),
+                    }
+
+    def search_chats(self, query: str, limit: int = 20, *, exclude_session: str = "") -> dict:
+        keyword = query.strip()
+        if not 1 <= len(keyword) <= 160 or not 1 <= limit <= 50:
+            raise ValueError("Enter 1–160 characters and request 1–50 matches.")
+        pattern = re.compile(re.escape(keyword), re.IGNORECASE)
+        hits = []
+        for path in reversed(self._files()):
+            if path.stem == exclude_session:
+                continue
+            try:
+                session = self._load_path(path, include_reasoning=False)
+            except (KeyError, FileNotFoundError):
+                continue  # A conversation can be archived after enumeration.
+            title = session.title()
+            origin = {"session_id": session.id, "title": title}
+            if pattern.search(title):
+                hits.append({**origin, "message_id": "", "role": "title", "excerpt": title})
+            for message in reversed(list(self._chat_messages(session))):
+                if len(hits) >= limit:
+                    break
+                content = message["content"]
+                match = pattern.search(content)
+                if match:
+                    start = max(0, match.start() - 48)
+                    end = min(len(content), match.end() + 80)
+                    excerpt = (
+                        ("…" if start else "")
+                        + content[start:end]
+                        + ("…" if end < len(content) else "")
+                    )
+                    hits.append(
+                        {
+                            **origin,
+                            "message_id": message["message_id"],
+                            "role": message["role"],
+                            "excerpt": excerpt,
+                        }
+                    )
+            if len(hits) >= limit:
+                break
+        return {"results": hits}
+
+    def search_message(self, session_id: str, message_id: str) -> dict:
+        session = self.load(session_id, include_reasoning=False)
+        messages = list(self._chat_messages(session))
+        for i, message in enumerate(messages):
+            if message["message_id"] == message_id:
+                return {"title": session.title(), "messages": messages[max(0, i - 1) : i + 2]}
+        raise KeyError(message_id)
+
     def _files(self, *, archived: bool = False) -> list[Path]:
         root = self.archive_root if archived else self.root
         if root.resolve() != root:
@@ -348,9 +415,27 @@ class SessionQuery:
 
     def user_message(self, session_id: str, message_id: str, *, active_only: bool = False) -> dict:
         """Look up exactly one original user message without loading reasoning or other sidecars."""
+        session = self.load(session_id, include_reasoning=False)
+        return self._user_message(session, message_id, active_only=active_only)
+
+    def review_source(self, session_id: str, message_id: str) -> dict:
+        """Explicit review may follow a saved reference into an archived conversation."""
+        archived = False
+        try:
+            session = self.load(session_id, include_reasoning=False)
+        except KeyError:
+            session = self.load(session_id, include_reasoning=False, archived=True)
+            archived = True
+        return {
+            **self._user_message(session, message_id),
+            "title": session.title(),
+            "archived": archived,
+        }
+
+    @staticmethod
+    def _user_message(session: Session, message_id: str, *, active_only: bool = False) -> dict:
         if not isinstance(message_id, str) or not SESSION_ID_RE.fullmatch(message_id):
             raise ValueError("Invalid source message ID.")
-        session = self.load(session_id, include_reasoning=False)
         records = session.active_records() if active_only else session.records
         matches = [record for record in records if record.get("id") == message_id]
         if (

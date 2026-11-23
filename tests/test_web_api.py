@@ -886,6 +886,46 @@ def test_running_turn_and_its_queue_are_protected_from_another_view(client, back
     assert backend._sessions.load(sid).user_texts() == ["first", "second"]
 
 
+def test_pending_evidence_and_chat_search_follow_saved_messages(client, backend):
+    store, service = backend._sessions, backend._service
+    session = store.create()
+    store.rename(session, "Library room")
+    for record in (
+        {"type": "message", "id": "old", "role": "user", "content": "Withdrawn BLUE-17"},
+        {"type": "undo", "message_id": "old"},
+        {"type": "message", "id": "src", "role": "user", "content": "Reserved BLUE-17 阅读室"},
+        {"type": "tool", "id": "hidden", "content": "hidden BLUE-17"},
+        {"type": "assistant", "id": "answer", "content": "Confirmed blue-17"},
+    ):
+        store.append(session, record)
+    fact = service.add(MemoryDraft(text="Related library fact", topic="library"))
+    draft = MemoryDraft(text="Review reservation", topic="library")
+    item = service.create_pending(
+        draft, "Is this correct?", [fact.id], session_id=session.id, message_id="src"
+    )
+    url = f"/api/pending/{item.id}/evidence"
+    evidence = client.get(url).json()
+    assert evidence["source"]["title"] == "Library room"
+    assert evidence["source"]["content"] == "Reserved BLUE-17 阅读室"
+    assert evidence["related"] == [{"id": fact.id, "text": fact.text}]
+    search = "/api/sessions/search"
+    hits = client.get(search, params={"q": "bLuE-17"}).json()["results"]
+    assert [hit["message_id"] for hit in hits] == ["answer", "src"]
+    assert client.get(search, params={"q": "library room"}).json()["results"][0]["role"] == "title"
+    ctx = f"/api/sessions/{session.id}/messages/src/context"
+    assert [m["message_id"] for m in client.get(ctx).json()["messages"]] == ["src", "answer"]
+    assert client.get(search, params={"q": ".*"}).json()["results"] == []
+    assert client.get(search, params={"q": " "}).status_code == 422
+    assert client.post(f"/api/sessions/{session.id}/archive").status_code == 200
+    assert client.get(search, params={"q": "blue-17"}).json()["results"] == []
+    assert client.get(ctx).status_code == 404
+    assert client.get(url).json()["source"]["archived"] is True
+    service.reject(item.id)
+    assert client.get(url).status_code == 404
+    orphan = service.create_pending(draft, "Imported?", [])
+    assert client.get(f"/api/pending/{orphan.id}/evidence").json()["state"] == "unrecorded"
+
+
 def test_permanent_deletion_rechecks_pending_revision_and_saved_memory_sources(client, backend):
     service = backend._runtime.service
     store = backend._sessions

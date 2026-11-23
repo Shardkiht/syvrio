@@ -550,6 +550,9 @@ textarea, input, select { touch-action: manipulation; }
 
 .messages-content { display: flow-root; }
 .history-loading { margin-block: 1rem; color: var(--muted); }
+@media (prefers-reduced-motion: no-preference) {
+  .history-loading { animation: surface-fade-in 120ms ease-out both; }
+}
 
 /* The home view is a centred hero, not an empty transcript pinned to the top. */
 .main.is-empty .thread { justify-content: safe center; padding-bottom: 5cqh; }
@@ -966,15 +969,37 @@ button.fold-summary:hover {
   width: var(--composer-control-size);
   height: var(--composer-control-size);
   padding: 0;
-  border: 0;
+  flex: none;
+  border: 1px solid transparent;
   border-radius: 50%;
-  background: var(--text);
-  color: var(--bg);
-  transition: opacity .15s ease;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  transition: background-color .15s ease, color .15s ease, border-color .15s ease;
 }
 
-.composer .send:disabled, .composer .composer-secondary:disabled { opacity: .26; cursor: default; }
-.composer .send:hover:not(:disabled), .composer .stop:hover { opacity: .85; }
+.composer .send > svg {
+  width: 79%;
+  height: 79%;
+  translate: -5% 1.5%;
+}
+.composer .send:disabled {
+  background: var(--panel-2);
+  color: var(--muted);
+  border-color: var(--border);
+  cursor: default;
+}
+.composer .stop { background: var(--text); color: var(--bg); }
+.composer .composer-secondary:disabled { opacity: .26; cursor: default; }
+@media (hover: hover) {
+  .composer .send:enabled:hover { background: color-mix(in srgb, var(--accent) 86%, var(--text)); }
+  .composer .stop:hover { background: var(--muted); }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .composer :is(.send, .stop):enabled:active { scale: .95; }
+}
+@media (pointer: coarse) {
+  .composer :is(.send, .stop) { min-width: 44px; min-height: 44px; }
+}
 
 .context-meter { position: relative; --context-accent: var(--accent); }
 
@@ -1092,7 +1117,6 @@ button.fold-summary:hover {
   }
   .composer-actions .context-meter { margin-inline-end: 6px; }
   .context-value { font-size: 12px; }
-  .composer .send svg { width: 25px; height: 25px; }
 }
 
 .context-detail {
@@ -1676,6 +1700,23 @@ button.fold-summary:hover {
   padding-inline-start: 12px;
 }
 .pending-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.candidate-evidence { margin-block: 12px; overflow-wrap: anywhere; }
+.candidate-evidence summary { width: fit-content; cursor: pointer; color: var(--accent); }
+.candidate-evidence[open] summary { margin-bottom: 8px; }
+.candidate-evidence blockquote {
+  margin: 6px 0 12px;
+  border-inline-start: 2px solid var(--border-strong);
+  padding-inline-start: 10px;
+  white-space: pre-wrap;
+}
+.candidate-evidence ul { margin: 4px 0; padding-inline-start: 20px; }
+.chats-heading { display: flex; align-items: center; justify-content: space-between; }
+.chat-matches button { display: grid; gap: 4px; overflow-wrap: anywhere; }
+.chat-matches span, .search-context small { color: var(--muted); }
+.search-context { overflow: auto; }
+.search-context article { padding: 8px 12px; border-inline-start: 2px solid transparent; }
+.search-context .matched { background: var(--panel-2); border-color: var(--accent); }
+.search-context p { white-space: pre-wrap; overflow-wrap: anywhere; margin: 4px 0; }
 .pending-detail textarea {
   width: 100%;
   padding: 8px;

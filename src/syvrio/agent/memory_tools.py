@@ -36,6 +36,11 @@ class Source(Arguments):
     memory_id: str = Field(min_length=1)
 
 
+class ChatSearch(Arguments):
+    query: str = Field(min_length=1, max_length=160)
+    limit: int = Field(default=10, ge=1, le=50)
+
+
 class Target(Arguments):
     entry_id: str = Field(min_length=1)
 
@@ -112,6 +117,12 @@ def register_memory_tools(
                 )
             ]
         },
+    )
+    register(
+        "search_chats",
+        "按一个关键词或连续原文片段搜索其他未归档会话的标题和对话正文。返回原文片段、角色和来源 ID；没有命中时可换词。",
+        ChatSearch,
+        lambda r: service.session_query.search_chats(r.query, r.limit, exclude_session=session.id),
     )
     register("read_topic", "按主题读取全部有效事实。", Topic, lambda r: service.read_topic(r.topic))
     register(
