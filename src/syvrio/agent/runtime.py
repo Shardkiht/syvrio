@@ -12,7 +12,6 @@ from ..infra.attachments import AttachmentBatch
 from ..infra.config import ChatConfig, Config, load_config
 from ..infra.documents import document_paths
 from ..infra.latency import TurnLatency, elapsed_ms, track_turn
-from ..infra.tokens import estimate_messages_tokens, estimate_tokens, truncate_to_tokens
 from ..infra.transaction import vault_transaction
 from ..llm import (
     AssistantTurn,
@@ -32,7 +31,13 @@ from ..memory.extractor import LLMExtractor
 from ..memory.service import MemoryService, load_persona
 from ..memory.turn_undo import TurnFileJournal, TurnUndoError
 from ..session import Session, SessionStore, new_message_id
-from .context import CompactionPhase, ContextManager, estimate_tool_tokens, record_to_message
+from .context import (
+    CompactionPhase,
+    ContextManager,
+    ContextPlan,
+    estimate_tool_tokens,
+    record_to_message,
+)
 from .evidence import RecallContext
 from .insertion import TurnInsertion
 from .prompts import build_system_prompt
@@ -49,7 +54,6 @@ from .tools import (
     ToolRegistry,
     build_tools,
     cancelled_tool,
-    compact_tool_outputs,
 )
 
 
@@ -86,7 +90,7 @@ def _tool_results(
                     tools.execute(call.name, call.arguments) if ready(call) else cancelled_tool(),
                 )
             continue
-        # A non-network call is a barrier. Keep each result paired in model order.
+        # 遇到非网络工具调用时，先完成之前的调用，并按模型给出的次序关联结果。
         while batch := list(islice(group, PARALLEL_NETWORK_LIMIT)):
             waits = [
                 tools.start(call.name, call.arguments, cancel=cancel, shared_deadline=True)
@@ -388,28 +392,44 @@ class AgentRuntime:
         schema_tokens = estimate_tool_tokens(tools.schemas())
         if not paths:
             self._meter_tools = self._tool_settings(), schema_tokens
-        plan = context.prepare(
-            session,
-            self._system_prompt(),
-            attachments.model_content(text) if attachments else text,
-            current_id=message_id,
-            memory_context=memory_context,
-            on_compaction=on_compaction,
-            tool_tokens=schema_tokens,
-        )
+        system_prompt = self._system_prompt()
+        user_text = text
+        current_input = attachments.model_content(text) if attachments else text
+        additional_inputs: list[dict] = []
+
+        def prepare_context(
+            tool_tokens: int, active_plan: ContextPlan | None = None
+        ) -> ContextPlan:
+            prepared = context.prepare(
+                session,
+                system_prompt,
+                current_input,
+                current_id=message_id,
+                memory_context=memory_context,
+                on_compaction=on_compaction,
+                tool_tokens=tool_tokens,
+                active_plan=active_plan,
+                additional_inputs=additional_inputs,
+            )
+            if prepared is not active_plan:
+                self.last_plan = prepared
+                if attachments:
+                    # 保留用户原文，避免缓存图片字节。
+                    cached = [
+                        {**msg, "content": user_text} if msg["content"] is current_input else msg
+                        for msg in prepared.messages
+                    ]
+                    self.last_plan = replace(prepared, messages=cached)
+                self.last_plan_session = session.id
+            return prepared
+
+        plan = prepare_context(schema_tokens)
         latency.event(
             "context.finished",
             elapsed_ms=elapsed_ms(started),
             estimated_tokens=plan.estimated_tokens,
             compacted=plan.compacted,
         )
-        # Keep the attachment files on disk, not their base64 payload in the cached plan.
-        self.last_plan = (
-            replace(plan, messages=[*plan.messages[:-1], {"role": "user", "content": text}])
-            if attachments
-            else plan
-        )
-        self.last_plan_session = session.id
         events: list[str] = []
 
         def emit(event: str) -> None:
@@ -420,7 +440,6 @@ class AgentRuntime:
 
         for event in recall_events + plan.events:
             emit(event)
-        messages = plan.messages
         usage = Usage()
         steps = 0
         final = ""
@@ -428,26 +447,20 @@ class AgentRuntime:
         needs_wrap_up = True
 
         def request_model(schemas: list[dict]) -> AssistantTurn:
-            schema_tokens = estimate_tool_tokens(schemas)
-            used = schema_tokens + estimate_messages_tokens(messages)
-            if used > context.input_budget:
-                tool_tokens = sum(
-                    estimate_tokens(message["content"])
-                    for message in messages
-                    if message["role"] == "tool"
-                )
-                tool_budget = max(0, tool_tokens - (used - context.input_budget))
-                if compact_tool_outputs(messages, max_tokens=tool_budget):
+            nonlocal plan
+            if steps:
+                prepared = prepare_context(estimate_tool_tokens(schemas), plan)
+                if prepared is not plan:
+                    plan = prepared
                     evidence.invalidate()
-                context.check_input_budget(
-                    schema_tokens + estimate_messages_tokens(messages), schema_tokens
-                )
+                    for event in plan.events:
+                        emit(event)
             evidence.begin_model_request()
             with latency.model_step() as started:
                 try:
                     turn = self._chat_with_retry(
                         model,
-                        messages,
+                        plan.messages,
                         schemas,
                         on_delta=on_delta,
                         cancel=cancel,
@@ -486,7 +499,7 @@ class AgentRuntime:
                 return False
             supplement = redact_secrets(pending.text)
             candidate = {"role": "user", "content": supplement}
-            # The new input authorizes only file paths supplied with that input.
+            # 每次输入只授权访问该次输入提供的文件路径。
             next_tools = build_tools(
                 self.service,
                 session,
@@ -495,10 +508,7 @@ class AgentRuntime:
                 evidence=evidence,
             )
             next_schemas = next_tools.schemas() if steps < config.max_tool_steps else []
-            used = estimate_messages_tokens([*messages, candidate]) + estimate_tool_tokens(
-                next_schemas
-            )
-            if used > context.input_budget:
+            if not context.fits_input([*plan.messages, candidate], next_schemas):
                 insertion.settle()
                 return False
             text = supplement
@@ -506,7 +516,8 @@ class AgentRuntime:
                 session,
                 {"type": "message", "id": new_message_id(), "turn_root": message_id, **candidate},
             )
-            messages.append(self._message_from_record(message))
+            additional_inputs.append(candidate)
+            plan.messages.append(self._message_from_record(message))
             insertion.settle(applied=True)
             if on_inserted is not None:
                 on_inserted(message["id"], text)
@@ -524,7 +535,7 @@ class AgentRuntime:
             usage.add(turn.usage)
             steps += 1
             record = self._append_assistant(session, turn, on_thinking)
-            messages.append(self._message_from_record(record))
+            plan.messages.append(self._message_from_record(record))
             if not turn.tool_calls:
                 if apply_insertion():
                     needs_wrap_up = False
@@ -542,15 +553,7 @@ class AgentRuntime:
                 latency.event(
                     "tool.finished", tool_index=index, ok=outcome.ok, elapsed_ms=outcome.duration_ms
                 )
-                complete_evidence = call.name in {"recall", "read_topic", "read_memory_source"} or (
-                    outcome.data and outcome.data.get("status") == "review_required"
-                )
-                content = (
-                    outcome.content
-                    if complete_evidence
-                    else truncate_to_tokens(outcome.content, 2000)
-                )
-                self.sessions.append(
+                saved = self.sessions.append(
                     session,
                     {
                         "type": "tool",
@@ -559,32 +562,29 @@ class AgentRuntime:
                         "name": call.name,
                         "ok": outcome.ok,
                         "duration_ms": outcome.duration_ms,
-                        "content": content,
+                        "content": outcome.content,
                         **({"turn_undo_recorded": True} if journal.has_effects() else {}),
                     },
                 )
-                messages.append({"role": "tool", "tool_call_id": call.id, "content": content})
-                # Report the outcome just before its text so the UI can pair
-                # the two without parsing the payload.
+                plan.messages.append(self._message_from_record(saved))
+                # 紧接着结果状态发送对应文本，界面即可将二者配对，
+                # 无需解析消息正文。
                 if on_tool is not None:
                     on_tool(outcome.ok)
                 emit(outcome.display)
-            # 工具结果预算随上下文窗口走；200K 窗口下 8K 会过早丢证据。
-            if compact_tool_outputs(messages, max_tokens=max(8000, config.context_window // 4)):
-                evidence.invalidate()
             latency.event("tools.finished", elapsed_ms=elapsed_ms(started))
             apply_insertion()
 
         if not completed:
             progress("Generating final answer")
             if needs_wrap_up:
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": "已达到工具调用上限。请基于以上信息直接给出最终回答，不要再调用工具。",
-                        **({"_tool_wrap_up": True} if isinstance(model, LiteLLMChatModel) else {}),
-                    }
-                )
+                wrap_up = {
+                    "role": "user",
+                    "content": "已达到工具调用上限。请基于以上信息直接给出最终回答，不要再调用工具。",
+                    **({"_tool_wrap_up": True} if isinstance(model, LiteLLMChatModel) else {}),
+                }
+                additional_inputs.append(wrap_up)
+                plan.messages.append(wrap_up)
             turn = request_model([])
             usage.add(turn.usage)
             steps += 1
@@ -651,7 +651,7 @@ class AgentRuntime:
                 record_event("catchup.failed", exc)
 
     def close(self, distill: bool = True) -> dict:
-        """Enqueue outstanding work; a switch/exit never waits for memory extraction."""
+        """将剩余工作加入队列，切换或退出时无需等待记忆提取。"""
         result = {"admitted": 0, "queued": 0, "duplicates": 0, "blocked": 0, "error": None}
         if self.session is None or self._closed:
             return result
@@ -699,8 +699,8 @@ class AgentRuntime:
         )
 
     def _ordinary_tool_tokens(self, session: Session) -> int:
-        # Attachments and file tools are scoped to a single input. An idle
-        # session's meter estimates its next ordinary request.
+        # 附件和文件工具的授权仅对单次输入有效。空闲时，
+        # 用下一次普通请求估算会话的上下文用量。
         settings = self._tool_settings()
         cached = self._meter_tools
         if cached is None or cached[0] != settings:
@@ -729,7 +729,7 @@ class AgentRuntime:
         """
         with self.service.write_lock:
             target_session = session or self.current
-            # Recheck the persisted tail while holding the same lock as append and rollback.
+            # 在追加和回滚使用的同一把锁内重新核对已保存的末尾记录。
             live = self.sessions.load(target_session.id)
             if expected_latest is not None and live.last_user_message_id() != expected_latest:
                 raise TurnUndoError(

@@ -22,6 +22,7 @@ from .base import (
     SearchFailure,
     SearchQuery,
     SearchResult,
+    truncate_fetch_content,
 )
 
 NAME = "open_websearch"
@@ -30,8 +31,9 @@ DAEMON_HINT = (
     "`npx open-websearch@latest serve`（或 `open-websearch serve`）。"
 )
 MAX_DAEMON_LIMIT = 50
-MAX_FETCH_CHARS = 8000
-MIN_FETCH_CHARS = 1000
+# 抓取服务的 HTTP 接口允许 1,000 至 200,000 个字符，省略参数时默认 30,000 个。
+DAEMON_MAX_FETCH_CHARS = 200_000
+DAEMON_MIN_FETCH_CHARS = 1000
 SEARCH_ENGINES = (
     "bing",
     "baidu",
@@ -178,10 +180,13 @@ class HttpTransport:
             body["engines"] = selected
         return self._parse(self._post("/search", body, timeout=timeout))
 
-    def fetch(self, url: str, max_chars: int) -> dict:
+    def fetch(self, url: str, max_chars: int | None) -> dict:
+        limit = DAEMON_MAX_FETCH_CHARS
+        if max_chars is not None and max_chars > 0:
+            limit = min(limit, max(DAEMON_MIN_FETCH_CHARS, max_chars))
         body = {
             "url": url,
-            "maxChars": max(MIN_FETCH_CHARS, min(max_chars, MAX_FETCH_CHARS)),
+            "maxChars": limit,
             "readability": True,
             "renderMode": "request",
         }
@@ -537,12 +542,13 @@ class OpenWebSearchProvider:
         content = _text(data.get("content"))
         if not content:
             raise ProviderError(NAME, ProviderErrorKind.BAD_RESPONSE, "open-websearch 未返回正文")
+        content, preview_truncated = truncate_fetch_content(content, query.max_chars)
         final_url = _text(data.get("finalUrl")) or query.url
         return FetchResult(
             url=query.url,
             final_url=final_url,
             title=_text(data.get("title")) or final_url,
             content=content,
-            truncated=bool(data.get("truncated")),
+            truncated=preview_truncated or bool(data.get("truncated")),
             site_name=_text(data.get("siteName")),
         )

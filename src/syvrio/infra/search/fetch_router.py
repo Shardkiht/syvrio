@@ -61,7 +61,7 @@ class FetchRouter:
     def supports_fetch(self) -> bool:
         return any("fetch" in provider.capabilities for provider in self.registry.values())
 
-    def fetch(self, url: str, max_chars: int = 4000) -> FetchResult:
+    def fetch(self, url: str, max_chars: int | None = None) -> FetchResult:
         text = url.strip()
         if not text:
             raise ValueError("抓取地址为空")

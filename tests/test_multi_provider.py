@@ -109,6 +109,8 @@ def test_agent_tool_names_and_parameters_compat(tmp_path):
     assert "search" in schemas and "fetch_web" in schemas
     fetch_params = schemas["fetch_web"]["parameters"]
     assert set(fetch_params["properties"]) == {"url", "max_chars"}
+    assert "default" not in fetch_params["properties"]["max_chars"]
+    assert "maximum" not in fetch_params["properties"]["max_chars"]
     assert fetch_params["required"] == ["url"]
 
 

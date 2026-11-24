@@ -1,7 +1,8 @@
-/* Light is the base palette; dark overrides it either through the system
-   preference or an explicit `data-theme` choice stored in the browser. */
+/* 浅色是基础配色，系统深色偏好或浏览器中明确保存的 data-theme 可覆盖它。
+    */
 :root {
   color-scheme: light;
+  --orb-glass-shade: rgb(67 91 150 / .58);
   --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC",
     "PingFang SC", "Microsoft YaHei", sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
@@ -32,15 +33,15 @@
   --radius: 12px;
   --radius-lg: 16px;
 
-  /* Reading column; the composer card uses the same width so the two align. */
+  /* 阅读区与输入框共用宽度，保持左右边缘对齐。 */
   --content: 720px;
   --chat-image-width: 192px;
-  --sidebar-w: 236px;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
     color-scheme: dark;
+    --orb-glass-shade: color-mix(in srgb, var(--accent) 24%, transparent);
     --bg: #292c32;
     --sidebar-bg: #24272d;
     --panel: #33373f;
@@ -66,6 +67,7 @@
 
 :root[data-theme="light"] {
   color-scheme: light;
+  --orb-glass-shade: rgb(67 91 150 / .58);
   --bg: #ffffff;
   --sidebar-bg: #f7f8fa;
   --panel: #ffffff;
@@ -90,6 +92,7 @@
 
 :root[data-theme="dark"] {
   color-scheme: dark;
+  --orb-glass-shade: color-mix(in srgb, var(--accent) 24%, transparent);
   --bg: #292c32;
   --sidebar-bg: #24272d;
   --panel: #33373f;
@@ -116,7 +119,7 @@
 
 html, body, #root { height: 100%; margin: 0; }
 
-/* iOS landscape must not inflate text; taps must not wait for double-tap zoom. */
+/* iOS 横屏时保留原字号，轻点无需等待双击缩放判定。 */
 html { -webkit-text-size-adjust: 100%; }
 
 body {
@@ -133,12 +136,12 @@ textarea, input, select { touch-action: manipulation; }
   --sidebar-motion: 220ms cubic-bezier(.22, .78, .22, 1);
   display: flex;
   height: 100dvh;
-  /* Set from visualViewport so the composer stays above the soft keyboard. */
+  /* 根据 visualViewport 设置高度，避免输入框被软键盘遮挡。 */
   height: var(--app-height, 100dvh);
   overflow: hidden;
 }
 
-/* ---------- Sidebar ---------- */
+/* 侧栏 */
 
 .sidebar {
   width: var(--sidebar-w);
@@ -267,7 +270,7 @@ textarea, input, select { touch-action: manipulation; }
 .archive-controls strong { overflow-wrap: anywhere; }
 .archive-panel footer { margin-top: auto; }
 
-/* A touch device has no hover state at any width (tablets, touch laptops). */
+/* 触屏设备在任何宽度下都可能没有悬停，包括平板和触屏笔记本。 */
 @media (hover: none) {
   .session-delete { opacity: 1; }
 }
@@ -287,7 +290,7 @@ textarea, input, select { touch-action: manipulation; }
 
 .sidebar-scrim { display: none; }
 
-/* ---------- Main ---------- */
+/* 主内容区 */
 
 .main {
   flex: 1;
@@ -297,8 +300,8 @@ textarea, input, select { touch-action: manipulation; }
   background: var(--bg);
 }
 
-/* Transcript and composer share one column so both stay mounted across the
-   empty → conversation transition; only their placement changes. */
+/* 会话记录与输入框共用一列，从空视图进入对话时仅调整位置，保持组件挂载。
+    */
 .thread {
   flex: 1;
   min-height: 0;
@@ -314,7 +317,7 @@ textarea, input, select { touch-action: manipulation; }
   gap: 8px;
   min-height: 52px;
   border-bottom: 1px solid var(--border);
-  /* Notch / rounded-corner inset in landscape with viewport-fit=cover. */
+  /* 使用 viewport-fit=cover 时，横屏布局需避开刘海和圆角。 */
   padding: 8px max(14px, env(safe-area-inset-right)) 8px max(14px, env(safe-area-inset-left));
 }
 
@@ -466,7 +469,7 @@ textarea, input, select { touch-action: manipulation; }
 }
 
 .connection.offline .dot { background: var(--danger); box-shadow: 0 0 0 3px var(--danger-soft); }
-/* The label stays in the DOM for assistive tech and for the offline wording. */
+/* 标签保留在 DOM 内，供辅助技术读取，并可在离线时显示相应提示。 */
 .connection-label {
   position: absolute;
   width: 1px;
@@ -501,7 +504,7 @@ textarea, input, select { touch-action: manipulation; }
   overflow-y: auto;
   padding: 20px clamp(16px, 4vw, 32px) 28px;
   scroll-behavior: smooth;
-  /* Keep scroll chaining inside the transcript; no page rubber-banding. */
+  /* 将连续滚动限制在对话记录内，避免页面回弹。 */
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
 }
@@ -554,7 +557,7 @@ textarea, input, select { touch-action: manipulation; }
   .history-loading { animation: surface-fade-in 120ms ease-out both; }
 }
 
-/* The home view is a centred hero, not an empty transcript pinned to the top. */
+/* 首页内容居中展示，不沿用对话记录从顶部开始的布局。 */
 .main.is-empty .thread { justify-content: safe center; padding-bottom: 5cqh; }
 .main.is-empty .messages { flex: 0 1 auto; overflow: hidden; padding-top: 0; }
 
@@ -564,7 +567,13 @@ textarea, input, select { touch-action: manipulation; }
   margin: 0 auto 30px;
 }
 .welcome picture { display: block; }
-.welcome img { display: block; width: 100%; height: auto; }
+.welcome img {
+  display: block;
+  width: 100%;
+  height: auto;
+  filter: drop-shadow(0 2px .5px rgba(91, 107, 132, .55))
+          drop-shadow(0 5px 4px rgba(6, 12, 24, .36));
+}
 
 .turn { max-width: var(--content); margin: 0 auto 26px; }
 .turn.user { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
@@ -667,7 +676,7 @@ textarea, input, select { touch-action: manipulation; }
 
 .stopped { color: var(--danger); font-size: 14px; padding-top: 6px; }
 
-/* ---------- Markdown ---------- */
+/* Markdown 正文 */
 
 .markdown { overflow-wrap: anywhere; }
 .markdown p { margin: 0 0 12px; }
@@ -743,10 +752,10 @@ textarea, input, select { touch-action: manipulation; }
   line-height: 1.5;
 }
 
-/* ---------- Folded chrome: reasoning, tool calls, summaries ---------- */
+/* 思考、工具调用与摘要的折叠布局 */
 
-/* Only the answer itself is always visible. Reasoning, tool calls and
-   compaction summaries collapse to a one-line pill the user can open. */
+/* 回答正文始终可见。思考、工具调用与压缩摘要默认折叠为单行，供用户展开。
+    */
 
 .fold {
   max-width: var(--content);
@@ -811,7 +820,7 @@ button.fold-summary:hover {
   line-height: 1.62;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  /* Expanded stays a bounded scroll area, never grows the transcript. */
+  /* 展开后仍在限高区域内滚动，避免撑高对话。 */
   max-height: 220px;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -819,7 +828,7 @@ button.fold-summary:hover {
 
 .thinking-text { white-space: pre-wrap; }
 
-/* Grouped tool calls: one summary row, each call listed inside. */
+/* 成组的工具调用共用一行摘要，展开后列出每次调用。 */
 .tool-item + .tool-item {
   margin-top: 8px;
   padding-top: 8px;
@@ -843,7 +852,7 @@ button.fold-summary:hover {
   overflow-wrap: anywhere;
 }
 
-/* ---------- Composer ---------- */
+/* 输入框 */
 
 .composer {
   flex: 0 0 auto;
@@ -918,7 +927,7 @@ button.fold-summary:hover {
 .composer textarea {
   display: block;
   width: 100%;
-  /* Three lines by default (line-height 1.5 em + 16px padding). */
+  /* 默认显示三行，行高为 1.5em，另有 16 像素内边距。 */
   min-height: calc(4.5em + 16px);
   max-height: 200px;
   padding: 10px 12px 6px;
@@ -929,7 +938,7 @@ button.fold-summary:hover {
   font: inherit;
   line-height: 1.5;
   resize: none;
-  /* The composer only scrolls past `max-height`; see the fit effect above. */
+  /* 输入框超过 max-height 后才滚动，见上方的高度测量逻辑。 */
   overflow-y: hidden;
   overscroll-behavior: contain;
 }
@@ -1017,7 +1026,7 @@ button.fold-summary:hover {
   font-variant-numeric: tabular-nums;
 }
 
-/* Scale the artwork while the tap target and its tooltip stay in place. */
+/* 缩放图形时保持触控区域和提示框的位置不变。 */
 .context-orb {
   position: relative;
   display: grid;
@@ -1026,8 +1035,21 @@ button.fold-summary:hover {
   place-items: center;
   overflow: hidden;
   border-radius: inherit;
-  background: var(--panel);
+  background:
+    radial-gradient(ellipse 67% 59% at 21% 19%,
+      var(--orb-glass-shade), transparent),
+    radial-gradient(circle at 40% 32%, transparent 40%, var(--accent-soft) 88%);
   pointer-events: none;
+}
+
+/* 在窗形高光对侧的球缘添加较柔和的反射光。 */
+.context-orb::after {
+  content: "";
+  position: absolute;
+  inset: 6.25%;
+  border-radius: inherit;
+  background: radial-gradient(circle at 30% 25%,
+    transparent 60%, rgb(255 255 255 / .24) 81%, transparent 96%);
 }
 
 .context-ring {
@@ -1039,43 +1061,29 @@ button.fold-summary:hover {
   pointer-events: none;
 }
 
-.context-orb::before {
-  --waterline: calc(100% - var(--context-fill));
+/* 在 32 单位的绘图坐标中，圆环宽 2 个单位。 */
+.context-liquid {
   position: absolute;
-  inset: 0 auto 0 0;
-  width: 200%;
-  content: "";
-  pointer-events: none;
-  background: linear-gradient(
-    color-mix(in srgb, var(--context-accent) 20%, var(--panel)) var(--waterline),
-    color-mix(in srgb, var(--context-accent) 38%, var(--panel)) 100%
-  );
-  /* Two matching waves let the layer move one full period without a seam. */
-  clip-path: polygon(
-    0 var(--waterline),
-    6.25% calc(var(--waterline) - 1.4px),
-    12.5% calc(var(--waterline) - 2px),
-    18.75% calc(var(--waterline) - 1px),
-    25% var(--waterline),
-    31.25% calc(var(--waterline) + 1.4px),
-    37.5% calc(var(--waterline) + 2px),
-    43.75% calc(var(--waterline) + 1px),
-    50% var(--waterline),
-    56.25% calc(var(--waterline) - 1.4px),
-    62.5% calc(var(--waterline) - 2px),
-    68.75% calc(var(--waterline) - 1px),
-    75% var(--waterline),
-    81.25% calc(var(--waterline) + 1.4px),
-    87.5% calc(var(--waterline) + 2px),
-    93.75% calc(var(--waterline) + 1px),
-    100% var(--waterline),
-    100% 100%,
-    0 100%
-  );
+  inset: 6.25%;
+  overflow: hidden;
+  border-radius: 50%;
 }
 
-.context-dial[data-fill="empty"] .context-orb::before { content: none; }
-.context-dial[data-fill="full"] .context-orb::before { clip-path: none; }
+.context-water {
+  --water-depth: color-mix(in srgb, var(--context-accent) 34%, #34416c);
+  position: absolute;
+  top: calc(100% - var(--context-fill));
+  left: 0;
+  width: 200%;
+  height: 100%;
+  overflow: visible;
+}
+
+.context-dial[data-fill="partial"] .context-water path {
+  stroke: var(--context-accent);
+  stroke-opacity: .52;
+  stroke-width: 1px;
+}
 
 @keyframes context-wave {
   to { transform: translateX(-50%); }
@@ -1087,20 +1095,21 @@ button.fold-summary:hover {
 }
 
 @media (prefers-reduced-motion: no-preference) {
-  .context-dial[data-wave="moving"] .context-orb::before {
+  .context-dial[data-wave="moving"] .context-water {
     animation: context-wave 4s linear infinite;
   }
   .context-orb { transition: scale 80ms ease-out; }
   .context-dial:active .context-orb { scale: .92; }
   .context-meter[data-compaction="running"] .context-orb { animation: context-squeeze 460ms ease-out; }
-  .context-meter[data-compaction="running"] .context-dial[data-wave="moving"] .context-orb::before {
+  .context-meter[data-compaction="running"] .context-dial[data-wave="moving"] .context-water {
     animation-duration: 1.8s;
   }
 }
 
 .context-value {
   position: relative;
-  display: inline-flex;
+  z-index: 1;
+  display: none;
   align-items: baseline;
   gap: 1px;
   font-size: 11px;
@@ -1147,7 +1156,7 @@ button.fold-summary:hover {
   .context-dial:hover + .context-detail { visibility: visible; opacity: 1; transform: none; }
 }
 
-/* Draft actions leave the primary Send/Stop control anchored on the right. */
+/* 草稿操作保持主发送或停止按钮固定在右侧。 */
 .composer .composer-secondary {
   border: 0;
   height: 30px;
@@ -1194,7 +1203,7 @@ button.fold-summary:hover {
   text-align: center;
 }
 
-/* ---------- Slash completion ---------- */
+/* 斜杠命令补全 */
 
 .command-suggestions {
   position: absolute;
@@ -1234,7 +1243,7 @@ button.fold-summary:hover {
   white-space: nowrap;
 }
 
-/* ---------- Palette, confirmation and option panels ---------- */
+/* 命令面板、确认框和选项面板 */
 
 .modal-layer {
   --modal-enter: 190ms cubic-bezier(.25, .55, .27, 1);
@@ -1248,7 +1257,7 @@ button.fold-summary:hover {
   pointer-events: none;
 }
 
-/* One backdrop per modal stack lets a panel hand off to the next without dimming twice. */
+/* 同一叠弹窗共用一层遮罩，面板切换时避免背景重复变暗。 */
 .modal-layer::before {
   content: '';
   position: absolute;
@@ -1283,7 +1292,7 @@ button.fold-summary:hover {
 .command-panel {
   width: min(560px, 100%);
   max-height: min(76vh, 620px);
-  /* dvh follows the on-screen keyboard and collapsing browser chrome. */
+  /* 使用 dvh 适配屏幕键盘和收起的浏览器工具栏。 */
   max-height: min(76dvh, 620px, 100%);
   display: flex;
   flex-direction: column;
@@ -1380,7 +1389,7 @@ button.fold-summary:hover {
 }
 .dream-panel button:disabled { opacity: .6; }
 
-/* ---------- Settings panel ---------- */
+/* 设置面板 */
 
 .settings-overlay {
   align-items: flex-start;
@@ -1710,13 +1719,6 @@ button.fold-summary:hover {
   white-space: pre-wrap;
 }
 .candidate-evidence ul { margin: 4px 0; padding-inline-start: 20px; }
-.chats-heading { display: flex; align-items: center; justify-content: space-between; }
-.chat-matches button { display: grid; gap: 4px; overflow-wrap: anywhere; }
-.chat-matches span, .search-context small { color: var(--muted); }
-.search-context { overflow: auto; }
-.search-context article { padding: 8px 12px; border-inline-start: 2px solid transparent; }
-.search-context .matched { background: var(--panel-2); border-color: var(--accent); }
-.search-context p { white-space: pre-wrap; overflow-wrap: anywhere; margin: 4px 0; }
 .pending-detail textarea {
   width: 100%;
   padding: 8px;
@@ -1847,7 +1849,7 @@ button.fold-summary:hover {
   .pending-detail textarea { font-size: 16px; }
 }
 
-/* ---------- Mobile ---------- */
+/* 移动端 */
 
 @media (max-width: 767px) {
   :root { --chat-image-width: 144px; }
@@ -1881,7 +1883,7 @@ button.fold-summary:hover {
   .session-list { overscroll-behavior-y: contain; }
   .session { min-height: 44px; }
   .sessions-toggle { display: inline-flex; }
-  /* Touch devices have no hover: the delete affordance must stay visible. */
+  /* 对没有悬停的触屏设备，删除入口须保持可见。 */
   .session-delete { opacity: 1; width: 32px; height: 32px; font-size: 18px; }
   .messages { padding: 8px 14px 20px; }
   .main.is-empty .thread { padding-bottom: 3cqh; }
@@ -1889,7 +1891,7 @@ button.fold-summary:hover {
     padding: 8px max(12px, env(safe-area-inset-right))
       max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
   }
-  /* 16px stops iOS Safari from zooming the page when an input is focused. */
+  /* 输入框使用 16 像素字号，防止 iOS Safari 聚焦时放大页面。 */
   .composer textarea, .palette-input, .provider-form input, .settings-content input {
     font-size: 16px;
   }
@@ -1902,7 +1904,7 @@ button.fold-summary:hover {
   .composer-chips { gap: 6px; margin-top: 12px; }
   .composer-chips button { padding: 6px 11px; font-size: 16px; }
   .composer-hint { display: none; }
-  /* Folded rows keep a comfortable touch height; the chevron is enough hint. */
+  /* 折叠行保留足够的触控高度，用箭头提示可以展开。 */
   .fold-summary, .fold-row { min-height: 32px; padding: 6px 12px; font-size: 14px; }
   .fold-hint { display: none; }
   .fold-body { max-height: 46vh; max-height: 46dvh; }
@@ -1912,7 +1914,7 @@ button.fold-summary:hover {
     padding: max(8px, env(safe-area-inset-top)) max(10px, env(safe-area-inset-right))
       8px max(10px, env(safe-area-inset-left));
   }
-  /* Touch targets get a size bump too, with the glyph scaled to match. */
+  /* 同步放大触控区域及其图标。 */
   .icon-button { width: 38px; height: 38px; }
   .icon-button svg { width: 22px; height: 22px; }
   .topbar-identity { flex-direction: column; align-items: flex-start; gap: 0; }
@@ -1949,8 +1951,8 @@ button.fold-summary:hover {
   }
 }
 
-/* Use the space below the header, including when the soft keyboard
-   resizes only the visual viewport. */
+/* 使用顶栏下方的可用空间，也适配软键盘仅缩小可视视口的情况。
+    */
 @container (max-height: 320px) {
   .main.is-empty .messages, .composer-chips, .composer-hint { display: none; }
   .composer { margin-top: auto; }
@@ -1971,7 +1973,7 @@ button.fold-summary:hover {
   .setting-choice { gap: 4px; padding-inline: 8px; }
 }
 
-/* Short landscape phones: dialogs must still fit above the keyboard. */
+/* 较矮的横屏手机也应能在键盘上方完整显示对话框。 */
 @media (max-height: 520px) and (orientation: landscape) {
   .main.is-empty .thread { padding-bottom: 0; }
   .overlay { --overlay-lift: 12px; }
@@ -1979,7 +1981,7 @@ button.fold-summary:hover {
   .command-palette, .command-panel, .confirm-dialog { max-height: min(92dvh, 100%); }
 }
 
-/* ---------- Visual refresh ---------- */
+/* 界面样式调整 */
 
 ::selection { background: var(--accent-soft); }
 
@@ -2000,14 +2002,28 @@ button.fold-summary:hover {
 }
 
 @media (min-width: 768px) {
+  body { font-size: 1rem; }
+  .new-chat, .new-chat-hint, .sidebar-section, .session-title, .sidebar .empty { font-size: inherit; }
   .model-info { font-size: 16px; font-weight: 500; }
   .model-info::after { content: none; }
   .model-chevron { display: block; flex: none; }
   .topbar-actions .icon-button svg { width: 24px; height: 24px; stroke-width: 2; }
-  /* The toolbar paths centre their long horizontal strokes on half units. */
+  /* 工具栏图标中较长的水平笔画居中对齐到半单位坐标。 */
   .topbar-actions .icon-button svg > * { transform: translate(.5px, .5px); }
-  /* Keep the sidebar at its reading width while giving its space back to the chat. */
-  .sidebar { margin-inline-start: 0; transition: margin-inline-start var(--sidebar-motion); }
+  /* 侧栏按阅读宽度绘制，收起时将占用的空间还给聊天区。 */
+  .sidebar { position: relative; margin-inline-start: 0; transition: margin-inline-start var(--sidebar-motion); }
+  .sidebar-divider {
+    position: absolute; inset-block: 0; inset-inline-end: -1px; width: 10px;
+    display: grid; place-items: center; cursor: col-resize; touch-action: none; user-select: none;
+  }
+  .sidebar-divider::after {
+    content: ''; width: 3px; height: 30px; border-radius: 2px; background: var(--border-strong);
+  }
+  .sidebar-divider:hover::after, .sidebar-divider:focus-visible::after, .sidebar-divider[data-dragging]::after {
+    background: var(--accent);
+  }
+  .sidebar-divider:focus-visible { outline: none; }
+  .app:has(.sidebar-divider[data-dragging]) { user-select: none; }
   .app.sidebar-collapsed .sidebar { margin-inline-start: calc(0px - var(--sidebar-w)); }
   .sessions-toggle {
     display: inline-flex;
@@ -2029,8 +2045,8 @@ button.fold-summary:hover {
   }
 }
 
-/* Typography pass: sizes and colours that complement the Markdown section
-   rather than restating it. */
+/* 此处的字号与颜色补充 Markdown 区域已有的排版规则。
+    */
 .markdown { line-height: 1.72; }
 .markdown h1 { font-size: 22px; }
 .markdown h2 { font-size: 18px; }

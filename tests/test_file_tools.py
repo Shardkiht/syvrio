@@ -1,14 +1,11 @@
 from __future__ import annotations
 
-import json
-
 import pytest
 
 from syvrio.agent.file_tools import file_handlers
 from syvrio.agent.session import SessionStore
 from syvrio.agent.tools import build_tools
 from syvrio.infra.documents import document_paths
-from syvrio.infra.tokens import estimate_tokens
 from syvrio.memory.models import Candidate
 
 pytestmark = pytest.mark.agent
@@ -31,7 +28,7 @@ def test_file_reads_are_paged_losslessly_and_scoped(service, tmp_path):
     offset = 0
     while offset is not None:
         result = handlers["read_file"]({"path": str(path), "offset": offset})
-        assert estimate_tokens(json.dumps(result, ensure_ascii=False)) < 2000
+        assert result["text"] == text[offset : offset + 4000]
         pieces.append(result["text"])
         offset = result["next_offset"]
     assert "".join(pieces) == text

@@ -15,7 +15,6 @@ from ..infra.search import (
     normalize_search_providers,
 )
 from ..infra.search.fetch_router import FetchRouter, build_fetch_router
-from ..infra.tokens import estimate_tokens, truncate_to_tokens
 from ..memory.service import MemoryService
 from ..session import Session
 from .evidence import RecallContext
@@ -405,7 +404,9 @@ def build_tools(
                     display="Fetch failed: empty url",
                 )
             try:
-                max_chars = int(arguments.get("max_chars", 4000))
+                max_chars = int(arguments["max_chars"]) if "max_chars" in arguments else None
+                if max_chars is not None and max_chars < 1:
+                    raise ValueError("max_chars 须为正整数")
                 result = fetch_entry.fetch(url, max_chars=max_chars)
             except (ProviderError, TypeError, ValueError) as exc:
                 return ToolOutcome(
@@ -442,10 +443,8 @@ def build_tools(
                         "url": {"type": "string", "description": "要抓取的公开 http(s) 链接"},
                         "max_chars": {
                             "type": "integer",
-                            "minimum": 1000,
-                            "maximum": 8000,
-                            "default": 4000,
-                            "description": "最多返回的正文字符数",
+                            "minimum": 1,
+                            "description": "仅需预览时指定最多返回的正文字符数；省略时读取服务提供的完整正文。",
                         },
                     },
                     "required": ["url"],
@@ -457,30 +456,3 @@ def build_tools(
             )
         )
     return registry
-
-
-def compact_tool_outputs(messages: list[dict], max_tokens: int = 8000) -> int:
-    """工具结果超出预算时，把较早的结果替换为占位符，保留最近两条完整结果。
-
-    预算只按工具输出计算：系统提示和历史对话不应挤占工具结果的额度，
-    否则长会话一开始就会把搜索证据压掉。
-    """
-    tool_indexes = [
-        index for index, message in enumerate(messages) if message.get("role") == "tool"
-    ]
-    tool_tokens = sum(
-        estimate_tokens(str(messages[index].get("content") or "")) for index in tool_indexes
-    )
-    if tool_tokens <= max_tokens:
-        return 0
-    removed = 0
-    for index in tool_indexes[:-2]:
-        content = str(messages[index].get("content") or "")
-        if len(content) > 200 and not content.endswith("（较早工具结果已压缩）"):
-            messages[index]["content"] = (
-                "(Earlier memory references omitted to fit the tool budget.)"
-                if content.startswith("Retrieved memories below are")
-                else truncate_to_tokens(content, 200) + "\n（较早工具结果已压缩）"
-            )
-            removed += 1
-    return removed

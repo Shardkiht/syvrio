@@ -23,6 +23,26 @@ it('warns at the server trigger and falls back to the ratio for older servers', 
   expect(warning()).toBeTruthy();
 });
 
+it('distinguishes shallow water from an empty orb and keeps exact usage in the details', () => {
+  const meter = (used: number) => <ContextMeter usage={estimate('a', used)} compaction={null} />;
+  const { rerender } = render(meter(0));
+  const dial = screen.getByRole('button', { name: /Context estimate/ });
+  expect(dial.querySelector('.context-water')).toBeNull();
+  expect(dial.dataset.wave).toBe('still');
+  let previous = 0;
+  for (const used of [1, 10, 30, 80]) {
+    rerender(meter(used));
+    const height = Number.parseFloat(dial.style.getPropertyValue('--context-fill'));
+    expect(height).toBeGreaterThan(previous);
+    expect(height).toBeGreaterThan(used / 10);
+    expect(height).toBeLessThan(20);
+    expect(dial.querySelector('.context-water')).toBeTruthy();
+    expect(dial.dataset.wave).toBe('moving');
+    expect(dial.getAttribute('aria-label')).toContain(used < 10 ? '(<1%)' : `(${used / 10}%)`);
+    previous = height;
+  }
+});
+
 it('animates between saved chats but immediately zeroes a new chat label while its water drains', () => {
   const media = window.matchMedia('(prefers-reduced-motion: no-preference)');
   vi.spyOn(window, 'matchMedia').mockReturnValue({ ...media, matches: true });

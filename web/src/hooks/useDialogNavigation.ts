@@ -7,7 +7,6 @@ type Settings = 'model' | 'thinking' | 'context' | 'providers' | 'about' | { sec
 type Dialog =
   | { kind: 'panel'; panel: CommandPanel }
   | { kind: 'palette' }
-  | { kind: 'search-chats' }
   | { kind: 'settings'; section: Settings }
   | { kind: 'confirm'; line: string; message: string; parent?: CommandPanel; triggerLabel?: string }
   | { kind: 'archive'; selected?: SessionInfo }

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 
-/** The owning panel is keyed by the item or query it displays. */
+/** 以当前展示的条目或查询作为面板的标识。 */
 export function usePanelRead<T>(initial: T | undefined, read: (signal: AbortSignal) => Promise<T>, enabled = true) {
   const [loaded, setLoaded] = useState<T>();
   const [error, setError] = useState<string | null>(null);
@@ -17,6 +17,7 @@ export function usePanelRead<T>(initial: T | undefined, read: (signal: AbortSign
     return () => controller.abort();
   }, [initial, attempt, enabled]);
   function retry() {
+    setLoaded(undefined);
     setError(null);
     setAttempt(n => n + 1);
   }

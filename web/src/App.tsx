@@ -9,7 +9,6 @@ import { PendingReview } from './components/PendingReview';
 import { SettingsPanel } from './components/SettingsPanel';
 import { SurfacePresence } from './components/SurfacePresence';
 import { Sidebar } from './components/Sidebar';
-import { ChatSearchPanel } from './components/ChatSearchPanel';
 import { SessionTitle, useSessionTitleEdits } from './components/SessionTitle';
 import { ArchivePanel } from './components/ArchivePanel';
 import { DreamPanel } from './components/DreamPanel';
@@ -93,25 +92,23 @@ export default function App() {
   const [theme, setTheme] = useState<ThemeMode>(readTheme);
   const themeBooted = useRef(false);
   useEffect(() => {
-    // The first run only restores what was stored; persisting starts on a real
-    // choice, so an untouched profile keeps no theme key at all.
+    // 首次加载只恢复已保存的选择，用户主动选择后才写入。
+    // 未设置主题的用户不会多出主题键。
     applyTheme(theme, themeBooted.current);
     themeBooted.current = true;
-    // On "auto" a live OS switch must repaint the chrome without a reload.
+    // 自动模式下，系统主题变更应即时更新界面，无需重载。
     if (theme !== 'auto') return;
     return watchSystemTheme(() => applyTheme('auto', false));
   }, [theme]);
 
-  // iOS Safari overlays the keyboard on the layout viewport, so `vh`/`dvh`
-  // alone leaves the composer hidden behind it. Track the visual viewport and
-  // hand the usable height to CSS; Android's resizes-content path agrees.
+  // 在 iOS Safari 中，软键盘覆盖布局视口，仅用 vh 或 dvh 会挡住输入框。
+  // 跟踪可视视口并将可用高度传给 CSS，同时兼容 Android 的 resizes-content 行为。
   useEffect(() => {
     const viewport = window.visualViewport;
     if (!viewport) return;
     const root = document.documentElement;
     const apply = () => {
-      // Pinch-zoom shrinks the visual viewport too; leave the layout alone so
-      // magnification still pans instead of squashing the whole app.
+      // 双指缩放也会缩小可视视口，此时保留原布局，让用户能平移查看放大后的内容。
       if (viewport.scale !== 1) return;
       root.style.setProperty('--app-height', `${Math.round(viewport.height)}px`);
     };
@@ -127,7 +124,7 @@ export default function App() {
   const panel = dialog?.kind === 'panel' ? dialog.panel : null;
   const deleteTarget = dialog?.kind === 'delete' ? dialog.target : null;
 
-  // One global listener; every binding lives in state/shortcuts.ts.
+  // 只注册一个全局监听器，快捷键绑定集中在 state/shortcuts.ts。
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || isComposing(event)) return;
@@ -170,7 +167,6 @@ export default function App() {
           currentId={chat.sessionId}
           open={sidebarOpen}
           onNew={() => void newSession()}
-          onSearch={() => openDialog({ kind: 'search-chats' })}
           onSelect={(id) => void selectSession(id)}
           onArchive={(session, trigger) => openDialog({ kind: 'archive-confirm', session }, trigger)}
           onOpenArchive={() => openDialog({ kind: 'archive' })}
@@ -319,8 +315,6 @@ export default function App() {
             }}
           />
         )}
-        {dialog?.kind === 'search-chats' && <ChatSearchPanel key="search-chats" onClose={closeDialog}
-          onOpen={id => { closeDialog(); void selectSession(id); }} />}
         {dialog?.kind === 'palette' && (
           <CommandPalette
             key="palette"

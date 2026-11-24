@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState, type CSSProperties, type MutableRefObject } from 'react';
+import { useId, useLayoutEffect, useRef, useState, type CSSProperties, type MutableRefObject } from 'react';
 import type { CompactionPhase, ContextUsage } from '../types';
 
 function formatPercent(value: number) {
@@ -29,14 +29,14 @@ function useMeterReading(target: number | null | undefined, newChat: boolean, re
       setShown(value);
     };
     if (target === null) { show(null); return; }
-    if (target === undefined) return; // Navigation is awaiting the target session's estimate.
+    if (target === undefined) return; // 切换时等待目标会话返回用量估算。
     const from = reading.current;
     const to = { percent: target, fill: target };
     if (from?.percent === target && from.fill === target) return;
     const motion = window.matchMedia?.('(prefers-reduced-motion: no-preference)');
     if (!from || !motion?.matches) { show(to); return; }
 
-    // A blank chat is already at zero. Only the water drains from the previous level.
+    // 新会话的用量已经归零，只有水位需要从旧高度下降。
     const startPercent = newChat ? target : from.percent;
     if (startPercent !== from.percent) show({ percent: startPercent, fill: from.fill });
     const start = performance.now();
@@ -68,6 +68,11 @@ export function ContextMeter({ usage, compaction, reading, newChat = false }: {
   const orb = useRef<HTMLSpanElement>(null);
   const rebound = useRef<Animation | undefined>(undefined);
   const fill = shown?.fill ?? 0;
+  // 用量较低时加深球底的可见水层。
+  const waterHeight = fill < 20 ? Math.sqrt(fill * 20) : fill;
+  const waveControl = Math.min(4, 32 * waterHeight / 100);
+  const waterId = useId();
+  const reflectionId = useId();
   const nearLimit = usage && usage.limit > 0 &&
     usage.used >= (usage.compaction_trigger_tokens ?? usage.limit * usage.compact_threshold);
   const waveCeiling = compaction === 'running' ? 99 : 85;
@@ -80,8 +85,8 @@ export function ContextMeter({ usage, compaction, reading, newChat = false }: {
       <button type="button" className="context-dial"
         aria-label={`Context estimate: ${detail}`}
         data-fill={fill === 0 ? 'empty' : fill === 100 ? 'full' : 'partial'}
-        data-wave={fill >= 10 && fill <= waveCeiling ? 'moving' : 'still'}
-        style={{ '--context-fill': `${fill}%` } as CSSProperties}
+        data-wave={fill > 0 && fill <= waveCeiling ? 'moving' : 'still'}
+        style={{ '--context-fill': `${waterHeight}%` } as CSSProperties}
         onPointerDown={() => rebound.current?.cancel()}
         onClick={() => {
           if (!window.matchMedia?.('(prefers-reduced-motion: no-preference)').matches) return;
@@ -92,7 +97,31 @@ export function ContextMeter({ usage, compaction, reading, newChat = false }: {
           );
         }}>
         <span className="context-orb" ref={orb} aria-hidden="true">
+          {fill > 0 && (
+            <span className="context-liquid">
+              <svg className="context-water" viewBox="0 0 64 32" preserveAspectRatio="none" focusable="false">
+                <defs>
+                  <linearGradient id={waterId} gradientUnits="userSpaceOnUse" x1="0" x2="0" y1="0" y2={32 * waterHeight / 100}>
+                    <stop stopColor="#b0d5fa" stopOpacity=".32" />
+                    <stop offset=".34" stopColor="#a8c7f6" stopOpacity=".22" />
+                    <stop offset="1" stopColor="var(--water-depth)" stopOpacity=".64" />
+                  </linearGradient>
+                </defs>
+                {/* 两个波浪周期共用同一轮廓，让波峰随水面移动。 */}
+                <path d={fill === 100 ? 'M0 0h64v36H0Z' : `M0 0q8 -${waveControl} 16 0t16 0t16 0t16 0v36H0Z`}
+                  fill={`url(#${waterId})`} vectorEffect="non-scaling-stroke" />
+              </svg>
+            </span>
+          )}
           <svg className="context-ring" viewBox="0 0 32 32" fill="none" focusable="false">
+            <defs>
+              <linearGradient id={reflectionId} x1="0" y1="0" x2=".55" y2="1">
+                <stop offset=".18" stopColor="white" stopOpacity=".96" />
+                <stop offset="1" stopColor="white" stopOpacity=".28" />
+              </linearGradient>
+            </defs>
+            <path fill={`url(#${reflectionId})`}
+              d="M5.7 12.4c.8-3.9 4.7-7.4 9.5-7.9l-.9 3.4c-3.3.7-5.6 2.2-7.7 5.2Z" />
             <circle cx="16" cy="16" r="15" stroke="currentColor" strokeWidth="2" />
           </svg>
           <span className="context-value">

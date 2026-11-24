@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import socket
 import subprocess
 import tempfile
 import time
@@ -12,9 +13,9 @@ import httpx
 
 from .base import (
     DEFAULT_FAKE_IP_CIDRS,
+    DEFAULT_FAKE_IPV4,
     ProviderError,
     ProviderErrorKind,
-    order_fake_ip_cidrs,
 )
 from .open_websearch import NAME, npx_command
 
@@ -88,6 +89,21 @@ def ensure_daemon(
 ensure_search_daemon = ensure_daemon
 
 
+def _daemon_fake_ip_cidrs() -> str:
+    configured = os.environ.get("FAKE_IP_CIDRS")
+    if configured is not None:
+        return configured
+
+    # open-websearch 2.2 遇到首个地址族不同的网段就会停止匹配。
+    # UDP 套接字在此只查询系统是否有可用路由，无需发送数据包。
+    try:
+        with socket.socket(socket.AF_INET6, socket.SOCK_DGRAM) as probe:
+            probe.connect(("2001:2::1", 9))
+    except OSError:
+        return DEFAULT_FAKE_IPV4
+    return DEFAULT_FAKE_IP_CIDRS
+
+
 def _spawn_daemon(command: list[str], log_path: Path) -> None:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     kwargs: dict = {}
@@ -106,10 +122,7 @@ def _spawn_daemon(command: list[str], log_path: Path) -> None:
 
     try:
         env = {**os.environ, "OPEN_WEBSEARCH_QUIET_STARTUP": "true"}
-        # 两层校验必须共用合成 DNS 段，否则本地通过后仍会被 daemon 拒绝。
-        # 这里不只是补齐默认值：daemon 的豁免判定对顺序敏感（IPv4 段在前会让
-        # IPv6 地址直接失败），所以无论用户是否自定义都重新排一次序。
-        env["FAKE_IP_CIDRS"] = order_fake_ip_cidrs(env.get("FAKE_IP_CIDRS", DEFAULT_FAKE_IP_CIDRS))
+        env["FAKE_IP_CIDRS"] = _daemon_fake_ip_cidrs()
         with open(log_path, "ab") as log:
             subprocess.Popen(
                 command,

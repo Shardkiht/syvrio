@@ -697,7 +697,7 @@ class SearchRouter:
             slots = [()]
         return tuple(slots)
 
-    def fetch(self, url: str, max_chars: int = 4000) -> FetchResult:
+    def fetch(self, url: str, max_chars: int | None = None) -> FetchResult:
         """抓取搜索结果正文；兼容入口，实际调度委托独立 FetchRouter。"""
         if self._fetch_router is None:
             self._fetch_router = FetchRouter(

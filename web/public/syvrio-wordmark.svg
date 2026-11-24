@@ -1,8 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 224 66" role="img" aria-labelledby="title">
   <title id="title">Syvrio</title>
   <style>
-    svg { color: #343943; }
-    @media (prefers-color-scheme: dark) { svg { color: #dce0e7; } }
+    svg { color: #343943; --water-tint: #3a56d4; }
+    @media (prefers-color-scheme: dark) { svg { color: #dce0e7; --water-tint: #aabaff; } }
     @keyframes drift {
       to { transform: translateX(-32px); }
     }
@@ -13,10 +13,16 @@
     #still:target > g { animation: none; }
   </style>
   <defs>
-    <linearGradient id="water" x2="0" y2="100%">
-      <stop stop-color="#b5deff"/>
-      <stop offset="1" stop-color="#6cb6ff"/>
+    <linearGradient id="water" gradientUnits="userSpaceOnUse" x1="0" y1="29" x2="0" y2="46">
+      <stop stop-color="#b0d5fa" stop-opacity=".32"/>
+      <stop offset=".34" stop-color="#a8c7f6" stop-opacity=".22"/>
+      <stop offset="1" stop-color="color-mix(in srgb, var(--water-tint) 34%, #34416c)" stop-opacity=".64"/>
     </linearGradient>
+    <radialGradient id="glass" cx=".33" cy=".25" r=".82">
+      <stop stop-color="white" stop-opacity=".42"/>
+      <stop offset=".46" stop-color="var(--water-tint)" stop-opacity=".04"/>
+      <stop offset="1" stop-color="var(--water-tint)" stop-opacity=".12"/>
+    </radialGradient>
     <clipPath id="orb">
       <ellipse cx="163.5" cy="32.75" rx="14.3" ry="14.7"/>
     </clipPath>
@@ -34,8 +40,9 @@
     <path d="M110.6 17h3.8v7.1c2.8-5.3 7.2-8 13.1-7.9v4.1h-1c-7.4 0-12.1 5.4-12.1 13.8V49h-3.8Z"/>
     <path d="M134.6 17h3.8v32h-3.8z"/>
     <g id="still" clip-path="url(#orb)">
-      <g class="wave-back"><use href="#wave" x="-8" y="-0.8" fill="#6cb6ff" opacity=".32"/></g>
-      <g class="wave-front"><use href="#wave" fill="url(#water)"/></g>
+      <ellipse cx="163.5" cy="32.75" rx="14.3" ry="14.7" fill="url(#glass)"/>
+      <g class="wave-back"><use href="#wave" x="-8" y="-1.2" fill="var(--water-tint)" opacity=".11"/></g>
+      <g class="wave-front"><use href="#wave" fill="url(#water)" stroke="var(--water-tint)" stroke-opacity=".52" stroke-width=".85"/></g>
     </g>
     <path fill-rule="evenodd" d="M163.5 16c9.6 0 16.5 7.1 16.5 16.7s-6.9 16.8-16.5 16.8S147 42.3 147 32.7 153.9 16 163.5 16Zm0 3.7c-7.2 0-12.4 5.5-12.4 13s5.2 13.1 12.4 13.1 12.4-5.6 12.4-13.1-5.2-13-12.4-13Z"/>
     <circle cx="136.5" cy="8.6" r="2.6" fill="#6cb6ff"/>

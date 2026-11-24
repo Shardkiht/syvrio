@@ -162,7 +162,7 @@ function installFetch(overrides: Record<string, (init?: RequestInit) => Response
   return calls;
 }
 
-/** Capture POST /api/commands while keeping GET /api/commands serving the catalog. */
+/** 拦截 POST /api/commands，同时让 GET /api/commands 继续提供命令目录。 */
 function spyCommands(
   respond: (body: { line: string; confirmed: boolean }) => CommandResponse,
 ) {
@@ -202,7 +202,7 @@ function captureScrolling() {
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
-  // restore the no-op from src/test/setup.ts (captureScrolling replaces it)
+  // 恢复 src/test/setup.ts 中被 captureScrolling 替换的空实现。
   Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
     configurable: true,
     writable: true,
@@ -371,7 +371,7 @@ describe('Web client interactions', () => {
     expect(screen.getByRole('button', { name: 'Context estimate: 0 / 4,000 tokens (0%)' }).textContent).toBe('0%');
   });
 
-  it('shows usage percentages and starts the context wave at 10% used', async () => {
+  it('keeps the context wave moving when switching to a shallow water level', async () => {
     const sessions = [
       { ...SESSIONS[0], id: 's-10', title: 'Ten percent' },
       { ...SESSIONS[0], id: 's-9', title: 'Nine percent' },
@@ -405,16 +405,17 @@ describe('Web client interactions', () => {
     fireEvent.click(screen.getByTestId('session-s-10'));
     const ten = await screen.findByRole('button', { name: /Context estimate: 400 \/ 4,000 tokens/ });
     expect(ten.textContent).toBe('10%');
+    const previousWaterHeight = ten.style.getPropertyValue('--context-fill');
     expect(ten.getAttribute('data-wave')).toBe('moving');
 
     fireEvent.click(screen.getByTestId('session-s-9'));
     const loading = await screen.findByRole('button', { name: /Context estimate: Loading estimate/ });
     expect(loading.textContent).toBe('10%');
-    expect(loading.style.getPropertyValue('--context-fill')).toBe('10%');
+    expect(loading.style.getPropertyValue('--context-fill')).toBe(previousWaterHeight);
     await act(async () => releaseEstimate());
     const nine = await screen.findByRole('button', { name: /Context estimate: 360 \/ 4,000 tokens/ });
     expect(nine.textContent).toBe('9%');
-    expect(nine.getAttribute('data-wave')).toBe('still');
+    expect(nine.getAttribute('data-wave')).toBe('moving');
   });
 
   it('sends a message and streams the markdown reply', async () => {
@@ -513,7 +514,7 @@ describe('Web client interactions', () => {
     await ready();
     send('recall something');
     await waitFor(() => expect(screen.getByTestId('tool-event').textContent).toContain('recall'));
-    // The summary row carries name and state; the result stays collapsed.
+    // 摘要行展示工具名和状态，结果保持折叠。
     expect(screen.getByTestId('tool-event').textContent).toContain('Done');
     expect(screen.getByTestId('tool-event').textContent).not.toContain('1 fact');
     expect(screen.queryByTestId('tool-body')).toBeNull();
@@ -772,7 +773,7 @@ describe('Web client interactions', () => {
     await ready();
     send('hi');
     await waitFor(() => expect(screen.getByTestId('error-banner').textContent).toContain('Model unavailable'));
-    // A 500 means the server is reachable; only a transport failure is offline.
+    // HTTP 500 表示服务器仍可访问，只有传输失败才视为离线。
     expect(screen.getByTestId('connection').textContent).toContain('Connected');
   });
 
@@ -1016,17 +1017,24 @@ describe('Slash commands and shortcuts', () => {
     });
     render(<App />);
     await ready();
-    fireEvent.click(screen.getByRole('button', { name: 'Search chats' }));
-    const panel = within(await screen.findByRole('dialog', { name: 'Search chats' }));
+    const panel = within(screen.getByTestId('sidebar'));
+    expect(panel.getByRole('searchbox', { name: 'Search chats' })).not.toBe(document.activeElement);
     fireEvent.change(panel.getByRole('searchbox'), { target: { value: 'locker' } });
-    fireEvent.click(panel.getByRole('button', { name: 'Search' }));
-    const result = await panel.findByRole('button', { name: /Earlier chat.*locker B-417/ });
+    const result = await panel.findByRole('button', { name: /Earlier chat.*locker.*B-417/ });
     expect(context).not.toHaveBeenCalled();
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(panel.queryByTestId('session-s-1')?.closest('[hidden]')).toBeTruthy();
     fireEvent.click(result);
-    expect((await panel.findByText('The blue locker B-417 was reserved.')).closest('article')?.classList.contains('matched')).toBe(true);
+    const matchingText = await panel.findByText('locker', { selector: 'article mark' });
+    expect(matchingText.closest('article.matched')?.textContent).toContain('The blue locker B-417 was reserved.');
     expect(panel.getByText('Understood.')).toBeTruthy();
     fireEvent.click(panel.getByRole('button', { name: 'Back' }));
     expect((panel.getByRole('searchbox') as HTMLInputElement).value).toBe('locker');
+    expect(document.activeElement).toBe(result);
+    fireEvent.keyDown(result, { key: 'Escape' });
+    expect(panel.getByRole<HTMLInputElement>('searchbox').value).toBe('');
+    expect(panel.getByTestId('session-s-1').closest('[hidden]')).toBeNull();
+    expect(document.activeElement).toBe(panel.getByRole('searchbox'));
   });
 
   it('selects a pending candidate once, edits it, and refreshes after confirmed writes', async () => {
@@ -1591,7 +1599,7 @@ describe('Slash commands and shortcuts', () => {
 
     const input = screen.getByTestId('composer-input') as HTMLTextAreaElement;
     fireEvent.change(input, { target: { value: '/status' } });
-    // Dismiss completions without letting Escape stop the generation.
+    // Escape 关闭补全列表时，保留正在生成的回复。
     fireEvent.keyDown(input, { key: 'Escape' });
     expect(screen.queryByTestId('command-suggestions')).toBeNull();
     fireEvent.keyDown(input, { key: 'Enter' });
@@ -1750,7 +1758,7 @@ describe('Session archive', () => {
     fireEvent.click(screen.getByRole('button', { name: 'New chat' }));
     await waitFor(() => expect(calls).toContain('POST /api/sessions'));
     expect(within(screen.getByTestId('message-list')).getByRole('heading', { name: 'Syvrio', level: 1 })).toBeTruthy();
-    // No extra row: the session file only appears with the first message.
+    // 不额外显示空行，首条消息发出后才出现会话文件。
     expect(document.querySelectorAll('.session-row').length).toBe(SESSIONS.length);
   });
 

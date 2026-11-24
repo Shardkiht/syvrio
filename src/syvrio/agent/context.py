@@ -30,8 +30,8 @@ class ContextPlan:
 
 
 def estimate_tool_tokens(schemas: list[dict]) -> int:
-    # Providers encode tools differently. Count the complete definitions we send
-    # using compact JSON, with no overhead when a request has no tools.
+    # 不同供应商的工具编码各异，按实际发送的完整工具定义估算紧凑 JSON 的大小。
+    # 请求未携带工具时，此项开销为零。
     return (
         estimate_tokens(json.dumps(schemas, ensure_ascii=False, separators=(",", ":")))
         if schemas
@@ -40,7 +40,7 @@ def estimate_tool_tokens(schemas: list[dict]) -> int:
 
 
 def _context_block(role: str, template: str, text: str, budget: int) -> list[dict]:
-    """Fit optional content to this request while preserving its role and delimiters."""
+    """在保留角色和分隔符的前提下，将可选内容裁剪到本次请求的预算内。"""
     if not text.strip() or budget <= 0:
         return []
     body_budget = estimate_tokens(text)
@@ -95,8 +95,8 @@ def records_to_messages(records: list[dict]) -> list[dict]:
     pending: dict[str, None] = {}
 
     def finish_tool_batch() -> None:
-        # A process may stop after a tool has run but before its result is
-        # saved. Complete the request history without rerunning the tool.
+        # 进程可能在工具已执行、结果尚未保存时退出。
+        # 此时补全请求历史，避免重复执行工具。
         for call_id in pending:
             messages.append(
                 {
@@ -146,6 +146,11 @@ class ContextManager:
     def trigger_tokens(self) -> int:
         return int(self.input_budget * self.config.compact_threshold)
 
+    def fits_input(self, messages: list[dict], schemas: list[dict]) -> bool:
+        return (
+            estimate_messages_tokens(messages) + estimate_tool_tokens(schemas) <= self.input_budget
+        )
+
     def check_input_budget(self, used: int, tool_tokens: int) -> None:
         if used > self.input_budget:
             raise ChatModelError(
@@ -172,22 +177,31 @@ class ContextManager:
         memory_context: str = "",
         on_compaction: Callable[[CompactionPhase], None] | None = None,
         tool_tokens: int = 0,
+        *,
+        active_plan: ContextPlan | None = None,
+        additional_inputs: list[dict] | None = None,
     ) -> ContextPlan:
-        history = [
-            record
-            for record in session.records_after_summary()
-            if current_id is None or record.get("id") != current_id
-        ]
+        if active_plan is not None:
+            used = tool_tokens + estimate_messages_tokens(active_plan.messages)
+            if used < self.trigger_tokens:
+                self.check_input_budget(used, tool_tokens)
+                return active_plan
+
+        history = session.records_after_summary()
+        if active_plan is None and current_id is not None:
+            history = [record for record in history if record.get("id") != current_id]
         summary_text = session.summary_text()
         system = [{"role": "system", "content": system_prompt}]
         current = [{"role": "user", "content": current_text}] if current_text else []
+        current.extend(additional_inputs or ())
         base_tokens = tool_tokens + estimate_messages_tokens(system + current)
         self.check_input_budget(base_tokens, tool_tokens)
         references = _context_block(
             "user", MEMORY_TEMPLATE, memory_context, self.input_budget - base_tokens
         )
         base_tokens += estimate_messages_tokens(references)
-        history_messages = records_to_messages(history)
+        # 运行中的请求到达这里时，已超过会话阈值。
+        history_messages = records_to_messages(history) if active_plan is None else []
         history_tokens = estimate_messages_tokens(history_messages)
         summary_tokens = (
             estimate_messages_tokens(
@@ -199,11 +213,14 @@ class ContextManager:
         compacted_records = 0
         events: list[str] = []
 
-        if history and base_tokens + history_tokens + summary_tokens >= self.trigger_tokens:
+        if history and (
+            active_plan is not None
+            or base_tokens + history_tokens + summary_tokens >= self.trigger_tokens
+        ):
             if on_compaction is not None:
                 on_compaction("running")
             try:
-                summary_text, events = self._summarize(session, history, summary_text)
+                summary_text, events = self._summarize(session, history, summary_text, current_id)
             except Exception:
                 if on_compaction is not None:
                     on_compaction("failed")
@@ -221,18 +238,19 @@ class ContextManager:
             self.input_budget - base_tokens - history_tokens,
         )
         messages = system + summary + history_messages + references + current
-
+        used = tool_tokens + estimate_messages_tokens(messages)
+        self.check_input_budget(used, tool_tokens)
         return ContextPlan(
             messages=messages,
             compacted=bool(compacted_records),
             evicted_records=compacted_records,
             summary=summary_text,
-            estimated_tokens=tool_tokens + estimate_messages_tokens(messages),
+            estimated_tokens=used,
             events=events,
         )
 
     def _summarize(
-        self, session: Session, evicted: list[dict], previous: str
+        self, session: Session, evicted: list[dict], previous: str, active_turn_id: str | None
     ) -> tuple[str, list[str]]:
         events: list[str] = []
         pending_ids = {record["id"] for record in session.undistilled_messages()}
@@ -242,6 +260,7 @@ class ContextManager:
             if record.get("type") == "message"
             and record.get("role") == "user"
             and record.get("id") in pending_ids
+            and (record.get("turn_root") or record["id"]) != active_turn_id
         ]
         source = transcript(evicted)
         if isinstance(self.summarizer, LLMSummarizer):

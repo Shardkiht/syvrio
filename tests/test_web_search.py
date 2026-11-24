@@ -410,7 +410,7 @@ def test_agent_fetch_tool_uses_config_fetch_router(tmp_path, monkeypatch):
     class ConfigFetchRouter:
         supports_fetch = True
 
-        def fetch(self, url, max_chars=4000):
+        def fetch(self, url, max_chars=None):
             return FetchResult(url, url, "Page", "来自独立 fetch 配置")
 
     config = Config(
@@ -490,8 +490,18 @@ def test_search_sends_configured_and_per_query_engines():
     assert bodies[1]["engines"] == ["sogou"]
 
 
-def test_fetch_clamps_max_chars_and_uses_fetch_timeout():
+@pytest.mark.parametrize(
+    ("requested", "wire_limit", "article_length"),
+    [
+        (None, 200_000, 40_000),
+        (500, 1000, 750),
+        (12_000, 12_000, 15_000),
+        (250_000, 200_000, 210_000),
+    ],
+)
+def test_fetch_respects_daemon_protocol_and_optional_preview(requested, wire_limit, article_length):
     seen = {}
+    article = "a" * (article_length - 3) + "END"
 
     def handler(request):
         seen["body"] = json.loads(request.content)
@@ -504,8 +514,8 @@ def test_fetch_clamps_max_chars_and_uses_fetch_timeout():
                     "url": "https://example.com/news",
                     "finalUrl": "https://example.com/news",
                     "title": "News",
-                    "content": "正文",
-                    "truncated": False,
+                    "content": article[:wire_limit],
+                    "truncated": len(article) > wire_limit,
                     "siteName": "Example",
                 },
                 "error": None,
@@ -514,9 +524,11 @@ def test_fetch_clamps_max_chars_and_uses_fetch_timeout():
         )
 
     provider = mock_provider(handler, fetch_timeout=12.0)
-    provider.fetch(FetchQuery("https://example.com/news", 500))
+    page = provider.fetch(FetchQuery("https://example.com/news", requested))
 
-    assert seen["body"]["maxChars"] == 1000
+    assert page.content == article[:wire_limit][:requested]
+    assert page.truncated == (len(page.content) < len(article))
+    assert seen["body"]["maxChars"] == wire_limit
     assert seen["timeout"]["read"] == 12.0
 
 
@@ -1237,37 +1249,39 @@ def test_spawn_daemon_hides_console_window(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "configured",
-    [None, "", "203.0.113.0/24", "198.18.0.0/15,2001:2::/48", "2001:2::/48, 198.18.0.0/15"],
+    ("configured", "ipv6_route", "expected"),
+    [
+        (None, False, "198.18.0.0/15"),
+        (None, True, "2001:2::/48,198.18.0.0/15"),
+        ("", False, ""),
+        ("198.18.0.0/16,2001:2::/64", True, "198.18.0.0/16,2001:2::/64"),
+        ("2001:2::/64,198.18.0.0/16", False, "2001:2::/64,198.18.0.0/16"),
+    ],
 )
-def test_spawn_daemon_shares_fake_dns_policy(tmp_path, monkeypatch, configured):
-    from syvrio.infra.search.base import (
-        DEFAULT_FAKE_IP_CIDRS,
-        order_fake_ip_cidrs,
-    )
+def test_spawn_daemon_uses_routed_family_and_honors_explicit_order(
+    tmp_path, monkeypatch, configured, ipv6_route, expected
+):
+    from unittest.mock import MagicMock
 
-    captured = {}
     if configured is None:
         monkeypatch.delenv("FAKE_IP_CIDRS", raising=False)
     else:
         monkeypatch.setenv("FAKE_IP_CIDRS", configured)
+    socket_factory = MagicMock()
+    connect = socket_factory.return_value.__enter__.return_value.connect
+    if not ipv6_route:
+        connect.side_effect = OSError("no IPv6 route")
+    monkeypatch.setattr(daemon_module.socket, "socket", socket_factory)
+    captured = {}
     monkeypatch.setattr(
-        daemon_module.subprocess,
-        "Popen",
-        lambda command, **kwargs: captured.update(kwargs),
+        daemon_module.subprocess, "Popen", lambda command, **kwargs: captured.update(kwargs)
     )
     daemon_module._spawn_daemon(["unused"], tmp_path / "daemon.log")
-    expected = order_fake_ip_cidrs(configured) if configured is not None else DEFAULT_FAKE_IP_CIDRS
     assert captured["env"]["FAKE_IP_CIDRS"] == expected
-
-
-def test_order_fake_ip_cidrs_puts_ipv6_first():
-    """open-websearch 2.2.0 的 some() 遇到 IPv4 段会抛错并吞掉，IPv6 必须先匹配。"""
-    from syvrio.infra.search.base import DEFAULT_FAKE_IP_CIDRS, order_fake_ip_cidrs
-
-    assert order_fake_ip_cidrs("198.18.0.0/15,2001:2::/48") == "2001:2::/48,198.18.0.0/15"
-    assert order_fake_ip_cidrs(" 198.18.0.0/15 , ,2001:2::/48 ") == ("2001:2::/48,198.18.0.0/15")
-    assert DEFAULT_FAKE_IP_CIDRS.startswith("2001:2::/48")
+    if configured is None:
+        connect.assert_called_once_with(("2001:2::1", 9))
+    else:
+        socket_factory.assert_not_called()
 
 
 def test_disabled_search_does_not_register_tool(tmp_path):
@@ -1443,11 +1457,49 @@ def test_agent_search_tool_rejects_unknown_search_engine(tmp_path):
     assert provider.calls == 0
 
 
+def test_long_fetch_reaches_model_and_session_with_tail_intact(tmp_path, monkeypatch, public_dns):
+    from test_agent import FakeChatModel, build_runtime
+
+    from syvrio.infra.search.anysearch import AnySearchFetchProvider
+    from syvrio.llm import AssistantTurn, ToolCall
+
+    url = "https://example.com/article"
+    article = "source " * 5_000 + "END OF SOURCE"
+    response = {"code": 0, "data": {"url": url, "title": "Article", "content": article}}
+    provider = AnySearchFetchProvider(
+        "",
+        client_factory=lambda: httpx.Client(
+            transport=httpx.MockTransport(lambda request: httpx.Response(200, json=response))
+        ),
+    )
+    router = FetchRouter({"anysearch": provider})
+    monkeypatch.setattr("syvrio.agent.tools.build_fetch_router", lambda *args: router)
+    calls = [
+        ToolCall("whole", "fetch_web", {"url": url}),
+        ToolCall("preview", "fetch_web", {"url": url, "max_chars": 12_000}),
+    ]
+    model = FakeChatModel([AssistantTurn(tool_calls=calls), AssistantTurn(content="Done")])
+    runtime, _ = build_runtime(tmp_path, model)
+    runtime.config.auto_recall = 0
+    assert not runtime.ask("Read the entire source, then get a preview.").compacted
+
+    sent = [m["content"] for m in model.calls[1][0] if m["role"] == "tool"]
+    saved = [
+        r["content"]
+        for r in runtime.sessions.load(runtime.current.id).records
+        if r["type"] == "tool"
+    ]
+    assert sent == saved
+    full, preview = [json.loads(content.removeprefix(SEARCH_NOTICE + "\n")) for content in sent]
+    assert (full["content"], full["truncated"]) == (article, False)
+    assert (preview["content"], preview["truncated"]) == (article[:12_000], True)
+
+
 def test_agent_fetch_tool_returns_page_content(tmp_path):
     class FetchRouter:
         supports_fetch = True
 
-        def fetch(self, url, max_chars=4000):
+        def fetch(self, url, max_chars=None):
             return FetchResult(url, url, "Page", "发布日期 2026-09-21", False, "Example")
 
     config = Config(

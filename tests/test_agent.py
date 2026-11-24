@@ -1351,44 +1351,40 @@ def test_coalesced_requests_keep_the_latest_original_message_boundary(tmp_path, 
     assert [r["id"] for r in runtime.sessions.load(session.id).undistilled_messages()] == ["c"]
 
 
-def test_compact_tool_outputs_budget_ignores_system_and_history():
-    from syvrio.agent.tools import compact_tool_outputs
+def test_long_search_results_share_the_whole_session_window(tmp_path, monkeypatch):
+    from syvrio.agent.tools import ToolOutcome, ToolRegistry, ToolSpec
+    from syvrio.infra.tokens import estimate_tokens
 
-    messages = [
-        {"role": "system", "content": "系统提示" * 5000},
-        {"role": "tool", "content": "a" * 400},
-        {"role": "tool", "content": "b" * 400},
-        {"role": "tool", "content": "c" * 400},
+    # 三项都超过 2K，合计超过 50K，但仍能一起放入 200K 窗口。
+    results = [
+        json.dumps({"text": " ref" * 34_000, "url": f"https://example.org/{i}"}) for i in range(3)
     ]
-
-    # 系统提示再长也不该触发工具结果压缩；只有工具输出本身超预算才压缩。
-    assert compact_tool_outputs(messages, max_tokens=1000) == 0
-    assert compact_tool_outputs(messages, max_tokens=100) == 1
-    assert "较早工具结果已压缩" in messages[1]["content"]
-
-
-def test_tool_output_budget_scales_with_context_window(tmp_path, monkeypatch):
-    captured = {}
-
-    def fake_compact(messages, max_tokens=8000):
-        captured["budget"] = max_tokens
-        return 0
-
-    monkeypatch.setattr("syvrio.agent.runtime.compact_tool_outputs", fake_compact)
-    model = FakeChatModel(
-        [
-            AssistantTurn(
-                tool_calls=[ToolCall(id="c1", name="recall", arguments={"query": "清淡"})]
-            ),
-            AssistantTurn(content="好"),
-        ]
+    assert 100_000 < sum(map(estimate_tokens, results)) < 110_000
+    registry = ToolRegistry()
+    registry.register(
+        ToolSpec(
+            "search",
+            "Search",
+            {},
+            lambda args: ToolOutcome(True, results[args["index"]], "searched"),
+        )
     )
+    monkeypatch.setattr("syvrio.agent.runtime.build_tools", lambda *args, **kwargs: registry)
+    monkeypatch.setattr(
+        "syvrio.llm.client.model_metadata", lambda *_: {"max_input_tokens": 200_000}
+    )
+    calls = [ToolCall(id=str(i), name="search", arguments={"index": i}) for i in range(3)]
+    model = FakeChatModel([AssistantTurn(tool_calls=calls), AssistantTurn(content="Done")])
     runtime, _ = build_runtime(tmp_path, model)
-    runtime.config.context_window = 200000
+    runtime.config.context_window = 200_000
+    runtime.config.auto_recall = 0
 
-    runtime.ask("测试")
+    reply = runtime.ask("Compare the three sources.")
 
-    assert captured["budget"] == 50000
+    assert not reply.compacted
+    assert [msg["content"] for msg in model.calls[1][0] if msg["role"] == "tool"] == results
+    records = runtime.sessions.load(runtime.current.id).records
+    assert [r["content"] for r in records if r["type"] == "tool"] == results
 
 
 def schema_cost(runtime, paths=()):
@@ -1456,7 +1452,7 @@ def test_real_tool_budget_triggers_history_compaction_and_counts_toward_meter(
 
     reply = runtime.ask("继续")
     assert reply.compacted and reply.estimated_tokens <= runtime.context.input_budget
-    sent = runtime.last_plan.messages[:-1]  # omit the final answer appended after dispatch
+    sent = runtime.last_plan.messages[:-1]  # 省略分发后追加的最终回答。
     assert reply.estimated_tokens == estimate_messages_tokens(sent) + cost
 
 
@@ -1536,32 +1532,55 @@ def test_manual_compaction_summarizes_all_history_at_the_context_threshold(
     assert runtime.sessions.load(session.id).records == saved.records
 
 
-def test_small_window_rechecks_tool_followup_before_contacting_model(tmp_path, monkeypatch):
+@pytest.mark.parametrize("max_steps", [1, 4], ids=["wrapup", "followup"])
+def test_overflowing_tool_batch_uses_session_summary_and_keeps_original(
+    tmp_path, monkeypatch, max_steps
+):
     path = tmp_path / "sample.txt"
-    path.write_text("合成参考材料" * 700, encoding="utf-8")
+    page = "资料" * 1999 + "终点"
+    path.write_text(page + "续页", encoding="utf-8")
     model = FakeChatModel(
         [
             AssistantTurn(
                 tool_calls=[ToolCall(id="c1", name="read_file", arguments={"path": str(path)})]
             ),
+            AssistantTurn(content="已读"),
         ]
     )
-    runtime, _ = build_runtime(tmp_path, model)
+    runtime, _ = build_runtime(tmp_path, model, max_steps=max_steps)
+    # 即使收尾请求没有携带工具定义，也要覆盖小窗口的情况。
+    monkeypatch.setattr(runtime, "_system_prompt", lambda: "系统")
     runtime.config.context_window = (
         runtime.config.reserve_output_tokens + schema_cost(runtime, [path]) + 512
     )
     runtime.config.auto_recall = 0
-    monkeypatch.setattr(runtime, "_system_prompt", lambda: "系统")
-    with pytest.raises(ChatModelError, match="Increase the context window"):
-        runtime.ask(f'请读取 "{path}"')
+    summaries = []
 
-    assert len(model.calls) == 1
-    saved = runtime.sessions.load(runtime.current.id).records_after_summary()
-    assert saved[-2]["tool_calls"][0]["id"] == saved[-1]["tool_call_id"] == "c1"
-    assert saved[-1]["ok"] and "合成参考材料" in saved[-1]["content"]
+    def summarize(previous, transcript, max_chars):
+        summaries.append(transcript)
+        return "已读到终点"
+
+    monkeypatch.setattr(runtime.summarizer, "summarize", summarize)
+    phases = []
+    question = f'请读取 "{path}"'
+    reply = runtime.ask(question, on_compaction=phases.append)
+
+    assert reply.compacted and phases == ["running", "done"]
+    assert len(summaries) == 1 and page in summaries[0] and question in summaries[0]
+    sent = model.calls[1][0]
+    assert any(m["content"] == question for m in sent)
+    assert "已读到终点" in str(sent)
+    if max_steps == 1:
+        assert "不要再调用工具" in str(sent) and not model.calls[1][1]
+    records = runtime.sessions.load(runtime.current.id).records
+    tool = next(r for r in records if r.get("tool_call_id") == "c1")
+    payload = json.loads(tool["content"])
+    assert payload["text"] == page and payload["next_offset"] == len(page)
 
 
-def test_small_window_fits_tool_followup_by_shortening_older_result(tmp_path, monkeypatch):
+def test_small_window_summarizes_the_whole_batch_without_splitting_tool_pairs(
+    tmp_path, monkeypatch
+):
     from syvrio.infra.tokens import estimate_messages_tokens, estimate_tokens
 
     oldest = tmp_path / "long.txt"
@@ -1600,12 +1619,13 @@ def test_small_window_fits_tool_followup_by_shortening_older_result(tmp_path, mo
 
     assert reply.content == "已读" and len(sent_sizes) == 2
     assert max(sent_sizes) <= runtime.context.input_budget
-    tools = [m for m in runtime.last_plan.messages if m["role"] == "tool"]
-    assert [m["tool_call_id"] for m in tools] == ["c0", "c1", "c2"]
-    assert tools[0]["content"].endswith("（较早工具结果已压缩）")
-    assert all("近期合成资料" in m["content"] for m in tools[1:])
-    saved = next(r for r in runtime.current.records if r.get("tool_call_id") == "c0")
-    assert len(saved["content"]) > len(tools[0]["content"])
+    assert reply.compacted
+    assert not any(m.get("tool_calls") or m["role"] == "tool" for m in runtime.last_plan.messages)
+    assert "会话摘要" in str(runtime.last_plan.messages)
+    saved = [r for r in runtime.sessions.load(runtime.current.id).records if r["type"] == "tool"]
+    assert [r["tool_call_id"] for r in saved] == ["c0", "c1", "c2"]
+    assert "合成旧资料" * 350 in saved[0]["content"]
+    assert all("近期合成资料" in r["content"] for r in saved[1:])
 
 
 def test_wrapup_only_charges_for_messages_when_no_tools_are_sent(tmp_path, monkeypatch):

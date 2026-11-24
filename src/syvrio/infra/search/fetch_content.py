@@ -1,4 +1,4 @@
-"""Map extracted text to the common FetchResult without exposing raw HTML."""
+"""将提取的正文转换为统一的 FetchResult，避免暴露原始 HTML。"""
 
 import re
 from html.parser import HTMLParser
@@ -67,10 +67,7 @@ def extracted_result(
         raise ProviderError(provider, ProviderErrorKind.BAD_RESPONSE, "响应没有网页正文")
     final_url = url.strip() if isinstance(url, str) else ""
     final_url = final_url or query.url
-    # The public tool advertises an 8,000-character ceiling; apply it even
-    # when an LLM or direct caller passes an out-of-range value.
-    max_chars = min(query.max_chars, 8000) if query.max_chars > 0 else 4000
-    content, truncated = truncate_fetch_content(content, max_chars)
+    content, truncated = truncate_fetch_content(content, query.max_chars)
     return FetchResult(
         url=query.url,
         final_url=final_url,

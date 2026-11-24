@@ -196,12 +196,62 @@ def test_compaction_summarizes_inserted_input_with_its_root_turn(tmp_path):
     assert expected.endswith("助手：补充资料已处理")
 
 
+def test_followup_summary_keeps_current_attachments_and_inserted_input(tmp_path):
+    from syvrio.agent.context import records_to_messages
+
+    store = SessionStore(tmp_path)
+    session = store.create()
+    pending = []
+    manager = ContextManager(
+        ChatConfig(context_window=4096, reserve_output_tokens=512),
+        FakeSummarizer(),
+        store,
+        lambda *args: pending.append(args),
+    )
+    question = "Read the source in the image."
+    image = [
+        {"type": "text", "text": question},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA=="}},
+    ]
+    store.append(session, {"type": "message", "role": "user", "id": "root", "content": question})
+    plan = manager.prepare(session, "system", image, "root")
+    records = [
+        {"type": "assistant", "tool_calls": [{"id": "c1", "name": "search", "arguments": {}}]},
+        {"type": "tool", "tool_call_id": "c1", "name": "search", "content": " ref" * 4096},
+        {
+            "type": "message",
+            "role": "user",
+            "id": "extra",
+            "turn_root": "root",
+            "content": "Include dates.",
+        },
+    ]
+    for record in records:
+        store.append(session, record)
+    messages = records_to_messages(records)
+    plan.messages.extend(messages)
+    result = manager.prepare(
+        session, "system", image, "root", active_plan=plan, additional_inputs=[messages[-1]]
+    )
+    assert result.compacted and result.estimated_tokens <= manager.input_budget
+    assert result.messages[-2:] == [{"role": "user", "content": image}, messages[-1]]
+    assert not pending
+    assert [r["id"] for r in session.undistilled_messages()] == ["root", "extra"]
+
+
+def test_local_summary_uses_the_same_budget_for_tool_records():
+    from syvrio.llm.summarizer import fallback_summary
+
+    source = "工具 search：" + "reference " * 30 + "https://example.org/source"
+    assert fallback_summary("", source, 500) == source
+
+
 def test_summary_requests_cover_full_evicted_history_within_turn_budget(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
     store = SessionStore(tmp_path)
     session = store.create()
-    # One long line crosses both a token boundary and the former 16,000-character cutoff.
+    # 同一长行跨过了词元边界，也超过了原来的 16,000 字符截断点。
     old = "开始。" + "abcdef" * 3000 + "。中间及末尾。"
     store.append(session, {"type": "message", "role": "user", "id": "old", "content": old})
     store.append(session, {"type": "assistant", "content": "答复完整。"})
@@ -440,7 +490,7 @@ def test_undo_invalidates_later_summary_and_compacts_against_raw_positions(tmp_p
 
     store.append(loaded, {"type": "message", "id": "m5", "role": "user", "content": "撤销后新问"})
     store.append(loaded, {"type": "assistant", "id": "a5", "content": "撤销后新答"})
-    coverage = len(loaded.records)  # Includes the undone records and invalidated summary.
+    coverage = len(loaded.records)  # 包括已撤回的记录和已失效的摘要。
     summarizer = FakeSummarizer()
     manager = ContextManager(
         ChatConfig(context_window=1000, reserve_output_tokens=100, compact_threshold=0.25),

@@ -15,33 +15,17 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from ...errors import SyvrioError
 
 # 常见 TUN 代理的合成 DNS 段，仅用于域名解析结果，不放行直接 IP 目标。
-#
-# 顺序有意义：open-websearch 2.2.0 的 isAllowedFakeIp 是
-#   parsed.match(ipaddr.parseCIDR(cidr)) 套在 some() 里，整段包在 try/catch。
-# 当被校验地址是 IPv6、而列表里先出现 IPv4 段时，ipaddr 的 IPv6.match 会
-# 抛 "cannot match ipv6 address with non-ipv6 one"，异常被 catch 吞掉并返回
-# false，于是该 IPv6 地址永远得不到豁免。IPv6 段必须排在前面。
-DEFAULT_FAKE_IP_CIDRS = "2001:2::/48,198.18.0.0/15"
-
-
-def order_fake_ip_cidrs(value: str) -> str:
-    """把 IPv6 段排到 IPv4 段之前，规避 open-websearch 的顺序敏感缺陷。
-
-    用户自定义 FAKE_IP_CIDRS 时同样适用；空项与多余空白一并清掉。
-    """
-    parts = [item.strip() for item in str(value).split(",") if item.strip()]
-    v6 = [item for item in parts if ":" in item]
-    v4 = [item for item in parts if ":" not in item]
-    return ",".join(v6 + v4)
+DEFAULT_FAKE_IPV4 = "198.18.0.0/15"
+DEFAULT_FAKE_IP_CIDRS = f"2001:2::/48,{DEFAULT_FAKE_IPV4}"
 
 
 def _fake_ip_networks() -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
     """与 open-websearch 同名的 FAKE_IP_CIDRS：代理的合成 DNS 结果不算私网目标。"""
     networks = []
     raw = os.environ.get("FAKE_IP_CIDRS", DEFAULT_FAKE_IP_CIDRS)
-    for item in order_fake_ip_cidrs(raw).split(","):
+    for item in raw.split(","):
         try:
-            networks.append(ipaddress.ip_network(item, strict=False))
+            networks.append(ipaddress.ip_network(item.strip(), strict=False))
         except ValueError:
             continue
     return tuple(networks)
@@ -97,7 +81,7 @@ def normalize_search_engines(
     if value is None:
         return ()
     if isinstance(value, str):
-        # Some providers serialize an array-valued tool argument as a JSON string.
+        # 部分供应商将数组类型的工具参数序列化为 JSON 字符串。
         if value.strip().startswith("["):
             try:
                 value = json.loads(value)
@@ -260,7 +244,7 @@ class SearchResult:
 @dataclass(slots=True)
 class FetchQuery:
     url: str
-    max_chars: int = 4000
+    max_chars: int | None = None
 
 
 @dataclass(slots=True)
@@ -273,9 +257,9 @@ class FetchResult:
     site_name: str = ""
 
 
-def truncate_fetch_content(content: str, max_chars: int) -> tuple[str, bool]:
+def truncate_fetch_content(content: str, max_chars: int | None) -> tuple[str, bool]:
     """正文按 max_chars 截断；返回（截断后文本, 是否发生截断）。"""
-    if max_chars <= 0 or len(content) <= max_chars:
+    if max_chars is None or max_chars <= 0 or len(content) <= max_chars:
         return content, False
     return content[:max_chars], True
 

@@ -21,7 +21,7 @@ SUMMARY_PROMPT = """你是会话压缩器。把较早的对话压缩成中文摘
 
 
 def _excerpts(text: str, limit: int) -> str:
-    """Sample the beginning, middle and end without joining unrelated fragments."""
+    """在开头、中间和结尾分别采样，保持不相邻的片段分开。"""
     if len(text) <= limit:
         return text
     separator = "\n…\n"
@@ -36,9 +36,6 @@ def _excerpts(text: str, limit: int) -> str:
 def fallback_summary(previous: str, transcript: str, max_chars: int = 1200) -> str:
     if max_chars <= 0:
         return ""
-    transcript = "\n".join(
-        line[:160] if line.startswith("工具 ") else line for line in transcript.splitlines()
-    )
     entire = "\n".join(part for part in (previous, transcript) if part)
     if len(entire) <= max_chars:
         return entire
@@ -48,8 +45,7 @@ def fallback_summary(previous: str, transcript: str, max_chars: int = 1200) -> s
     max_chars -= len(label)
     if not previous or not transcript:
         return label + _excerpts(previous or transcript, max_chars)
-    # Both the existing summary and the newly covered range need a share. A
-    # full previous summary must never squeeze the entire new transcript out.
+    # 为现有摘要和新增记录分别预留空间，避免旧摘要用满预算后挤掉所有新内容。
     previous_limit = max(max_chars // 3, max_chars - len(transcript) - 1)
     prior = _excerpts(previous, previous_limit)
     return label + prior + "\n" + _excerpts(transcript, max(0, max_chars - len(prior) - 1))
@@ -69,8 +65,8 @@ def _messages(previous: str, chunk: str, max_chars: int) -> list[dict]:
 
 
 def _chunk_length(previous: str, source: str, start: int, max_chars: int, budget: int) -> int:
-    # The character cap bounds search cost per request. The cursor advances
-    # over actual Unicode characters, so a long line also reaches later chunks.
+    # 字符数上限用于控制每次请求的查找成本。游标按实际 Unicode 字符推进，
+    # 因此单行很长时也能继续处理后续片段。
     high = min(16000, len(source) - start)
     if (
         estimate_messages_tokens(_messages(previous, source[start : start + high], max_chars))
@@ -117,12 +113,12 @@ class LLMSummarizer:
         carry_budget = (budget - estimate_messages_tokens(_messages("", "", max_chars))) // 2
         if carry_budget <= 0:
             return fallback_summary(previous, transcript, max_chars)
-        # A prior summary from a larger window may need chunking itself.
+        # 来自更大窗口的旧摘要本身也可能需要分段。
         if estimate_tokens(previous) > carry_budget:
             transcript = f"此前摘要：{previous}\n\n{transcript}"
             previous = ""
         offset = 0
-        # Bound foreground latency on a very large session or a small window.
+        # 在会话很长或窗口较小时限制前台等待时间。
         for _ in range(8):
             if offset == len(transcript):
                 return previous
