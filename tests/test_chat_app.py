@@ -5370,11 +5370,14 @@ async def test_pending_long_text_scrolls_without_hiding_actions(tmp_path, size):
         assert listing.has_focus
         assert str(screen.query_one("#pending-text", Static).content) == items[0].text
         await pilot.press("down")
+        await pilot.pause()
         assert str(screen.query_one("#pending-text", Static).content) == text
         assert panel.max_scroll_y > 0
         await pilot.press("pagedown")
+        await pilot.pause()
         assert panel.scroll_y > 0 and listing.highlighted == 1
         await pilot.press("pageup")
+        await pilot.pause()
         assert panel.scroll_y == 0
         assert screen.query_one("#pending-actions").region.bottom <= size[1]
         if size[0] < 92:
