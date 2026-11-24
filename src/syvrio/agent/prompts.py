@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from ..memory.service import DEFAULT_PERSONA
+from ..infra.llm.tokens import truncate_to_tokens
+from ..infra.vault.files import DEFAULT_PERSONA
+
+SOUL_MAX_TOKENS = 2000
 
 # 机制段不可被人设覆盖：SOUL.md 只替换人设段，工具说明与记忆纪律永远拼在末尾。
 MECHANISM_PROMPT = """可用工具：\n回答涉及用户既往经历、偏好或计划的问题时，用 recall 获取相关事实；需要整个主题时用 read_topic，需要核对原话时用 read_memory_source。
@@ -13,4 +16,7 @@ MECHANISM_PROMPT = """可用工具：\n回答涉及用户既往经历、偏好�
 
 def build_system_prompt(persona: str = "") -> str:
     """拼接系统提示词：persona 为空回退默认；机制段固定在末尾，不可被人设覆盖。"""
-    return f"{persona.strip() or DEFAULT_PERSONA}\n\n{MECHANISM_PROMPT}"
+    persona = (
+        truncate_to_tokens(persona.strip(), SOUL_MAX_TOKENS) if persona.strip() else DEFAULT_PERSONA
+    )
+    return f"{persona}\n\n{MECHANISM_PROMPT}"

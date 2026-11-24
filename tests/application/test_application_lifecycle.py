@@ -13,8 +13,6 @@ from syvrio.application.conversation import ConversationUseCases
 from syvrio.infra.config import ChatConfig, Config, LLMConfig, RetrievalConfig
 from syvrio.infra.llm import AssistantTurn
 from syvrio.infra.session import SessionStore
-from syvrio.memory.extractor import StaticExtractor
-from syvrio.memory.models import ExtractionResult
 from syvrio.memory.service import MemoryService
 
 pytestmark = pytest.mark.agent
@@ -57,8 +55,8 @@ def build(tmp_path, turns):
         chat=ChatConfig(context_window=32000, auto_recall=0, recall_rewrite=False),
         retrieval=RetrievalConfig(method="keyword"),
     )
-    service = MemoryService(config, extractor=StaticExtractor(ExtractionResult(memories=[])))
-    service.init_vault()
+    service = MemoryService(config)
+    service.initialize_files()
     runtime = AgentRuntime(
         service,
         FakeModel(turns),

@@ -6,6 +6,14 @@ import stat
 import tempfile
 from pathlib import Path, PureWindowsPath
 
+type FileVersion = tuple[int, int, int, int, int]
+
+
+def file_version(stat: os.stat_result) -> FileVersion:
+    # Windows 上通过路径和句柄读取的 ctime 含义可能不同，创建时间在两者间一致。
+    stamp = stat.st_birthtime_ns if os.name == "nt" else stat.st_ctime_ns
+    return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stamp
+
 
 def safe_component(name: str) -> bool:
     return bool(

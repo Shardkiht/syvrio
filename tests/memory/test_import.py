@@ -205,7 +205,6 @@ def test_import_extractor_injects_existing_topics(monkeypatch):
 def test_import_text_passes_store_topics_to_extractor(tmp_path, monkeypatch):
     # 回归：service 注入路径要把 store.topics() 的主题名传给 ImportExtractor。
     import syvrio.memory.service as service_module
-    from syvrio.memory.extractor import StaticExtractor
 
     captured = {}
 
@@ -218,8 +217,8 @@ def test_import_text_passes_store_topics_to_extractor(tmp_path, monkeypatch):
 
     monkeypatch.setattr(service_module, "ImportExtractor", FakeImportExtractor)
     config = Config(vault=tmp_path / "vault")
-    service = MemoryService(config, extractor=StaticExtractor(ExtractionResult(memories=[])))
-    service.init_vault()
+    service = MemoryService(config)
+    service.initialize_files()
     service.note("既有条目", topic="preferences")
 
     service.import_text("新内容")

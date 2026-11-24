@@ -170,6 +170,12 @@ def normalize_search_providers(value: object, limit: int = 8) -> tuple[str, ...]
     return tuple(selected)
 
 
+class SearchArgumentError(SyvrioError, ValueError):
+    def __init__(self, field: str, detail: str):
+        super().__init__(detail)
+        self.field = field
+
+
 class ProviderErrorKind(str, Enum):
     TIMEOUT = "timeout"
     RATE_LIMIT = "rate_limit"

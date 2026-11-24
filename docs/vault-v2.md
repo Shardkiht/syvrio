@@ -69,10 +69,10 @@ Vault 与 Runtime 使用独立路径。配置中的 `vault`、`runtime` 与环�
 | 相对 Runtime 的路径 | 用途 |
 | --- | --- |
 | `state/backend.json` | 本地端口、访问令牌和绑定的 Vault |
-| `locks/`、`state/git-sync.json` | 写入、Git 协调与同步状态 |
+| `locks/`、`state/git-sync.json` | 写入、单会话日志协调与 Git 同步状态 |
 | `indexes/`、`cache/` | 可重建索引与缓存 |
 | `jobs/background-memory/<vault-hash>/{distillation,context,dream}/` | 后台任务、版本和续跑进度 |
-| `jobs/vault-transactions/`、`jobs/session-deletions/` | 跨文件写入与永久删除会话的恢复记录 |
+| `jobs/vault-transactions/` | 跨文件写入与永久删除会话的恢复记录 |
 | `session-reasoning/<session-id>/<message-id>.json` | 本机保存的助手推理附件 |
 | `turn-undo/<session-id>/<first-user-message-id>.json` | 最新回合文件撤回需要的原始状态与校验值 |
 | `logs/` | 本地诊断日志 |
@@ -83,7 +83,7 @@ Vault 与 Runtime 使用独立路径。配置中的 `vault`、`runtime` 与环�
 
 ## 附件和备份
 
-Web 与 TUI 可以一起上传多份文档或图片。每份原件在会话中有稳定 ID、显示名、字节数、媒体类型和 SHA-256。恢复原件时按这些标识核对。Vault 根的 `.gitignore` 排除 `/attachments/` 与 `/archived/`，仅克隆 Git 仓库无法还原上传原件。
+Web 与 TUI 可以一起上传多份文档或图片。每份原件在会话中有稳定 ID、显示名、字节数、媒体类型和 SHA-256。恢复原件时按这些标识核对。手动核验包含活动与归档会话，以及已撤回消息的上传原件。Vault 根的 `.gitignore` 排除 `/attachments/` 与 `/archived/`，仅克隆 Git 仓库无法还原上传原件。
 
 迁机或完整备份时先停掉常驻后端及其他写入者，复制整个 Vault，包括 `attachments/`。如果上次运行异常退出，先用原先配对的 Vault 和 Runtime 重开并完成恢复，再制作快照或切换 Runtime。需要保留历史思考面板、撤回能力或未完成任务时同时复制匹配的 Runtime，并妥善保护其中的本地凭据和原文件快照。助手消息的 `reasoning_local` 标记关联 Runtime 附件。推理附件缺失时，仍可读取会话回复。
 

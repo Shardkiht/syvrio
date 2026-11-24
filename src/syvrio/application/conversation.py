@@ -649,19 +649,31 @@ class ConversationUseCases:
                 raise SessionProtectedError(reason)
             return self.runtime.service.queue.deletion_preview(session_id)
 
-    def delete_session(self, session_id: str, pending_revision: str = "") -> bool:
+    def delete_session(
+        self, session_id: str, pending_revision: str = "", *, confirmed: bool
+    ) -> bool:
         with self.runtime.service.write_lock:
             if not self.sessions.exists(session_id, archived=True):
                 if self.sessions.exists(session_id):
-                    raise SessionProtectedError(
-                        "Archive the conversation before permanently deleting it."
+                    raise ConversationError(
+                        "archive_required",
+                        "Archive this conversation before permanently deleting it.",
                     )
                 return False
+            if not confirmed:
+                raise ConversationError(
+                    "confirm_required", "Deleting a session is permanent; confirm the action first."
+                )
             allowed, reason = self.delete_guard(session_id)
             if not allowed:
                 raise SessionProtectedError(reason)
-            with self.runtime.service.queue.removing_with_session(session_id, pending_revision):
-                return self.sessions.delete(session_id, archived=True)
+            return self.sessions.delete(
+                session_id,
+                archived=True,
+                before_delete=lambda: self.runtime.service.queue.remove_for_session(
+                    session_id, pending_revision
+                ),
+            )
 
     def session_exists(self, session_id: str) -> bool:
         return self.sessions.exists(session_id)

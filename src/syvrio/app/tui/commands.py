@@ -8,8 +8,7 @@ from urllib.parse import quote
 
 from textual.widgets import Input
 
-from ...backend.api.commands import SLASH_COMMANDS, parse_command
-from ...backend.client_contracts import Inference, PendingItem
+from ...backend.client_contracts import SLASH_COMMANDS, Inference, PendingItem, parse_command
 from .screens.git import GitScreen
 from .screens.inferences import InferenceScreen
 from .screens.pending import PendingScreen
@@ -182,11 +181,11 @@ class ResidentCommands:
                     lambda value: value and self._submit_command(f"/{intent} {value}"),
                 )
             )
-        elif intent == "topics" and values.get("names"):
+        elif intent == "topics" and values.get("topics"):
             self.push_screen(
                 PickScreen(
                     "Topics",
-                    [(topic, topic) for topic in values["names"]],
+                    [(row["topic"], row["topic"]) for row in values["topics"]],
                     lambda key: key and self._submit_command(f"/topics {key}"),
                     searchable=True,
                 )

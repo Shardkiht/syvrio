@@ -17,8 +17,7 @@ from syvrio.infra.config import ChatConfig, Config, LLMConfig, RetrievalConfig
 from syvrio.infra.llm import AssistantTurn
 from syvrio.infra.session import SessionStore
 from syvrio.infra.session.errors import SessionProtectedError
-from syvrio.memory.extractor import StaticExtractor
-from syvrio.memory.models import ExtractionResult
+from syvrio.infra.vault.sync import GitSyncService
 from syvrio.memory.service import MemoryService
 
 pytestmark = pytest.mark.agent
@@ -65,8 +64,8 @@ def build(tmp_path, turns):
         chat=ChatConfig(context_window=32000, auto_recall=0, recall_rewrite=False),
         retrieval=RetrievalConfig(method="keyword"),
     )
-    service = MemoryService(config, extractor=StaticExtractor(ExtractionResult(memories=[])))
-    service.init_vault()
+    service = MemoryService(config)
+    service.initialize_files()
     runtime = AgentRuntime(
         service,
         FakeModel(turns),
@@ -104,7 +103,8 @@ def test_turn_streams_in_order_and_binds_session(tmp_path):
 def test_application_owns_admitted_turns_across_views(tmp_path, monkeypatch, fail_queued_start):
     runtime, _ = build(tmp_path, [])
     runtime.model = GatedModel([AssistantTurn(content="answer") for _ in range(3)])
-    owner = ApplicationService(runtime, runtime.service)
+    git = GitSyncService(runtime.service.config, runtime.service.paths)
+    owner = ApplicationService(runtime, runtime.service, git=git)
     scheduling = owner.conversation.scheduling
 
     def new_channel():
@@ -113,6 +113,7 @@ def test_application_owns_admitted_turns_across_views(tmp_path, monkeypatch, fai
         return ApplicationService(
             sibling,
             runtime.service,
+            git=git,
             registry=scheduling.registry,
             settings_lock=scheduling.settings_lock,
         )
@@ -327,7 +328,7 @@ def test_refuses_session_delete_if_memory_was_written_during_confirmation(tmp_pa
         )
         runtime.service.store.set_status(fact.id, status)
     with pytest.raises(SessionProtectedError, match=fact.id):
-        conv.delete_session(target.id)
+        conv.delete_session(target.id, confirmed=True)
     assert archived.read_bytes() == original
 
 

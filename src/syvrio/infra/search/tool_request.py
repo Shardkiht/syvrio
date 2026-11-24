@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
-from ..infra.config import SearchConfig
-from ..infra.search.base import SearchQuery, normalize_search_engines, normalize_search_providers
-from ..infra.search.providers.open_websearch import SEARCH_ENGINES
-from ..infra.search.router import SearchRouter
+from ..config import SearchConfig
+from .base import (
+    SearchArgumentError,
+    SearchQuery,
+    normalize_search_engines,
+    normalize_search_providers,
+)
+from .providers.open_websearch import SEARCH_ENGINES
+from .router import SearchRouter
 
 
 def run_tool_search(router: SearchRouter, settings: SearchConfig, arguments: dict) -> dict:
@@ -45,10 +50,6 @@ def run_tool_search(router: SearchRouter, settings: SearchConfig, arguments: dic
     except ValueError as exc:
         return failure("providers", str(exc))
     strategy = str(arguments.get("strategy") or "auto").strip().lower()
-    if strategy not in ("auto", "compare", "strict"):
-        return failure("strategy", f"unsupported search strategy: {strategy}")
-    if strategy == "strict" and not providers:
-        return failure("providers", "strict strategy requires providers")
     context = arguments.get("context") or ()
     if isinstance(context, str):
         context = [context]
@@ -62,5 +63,7 @@ def run_tool_search(router: SearchRouter, settings: SearchConfig, arguments: dic
     )
     try:
         return router.search(query).to_payload()
+    except SearchArgumentError as exc:
+        return failure(exc.field, str(exc))
     except Exception as exc:
         return {**failure("router", str(exc)), "hint": str(exc)}

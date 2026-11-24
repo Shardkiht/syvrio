@@ -5,7 +5,9 @@ from __future__ import annotations
 import fnmatch
 import posixpath
 from contextlib import contextmanager
+from pathlib import Path
 
+from ..storage.files import atomic_write
 from ..system.gitops import GitError, GitRepo, classify_git_error, redact_git_message
 
 # 根目录名使用通配模式。Git 会将字面前缀 archived/ 当作显式指定被忽略的目录，
@@ -36,6 +38,41 @@ SENSITIVE_PATTERNS = (
     "memory.toml",
     ".syvrio-config-transaction.json",
 )
+
+
+VAULT_GITIGNORE = """__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*~
+/attachments/
+/archived/
+"""
+
+
+def ensure_vault_gitignore(vault: Path) -> None:
+    path = vault / ".gitignore"
+    if path.is_symlink():
+        raise ValueError("Vault .gitignore must be a regular file")
+    try:
+        original = path.read_bytes()
+    except FileNotFoundError:
+        atomic_write(path, VAULT_GITIGNORE.encode("utf-8"))
+        return
+    # 后续的否定规则可能覆盖目录规则，须保留用户规则的位置。
+    required = [b"/attachments/", b"/archived/"]
+    for rule in reversed(original.splitlines()):
+        if rule in required:
+            required.remove(rule)
+        if rule.startswith(b"!"):
+            break
+    if not required:
+        return
+    newline = b"\r\n" if b"\r\n" in original else b"\n"
+    separator = newline if original and not original.endswith(b"\n") else b""
+    atomic_write(path, original + separator + newline.join(required) + newline)
 
 
 def _normalized_relative(path: str) -> str:
@@ -145,6 +182,20 @@ class VaultGitRepo(GitRepo):
                 except GitError as restore_error:
                     raise GitError(str(restore_error), kind="sensitive") from restore_error
             raise
+
+    def _refuse_sensitive(self) -> None:
+        sensitive = self.sensitive_paths()
+        if sensitive:
+            paths = "、".join(sensitive[:5])
+            raise GitError(
+                f"拒绝提交疑似敏感文件：{paths}。请移出 vault 或加入 .gitignore。", kind="sensitive"
+            )
+
+    def stage_all_checked(self) -> None:
+        """首次初始化与后续提交共用：暂存前后都检查，覆盖索引里已有的文件。"""
+        self._refuse_sensitive()
+        with self.stage_checked():
+            self._refuse_sensitive()
 
     def staged_stat(self) -> str:
         return self._run(["diff", "--cached", "--stat", *ACTIVE_VAULT_PATHS]).stdout

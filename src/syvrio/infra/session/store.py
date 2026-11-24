@@ -8,38 +8,33 @@ import os
 import secrets
 import shutil
 from collections import OrderedDict
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
+from functools import cached_property
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 from ..security.secrets import redact_secrets
-from ..storage.files import atomic_write
-from ..storage.locking import vault_write_lock
+from ..storage.files import FileVersion, atomic_write, file_version
+from ..storage.locking import session_file_lock, vault_write_lock
 from ..storage.paths import TURN_UNDO_DIR, SyvrioPaths, vault_paths
+from ..storage.transaction import vault_transaction
 from ..time import serialize_timestamp, timestamp_calendar_date, utc_now
 from .errors import ConversationError
 from .model import Session, new_message_id, now_iso, validate_record
 from .query import SessionQuery
 
-type _FileVersion = tuple[int, int, int, int, int]
 
-
-def _version(stat: os.stat_result) -> _FileVersion:
-    # Windows 上通过路径和句柄读取的 ctime 含义可能不同，创建时间在两者间一致。
-    stamp = stat.st_birthtime_ns if os.name == "nt" else stat.st_ctime_ns
-    return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stamp
-
-
-def _reasoning_versions(folder: Path) -> dict[str, _FileVersion]:
+def _reasoning_versions(folder: Path) -> dict[str, FileVersion]:
     if folder.resolve() != folder:
         raise ValueError("Redirected local reasoning directory.")
     try:
         with os.scandir(folder) as entries:
             return {
-                entry.name: _version(entry.stat(follow_symlinks=False))
+                entry.name: file_version(entry.stat(follow_symlinks=False))
                 for entry in entries
                 if entry.name.endswith(".json")
             }
@@ -56,10 +51,19 @@ class SessionSnapshot:
     """多个读取方共享的只读日志版本，Runtime 另取独立副本。"""
 
     session: Session
-    version: _FileVersion
+    version: FileVersion
     # None 表示对话记录完全没有引用本地思考内容。
-    reasoning: dict[str, _FileVersion] | None
+    reasoning: dict[str, FileVersion] | None
     history_revision: HistoryRevision = field(default_factory=HistoryRevision)
+
+    @cached_property
+    def attachments(self) -> dict:
+        return {
+            (row["id"], item["id"]): item
+            for row in self.session.active_records()
+            if row.get("role") == "user"
+            for item in row.get("attachments", [])
+        }
 
 
 def _sidecar_directory(path: Path) -> Path:
@@ -122,11 +126,18 @@ class SessionStore(SessionQuery):
     def __init__(self, vault: Path | SyvrioPaths):
         paths = vault if isinstance(vault, SyvrioPaths) else vault_paths(vault)
         super().__init__(paths)
-        self.paths = paths
         self._lock = vault_write_lock(paths)
         self._turn_undo_root = paths.runtime_dir.resolve() / TURN_UNDO_DIR
         self._sidecar_roots = (self.attachments_dir, self._reasoning_root, self._turn_undo_root)
+        self._cache_lock = Lock()
         self._snapshots: OrderedDict[Path, SessionSnapshot] = OrderedDict()
+
+    def _attachment_metadata(self, path: Path, message_id: str, attachment_id: str) -> dict | None:
+        with session_file_lock(self.paths, path.stem):
+            snapshot = self._snapshots.get(path)
+            if snapshot is not None and snapshot.version == file_version(path.stat()):
+                return snapshot.attachments.get((message_id, attachment_id))
+            return super()._attachment_metadata(path, message_id, attachment_id)
 
     def load_snapshot(self, session_id: str) -> Session:
         """返回独立副本，供 Runtime 追加或撤回。"""
@@ -134,10 +145,11 @@ class SessionStore(SessionQuery):
 
     def read_snapshot(self, session_id: str) -> SessionSnapshot:
         """核验已保存的版本，在只读投影之间共享其记录。"""
-        with self._lock:
+        self._validate_session_id(session_id)
+        with session_file_lock(self.paths, session_id):
             path = self._path(session_id)
             try:
-                version = _version(path.stat())
+                version = file_version(path.stat())
             except FileNotFoundError as exc:
                 raise KeyError(f"会话不存在：{session_id}") from exc
             cached = self._snapshots.get(path)
@@ -152,11 +164,15 @@ class SessionStore(SessionQuery):
                 session = self._load_path(path, include_reasoning=True)
                 has_reasoning = any(item.get("reasoning_local") is True for item in session.records)
                 cached = SessionSnapshot(session, version, reasoning if has_reasoning else None)
-                self._snapshots[path] = cached
-                if len(self._snapshots) > 8:
-                    self._snapshots.popitem(last=False)
-            self._snapshots.move_to_end(path)
+            self._cache_snapshot(path, cached)
             return cached
+
+    def _cache_snapshot(self, path: Path, snapshot: SessionSnapshot) -> None:
+        with self._cache_lock:
+            self._snapshots[path] = snapshot
+            self._snapshots.move_to_end(path)
+            if len(self._snapshots) > 8:
+                self._snapshots.popitem(last=False)
 
     def create(self) -> Session:
         stamp = utc_now()
@@ -184,7 +200,10 @@ class SessionStore(SessionQuery):
                     "cwd": str(Path.cwd()),
                 }
                 try:
-                    with path.open("x", encoding="utf-8") as handle:
+                    with (
+                        session_file_lock(self.paths, session_id),
+                        path.open("x", encoding="utf-8") as handle,
+                    ):
                         handle.write(json.dumps(meta, ensure_ascii=False) + "\n")
                     break
                 except FileExistsError:
@@ -218,7 +237,7 @@ class SessionStore(SessionQuery):
             reasoning.pop("source", None)
         _stamp_event(record)
         # 损坏尾行原样保留：只追加换行和恢复标记，后续加载据此跳过该行。
-        with self._lock:
+        with self._lock, session_file_lock(self.paths, session.id):
             if not session.path.resolve().is_relative_to(self.root):
                 raise ValueError("Only active sessions can be modified.")
             cached = None
@@ -232,7 +251,7 @@ class SessionStore(SessionQuery):
                     if (
                         previous is not None
                         and previous.session.damaged_tail_line is None
-                        and previous.version == _version(os.fstat(handle.fileno()))
+                        and previous.version == file_version(os.fstat(handle.fileno()))
                     ):
                         cached = previous
                 if reasoning:
@@ -258,11 +277,11 @@ class SessionStore(SessionQuery):
                 handle.write((json.dumps(record, ensure_ascii=False) + "\n").encode("utf-8"))
                 if cached is not None:
                     handle.flush()
-                    version = _version(os.fstat(handle.fileno()))
+                    version = file_version(os.fstat(handle.fileno()))
             if cached is not None:
                 # 为 Runtime 保留已保存的关闭事件，界面显示的历史保持一致。
                 saved = replace(cached.session, records=[*cached.session.records, record.copy()])
-                self._snapshots[session.path] = replace(cached, session=saved, version=version)
+                self._cache_snapshot(session.path, replace(cached, session=saved, version=version))
             if reasoning:
                 record["reasoning"] = reasoning
             session.records.append(record)
@@ -270,9 +289,8 @@ class SessionStore(SessionQuery):
 
     def append_event_transactionally(self, session: Session, event: dict, *following: dict) -> dict:
         """在调用方的事务中一次替换文件，一并发布关联事件。"""
-        from ..storage.transaction import vault_transaction
-
         with vault_transaction(self.paths) as tx:
+            tx.guard(session_file_lock(self.paths, session.id))
             current = self.load(session.id, include_reasoning=False)
             records = []
             if current.damaged_tail_line is not None:
@@ -295,8 +313,6 @@ class SessionStore(SessionQuery):
 
     def advance_distilled(self, session: Session, message_id: str) -> None:
         """将下一个游标与从该消息提取的所有事实一同提交。"""
-        from ..storage.transaction import vault_transaction
-
         with vault_transaction(self.paths):
             current = self.load(session.id, include_reasoning=False)
             pending = current.undistilled_messages()
@@ -312,7 +328,8 @@ class SessionStore(SessionQuery):
 
     def set_archived(self, session_id: str, archived: bool) -> None:
         """仅移动对话记录，保留来源 ID 及所有原始附属文件。"""
-        with self._lock:
+        self._validate_session_id(session_id)
+        with self._lock, session_file_lock(self.paths, session_id):
             source = self._find(session_id, archived=not archived)
             existing = self._find(session_id, archived=archived)
             if source is None:
@@ -331,15 +348,26 @@ class SessionStore(SessionQuery):
             self._listing_cache.pop(session_id, None)
             self._undistilled_cache.pop(session_id, None)
 
-    def delete(self, session_id: str, *, archived: bool = False) -> bool:
-        with self._lock:
+    def delete(
+        self,
+        session_id: str,
+        *,
+        archived: bool = False,
+        before_delete: Callable[[], None] | None = None,
+    ) -> bool:
+        self._validate_session_id(session_id)
+        with self._lock, session_file_lock(self.paths, session_id):
             path = self._find(session_id, archived=archived)
             if path is None:
                 return False
             with ExitStack() as sidecars:
                 for root in self._sidecar_roots:
                     sidecars.enter_context(_stage_sidecars(root, session_id))
-                path.unlink()
+                # 事务提交后才清理暂存的附件；中断时先恢复事务，再按会话是否存在恢复附件。
+                with vault_transaction(self.paths) as tx:
+                    if before_delete is not None:
+                        before_delete()
+                    tx.write(path, None)
             self._snapshots.pop(path, None)
             self._listing_cache.pop(session_id, None)
             self._undistilled_cache.pop(session_id, None)

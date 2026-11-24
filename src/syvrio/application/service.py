@@ -6,6 +6,7 @@ from threading import RLock
 
 from ..agent.runtime import AgentRuntime
 from ..infra.search.daemon import ensure_search_daemon
+from ..infra.vault.sync import GitSyncService
 from ..memory.service import MemoryService
 from .conversation import ConversationUseCases
 from .git import GitUseCases
@@ -22,6 +23,7 @@ class ApplicationService:
         service: MemoryService,
         background=None,
         *,
+        git: GitSyncService,
         registry: TurnRegistry | None = None,
         settings_lock: RLock | None = None,
     ) -> None:
@@ -35,7 +37,7 @@ class ApplicationService:
         self.memory = MemoryUseCases(service)
         self.settings = SettingsUseCases(service, runtime)
         self.reflection = ReflectionUseCases(background)
-        self.git = GitUseCases(service)
+        self.git = GitUseCases(git)
         self._service = service
 
     # ---------- 生命周期 ----------

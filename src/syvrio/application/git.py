@@ -2,23 +2,22 @@
 
 from __future__ import annotations
 
-from ..infra.vault.sync import SyncResult
-from ..memory.service import MemoryService
+from ..infra.vault.sync import GitSyncService, SyncResult
 
 
 class GitUseCases:
-    def __init__(self, service: MemoryService) -> None:
+    def __init__(self, service: GitSyncService) -> None:
         self.service = service
 
     @property
     def running(self) -> bool:
-        return self.service.git_sync.running
+        return self.service.running
 
     def due(self) -> bool:
-        return self.service.git_sync.due()
+        return self.service.due()
 
     def status(self) -> dict:
-        return self.service.git_sync.status()
+        return self.service.status()
 
     def sync(
         self,
@@ -27,4 +26,4 @@ class GitUseCases:
         *,
         wait_for_git: bool = False,
     ) -> SyncResult:
-        return self.service.git_sync.sync(trigger, on_progress, wait_for_git=wait_for_git)
+        return self.service.sync(trigger, on_progress, wait_for_git=wait_for_git)

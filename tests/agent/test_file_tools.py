@@ -54,7 +54,8 @@ def test_import_is_preview_by_default_and_reports_remaining_chunks(service, tmp_
     calls = []
     candidate = Candidate(text="合成用户偏好茶饮", topic="preferences")
 
-    def prepare(text):
+    def prepare(text, *, llm_config):
+        assert llm_config is service.config.llm
         calls.append(text)
         return service.evidence_version(include_pending=True), [candidate]
 

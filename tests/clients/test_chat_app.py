@@ -11,13 +11,14 @@ from textual.widgets import Button, Input, Static
 from syvrio.app.tui.input import BarInput
 from syvrio.app.tui.resident import ResidentChatApp
 from syvrio.app.tui.widgets import ModelPickerScreen, SidebarToggle
-from syvrio.backend.api.commands import SLASH_COMMANDS
+from syvrio.backend.client_contracts import SLASH_COMMANDS
 from syvrio.infra.config import (
     GitConfig,
     SearchConfig,
 )
 from syvrio.infra.llm import AssistantTurn
 from syvrio.infra.session import SessionStore, new_message_id
+from syvrio.infra.vault.files import initialize_vault
 
 pytestmark = pytest.mark.ui
 
@@ -1589,14 +1590,14 @@ def test_startup_commits_dirty_vault_without_crashed_sessions(service):
 
     service.config.git.auto_sync = False
     service.config.search.auto_start = False
-    service.init_vault()
-    service.note("Uncommitted synthetic fact", topic="misc")
-    assert service.repo.has_changes()
     owner = WebBackend(service=service)
+    initialize_vault(owner.git, service.initialize_files)
+    service.note("Uncommitted synthetic fact", topic="misc")
+    assert owner.git.repo.has_changes()
     owner.startup()
     try:
         assert not owner.health().busy
-        assert not service.repo.has_changes()
+        assert not owner.git.repo.has_changes()
     finally:
         owner.shutdown()
 
@@ -1722,7 +1723,7 @@ async def test_startup_catchup_advances_crashed_session_cursor(service, monkeypa
 
     service.config.git.auto_sync = False
     service.config.search.auto_start = False
-    service.init_vault()
+    service.initialize_files()
     sessions = SessionStore(service.paths)
     crashed = sessions.create()
     message_id = new_message_id()
@@ -2162,7 +2163,7 @@ async def test_startup_catchup_does_not_block_switching(service, monkeypatch):
 
     service.config.search.auto_start = False
     service.config.git.auto_sync = False
-    service.init_vault()
+    service.initialize_files()
     sessions = SessionStore(service.paths)
     crashed = sessions.create()
     sessions.append(
@@ -2635,14 +2636,14 @@ async def test_startup_compensation_runs_missed_daily_sync(service):
                 state = json.loads(state_path.read_text()) if state_path.exists() else {}
                 if (
                     state.get("last_daily_blocked_date") == date.today().isoformat()
-                    and not service.git_sync.running
+                    and not owner.git.running
                 ):
                     break
                 await asyncio.sleep(0.02)
         assert state["last_sync_trigger"] == "scheduled"
         assert state["last_daily_attempt_date"] == date.today().isoformat()
         assert state.get("last_daily_success_date") != date.today().isoformat()
-        assert not service.git_sync.running
+        assert not owner.git.running
     finally:
         owner.shutdown()
 

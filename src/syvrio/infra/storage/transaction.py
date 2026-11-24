@@ -8,14 +8,14 @@ import json
 import os
 from base64 import b64decode, b64encode
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
 from pathlib import Path
 from threading import get_ident, local
 
 from ..errors import SyvrioError
 from .files import atomic_write, safe_component, sync_directory
-from .locking import vault_write_lock
+from .locking import VaultLock, vault_write_lock
 from .paths import TURN_UNDO_DIR, SyvrioPaths
 
 
@@ -58,7 +58,13 @@ class VaultTransaction:
         identity = hashlib.sha256(os.fsencode(os.path.normcase(str(self.vault)))).hexdigest()
         self.journal = self.jobs / "vault-transactions" / (identity + ".json")
         self.files: dict[str, dict] = {}
+        self._guards = ExitStack()
         self.failed = False
+
+    def guard(self, lock: VaultLock) -> None:
+        """发布中的文件须保护到最外层事务提交或恢复完毕。"""
+        self._check_owner()
+        self._guards.enter_context(lock)
 
     def _target(self, key: str) -> Path:
         root_name, sep, name = key.partition("/")
@@ -102,13 +108,22 @@ class VaultTransaction:
             sync_directory(self.journal.parent)
             self.files.clear()
 
-    def write(self, path: Path, payload: bytes | None) -> None:
+    def _check_owner(self) -> None:
         if self.closed or self.owner != _owner():
             raise TransactionError(
                 "This Vault transaction is no longer active in the current task."
             )
+
+    def _read_current(self, path: Path) -> tuple[str, bytes | None]:
+        self._check_owner()
         key = self._key(path)
-        current = _read(path)
+        return key, _read(path)
+
+    def write(self, path: Path, payload: bytes | None) -> None:
+        key, current = self._read_current(path)
+        self._replace(path, key, current, payload)
+
+    def _replace(self, path: Path, key: str, current: bytes | None, payload: bytes | None) -> None:
         if current == payload:
             return
         before = _digest(current)
@@ -129,8 +144,8 @@ class VaultTransaction:
             atomic_write(path, payload)
 
     def append(self, path: Path, payload: bytes) -> None:
-        self._key(path)
-        self.write(path, (_read(path) or b"") + payload)
+        key, current = self._read_current(path)
+        self._replace(path, key, current, (current or b"") + payload)
 
     def recover(self) -> None:
         if self.journal.resolve() != self.journal:
@@ -213,9 +228,12 @@ def vault_transaction(paths: SyvrioPaths) -> Iterator[VaultTransaction]:
                 ) from failure
             raise
         finally:
-            tx.closed = True
-            del _thread_state.transaction
-            _current.reset(token)
+            try:
+                tx._guards.close()
+            finally:
+                tx.closed = True
+                del _thread_state.transaction
+                _current.reset(token)
 
 
 def recover_vault_transaction(paths: SyvrioPaths) -> None:

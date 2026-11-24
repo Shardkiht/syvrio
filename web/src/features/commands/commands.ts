@@ -141,11 +141,6 @@ export function panelFor(result: CommandResponse): CommandPanel | null {
       return { kind: 'topics', document: { topic: data.topic, entries: data.entries as TopicDocument['entries'] } };
     }
     if (Array.isArray(data.topics)) return { kind: 'topics', topics: data.topics as TopicListItem[] };
-    // 旧版常驻服务返回同样的主题键，但不带用于展示的元数据。
-    if (Array.isArray(data.names)) return {
-      kind: 'topics',
-      topics: data.names.filter((name): name is string => typeof name === 'string').map(topic => ({ topic, title: '' })),
-    };
   }
 
   if ((data.kind === 'pending' || data.kind === 'inferences') && Array.isArray(data.rows)) {

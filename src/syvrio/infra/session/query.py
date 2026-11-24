@@ -4,15 +4,19 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
 from ..observability.diagnostics import record_event
 from ..storage.documents import DocumentError
+from ..storage.locking import session_file_lock
 from ..storage.paths import SESSION_ID_RE, SyvrioPaths, vault_paths
 from ..time import parse_timestamp
-from .attachments import AttachmentBatch
+from .attachment_index import attachment_metadata
+from .attachments import Attachment, AttachmentBatch
 from .model import Session, validate_record
 
 _LOG = logging.getLogger(__name__)
@@ -23,8 +27,10 @@ def _session_sort_time(value: str) -> datetime:
 
 
 class SessionQuery:
-    def __init__(self, vault: Path | SyvrioPaths):
+    def __init__(self, vault: Path | SyvrioPaths, *, offline: bool = False):
         paths = vault if isinstance(vault, SyvrioPaths) else vault_paths(vault)
+        self.paths = paths
+        self._offline = offline
         self.root = paths.sessions_dir
         self.archive_root = paths.archived_sessions_dir
         self.attachments_dir = paths.attachments_dir
@@ -37,14 +43,44 @@ class SessionQuery:
     def exists(self, session_id: str, *, archived: bool = False) -> bool:
         return self._find(session_id, archived=archived) is not None
 
+    _attachment_metadata = staticmethod(attachment_metadata)
+
+    def copy_message_attachment(
+        self,
+        session_id: str,
+        message_id: str,
+        attachment_id: str,
+        destination: Callable[[bytes], object],
+        *,
+        archived: bool = False,
+    ) -> tuple[Attachment, os.stat_result] | None:
+        self._validate_session_id(session_id)
+        root = self.archive_root if archived else self.root
+        # 生成的 ID 已包含归档年月，常见下载不必枚举整个会话目录。
+        match = re.fullmatch(r"s-(\d{4})(\d{2})\d{2}-\d{6}-[a-f0-9]{4}", session_id)
+        path = root / match[1] / match[2] / f"{session_id}.jsonl" if match else None
+        if path is None or not path.is_file():
+            path = self._path(session_id, archived=archived)
+        if path.resolve() != path:
+            raise ValueError("Redirected session path.")
+        try:
+            meta = self._attachment_metadata(path, message_id, attachment_id)
+        except FileNotFoundError as exc:
+            raise KeyError(session_id) from exc
+        if meta is None:
+            return None
+        return AttachmentBatch.copy_original(
+            self.attachments_dir, session_id, message_id, meta, destination
+        )
+
     def verify_attachments(self) -> tuple[int, list[str]]:
         """对照所有原始消息核验归档，包括已撤回的回合。"""
         checked = 0
         errors = []
-        if not self.root.is_dir():
+        if not self.root.is_dir() and not self.archive_root.is_dir():
             return 0, ["The selected Vault has no sessions directory."]
         try:
-            files = self._files()
+            files = self._files() + self._files(archived=True)
         except (OSError, ValueError) as exc:
             return 0, [str(exc)]
         for path in files:
@@ -81,16 +117,31 @@ class SessionQuery:
             self._path(session_id, archived=archived), include_reasoning=include_reasoning
         )
 
+    def _read_log(self, path: Path) -> bytes:
+        # 捕获已提交字节后立即放锁，JSON 校验、页面投影和附件摘要均在锁外处理。
+        if self._offline:
+            # 调用方持有物理 Vault 的维护租约，不接触可能属于其他 Vault 的 Runtime。
+            return path.read_bytes()
+        if not self.paths.lock_dir.exists():
+            # 单独复制来的 Vault 没有 Runtime，离线核验不能创建目录。如果写者
+            # 同时启动，锁目录一定先于日志修改出现，此时重新在会话锁内读取。
+            raw = path.read_bytes()
+            if not self.paths.lock_dir.exists():
+                return raw
+        with session_file_lock(self.paths, path.stem):
+            return path.read_bytes()
+
     def _load_path(self, path: Path, *, include_reasoning: bool) -> Session:
         session_id = path.stem
         self._validate_session_id(session_id)
-        if not path.exists():
-            raise KeyError(f"会话不存在：{session_id}")
         if path.resolve() != path or not (
             path.is_relative_to(self.root) or path.is_relative_to(self.archive_root)
         ):
             raise ValueError("symlink in session archive")
-        lines = path.read_bytes().splitlines()
+        try:
+            lines = self._read_log(path).splitlines()
+        except FileNotFoundError as exc:
+            raise KeyError(f"会话不存在：{session_id}") from exc
         records: list[dict] = []
         errors: dict[int, ValueError] = {}
         recovered: set[int] = set()
@@ -369,6 +420,12 @@ class SessionQuery:
 
     def _path(self, session_id: str, *, archived: bool = False) -> Path:
         path = self._find(session_id, archived=archived)
+        if path is None and not self._offline:
+            # 删除事务可能在发布前回滚；未知 ID 不应因此在 Runtime 新建锁文件。
+            lock = session_file_lock(self.paths, session_id)
+            if lock.path.exists():
+                with lock:
+                    path = self._find(session_id, archived=archived)
         if path is None:
             raise KeyError(f"会话不存在：{session_id}")
         return path

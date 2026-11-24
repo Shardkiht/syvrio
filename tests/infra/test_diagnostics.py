@@ -141,7 +141,7 @@ def test_chat_latency_separates_stream_and_tool_completion_without_payloads(tmp_
     registry.register(ToolSpec("consult", "Consult a model", {"type": "object"}, consult))
     monkeypatch.setattr("syvrio.agent.runtime.build_tools", lambda *args, **kwargs: registry)
     service = MemoryService(config)
-    service.init_vault()
+    service.initialize_files()
     runtime = AgentRuntime(
         service, client.LiteLLMChatModel(config.llm), SessionStore(config.paths())
     )

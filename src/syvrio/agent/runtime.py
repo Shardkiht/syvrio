@@ -8,7 +8,7 @@ from datetime import date
 from itertools import groupby, islice
 from threading import Event
 
-from ..infra.config import ChatConfig, Config, load_config
+from ..infra.config import ChatConfig, Config, LLMConfig, load_config
 from ..infra.llm import (
     AssistantTurn,
     ChatModel,
@@ -24,9 +24,9 @@ from ..infra.security.secrets import redact_secrets
 from ..infra.session import Session, SessionStore, new_message_id
 from ..infra.session.attachments import AttachmentBatch
 from ..infra.storage.transaction import vault_transaction
+from ..infra.vault.files import load_persona
 from ..memory.background.titles import rename_session
-from ..memory.extractor import LLMExtractor
-from ..memory.service import MemoryService, load_persona
+from ..memory.service import MemoryService
 from ..memory.turn_undo import TurnFileJournal, TurnUndoError
 from .context import (
     CompactionPhase,
@@ -114,6 +114,7 @@ class AgentReply:
 @dataclass(frozen=True)
 class TurnSettings:
     model: ChatModel
+    llm_config: LLMConfig
     context: ContextManager
     recall_queries: RecallQueryBuilder
 
@@ -132,7 +133,6 @@ class AgentRuntime:
         self.model = model
         self.model_config = service.config.llm
         self.sessions = sessions
-        self.sessions.recover_deletions()
         self.config = config or service.config.chat
         self.recall_queries = RecallQueryBuilder(
             service.config.llm,
@@ -171,7 +171,7 @@ class AgentRuntime:
         context = copy(self.context)
         window = effective_context_window(self.service.config.llm, self.config.context_window)
         context.config = replace(self.config, context_window=window)
-        return TurnSettings(self.model, context, self.recall_queries)
+        return TurnSettings(self.model, self.model_config, context, self.recall_queries)
 
     def ensure_session(self) -> Session:
         if self.session is None:
@@ -204,7 +204,7 @@ class AgentRuntime:
             return session
 
     def reload_llm(self, config: "Config | None" = None) -> None:
-        """配置变更后热更新模型、抽取器和摘要器，不重启会话。
+        """配置变更后热更新聊天模型和摘要器，不重启会话。
 
         默认从 service 记住的配置路径重读；调用方持有新配置对象时直接传入，
         避免落盘与重读之间的竞态把切换回滚。
@@ -214,7 +214,6 @@ class AgentRuntime:
             config = load_config(path) if path else load_config()
         self.service.config.llm = config.llm
         self.service.config.chat = config.chat
-        self.service.extractor = LLMExtractor(config.llm)
         self.model = LiteLLMChatModel(config.llm)
         self.model_config = config.llm
         self.summarizer = LLMSummarizer(config.llm)
@@ -388,7 +387,12 @@ class AgentRuntime:
         )
         evidence = RecallContext(self.service)
         tools = build_tools(
-            self.service, session, timeout=config.tool_timeout, file_paths=paths, evidence=evidence
+            self.service,
+            session,
+            timeout=config.tool_timeout,
+            file_paths=paths,
+            evidence=evidence,
+            llm_config=settings.llm_config,
         )
         schema_tokens = estimate_tool_tokens(tools.schemas())
         if not paths:
@@ -507,6 +511,7 @@ class AgentRuntime:
                 timeout=config.tool_timeout,
                 file_paths=document_paths(supplement) if self.allow_local_paths else [],
                 evidence=evidence,
+                llm_config=settings.llm_config,
             )
             next_schemas = next_tools.schemas() if steps < config.max_tool_steps else []
             if not context.fits_input([*plan.messages, candidate], next_schemas):

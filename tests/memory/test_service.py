@@ -6,6 +6,8 @@ import pytest
 
 from syvrio.infra.config import Config, LLMConfig, RetrievalConfig
 from syvrio.infra.session import SessionStore
+from syvrio.infra.vault.files import initialize_vault
+from syvrio.infra.vault.sync import GitSyncService
 from syvrio.memory.extractor import StaticExtractor
 from syvrio.memory.models import (
     Candidate,
@@ -19,14 +21,17 @@ from syvrio.memory.service import MemoryService
 pytestmark = pytest.mark.memory
 
 
-def make_service(tmp_path, candidates):
+def make_service(tmp_path):
     config = Config(
         vault=tmp_path / "vault", llm=LLMConfig(), retrieval=RetrievalConfig(method="keyword")
     )
-    extractor = StaticExtractor(ExtractionResult(memories=candidates))
-    service = MemoryService(config, extractor=extractor)
-    service.init_vault()
+    service = MemoryService(config)
+    service.initialize_files()
     return service
+
+
+def import_extractor(*candidates):
+    return StaticExtractor(ExtractionResult(memories=list(candidates)))
 
 
 def draft(text, topic="misc", **context):
@@ -48,10 +53,11 @@ def message_source(service, content):
 def test_context_and_trusted_source_survive_import_and_approval(tmp_path, question):
     context = MemoryContext(event_time="2024-06", emotion={"event": "紧张", "recollection": "开心"})
     candidate = Candidate(text="参观展览", topic="events", context=context, question=question)
-    svc = make_service(tmp_path, [candidate])
+    svc = make_service(tmp_path)
+    extractor = import_extractor(candidate)
     original = "2024年6月参加展览时紧张，现在想起来开心。"
     source = message_source(svc, original)
-    version, candidates = svc.prepare_import(original, extractor=svc.extractor)
+    version, candidates = svc.prepare_import(original, extractor=extractor)
     result = svc.apply_import(candidates, version, **source)
     if question:
         (queued,) = result.queued
@@ -73,40 +79,39 @@ def test_context_and_trusted_source_survive_import_and_approval(tmp_path, questi
 
 
 def test_import_dry_run_and_duplicate_retry(tmp_path):
-    svc = make_service(
-        tmp_path,
-        [
-            Candidate(
-                text="有过紧张的感受",
-                topic="events",
-                context=MemoryContext(emotion={"event": "紧张"}),
-            ),
-            Candidate(text="也许在附近", topic="location", question="具体在哪里？"),
-        ],
+    svc = make_service(tmp_path)
+    extractor = import_extractor(
+        Candidate(
+            text="有过紧张的感受",
+            topic="events",
+            context=MemoryContext(emotion={"event": "紧张"}),
+        ),
+        Candidate(text="也许在附近", topic="location", question="具体在哪里？"),
     )
-    result = svc.import_text("外部材料", dry_run=True, extractor=svc.extractor)
+    result = svc.import_text("外部材料", dry_run=True, extractor=extractor)
     assert result.to_dict()["admitted"][0]["context"] == {"emotion": {"event": "紧张"}}
     assert [p.text for p in result.queued] == ["也许在附近"]
     assert not svc.pending() and not svc.current_facts() and not svc.store.changes_path.exists()
-    saved = svc.import_text("外部材料", extractor=svc.extractor)
-    again = svc.import_text("外部材料", extractor=svc.extractor)
+    saved = svc.import_text("外部材料", extractor=extractor)
+    again = svc.import_text("外部材料", extractor=extractor)
     assert again.duplicates == ["有过紧张的感受"] and not again.admitted
     assert again.queued == saved.queued and len(svc.pending()) == 1
     assert len(svc.store.changes_path.read_bytes().splitlines()) == 1
 
 
 def test_import_rejects_stale_evidence_across_call_and_retries_fresh(tmp_path):
-    svc = make_service(tmp_path, [Candidate(text="导入的事实", topic="misc")])
-    stale, candidates = svc.prepare_import("材料", extractor=svc.extractor)
+    svc = make_service(tmp_path)
+    extractor = import_extractor(Candidate(text="导入的事实", topic="misc"))
+    stale, candidates = svc.prepare_import("材料", extractor=extractor)
     svc.note("读取后发生了另一次写入")
     with pytest.raises(ValueError, match="fresh evidence"):
         svc.apply_import(candidates, stale)
     assert [r.text for r in svc.current_facts()] == ["读取后发生了另一次写入"]
-    assert svc.import_text("材料", extractor=svc.extractor).admitted[0].text == "导入的事实"
+    assert svc.import_text("材料", extractor=extractor).admitted[0].text == "导入的事实"
 
 
 def test_source_identity_is_idempotent_without_sharing_unrelated_messages(tmp_path):
-    svc = make_service(tmp_path, [])
+    svc = make_service(tmp_path)
     text = "合成候选"
     one, two = message_source(svc, text), message_source(svc, text)
     record = draft(text)
@@ -132,7 +137,7 @@ def test_source_identity_is_idempotent_without_sharing_unrelated_messages(tmp_pa
 
 
 def test_queue_question_and_payload_cannot_store_credentials(tmp_path):
-    svc = make_service(tmp_path, [])
+    svc = make_service(tmp_path)
     secret = "api_key=synthetic-token-123"
     with pytest.raises(ValueError):
         svc.create_pending(draft("普通事实"), secret, [])
@@ -142,18 +147,20 @@ def test_queue_question_and_payload_cannot_store_credentials(tmp_path):
 
 
 def test_init_creates_vault_git_and_readme(tmp_path):
-    service = make_service(tmp_path, [])
+    service = make_service(tmp_path)
+    git = GitSyncService(service.config, service.paths)
+    initialize_vault(git, service.initialize_files)
     vault = tmp_path / "vault"
     assert (vault / "README.md").exists()
     assert (vault / ".git").is_dir()
     assert b"/attachments/" in (vault / ".gitignore").read_bytes().splitlines()
-    assert service.history(limit=5)[0]["subject"] == "memory: 初始化记忆库"
+    assert git.history(limit=5)[0]["subject"] == "memory: 初始化记忆库"
 
 
 def test_turn_undo_targets_archived_rejection_file(tmp_path):
     from syvrio.memory.turn_undo import TurnFileJournal
 
-    service = make_service(tmp_path, [])
+    service = make_service(tmp_path)
     candidate = service.create_pending(draft("Synthetic candidate"), "Which?", [])
     journal = TurnFileJournal(service.paths, "s-1", "t-1", lambda ids, files: {})
     with journal.capture():
@@ -163,7 +170,9 @@ def test_turn_undo_targets_archived_rejection_file(tmp_path):
 
 
 def test_reopening_vault_preserves_user_ignore_rules_and_excludes_uploads(tmp_path):
-    service = make_service(tmp_path, [])
+    service = make_service(tmp_path)
+    git = GitSyncService(service.config, service.paths)
+    initialize_vault(git, service.initialize_files)
     vault = service.config.vault
     path = vault / ".gitignore"
     prior = b"# private rules\r\n*.local\r\n!/attachments/"
@@ -172,19 +181,21 @@ def test_reopening_vault_preserves_user_ignore_rules_and_excludes_uploads(tmp_pa
     upload.parent.mkdir()
     upload.write_bytes(b"private document")
     (vault / "sample.txt").write_bytes(b"ordinary vault file")
-    MemoryService(service.config, extractor=service.extractor)
+    MemoryService(service.config)
+    assert path.read_bytes() == prior
+    git.ensure_ignore_rules()
     expected = prior + b"\r\n/attachments/\r\n/archived/\r\n"
     assert path.read_bytes() == expected
-    service.repo.stage_all()
-    staged = service.repo.staged_paths()
+    git.repo.stage_all()
+    staged = git.repo.staged_paths()
     assert "sample.txt" in staged and "attachments/sample.txt" not in staged
-    MemoryService(service.config, extractor=service.extractor)
+    git.ensure_ignore_rules()
     assert path.read_bytes() == expected
 
 
 @pytest.mark.parametrize("override", [None, "我喜欢深烘咖啡"])
 def test_approval_retries_and_never_changes_related_fact(tmp_path, override):
-    svc = make_service(tmp_path, [])
+    svc = make_service(tmp_path)
     old = svc.note("我喜欢喝茶", "preferences")
     item = svc.create_pending(
         draft("我喜欢咖啡", topic="preferences", event_time="2024"), "这是新增偏好吗？", [old.id]
@@ -203,7 +214,7 @@ def test_approval_retries_and_never_changes_related_fact(tmp_path, override):
 
 
 def test_review_keeps_deprecated_related_fact_and_archive_contains_original_only(tmp_path):
-    svc = make_service(tmp_path, [])
+    svc = make_service(tmp_path)
     old = svc.note("先前事实")
     item = svc.create_pending(draft("待确认", location="示例展厅"), "这里指哪里？", [old.id])
     svc.deprecate(old.id)
@@ -216,7 +227,7 @@ def test_review_keeps_deprecated_related_fact_and_archive_contains_original_only
 
 @pytest.mark.parametrize("value", ["", "   ", "API key: demo-placeholder"])
 def test_invalid_approval_keeps_original_and_all_files(tmp_path, value):
-    svc = make_service(tmp_path, [])
+    svc = make_service(tmp_path)
     item = svc.create_pending(draft("候选"), "是这个意思吗？", [])
     before = svc.queue.pending_path.read_bytes()
     with pytest.raises(ValueError):
@@ -226,28 +237,32 @@ def test_invalid_approval_keeps_original_and_all_files(tmp_path, value):
 
 
 def test_commit_generates_fallback_summary_and_history(tmp_path):
-    service = make_service(tmp_path, [])
+    service = make_service(tmp_path)
+    git = GitSyncService(service.config, service.paths)
+    initialize_vault(git, service.initialize_files)
     service.note("使用 手冲滤纸", topic="devices")
 
-    result = service.commit(push=False)
+    result = git.commit(push=False)
 
     assert result["committed"]
     assert result["summary"].startswith("memory:")
     assert result["hash"]
-    assert service.history(1)[0]["hash"] == result["hash"]
+    assert git.history(1)[0]["hash"] == result["hash"]
 
-    again = service.commit(push=False)
+    again = git.commit(push=False)
     assert not again["committed"]
 
 
 def test_push_without_remote_reports_error_but_keeps_commit(tmp_path):
     # 回归：push 失败不再抛异常掩盖已完成的本地提交。
-    service = make_service(tmp_path, [])
+    service = make_service(tmp_path)
+    git = GitSyncService(service.config, service.paths)
+    initialize_vault(git, service.initialize_files)
     service.note("一条记录", topic="misc")
-    service.commit(push=False)
+    git.commit(push=False)
     service.note("另一条记录", topic="misc")
 
-    result = service.commit(push=True)
+    result = git.commit(push=True)
 
     assert result["committed"] and result["hash"]
     assert result["pushed"] is False
@@ -255,7 +270,7 @@ def test_push_without_remote_reports_error_but_keeps_commit(tmp_path):
 
 
 def test_recall_and_read_topic_return_structured_active_facts(tmp_path):
-    service = make_service(tmp_path, [])
+    service = make_service(tmp_path)
     wanted = service.note("喜欢清淡风味", topic="preferences")
     old = service.note("以前的偏好", topic="preferences")
     service.deprecate(old.id)
@@ -278,11 +293,12 @@ def test_recall_and_read_topic_return_structured_active_facts(tmp_path):
 def test_commit_push_failure_does_not_hide_commit(tmp_path):
     # auto_push 但无 remote：本地提交必须成功返回 hash，push 失败只记录在 push_error。
     config = Config(vault=tmp_path / "vault", llm=LLMConfig(), auto_push=True)
-    service = MemoryService(config, extractor=StaticExtractor(ExtractionResult(memories=[])))
-    service.init_vault()
+    service = MemoryService(config)
+    git = GitSyncService(service.config, service.paths)
+    initialize_vault(git, service.initialize_files)
     service.note("一条记录", topic="misc")
 
-    result = service.commit()
+    result = git.commit()
 
     assert result["committed"] and result["hash"]
     assert result["pushed"] is False
@@ -291,7 +307,7 @@ def test_commit_push_failure_does_not_hide_commit(tmp_path):
 
 def test_load_persona_falls_back_to_gbk(tmp_path):
     # 记事本 ANSI（GBK）保存的 SOUL.md 不应炸掉整轮对话。
-    from syvrio.memory.service import load_persona
+    from syvrio.infra.vault.files import load_persona
 
     vault = tmp_path / "vault"
     vault.mkdir()
@@ -301,7 +317,7 @@ def test_load_persona_falls_back_to_gbk(tmp_path):
 
 
 def test_load_persona_missing_or_empty(tmp_path):
-    from syvrio.memory.service import load_persona
+    from syvrio.infra.vault.files import load_persona
 
     vault = tmp_path / "vault"
     vault.mkdir()
@@ -312,14 +328,16 @@ def test_load_persona_missing_or_empty(tmp_path):
 
 def test_commit_pending_changes_auto_commits_without_llm(tmp_path):
     # 启动检查：有未提交变更时自动提交（不 push、不调 LLM），无变更时返回 None。
-    service = make_service(tmp_path, [])
-    assert service.commit_pending_changes() is None  # 干净库
+    service = make_service(tmp_path)
+    git = GitSyncService(service.config, service.paths)
+    initialize_vault(git, service.initialize_files)
+    assert git.commit_pending_changes() is None  # 干净库
 
     service.note("启动前未提交的一条", topic="misc")
-    commit = service.commit_pending_changes()
+    commit = git.commit_pending_changes()
     assert commit
-    assert not service.repo.has_changes()
-    assert any("自动提交" in item["subject"] for item in service.history(3))
+    assert not git.repo.has_changes()
+    assert any("自动提交" in item["subject"] for item in git.history(3))
 
 
 @pytest.mark.parametrize(
@@ -333,25 +351,27 @@ def test_commit_pending_changes_auto_commits_without_llm(tmp_path):
     ],
 )
 def test_note_correct_and_import_reject_secrets(tmp_path, text):
-    svc = make_service(tmp_path, [Candidate(text=text, topic="misc")])
+    svc = make_service(tmp_path)
+    extractor = import_extractor(Candidate(text=text, topic="misc"))
     with pytest.raises(ValueError):
         svc.note(text)
     entry = svc.note("普通偏好", "preferences")
     with pytest.raises(ValueError):
         svc.correct(entry.id, draft(text))
-    result = svc.import_text("合成材料", extractor=svc.extractor)
+    result = svc.import_text("合成材料", extractor=extractor)
     assert result.blocked and text not in repr(result.blocked)
     assert not result.admitted and not result.queued and svc.current_facts() == [entry]
 
 
 def test_normal_credential_description_can_be_imported(tmp_path):
     text = "这个软件的密码管理器好用"
-    svc = make_service(tmp_path, [Candidate(text=text, topic="devices")])
-    assert svc.import_text(text, extractor=svc.extractor).admitted[0].text == text
+    svc = make_service(tmp_path)
+    extractor = import_extractor(Candidate(text=text, topic="devices"))
+    assert svc.import_text(text, extractor=extractor).admitted[0].text == text
 
 
 def test_approve_rejects_secret_from_manually_edited_candidate(tmp_path):
-    svc = make_service(tmp_path, [])
+    svc = make_service(tmp_path)
     item = PendingItem(text="api_key=abcd1234", topic="misc", question="确认吗？")
     svc.queue.add(item)
     with pytest.raises(ValueError):
@@ -378,7 +398,7 @@ def test_failed_multi_file_operations_restore_every_file_and_can_retry(
     from syvrio.infra.storage import transaction
     from syvrio.memory import service as service_module
 
-    svc = make_service(tmp_path, [])
+    svc = make_service(tmp_path)
     old = svc.note("最初事实", "old")
     pending = svc.create_pending(draft("待确认的事实", "new"), "具体是什么？", [old.id])
 

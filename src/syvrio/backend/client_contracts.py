@@ -4,6 +4,12 @@ from __future__ import annotations
 
 from pydantic import Base64Bytes, BaseModel, ConfigDict
 
+from ..application.command_catalog import (
+    SLASH_COMMANDS,
+    SLASH_SUBCOMMANDS,
+    parse_command,
+    slash_matches,
+)
 from ..infra.config import WebShareConfig as WebShareConfig
 from ..infra.storage.documents import SUPPORTED_SUFFIXES
 from ..infra.storage.paths import SESSION_ID_RE
@@ -20,6 +26,10 @@ class UploadedImportDocument(BaseModel):
 
 
 __all__ = [
+    "SLASH_COMMANDS",
+    "SLASH_SUBCOMMANDS",
+    "parse_command",
+    "slash_matches",
     "SUPPORTED_SUFFIXES",
     "SESSION_ID_RE",
     "ProgressCallback",

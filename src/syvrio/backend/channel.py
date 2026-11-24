@@ -15,9 +15,11 @@ from ..infra.observability.diagnostics import record_event
 from ..infra.session import SessionStore
 from ..infra.session.errors import ConversationError
 from ..infra.storage.locking import LockTimeout
-from ..infra.storage.transaction import recover_vault_transaction
+from ..infra.vault.files import open_vault
+from ..infra.vault.sync import GitSyncService
 from ..memory.background import BackgroundMemory
 from ..memory.service import MemoryService, get_service
+from .maintenance import prepare_vault_runtime
 from .ownership import BackendLease
 from .scheduler import GitScheduler
 
@@ -34,6 +36,9 @@ class ResidentChannel:
         self._parent = parent
         self._service = (
             parent._service if parent else service or get_service(config_path, vault_path)
+        )
+        self.git = (
+            parent.git if parent else GitSyncService(self._service.config, self._service.paths)
         )
         self._sessions = parent._sessions if parent else SessionStore(self._service.paths)
         settings_lock = parent.scheduling.settings_lock if parent else threading.RLock()
@@ -53,6 +58,7 @@ class ResidentChannel:
             self._runtime,
             self._service,
             self._background,
+            git=self.git,
             registry=parent.scheduling.registry if parent else None,
             settings_lock=settings_lock,
         )
@@ -89,11 +95,11 @@ class ResidentChannel:
                 "client_busy", "A resident Syvrio backend already owns this Vault."
             ) from exc
         try:
-            recover_vault_transaction(self._service.paths)
-            if not (self._service.config.vault / ".git").exists():
-                self._service.init_vault()
+            prepare_vault_runtime(self._service.paths)
+            self._sessions.recover_deletions()
+            open_vault(self.git, self._service.initialize_files)
             try:
-                self._service.commit_pending_changes()
+                self.git.commit_pending_changes()
             except Exception as exc:
                 record_event("backend.startup_hook_failed", exc)
             self._background.start()

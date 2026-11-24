@@ -38,7 +38,7 @@ class FakeSummarizer:
         return "会话摘要"
 
 
-def build_runtime(tmp_path, model, candidates=None, *, extract_on_exit=False, max_steps=4):
+def build_runtime(tmp_path, model, *, extract_on_exit=False, max_steps=4):
     config = Config(
         vault=tmp_path / "vault",
         llm=LLMConfig(),
@@ -49,11 +49,8 @@ def build_runtime(tmp_path, model, candidates=None, *, extract_on_exit=False, ma
             extract_on_exit=extract_on_exit,
         ),
     )
-    service = MemoryService(
-        config,
-        extractor=StaticExtractor(ExtractionResult(memories=candidates or [])),
-    )
-    service.init_vault()
+    service = MemoryService(config)
+    service.initialize_files()
     runtime = AgentRuntime(
         service,
         model,
@@ -273,6 +270,36 @@ def reviewed_calls(*operations):
         for suffix in ("review", "apply"):
             turns.append(AssistantTurn(tool_calls=[ToolCall(f"{index}-{suffix}", name, payload)]))
     return turns + [AssistantTurn(content="已处理")]
+
+
+def test_file_import_uses_model_selected_at_turn_start(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    path = tmp_path / "synthetic.txt"
+    path.write_text("合成材料", encoding="utf-8")
+    model = FakeChatModel(
+        [
+            AssistantTurn(tool_calls=[ToolCall("import", "import_file", {"path": str(path)})]),
+            AssistantTurn(content="done"),
+        ]
+    )
+    runtime, service = build_runtime(tmp_path, model)
+    selected = service.config.llm
+    calls = []
+
+    def extractor(config, **kwargs):
+        calls.append(config)
+        return StaticExtractor(ExtractionResult(memories=[]))
+
+    monkeypatch.setattr("syvrio.memory.service.ImportExtractor", extractor)
+
+    def switch(phase):
+        if phase == "Preparing context":
+            service.config.llm = replace(selected, model="synthetic-next-model")
+
+    runtime.ask(f'分析 "{path}"', on_progress=switch)
+    assert calls == [selected]
+    assert selected is not service.config.llm
 
 
 def test_turn_undo_restores_vault_files_after_resume(tmp_path, monkeypatch):
@@ -815,7 +842,7 @@ def test_close_enqueues_once_and_returns_before_extraction(tmp_path):
     assert not service.current_facts()
 
 
-def test_reload_llm_updates_model_and_extractor(tmp_path, monkeypatch):
+def test_reload_llm_updates_chat_model_and_context(tmp_path, monkeypatch):
     runtime, service = build_runtime(tmp_path, FakeChatModel([AssistantTurn(content="ok")]))
     new_llm = LLMConfig(
         provider="siliconflow",
@@ -871,7 +898,7 @@ def test_recall_tool_guides_query_with_synonyms():
 
     config = _config_with_vault()
     service = MemoryService(config)
-    service.init_vault()
+    service.initialize_files()
     session = SessionStore(config.vault).create()
     spec = build_tools(service, session)._tools["recall"]
     assert "同义词" in spec.description
@@ -939,7 +966,10 @@ def test_soul_md_truncated_by_tokens(tmp_path):
 
 
 def test_init_vault_seeds_default_soul(tmp_path):
+    from syvrio.backend.maintenance import initialize_vault
+
     runtime, service = build_runtime(tmp_path, FakeChatModel([]))
+    initialize_vault(service.config, force=True)
 
     soul = service.config.vault / "SOUL.md"
     assert "个人记忆助手" in soul.read_text(encoding="utf-8")

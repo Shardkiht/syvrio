@@ -153,7 +153,7 @@ def resident_backend(service):
 
     service.config.search.auto_start = False
     service.config.git.auto_sync = False
-    service.init_vault()
+    service.initialize_files()
     owner = WebBackend(service=service)
     token = secrets.token_urlsafe(24)
     api = create_app(owner, resident_token=token)

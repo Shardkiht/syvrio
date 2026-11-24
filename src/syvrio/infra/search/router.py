@@ -12,6 +12,7 @@ from ..config import SearchConfig, read_api_key
 from ..storage.paths import SyvrioPaths, vault_paths
 from .attempts import SearchAttempt, SearchRun
 from .base import (
+    SearchArgumentError,
     SearchFailure,
     SearchOutcome,
     SearchProvider,
@@ -315,11 +316,11 @@ class SearchRouter:
         limit = max(1, min(query.limit or self.max_results, 15))
         strategy = (query.strategy or "auto").strip().lower()
         if strategy not in SEARCH_STRATEGIES:
-            raise ValueError(f"unsupported search strategy: {strategy}")
+            raise SearchArgumentError("strategy", f"unsupported search strategy: {strategy}")
         requested = normalize_search_providers(query.providers, limit=MAX_SELECTED_PROVIDERS)
         enabled = [name for name in self.order if name in self.registry]
         if strategy == "strict" and not requested:
-            raise ValueError("strict strategy requires at least one provider")
+            raise SearchArgumentError("providers", "strict strategy requires at least one provider")
         selection_failures = [
             SearchFailure(name, "unavailable", "未启用或未注册的搜索 provider")
             for name in requested

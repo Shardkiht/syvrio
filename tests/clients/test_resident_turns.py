@@ -504,7 +504,7 @@ async def test_git_sync_without_remote_shows_reason_and_preserves_commit(residen
         await wait_for_ui(pilot, lambda: "Partially Completed" in str(content.content), timeout=45)
         assert "Remote is not configured" in str(content.content)
         assert "Local commit has been preserved" in str(content.content)
-        assert not owner._service.git_sync.running
+        assert not owner.git.running
 
 
 async def test_closing_git_screen_does_not_cancel_sync(resident_backend, tmp_path, monkeypatch):
@@ -518,14 +518,14 @@ async def test_closing_git_screen_does_not_cancel_sync(resident_backend, tmp_pat
     before = remote_log(remote)
     service.note("关闭界面后继续推送", topic="misc")
     entered, release = Event(), Event()
-    original_push = service.repo.push
+    original_push = owner.git.repo.push
 
     def gated_push():
         entered.set()
         assert release.wait(30)
         return original_push()
 
-    monkeypatch.setattr(service.repo, "push", gated_push)
+    monkeypatch.setattr(owner.git.repo, "push", gated_push)
     app = ResidentChatApp(client)
     async with app.run_test() as pilot:
         await app._command("/git")

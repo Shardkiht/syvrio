@@ -17,9 +17,11 @@ from typing import Callable
 
 from ..config import Config
 from ..storage.locking import LockTimeout, git_operation_lock, vault_write_lock
+from ..storage.paths import SyvrioPaths
 from ..system.gitops import GitError
 from ..time import parse_timestamp, serialize_timestamp, utc_now
-from .git import VaultGitRepo
+from .commit_summary import summarize_diff
+from .git import VaultGitRepo, ensure_vault_gitignore
 
 STAGE_CHECK = "Checking working tree"
 STAGE_COMMIT = "Creating commit"
@@ -63,12 +65,104 @@ class SyncResult:
 
 
 class GitSyncService:
-    def __init__(self, config: Config, repo: VaultGitRepo | None = None) -> None:
+    def __init__(self, config: Config, paths: SyvrioPaths) -> None:
         self.config = config
-        self.repo = repo or VaultGitRepo(config.vault)
+        self.paths = paths
+        self.repo = VaultGitRepo(paths.vault_dir)
         self._running = threading.Lock()
-        self._git_lock = git_operation_lock(config.paths())
-        self._vault_lock = vault_write_lock(config.paths())
+        self._git_lock = git_operation_lock(paths)
+        self._vault_lock = vault_write_lock(paths)
+
+    def ensure_ignore_rules(self) -> None:
+        with self._git_lock, self._vault_lock:
+            if (self.repo.path / ".git").exists() and self.repo.is_repo:
+                ensure_vault_gitignore(self.repo.path)
+
+    def initialize(self, prepare_files: Callable[[], None]) -> dict:
+        with self._git_lock, self._vault_lock:
+            created = self.repo.ensure_init()
+            prepare_files()
+            ensure_vault_gitignore(self.repo.path)
+            self.repo.stage_all_checked()
+            commit_hash = self.repo.commit("memory: 初始化记忆库")
+        return {"vault": str(self.repo.path), "git_created": created, "commit": commit_hash}
+
+    def is_dirty(self) -> bool:
+        return self.repo.is_repo and self.repo.has_changes()
+
+    def history(self, limit: int = 10) -> list[dict]:
+        return self.repo.history(limit)
+
+    def commit_pending_changes(self) -> str | None:
+        """启动检查用：自动提交 vault 未保存变更（不 push、不调 LLM 生成总结）。"""
+        with self._git_lock:
+            with self._vault_lock:
+                self.repo.ensure_init()
+                self.repo.stage_all_checked()
+            return self.repo.commit("memory: 自动提交未保存变更（启动检查）")
+
+    def commit(self, push: bool | None = None) -> dict:
+        with self._git_lock:
+            return self._commit_locked(push)
+
+    def _commit_locked(self, push: bool | None) -> dict:
+        with self._vault_lock:
+            self.repo.ensure_init()
+            self.repo.stage_all_checked()
+            staged = self.repo.has_staged()
+            if staged:
+                stat = self.repo.staged_stat()
+                diff = self.repo.staged_diff()
+        should_push = self.config.auto_push if push is None else push
+        if not staged:
+            result = {
+                "committed": False,
+                "summary": "没有需要提交的变更。",
+                "hash": None,
+                "pushed": False,
+                "push_output": "",
+                "push_error": "",
+            }
+            # 没有新提交时仍允许补推历史未推送提交；缺少 remote/upstream 时保持静默。
+            if should_push and self.repo.has_remote() and self.repo.upstream():
+                if self.repo.unpushed_count():
+                    try:
+                        result["push_output"] = self.repo.push()
+                        result["pushed"] = True
+                        self.record_push_success()
+                    except GitError as exc:
+                        result["push_error"] = str(exc)
+            return result
+        # LLM 摘要与 Push 都不占 Vault 写锁；Git 锁仍持有，其他 Git 操作不会改 Index。
+        summary = summarize_diff(diff, self.config.llm, stat, self.config.chat.context_window)
+        lines = summary.splitlines()
+        subject = lines[0] if lines else "memory: 更新记忆库"
+        if not subject.startswith("memory:"):
+            subject = f"memory: {subject}"
+        message = subject[:120]
+        body = "\n".join(lines[1:]).strip()
+        if body:
+            message += f"\n\n{body}"
+        commit_hash = self.repo.commit(message)
+        # 本地提交已成功；push 失败只记录原因，不掩盖已完成的提交。
+        pushed = False
+        push_output = ""
+        push_error = ""
+        if should_push and commit_hash:
+            try:
+                push_output = self.repo.push()
+                pushed = True
+                self.record_push_success()
+            except GitError as exc:
+                push_error = str(exc)
+        return {
+            "committed": commit_hash is not None,
+            "summary": summary,
+            "hash": commit_hash,
+            "pushed": pushed,
+            "push_output": push_output,
+            "push_error": push_error,
+        }
 
     # ---------- 状态 ----------
 
@@ -78,7 +172,7 @@ class GitSyncService:
 
     @property
     def state_path(self) -> Path:
-        return self.config.paths().state_dir / "git-sync.json"
+        return self.paths.state_dir / "git-sync.json"
 
     def _read_state(self) -> dict:
         try:

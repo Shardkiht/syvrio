@@ -2,18 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
-import logging
-import os
-from collections.abc import Iterator
-from contextlib import contextmanager
 from pathlib import Path
 
 from ..infra.session.errors import SessionDeletionChanged
-from ..infra.session.query import SessionQuery
-from ..infra.storage.files import atomic_write, sync_directory
-from ..infra.storage.locking import vault_write_lock
 from ..infra.storage.paths import SyvrioPaths, vault_paths
-from ..infra.storage.transaction import recover_vault_transaction, vault_transaction
+from ..infra.storage.transaction import vault_transaction
 from .models import PendingItem
 from .schema import (
     SchemaError,
@@ -33,10 +26,6 @@ class PendingQueue:
         self.vault = self.paths.vault_dir
         self.pending_path = self.paths.memories_dir / "pending.md"
         self.resolved_path = self.paths.archived_dir / "pending" / "rejected.md"
-        self._lock = vault_write_lock(self.paths)
-        self._sessions = SessionQuery(self.paths)
-        key = hashlib.sha256(os.fsencode(os.path.normcase(str(self.vault.resolve())))).hexdigest()
-        self._delete_journal = self.paths.jobs_dir / "session-deletions" / (key + ".json")
 
     @staticmethod
     def _records(raw: str, name: str):
@@ -80,30 +69,8 @@ class PendingQueue:
         )
 
     def _active(self):
-        self.recover_session_deletion()
         raw = read_utf8(self.pending_path)
         return raw, self._records(raw, "memories/pending.md")
-
-    def recover_session_deletion(self) -> None:
-        """移除会话文件时，同时提交已准备好的待审条目移除操作。"""
-        with self._lock:
-            journal = self._delete_journal
-            if journal.resolve() != journal:
-                raise ValueError("Redirected session deletion journal.")
-            if not journal.exists():
-                return
-            record = json.loads(journal.read_bytes())
-            if self._sessions.exists(record["session_id"]):
-                original = record["original"].encode("utf-8")
-                current = read_utf8(self.pending_path).encode("utf-8")
-                if current != original:
-                    if hashlib.sha256(current).hexdigest() != record["prepared_hash"]:
-                        raise ValueError(
-                            "The pending file changed during session deletion recovery."
-                        )
-                    atomic_write(self.pending_path, original)
-            journal.unlink()
-            sync_directory(journal.parent)
 
     @staticmethod
     def _revision(records) -> str:
@@ -118,39 +85,17 @@ class PendingQueue:
             related = [(i, block) for i, block in records if i.session_id == session_id]
             return [i for i, _ in related], self._revision(related)
 
-    @contextmanager
-    def removing_with_session(self, session_id: str, revision: str) -> Iterator[None]:
-        with self._lock:
-            recover_vault_transaction(self.paths)
+    def remove_for_session(self, session_id: str, revision: str) -> None:
+        with vault_transaction(self.paths) as tx:
             raw, records = self._active()
-            related = [(i, block) for i, block in records if i.session_id == session_id]
+            related = [(item, block) for item, block in records if item.session_id == session_id]
             if revision != self._revision(related):
                 raise SessionDeletionChanged(
                     "The related pending items changed. Review the updated list."
                 )
-            if not related:
-                yield
-                return
-            prepared = replacements(raw, [(b.start, b.end, "") for _, b in related]).encode("utf-8")
-            journal = {
-                "session_id": session_id,
-                "original": raw,
-                "prepared_hash": hashlib.sha256(prepared).hexdigest(),
-            }
-            atomic_write(
-                self._delete_journal, json.dumps(journal, ensure_ascii=False).encode("utf-8")
-            )
-            try:
-                atomic_write(self.pending_path, prepared)
-                yield
-            except BaseException:
-                self.recover_session_deletion()
-                raise
-            try:
-                self._delete_journal.unlink()
-                sync_directory(self._delete_journal.parent)
-            except OSError as exc:
-                logging.getLogger(__name__).warning("Deletion journal cleanup deferred: %s", exc)
+            if related:
+                prepared = replacements(raw, [(b.start, b.end, "") for _, b in related])
+                tx.write(self.pending_path, prepared.encode("utf-8"))
 
     def all(self) -> list[PendingItem]:
         with vault_transaction(self.paths):

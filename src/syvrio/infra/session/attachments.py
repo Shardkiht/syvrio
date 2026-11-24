@@ -6,7 +6,7 @@ import base64
 import hashlib
 import os
 import re
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
 from typing import BinaryIO
@@ -34,6 +34,42 @@ class Attachment:
     @property
     def filename(self) -> str:
         return self.id + Path(self.name).suffix.lower()
+
+    def verify(
+        self, folder: Path, copy_to: Callable[[bytes], object] | None = None
+    ) -> os.stat_result:
+        if (
+            not re.fullmatch(r"[a-f0-9]{32}", self.id)
+            or PureWindowsPath(self.name).name != self.name
+        ):
+            raise DocumentError("Invalid attachment metadata.")
+        path = folder / self.filename
+        unavailable = "Attachment is missing or changed. Restore the matching attachment archive."
+        if path.resolve() != path or not path.is_file():
+            raise DocumentError(unavailable)
+        with path.open("rb") as source:
+            stat = os.fstat(source.fileno())
+            if not 0 < stat.st_size == self.size <= MAX_FILE_BYTES:
+                raise DocumentError(unavailable)
+            if copy_to is None:
+                digest = hashlib.file_digest(source, "sha256")
+            else:
+                # 快照与校验取自同一批字节，并限制原件同时被追加时的复制量。
+                digest = hashlib.sha256()
+                copied = 0
+                while chunk := source.read(256 * 1024):
+                    copied += len(chunk)
+                    if copied > self.size:
+                        raise DocumentError(unavailable)
+                    digest.update(chunk)
+                    copy_to(chunk)
+                if copied != self.size:
+                    raise DocumentError(unavailable)
+            if digest.hexdigest() != self.sha256:
+                raise DocumentError(
+                    "Attachment checksum mismatch. Restore the matching attachment archive."
+                )
+            return stat
 
 
 def _directory(root: Path, *parts: str) -> Path:
@@ -140,31 +176,27 @@ class AttachmentBatch:
             if not item.media_type.startswith("image/")
         }
 
+    @staticmethod
+    def copy_original(
+        root: Path,
+        session_id: str,
+        message_id: str,
+        record: dict,
+        destination: Callable[[bytes], object],
+    ) -> tuple[Attachment, os.stat_result]:
+        folder = _directory(root, session_id, message_id)
+        item = Attachment(**record)
+        return item, item.verify(folder, destination)
+
     @classmethod
     def restore(
         cls, root: Path, session_id: str, message_id: str, records: list[dict]
     ) -> AttachmentBatch:
         folder = _directory(root, session_id, message_id)
-        files = []
-        for record in records:
-            item = Attachment(**record)
-            if (
-                not re.fullmatch(r"[a-f0-9]{32}", item.id)
-                or PureWindowsPath(item.name).name != item.name
-            ):
-                raise DocumentError("Invalid attachment metadata.")
-            path = folder / item.filename
-            if path.resolve() != path or not path.is_file() or path.stat().st_size != item.size:
-                raise DocumentError(
-                    "Attachment is missing or changed. Restore the matching attachment archive."
-                )
-            with path.open("rb") as source:
-                if hashlib.file_digest(source, "sha256").hexdigest() != item.sha256:
-                    raise DocumentError(
-                        "Attachment checksum mismatch. Restore the matching attachment archive."
-                    )
-            files.append(item)
-        return cls(root, folder, tuple(files))
+        files = tuple(Attachment(**record) for record in records)
+        for item in files:
+            item.verify(folder)
+        return cls(root, folder, files)
 
     def model_content(self, text: str) -> str | list[dict]:
         docs = self.documents()

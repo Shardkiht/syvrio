@@ -35,8 +35,7 @@ from syvrio.infra.llm import (
 from syvrio.infra.storage.locking import LockTimeout
 from syvrio.memory.background import distillation
 from syvrio.memory.background.jobs import job_path, read_job
-from syvrio.memory.extractor import StaticExtractor
-from syvrio.memory.models import ExtractionResult, MemoryDraft
+from syvrio.memory.models import MemoryDraft
 from syvrio.memory.service import MemoryService
 from tests.support.resident_api import create_app
 
@@ -158,8 +157,8 @@ def backend(tmp_path, monkeypatch):
         search=SearchConfig(enabled=False),
         git=GitConfig(auto_sync=False),
     )
-    service = MemoryService(config, extractor=StaticExtractor(ExtractionResult(memories=[])))
-    service.init_vault()
+    service = MemoryService(config)
+    service.initialize_files()
     owner = WebBackend(service=service)
     owner._runtime.model = FakeModel([])
     owner.startup()
@@ -190,7 +189,7 @@ def types(events):
     return [event["type"] for event in events]
 
 
-def test_mixed_attachments_reach_model_and_survive_move(client, backend, tmp_path):
+def test_mixed_attachments_reach_model_and_survive_move(client, backend, tmp_path, monkeypatch):
     import base64
     from io import BytesIO
     from shutil import copytree
@@ -253,10 +252,56 @@ def test_mixed_attachments_reach_model_and_survive_move(client, backend, tmp_pat
     assert [item["name"] for item in draft.json()["attachments"]] == ["notes.txt", "picture.png"]
     assert all(item["message_id"] == record["id"] for item in draft.json()["attachments"])
     url = f"/api/sessions/{sid}/messages/{record['id']}/attachments/{file_id}"
-    download = client.get(url)
+    # 下载线程与持锁的测试线程并发，不能重新加载整段历史。
+    with monkeypatch.context() as patch, ThreadPoolExecutor(max_workers=1) as pool:
+        patch.setattr(backend._sessions, "_load_path", lambda *a, **kw: pytest.fail("full load"))
+        with backend._service.write_lock:
+            download = pool.submit(client.get, url).result(timeout=3)
     assert download.content == data and download.headers["content-disposition"].startswith(
         "attachment;"
     )
+    from syvrio.backend.api.routes import AttachmentDownload
+
+    snapshot_paths = []
+    original_send = AttachmentDownload.__call__
+    live = backend._service.paths.attachments_dir / sid / record["id"] / (file_id + ".png")
+
+    async def send_after_removal(response, scope, receive, send):
+        snapshot_paths.append(response.path)
+        live.unlink()
+        await original_send(response, scope, receive, send)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(AttachmentDownload, "__call__", send_after_removal)
+        ranged = client.get(url, headers={"Range": "bytes=1-5"})
+        assert ranged.status_code == 206 and ranged.content == data[1:6]
+        assert ranged.headers["content-range"] == f"bytes 1-5/{len(data)}"
+        assert not snapshot_paths[0].parent.exists()
+        assert client.get(url).status_code == 404
+    live.write_bytes(data)
+    import errno
+    from pathlib import Path
+    from unittest.mock import MagicMock
+
+    open_path = Path.open
+    failed_directories = []
+
+    def open_full_destination(path, mode="r", *args, **kwargs):
+        if path.name == "content" and mode == "xb":
+            failed_directories.append(path.parent)
+            destination = MagicMock()
+            destination.__enter__.return_value.write.side_effect = OSError(errno.ENOSPC, "full")
+            return destination
+        return open_path(path, mode, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "open", open_full_destination)
+        failure = client.get(url)
+        assert (
+            failure.status_code == 507
+            and failure.json()["error"]["code"] == "download_storage_full"
+        )
+        assert failed_directories and not failed_directories[0].exists()
     preview = client.get(url, params={"preview": True})
     assert preview.content == data and preview.headers["content-type"] == "image/png"
     assert preview.headers["content-disposition"].startswith("inline;")
@@ -273,8 +318,8 @@ def test_mixed_attachments_reach_model_and_survive_move(client, backend, tmp_pat
     assert client.post(f"/api/sessions/{sid}/restore").status_code == 200
     assert client.get(url).content == data
     paths = backend._service.paths
-    backend._service.repo.stage_all()
-    staged = backend._service.repo.staged_paths()
+    backend.git.repo.stage_all()
+    staged = backend.git.repo.staged_paths()
     assert any(item.startswith("sessions/") for item in staged)
     assert not any(item.startswith("attachments/") for item in staged)
     moved = SyvrioPaths(tmp_path / "moved-vault", tmp_path / "moved-runtime")
@@ -852,6 +897,9 @@ def test_searches_all_configured_models_and_can_select_a_result_beyond_the_first
     assert client.get("/api/settings/models", params={"q": "not-present"}).json()["items"] == []
     assert len(client.get("/api/settings/models", params={"refresh": True}).json()["items"]) == 47
     assert requests[-1] == (False, True)
+    choices = client.post("/api/commands", json={"line": "/model"}).json()["data"]["options"]
+    assert len(choices) == 47
+    assert ("deepseek", "Chat-New-Model") in [(row["provider"], row["model"]) for row in choices]
     applied = client.post("/api/commands", json={"line": "/model deepseek/Chat-New-Model"}).json()
     assert applied["status"] == "ok" and selected == [("deepseek", "Chat-New-Model")]
 
@@ -1768,6 +1816,12 @@ def test_invalid_payload_and_empty_message(client):
 
 
 def test_client_busy_is_reported(backend, monkeypatch):
+    # 打开子视图和未获得租约的服务都不能执行启动恢复。
+    monkeypatch.setattr(
+        type(backend._sessions), "recover_deletions", lambda _: pytest.fail("unexpected recovery")
+    )
+    type(backend)(parent=backend)
+
     def denied(*args, **kwargs):
         raise LockTimeout("occupied")
 

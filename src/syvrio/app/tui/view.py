@@ -7,7 +7,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.events import MouseDown, MouseUp
 from textual.widgets import Button, Input, ListView, Markdown, Static
 
-from ...backend.api.commands import SLASH_SUBCOMMANDS, parse_command, slash_matches
+from ...backend.client_contracts import SLASH_SUBCOMMANDS, parse_command, slash_matches
 from .input import BarInput
 from .widgets import (
     ASSISTANT_NAME,

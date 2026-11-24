@@ -28,7 +28,7 @@ from syvrio.application.contracts import ModelOption, SettingsResult
 from syvrio.application.conversation import SAFE_COMMANDS
 from syvrio.application.settings import SettingsUseCases
 from syvrio.backend.api.channel import APIChannel as WebBackend
-from syvrio.backend.api.commands import SLASH_COMMANDS, slash_matches
+from syvrio.backend.client_contracts import SLASH_COMMANDS, slash_matches
 from syvrio.infra.config import (
     ChatConfig,
     Config,
@@ -38,8 +38,7 @@ from syvrio.infra.config import (
 )
 from syvrio.infra.llm import AssistantTurn, LiteLLMChatModel, ToolCall
 from syvrio.infra.time import utc_timestamp
-from syvrio.memory.extractor import StaticExtractor
-from syvrio.memory.models import ExtractionResult, PendingItem
+from syvrio.memory.models import PendingItem
 from syvrio.memory.service import MemoryService
 from tests.support.resident_api import create_app
 
@@ -78,8 +77,8 @@ def backend(tmp_path, monkeypatch):
         retrieval=RetrievalConfig(method="keyword"),
         search=SearchConfig(enabled=False),
     )
-    service = MemoryService(config, extractor=StaticExtractor(ExtractionResult(memories=[])))
-    service.init_vault()
+    service = MemoryService(config)
+    service.initialize_files()
     owner = WebBackend(service=service)
     owner._runtime.model = FakeModel()
     owner.startup()
@@ -141,7 +140,7 @@ def test_unknown_command_is_never_forwarded_to_the_llm(client, backend):
 
 
 def test_topic_directory_returns_metadata_and_opens_each_exact_path(client, backend, monkeypatch):
-    assert run(client, "/topics").json()["data"] == {"count": 0, "names": [], "topics": []}
+    assert run(client, "/topics").json()["data"] == {"count": 0, "topics": []}
     service = backend._app_service.memory.service
     first = service.note("A synthetic reading note.\nWith a second line.", topic="general/reading")
     second = service.note("A separate synthetic reading note.", topic="projects/reading")
@@ -160,7 +159,7 @@ def test_topic_directory_returns_metadata_and_opens_each_exact_path(client, back
     assert listing["status"] == "ok"
     data = listing["data"]
     assert data["count"] == 2
-    assert data["names"] == [row["topic"] for row in data["topics"]] == [first.topic, second.topic]
+    assert [row["topic"] for row in data["topics"]] == [first.topic, second.topic]
     for row, fact in zip(data["topics"], (first, second), strict=True):
         assert row["title"] == "reading" and row["updated"]
         detail = run(client, f"/topics {row['topic']}").json()
@@ -255,6 +254,9 @@ def test_manual_dream_retries_one_checkpoint_while_worker_applies_normal_backoff
     failed_once, failed_twice = Event(), Event()
     retrying, release = Event(), Event()
     record_failure = background.dream.failed
+    # 此用例测重试检查点，假模型的输入和输出容量也固定，避免冷加载 SDK 占用等待时间。
+    monkeypatch.setattr(dream, "effective_context_window", lambda _, configured: configured)
+    monkeypatch.setattr(dream, "dream_output_ceiling", lambda _: dream.MAX_DREAM_OUTPUT_TOKENS)
 
     def signal_failure(error, job_id, generation):
         record_failure(error, job_id, generation)
@@ -772,7 +774,7 @@ def test_empty_model_catalog_still_lists_the_current_model(client, monkeypatch):
         "label": "custom/fake",
         "current": True,
     }
-    assert "No cached model list" in body["message"]
+    assert "No provider model list" in body["message"]
 
 
 def test_model_refresh_reports_an_empty_provider_catalog(client, monkeypatch):

@@ -13,6 +13,8 @@ from syvrio.infra.retrieval import (
     SearchHit,
     VectorRetriever,
 )
+from syvrio.infra.vault.files import initialize_vault
+from syvrio.infra.vault.sync import GitSyncService
 from syvrio.memory import service as service_module
 from syvrio.memory.store import MemoryStore
 
@@ -478,16 +480,17 @@ def test_vector_cache_is_outside_vault_git_worktree(tmp_path):
 
     config = Config(vault=tmp_path / "vault", retrieval=RetrievalConfig(method="keyword"))
     service = MemoryService(config)
-    service.init_vault()
+    git = GitSyncService(config, service.paths)
+    initialize_vault(git, service.initialize_files)
     service.note("喜欢清淡、像茶的风味")
-    service.commit(push=False)
+    git.commit(push=False)
     retriever = VectorRetriever(
         service.store, FakeEmbedder(GROUPS), cache_dir=service.store.paths.index_dir
     )
     retriever.sync()
     assert retriever.cache_path == service.paths.runtime_dir / "indexes" / "vectors.npz"
     assert retriever.cache_path.is_file()
-    assert not service.repo.has_changes()
+    assert not git.repo.has_changes()
     assert not (config.vault / ".syvrio").exists()
 
 
@@ -500,10 +503,11 @@ def test_init_vault_preserves_user_gitignore_without_final_newline(tmp_path):
     gitignore = config.vault / ".gitignore"
     gitignore.write_bytes(b"*.log")
 
-    service.init_vault()
+    git = GitSyncService(config, service.paths)
+    initialize_vault(git, service.initialize_files)
 
     assert gitignore.read_bytes() == b"*.log\n/attachments/\n/archived/\n"
-    service.init_vault()
+    initialize_vault(git, service.initialize_files)
     assert gitignore.read_bytes() == b"*.log\n/attachments/\n/archived/\n"
 
 

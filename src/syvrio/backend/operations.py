@@ -7,10 +7,10 @@ from dataclasses import asdict, replace
 
 from pydantic import TypeAdapter
 
-from ..agent.search_tools import run_tool_search
 from ..application.contracts import ImportDocument
 from ..infra.config import WebShareConfig, write_config
 from ..infra.search import SearchQuery, build_search_router
+from ..infra.search.tool_request import run_tool_search
 from ..memory.models import MemoryDraft
 from .client_contracts import UploadedImportDocument
 from .hosts import normalize_domain
@@ -46,9 +46,9 @@ class ResidentOperations:
                 service.approve(item_id).as_recall().model_dump(exclude_none=True)
             ),
             "reject": service.reject,
-            "history": service.history,
-            "commit": service.commit,
-            "status": service.status,
+            "history": self.owner.git.history,
+            "commit": self.owner.git.commit,
+            "status": lambda: {**service.status(), "dirty": self.owner.git.is_dirty()},
             "inferences": service.list_inferences,
             "review_inference": service.review_inference,
             "profile": service.profile.read_text,
@@ -82,8 +82,7 @@ class ResidentOperations:
             return asdict(share)
 
     def verify_attachments(self):
-        with self.service.write_lock:
-            return self.owner._sessions.verify_attachments()
+        return self.owner._sessions.verify_attachments()
 
     def import_documents(self, upload, apply: bool):
         def documents():

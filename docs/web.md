@@ -144,7 +144,7 @@ FastAPI 自动提供 `/openapi.json` 与 `/docs`。
 
 ### 单一命令目录
 
-`src/syvrio/backend/api/commands.py` 定义命令名称、用法、说明、子命令和文本拆分规则。TUI 使用这一协议提供补全。Web 通过 `GET /api/commands` 取得同一份目录及能力信息，供输入框、命令面板和 `/help` 使用。`src/syvrio/application/commands.py` 负责校验命令、检查当前状态并调用相应的应用用例。
+`src/syvrio/application/command_catalog.py` 定义命令名称、用法、说明、子命令和文本拆分规则。TUI 使用这一协议提供补全。Web 通过 `GET /api/commands` 取得同一份目录及能力信息，供输入框、命令面板和 `/help` 使用。`src/syvrio/application/commands.py` 负责校验命令、检查当前状态并调用相应的应用用例。
 
 `WEB_CAPABILITIES` 用能力标记说明每个命令在 Web 的语义：
 

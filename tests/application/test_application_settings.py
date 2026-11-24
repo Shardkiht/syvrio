@@ -43,7 +43,7 @@ def build(tmp_path):
         retrieval=RetrievalConfig(method="keyword"),
     )
     service = MemoryService(config)
-    service.init_vault()
+    service.initialize_files()
     runtime = DummyRuntime(service)
     return service, runtime, SettingsUseCases(service, runtime)
 
@@ -607,7 +607,7 @@ def test_apply_model_updates_config_and_runtime(tmp_path, service):
     from syvrio.infra.llm.client import LiteLLMChatModel
     from syvrio.infra.session import SessionStore
 
-    service.init_vault()
+    service.initialize_files()
     runtime = AgentRuntime(
         service, LiteLLMChatModel(service.config.llm), SessionStore(service.paths)
     )

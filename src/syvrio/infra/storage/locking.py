@@ -11,8 +11,9 @@ import os
 import threading
 import time
 from pathlib import Path
+from weakref import WeakValueDictionary
 
-from .paths import SyvrioPaths, vault_paths
+from .paths import SESSION_ID_RE, SyvrioPaths, vault_paths
 
 if os.name == "nt":
     import msvcrt
@@ -158,6 +159,23 @@ def _lock_path(vault: Path | SyvrioPaths, name: str) -> Path:
 def vault_write_lock(vault: Path | SyvrioPaths) -> VaultLock:
     """保护记忆文件、会话追加与 Git 快照阶段。"""
     return _shared(_lock_path(vault, "vault.lock"))
+
+
+_SESSION_LOCKS: WeakValueDictionary[str, VaultLock] = WeakValueDictionary()
+
+
+def session_file_lock(paths: SyvrioPaths, session_id: str) -> VaultLock:
+    """协调单个会话文件的发布，读者只与该会话的变更互斥。"""
+    if not SESSION_ID_RE.fullmatch(session_id):
+        raise ValueError("Invalid session identifier.")
+    path = paths.lock_dir / "sessions" / (session_id + ".lock")
+    key = os.path.normcase(os.path.abspath(path))
+    with _REGISTRY_LOCK:
+        lock = _SESSION_LOCKS.get(key)
+        if lock is None:
+            lock = VaultLock(path)
+            _SESSION_LOCKS[key] = lock
+        return lock
 
 
 def git_operation_lock(vault: Path | SyvrioPaths) -> VaultLock:

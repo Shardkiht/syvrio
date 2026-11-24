@@ -330,14 +330,12 @@ def test_import_dry_run_then_apply(tmp_path, monkeypatch, suffix):
 
 def test_cli_correct_and_forget(tmp_path):
     from syvrio.infra.config import Config, LLMConfig
-    from syvrio.memory.extractor import StaticExtractor
-    from syvrio.memory.models import ExtractionResult
     from syvrio.memory.service import MemoryService
 
     vault = tmp_path / "vault"
     config = Config(vault=vault, llm=LLMConfig())
-    service = MemoryService(config, extractor=StaticExtractor(ExtractionResult(memories=[])))
-    service.init_vault()
+    service = MemoryService(config)
+    service.initialize_files()
     entry = service.note("旧表述：住在城西", topic="housing")
 
     result = invoke(
@@ -359,14 +357,12 @@ def test_cli_correct_and_forget(tmp_path):
 
 def test_cli_correct_rejects_inactive_entry(tmp_path):
     from syvrio.infra.config import Config, LLMConfig
-    from syvrio.memory.extractor import StaticExtractor
-    from syvrio.memory.models import ExtractionResult
     from syvrio.memory.service import MemoryService
 
     vault = tmp_path / "vault"
     config = Config(vault=vault, llm=LLMConfig())
-    service = MemoryService(config, extractor=StaticExtractor(ExtractionResult(memories=[])))
-    service.init_vault()
+    service = MemoryService(config)
+    service.initialize_files()
     entry = service.note("一条记录", topic="misc")
     service.deprecate(entry.id)
 

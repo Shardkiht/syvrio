@@ -283,7 +283,10 @@ def test_terminal_update_requires_confirmation_for_the_checked_version(
             await pilot.pause()
             screen = ui.screen
             assert isinstance(screen, UpdateScreen)
-            assert not screen.query_one("#update-install", Button).disabled
+            install_button = screen.query_one("#update-install", Button)
+            assert not install_button.disabled
+            # 连续两次打开确认框，跳过按钮动画自带的防连点时间。
+            install_button.active_effect_duration = 0
             await pilot.click("#update-install")
             assert isinstance(ui.screen, PickScreen)
             # 初始高亮在列表挂载时建立，点击回执可能先于该帧到达。
@@ -293,6 +296,9 @@ def test_terminal_update_requires_confirmation_for_the_checked_version(
             await pilot.pause()
             assert ui.screen is screen and requests == [("GET", None)]
             await pilot.click("#update-install")
+            await pilot.pause()
+            assert isinstance(ui.screen, PickScreen)
+            assert ui.screen.query_one("#pick-list", ListView).index == 0
             await pilot.press("down", "enter")
             await pilot.pause()
             assert screen.query_one("#update-install", Button).disabled

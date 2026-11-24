@@ -469,7 +469,13 @@ def test_permanent_delete_removes_only_this_sessions_uploaded_copies(tmp_path, m
     store.set_archived(first.id, True)
     archived = store.load(first.id, archived=True)
     assert archived.path.read_bytes() == original
-    assert store.verify_attachments() == (1, [])
+    assert store.verify_attachments() == (2, [])
+    archived_file = next((store.attachments_dir / first.id).glob("*/*.txt"))
+    saved = archived_file.read_bytes()
+    archived_file.unlink()
+    count, errors = store.verify_attachments()
+    assert count == 1 and len(errors) == 1 and first.id in errors[0]
+    archived_file.write_bytes(saved)
     with pytest.raises(ValueError, match="active sessions"):
         store.append(archived, {"type": "title", "title": "stale write"})
     store.set_archived(first.id, False)
@@ -817,3 +823,77 @@ def test_unreadable_reasoning_attachment_keeps_session_and_other_reasoning(tmp_p
     assert "Skipping unreadable reasoning attachment" in caplog.text
     assert "Synthetic reasoning" not in caplog.text
     assert session.path.read_bytes() == original
+
+
+def test_attachment_index_skips_tool_payload_and_invalidates_undo(tmp_path, monkeypatch):
+    from syvrio.infra.session import attachment_index
+
+    store, session = make_store(tmp_path)
+    path = session.path
+
+    def add(mid, **fields):
+        store.append(
+            session, {"id": mid, "type": "message", "role": "user", "content": "", **fields}
+        )
+
+    add("before", attachments=[{"id": "keep"}])
+    add("turn")
+    add("inserted", turn_root="turn", attachments=[{"id": "file"}])
+    store.append(session, {"type": "tool", "content": "large-result" * 20000})
+    lookup = attachment_index.attachment_metadata
+    original = json.loads
+    parsed = []
+
+    def counted(raw):
+        assert b"large-result" not in raw
+        parsed.append(raw)
+        return original(raw)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(attachment_index.json, "loads", counted)
+        assert lookup(path, "inserted", "file") == {"id": "file"}
+        parsed.clear()
+        assert lookup(path, "before", "keep") == {"id": "keep"}
+        assert lookup(path, "turn", "file") is None
+        assert parsed == []
+    store.append_event_transactionally(session, {"type": "undo", "message_id": "turn"})
+    assert lookup(path, "inserted", "file") is None
+    assert lookup(path, "before", "keep") == {"id": "keep"}
+    add("replacement", attachments=[{"id": "new"}])
+    assert lookup(path, "replacement", "new") == {"id": "new"}
+
+
+def test_attachment_lookup_honors_json_escaped_undo(tmp_path):
+    from syvrio.infra.session.attachment_index import attachment_metadata
+
+    _, session = make_store(tmp_path)
+    with session.path.open("ab") as stream:
+        stream.write(
+            b'{"type":"message","id":"m1","role":"user","content":"","attachments":[{"id":"a"}]}\n'
+        )
+        stream.write(rb'{"type":"\u0075ndo","message_id":"m1"}' + b"\n")
+    assert attachment_metadata(session.path, "m1", "a") is None
+
+
+@pytest.mark.parametrize("reader_kind", ["snapshot", "query"])
+def test_readers_wait_only_for_the_session_published_by_transaction(tmp_path, reader_kind):
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError
+
+    from syvrio.infra.session.query import SessionQuery
+    from syvrio.infra.storage.transaction import vault_transaction
+
+    store, edited = make_store(tmp_path)
+    other = store.create()
+    store.append(edited, {"type": "message", "role": "user", "id": "old", "content": "before"})
+    query = SessionQuery(store.paths)
+    read = store.load_snapshot if reader_kind == "snapshot" else query.load
+    with ThreadPoolExecutor(2) as pool:
+        with pytest.raises(RuntimeError, match="rollback"):
+            with vault_transaction(store.paths):
+                store.append_event_transactionally(edited, {"type": "undo", "message_id": "old"})
+                waiting = pool.submit(read, edited.id)
+                assert pool.submit(read, other.id).result(3).id == other.id
+                with pytest.raises(TimeoutError):
+                    waiting.result(0.1)
+                raise RuntimeError("rollback")
+        assert waiting.result(3).user_texts() == ["before"]

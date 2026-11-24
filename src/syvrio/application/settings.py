@@ -118,15 +118,19 @@ class SettingsUseCases:
         options.sort(key=lambda option: recent.get((option.provider, option.model), len(recent)))
         return options
 
-    def search_models(
-        self, query: str = "", *, refresh: bool = False
-    ) -> tuple[list[ModelOption], list[str]]:
-        catalog = self.model_catalog(refresh=refresh)
+    def model_choices(self, catalog: dict[str, list[str]]) -> list[ModelOption]:
         options = self.model_options(catalog, capabilities=False)
         current = self.service.config.llm
         if not any(option.current for option in options):
             label = f"{current.provider}/{current.model}"
             options.insert(0, ModelOption(current.provider, current.model, label, current=True))
+        return options
+
+    def search_models(
+        self, query: str = "", *, refresh: bool = False
+    ) -> tuple[list[ModelOption], list[str]]:
+        catalog = self.model_catalog(refresh=refresh)
+        options = self.model_choices(catalog)
         needle = query.strip().casefold()
         matches = [
             option

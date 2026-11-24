@@ -14,13 +14,8 @@ pytestmark = pytest.mark.memory
 
 
 def build_service(config):
-    service = MemoryService(
-        config,
-        extractor=StaticExtractor(
-            ExtractionResult(memories=[Candidate(topic="preference", text="喜欢清淡饮食")])
-        ),
-    )
-    service.init_vault()
+    service = MemoryService(config)
+    service.initialize_files()
     return service
 
 

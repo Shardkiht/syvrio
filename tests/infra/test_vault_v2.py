@@ -160,13 +160,18 @@ def test_runtime_binding_invalidates_derived_data_without_vault_writes(tmp_path,
     monkeypatch.delenv("SYVRIO_RUNTIME")
     runtime = tmp_path / "runtime"
 
+    from syvrio.backend.maintenance import prepare_vault_runtime
+
     def app(vault):
-        return MemoryService(
+        service = MemoryService(
             Config(vault=vault, runtime=str(runtime), retrieval=RetrievalConfig(method="keyword"))
         )
 
+        prepare_vault_runtime(service.paths)
+        return service
+
     first = app(tmp_path / "first")
-    first.init_vault()
+    first.initialize_files()
     entry = first.note("synthetic personal note")
     cache = first.paths.index_dir / "vectors.npz"
     cache.parent.mkdir()

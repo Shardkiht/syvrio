@@ -25,37 +25,48 @@ def test_add_and_load(tmp_path):
     assert queue.get("p-1").text == "候选事实"
 
 
-@pytest.mark.parametrize("committed", [False, True])
-def test_interrupted_session_deletion_recovers_pending_on_reopen(tmp_path, committed, monkeypatch):
+@pytest.mark.parametrize("failed", [False, True])
+def test_archived_deletion_commits_or_restores_pending(tmp_path, failed, monkeypatch):
     from pathlib import Path
 
     from syvrio.infra.session import SessionStore
 
-    session = SessionStore(tmp_path).create()
+    sessions = SessionStore(tmp_path)
+    session = sessions.create()
+    sessions.set_archived(session.id, True)
+    archived = sessions.load(session.id, archived=True)
     queue = PendingQueue(tmp_path)
     queue.add(make_item().model_copy(update={"session_id": session.id, "message_id": "m-1"}))
     queue.add(make_item("other"))
     original = queue.pending_path.read_bytes()
     _, revision = queue.deletion_preview(session.id)
-    # 分别模拟进程在移除 JSONL 文件前后退出，从留存的字节重新打开。
-    with monkeypatch.context() as mp:
+
+    def delete():
+        return sessions.delete(
+            session.id,
+            archived=True,
+            before_delete=lambda: queue.remove_for_session(session.id, revision),
+        )
+
+    if failed:
         unlink = Path.unlink
 
-        def keep_journal(path, *args, **kwargs):
-            if path == queue._delete_journal:
-                raise PermissionError("simulated process exit")
+        def fail_unlink(path, *args, **kwargs):
+            if path == archived.path:
+                raise PermissionError("synthetic deletion failure")
             return unlink(path, *args, **kwargs)
 
-        mp.setattr(Path, "unlink", keep_journal)
-        with queue.removing_with_session(session.id, revision):
-            if committed:
-                session.path.unlink()
-        assert queue._delete_journal.is_file()
-    reopened = PendingQueue(tmp_path)
-    assert [item.id for item in reopened.all()] == (["other"] if committed else ["p-1", "other"])
-    if not committed:
+        monkeypatch.setattr(Path, "unlink", fail_unlink)
+        with pytest.raises(PermissionError):
+            delete()
+        assert sessions.exists(session.id, archived=True)
         assert queue.pending_path.read_bytes() == original
-    assert not reopened._delete_journal.exists()
+    else:
+        assert delete()
+        assert not sessions.exists(session.id, archived=True)
+    assert [item.id for item in PendingQueue(tmp_path).all()] == (
+        ["p-1", "other"] if failed else ["other"]
+    )
 
 
 def test_resolve_removes_and_logs(tmp_path):
@@ -87,7 +98,7 @@ def test_resolve_missing_returns_none(tmp_path):
 
 
 def test_save_failure_leaves_pending_queue_intact(tmp_path, monkeypatch):
-    from syvrio.memory import queue as queue_module
+    from syvrio.infra.storage import files
 
     queue = PendingQueue(tmp_path)
     queue.add(make_item())
@@ -96,7 +107,7 @@ def test_save_failure_leaves_pending_queue_intact(tmp_path, monkeypatch):
     def fail_replace(source, target):
         raise OSError("disk full")
 
-    monkeypatch.setattr(queue_module.os, "replace", fail_replace)
+    monkeypatch.setattr(files.os, "replace", fail_replace)
     with pytest.raises(OSError, match="disk full"):
         queue.add(make_item("p-2"))
 
@@ -177,3 +188,45 @@ def test_failure_of_recovery_retains_both_errors_and_next_open_finishes_rollback
     ]
     transaction.recover_vault_transaction(store.paths)
     assert path.read_bytes() == b"original"
+
+
+def test_restart_restores_archived_transcript_candidates_and_attachment_after_interruption(
+    tmp_path,
+):
+    import subprocess
+    import sys
+
+    from syvrio.infra.session import SessionStore
+    from syvrio.infra.storage.transaction import recover_vault_transaction
+
+    store = SessionStore(tmp_path)
+    session = store.create()
+    store.set_archived(session.id, True)
+    queue = PendingQueue(store.paths)
+    queue.add(make_item().model_copy(update={"session_id": session.id, "message_id": "m1"}))
+    _, revision = queue.deletion_preview(session.id)
+    folder = store.attachments_dir / session.id
+    folder.mkdir(parents=True)
+    (folder / "original.txt").write_bytes(b"saved")
+    # 在删除文件已落盘、事务日志尚未清除时终止子进程，绕过所有 finally。
+    code = """
+import os, sys
+from pathlib import Path
+from syvrio.infra.session import SessionStore
+from syvrio.infra.storage.transaction import VaultTransaction
+from syvrio.memory.queue import PendingQueue
+store = SessionStore(Path(sys.argv[1]))
+queue = PendingQueue(store.paths)
+sid, revision = sys.argv[2:]
+VaultTransaction._forget = lambda tx: os._exit(93)
+store.delete(sid, archived=True, before_delete=lambda: queue.remove_for_session(sid, revision))
+"""
+    proc = subprocess.run(
+        [sys.executable, "-c", code, str(tmp_path), session.id, revision], timeout=20
+    )
+    assert proc.returncode == 93
+    recover_vault_transaction(store.paths)
+    store.recover_deletions()
+    assert store.exists(session.id, archived=True)
+    assert queue.get("p-1").session_id == session.id
+    assert (folder / "original.txt").read_bytes() == b"saved"

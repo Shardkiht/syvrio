@@ -89,7 +89,7 @@ def test_agent_search_and_fetch_schema(tmp_path):
         fetch=FetchConfig(),
     )
     service = MemoryService(config)
-    service.init_vault()
+    service.initialize_files()
     session = SessionStore(config.vault).create()
     tools = build_tools(service, session)
 

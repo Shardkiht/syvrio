@@ -28,7 +28,7 @@ from textual.style import Style
 from textual.visual import RenderOptions, RichVisual
 from textual.widgets import Button, Input, Label, ListItem, ListView, Static
 
-from ...backend.api.commands import SLASH_COMMANDS, slash_matches
+from ...backend.client_contracts import SLASH_COMMANDS, slash_matches
 from ...infra.observability.diagnostics import record_event
 from ...infra.time import format_local_timestamp
 from .theme import MARKDOWN_THEME

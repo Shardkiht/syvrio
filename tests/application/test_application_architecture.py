@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2] / "src" / "syvrio"
-FORBIDDEN_APP = ("textual", "rich", "typer", "fastapi", "starlette", "syvrio.app")
+FORBIDDEN_APP = ("textual", "rich", "typer", "fastapi", "starlette", "syvrio.app", "syvrio.backend")
 CORE = ("agent", "memory", "infra")
 
 
@@ -106,6 +106,11 @@ def test_infrastructure_does_not_reach_into_business_or_client_modules():
     assert not (found := _violations((ROOT / "infra").rglob("*.py"), forbidden)), found
 
 
+def test_memory_does_not_manage_vault_git():
+    forbidden = ("syvrio.infra.vault.git", "syvrio.infra.vault.sync", "syvrio.infra.system.gitops")
+    assert not (found := _violations((ROOT / "memory").rglob("*.py"), forbidden)), found
+
+
 def test_relative_import_detection_handles_levels(tmp_path):
     root = tmp_path / "src" / "syvrio"
     files = {
@@ -186,3 +191,22 @@ def test_application_imports_without_textual_or_app():
         "syvrio.application.service",
     ):
         importlib.import_module(name)
+
+
+def test_client_command_catalog_does_not_initialize_agent_runtime():
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            """
+import sys
+from syvrio.backend.client_contracts import SLASH_COMMANDS
+from syvrio.application import SLASH_SUBCOMMANDS
+assert SLASH_COMMANDS and SLASH_SUBCOMMANDS and "syvrio.agent.runtime" not in sys.modules
+from syvrio.application import ApplicationService
+assert ApplicationService.__name__ == "ApplicationService"
+""",
+        ],
+        check=True,
+        timeout=15,
+    )

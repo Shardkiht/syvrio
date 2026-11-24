@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import re
 import secrets
 import subprocess
 import tempfile
+from collections.abc import Iterator
+from contextlib import ExitStack, contextmanager
+from pathlib import Path
 from uuid import UUID
 
+import anyio
 import httpx
 from fastapi import FastAPI, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
@@ -17,8 +22,9 @@ from pydantic import ValidationError
 from starlette.datastructures import UploadFile
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.formparsers import MultiPartException, MultiPartParser
-from starlette.types import Lifespan
+from starlette.types import Lifespan, Receive, Scope, Send
 
+from ...application.command_catalog import parse_command
 from ...infra.observability.diagnostics import record_event
 from ...infra.session.attachments import IMAGE_TYPES, MAX_BATCH_BYTES, MAX_FILES, AttachmentBatch
 from ...infra.session.errors import ConversationError
@@ -27,7 +33,6 @@ from ...infra.system.gitops import GitError
 from ..updates import service as software_update
 from ..updates.installer import UpdateError
 from .channel import HISTORY_ITEM_LIMIT, APIChannel, APIError
-from .commands import parse_command
 from .http import error_response, guard_hosts
 from .models import (
     ActionResponse,
@@ -55,6 +60,36 @@ from .models import (
     UpdateRequest,
 )
 from .views import ClientViews
+
+
+@contextmanager
+def _download_storage() -> Iterator[None]:
+    try:
+        yield
+    except OSError as exc:
+        if exc.errno == errno.ENOSPC:
+            raise APIError("download_storage_full", "Insufficient temporary storage.", 507) from exc
+        raise APIError(
+            "download_storage_error", "Temporary download storage is unavailable.", 500
+        ) from exc
+
+
+class AttachmentDownload(FileResponse):
+    def __init__(self, directory: tempfile.TemporaryDirectory, **kwargs) -> None:
+        self._directory = directory
+        super().__init__(Path(directory.name) / "content", **kwargs)
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        try:
+            # 响应结束后就清理快照，因此文件读完前不能把路径交给服务器异步发送。
+            if "http.response.pathsend" in scope.get("extensions", {}):
+                extensions = dict(scope["extensions"])
+                del extensions["http.response.pathsend"]
+                scope = {**scope, "extensions": extensions}
+            await super().__call__(scope, receive, send)
+        finally:
+            with anyio.CancelScope(shield=True):
+                await anyio.to_thread.run_sync(self._directory.cleanup)
 
 
 def create_api(
@@ -383,44 +418,42 @@ def create_api(
         preview: bool = False,
     ):
         owner._validate_session_id(session_id)
-        try:
-            with owner._service.write_lock:
-                session = owner._sessions.load(
-                    session_id, include_reasoning=False, archived=archived
-                )
-        except KeyError as exc:
-            raise APIError("session_not_found", "Session not found.", 404) from exc
-        for record in session.active_records():
-            if record.get("id") != message_id or record.get("role") != "user":
-                continue
-            for meta in record.get("attachments", []):
-                if meta.get("id") == attachment_id:
-                    try:
-                        batch = AttachmentBatch.restore(
-                            owner._service.paths.attachments_dir, session_id, message_id, [meta]
-                        )
-                    except (DocumentError, ValueError, TypeError, OSError) as exc:
-                        raise APIError(
-                            "attachment_unavailable",
-                            "Restore the matching attachment archive.",
-                            404,
-                        ) from exc
-                    item = batch.files[0]
-                    path = batch.folder / item.filename
-                    image_format = IMAGE_TYPES.get(path.suffix)
-                    inline = (
-                        preview
-                        and image_format is not None
-                        and item.media_type == f"image/{image_format}"
+        with _download_storage(), ExitStack() as pending:
+            directory = tempfile.TemporaryDirectory(prefix="syvrio-download-")
+            pending.callback(directory.cleanup)
+            with (Path(directory.name) / "content").open("xb") as destination:
+
+                def write_chunk(chunk: bytes) -> None:
+                    with _download_storage():
+                        destination.write(chunk)
+
+                try:
+                    original = owner._sessions.copy_message_attachment(
+                        session_id, message_id, attachment_id, write_chunk, archived=archived
                     )
-                    return FileResponse(
-                        path,
-                        media_type=item.media_type if inline else "application/octet-stream",
-                        content_disposition_type="inline" if inline else "attachment",
-                        filename=item.name,
-                        headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
-                    )
-        raise APIError("attachment_not_found", "Attachment not found in this message.", 404)
+                except KeyError as exc:
+                    raise APIError("session_not_found", "Session not found.", 404) from exc
+                except (DocumentError, ValueError, TypeError, OSError) as exc:
+                    raise APIError(
+                        "attachment_unavailable", "Restore the matching attachment archive.", 404
+                    ) from exc
+            if original is None:
+                raise APIError("attachment_not_found", "Attachment not found in this message.", 404)
+            item, stat = original
+            image_format = IMAGE_TYPES.get(Path(item.filename).suffix)
+            inline = (
+                preview and image_format is not None and item.media_type == f"image/{image_format}"
+            )
+            response = AttachmentDownload(
+                directory,
+                stat_result=stat,
+                media_type=item.media_type if inline else "application/octet-stream",
+                content_disposition_type="inline" if inline else "attachment",
+                filename=item.name,
+                headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+            )
+            pending.pop_all()
+            return response
 
     @app.post("/api/settings/providers/{provider}", response_model=ActionResponse, tags=["web"])
     async def provider_action(provider: str, body: ProviderActionRequest):

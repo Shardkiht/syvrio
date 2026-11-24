@@ -419,7 +419,7 @@ def test_agent_fetch_tool_uses_config_fetch_router(tmp_path, monkeypatch):
         fetch=FetchConfig(),
     )
     service = MemoryService(config)
-    service.init_vault()
+    service.initialize_files()
     session = SessionStore(config.vault).create()
     tools = build_tools(service, session, fetch_router=ConfigFetchRouter())
 
@@ -1295,7 +1295,7 @@ def test_disabled_search_does_not_register_tool(tmp_path):
         fetch=FetchConfig(providers=[]),
     )
     service = MemoryService(config)
-    service.init_vault()
+    service.initialize_files()
     session = SessionStore(config.vault).create()
     tools = build_tools(service, session)
 
@@ -1313,7 +1313,7 @@ def test_agent_search_tool_returns_notice_and_results(tmp_path):
         search=SearchConfig(enabled=True),
     )
     service = MemoryService(config)
-    service.init_vault()
+    service.initialize_files()
     session = SessionStore(config.vault).create()
     tools = build_tools(service, session, search_router=router)
 
@@ -1335,7 +1335,7 @@ def test_agent_search_tool_passes_search_engine(tmp_path):
         search=SearchConfig(enabled=True),
     )
     service = MemoryService(config)
-    service.init_vault()
+    service.initialize_files()
     session = SessionStore(config.vault).create()
     tools = build_tools(service, session, search_router=router)
 
@@ -1356,7 +1356,7 @@ def test_agent_search_tool_rejects_unknown_fields_and_accepts_multiple_engines(t
         search=SearchConfig(enabled=True),
     )
     service = MemoryService(config)
-    service.init_vault()
+    service.initialize_files()
     session = SessionStore(config.vault).create()
     tools = build_tools(service, session, search_router=router)
 
@@ -1381,7 +1381,7 @@ def test_agent_search_tool_accepts_many_engines(tmp_path):
         search=SearchConfig(enabled=True),
     )
     service = MemoryService(config)
-    service.init_vault()
+    service.initialize_files()
     session = SessionStore(config.vault).create()
     tools = build_tools(service, session, search_router=router)
 
@@ -1405,7 +1405,7 @@ def test_agent_search_tool_honors_configured_engine_limit(tmp_path):
         search=SearchConfig(enabled=True, max_search_engines=2),
     )
     service = MemoryService(config)
-    service.init_vault()
+    service.initialize_files()
     session = SessionStore(config.vault).create()
     tools = build_tools(service, session, search_router=router)
 
@@ -1429,7 +1429,7 @@ def test_agent_search_schema_does_not_expose_provider_engine(tmp_path):
         search=SearchConfig(enabled=True),
     )
     service = MemoryService(config)
-    service.init_vault()
+    service.initialize_files()
     session = SessionStore(config.vault).create()
     tools = build_tools(service, session, search_router=router)
 
@@ -1449,7 +1449,7 @@ def test_agent_search_tool_rejects_unknown_search_engine(tmp_path):
         search=SearchConfig(enabled=True),
     )
     service = MemoryService(config)
-    service.init_vault()
+    service.initialize_files()
     session = SessionStore(config.vault).create()
     tools = build_tools(service, session, search_router=router)
 
@@ -1511,7 +1511,7 @@ def test_agent_fetch_tool_returns_page_content(tmp_path):
         search=SearchConfig(enabled=True),
     )
     service = MemoryService(config)
-    service.init_vault()
+    service.initialize_files()
     session = SessionStore(config.vault).create()
     tools = build_tools(service, session, fetch_router=FetchRouter())
 

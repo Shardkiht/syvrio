@@ -22,9 +22,8 @@ from syvrio.infra.config import (
 from syvrio.infra.session import SessionStore
 from syvrio.infra.storage.locking import LockTimeout, git_operation_lock, vault_write_lock
 from syvrio.infra.system.gitops import GitError, classify_git_error
-from syvrio.infra.vault.sync import STAGE_CHECK, STAGE_COMMIT, STAGE_PUSH
-from syvrio.memory.extractor import StaticExtractor
-from syvrio.memory.models import ExtractionResult
+from syvrio.infra.vault.files import initialize_vault
+from syvrio.infra.vault.sync import STAGE_CHECK, STAGE_COMMIT, STAGE_PUSH, GitSyncService
 from syvrio.memory.service import MemoryService
 
 pytestmark = pytest.mark.memory
@@ -38,7 +37,9 @@ def _git(*args: str, cwd: Path | None = None, check: bool = True) -> subprocess.
     )
 
 
-def make_uninitialized_service(vault: Path, *, auto_sync: bool = True) -> MemoryService:
+def make_uninitialized_services(
+    vault: Path, *, auto_sync: bool = True
+) -> tuple[MemoryService, GitSyncService]:
     config = Config(
         vault=vault,
         llm=LLMConfig(),
@@ -46,18 +47,21 @@ def make_uninitialized_service(vault: Path, *, auto_sync: bool = True) -> Memory
         git=GitConfig(auto_sync=auto_sync),
         auto_push=False,
     )
-    return MemoryService(config, extractor=StaticExtractor(ExtractionResult(memories=[])))
+    memory = MemoryService(config)
+    return memory, GitSyncService(config, memory.paths)
 
 
-def make_service(tmp_path: Path, *, auto_sync: bool = True) -> MemoryService:
-    service = make_uninitialized_service(tmp_path / "vault", auto_sync=auto_sync)
-    service.init_vault()
-    return service
+def make_services(
+    tmp_path: Path, *, auto_sync: bool = True
+) -> tuple[MemoryService, GitSyncService]:
+    service, git = make_uninitialized_services(tmp_path / "vault", auto_sync=auto_sync)
+    initialize_vault(git, service.initialize_files)
+    return service, git
 
 
 def test_vault_git_never_stages_or_summarizes_archived_data(tmp_path):
-    service = make_service(tmp_path)
-    repo, vault = service.repo, service.paths.vault_dir
+    service, git = make_services(tmp_path)
+    repo, vault = git.repo, service.paths.vault_dir
     store = SessionStore(service.paths)
     session = store.create()
     marker = "quartz archive only text"
@@ -92,16 +96,16 @@ def test_commit_summary_keeps_later_files_and_fits_the_model_window(tmp_path, mo
     from syvrio.infra.llm.tokens import estimate_messages_tokens
     from syvrio.infra.vault import commit_summary
 
-    service = make_service(tmp_path)
+    service, git = make_services(tmp_path)
     vault = service.paths.vault_dir
     (vault / "a-long.md").write_text(
         "".join(f"line {index} synthetic change\n" for index in range(2000)), encoding="utf-8"
     )
     (vault / "z-small.md").write_text("synthetic final change", encoding="utf-8")
-    service.repo.stage_all()
-    diff = service.repo.staged_diff()
+    git.repo.stage_all()
+    diff = git.repo.staged_diff()
     assert len(diff) > 24000 and "synthetic final change" in diff
-    stat = service.repo.staged_stat()
+    stat = git.repo.staged_stat()
     monkeypatch.setattr(LLMConfig, "api_key", lambda _: "fixture")
     monkeypatch.setattr(
         commit_summary, "effective_context_window", lambda _, configured: min(4096, configured)
@@ -166,62 +170,62 @@ def remote_log(remote: Path) -> list[str]:
     ]
 
 
-def read_state(service: MemoryService) -> dict:
-    return json.loads(service.git_sync.state_path.read_text(encoding="utf-8"))
+def read_state(git: GitSyncService) -> dict:
+    return json.loads(git.state_path.read_text(encoding="utf-8"))
 
 
 def test_sync_commits_and_pushes(tmp_path):
-    service = make_service(tmp_path)
+    service, git = make_services(tmp_path)
     remote = add_remote(service, tmp_path)
     service.note("合成偏好：喜欢安静环境", topic="preferences")
 
-    result = service.git_sync.sync("manual")
+    result = git.sync("manual")
 
     assert result.status == "success"
     assert result.committed and result.commit_hash
     assert result.pushed
-    assert service.repo.modified_count() == 0
+    assert git.repo.modified_count() == 0
     assert result.snapshot is not None and result.snapshot["running"] is False
     assert remote_log(remote)[0].startswith(result.commit_hash)
 
 
 def test_commit_command_pushes_existing_unpushed_without_new_commit(tmp_path):
-    service = make_service(tmp_path)
+    service, git = make_services(tmp_path)
     remote = add_remote(service, tmp_path)
     service.note("先本地提交", topic="misc")
-    service.commit(push=False)
+    git.commit(push=False)
 
-    result = service.commit(push=True)
+    result = git.commit(push=True)
 
     assert not result["committed"]
     assert result["pushed"]
-    assert service.repo.unpushed_count() == 0
+    assert git.repo.unpushed_count() == 0
     head = _git("rev-parse", "--short", "HEAD", cwd=service.config.vault).stdout.strip()
     assert any(head in line for line in remote_log(remote))
-    assert read_state(service)["last_push_at"]
+    assert read_state(git)["last_push_at"]
 
 
 def test_sync_pushes_existing_unpushed_without_new_commit(tmp_path):
-    service = make_service(tmp_path)
+    service, git = make_services(tmp_path)
     remote = add_remote(service, tmp_path)
     service.note("待补推的记录", topic="misc")
-    service.commit(push=False)
-    assert service.repo.unpushed_count() == 1
+    git.commit(push=False)
+    assert git.repo.unpushed_count() == 1
 
-    result = service.git_sync.sync("manual")
+    result = git.sync("manual")
 
     assert result.status == "success"
     assert not result.committed
     assert result.pushed
-    assert service.repo.unpushed_count() == 0
+    assert git.repo.unpushed_count() == 0
     assert any("memory:" in line for line in remote_log(remote))
 
 
 def test_sync_without_changes_is_noop(tmp_path):
-    service = make_service(tmp_path)
+    service, git = make_services(tmp_path)
     add_remote(service, tmp_path)
 
-    result = service.git_sync.sync("manual")
+    result = git.sync("manual")
 
     assert result.status == "success"
     assert not result.committed
@@ -230,39 +234,39 @@ def test_sync_without_changes_is_noop(tmp_path):
 
 
 def test_repeated_sync_never_creates_empty_commit(tmp_path):
-    service = make_service(tmp_path)
+    service, git = make_services(tmp_path)
     add_remote(service, tmp_path)
     service.note("一次性记录", topic="misc")
 
-    assert service.git_sync.sync("manual").committed
-    second = service.git_sync.sync("manual")
+    assert git.sync("manual").committed
+    second = git.sync("manual")
 
     assert not second.committed
-    assert service.repo.modified_count() == 0
+    assert git.repo.modified_count() == 0
 
 
 def test_missing_remote_keeps_local_commit_and_reports_partial(tmp_path):
-    service = make_service(tmp_path)
+    service, git = make_services(tmp_path)
     service.note("仅本地记录", topic="misc")
 
-    result = service.git_sync.sync("manual")
+    result = git.sync("manual")
 
     assert result.status == "partial"
     assert result.committed and result.commit_hash
     assert not result.pushed
     assert result.error_kind == "no_remote"
     assert "remote" in result.error
-    state = read_state(service)
+    state = read_state(git)
     assert state["last_commit_hash"] == result.commit_hash
     assert "last_push_at" not in state
 
 
 def test_missing_upstream_reports_partial(tmp_path):
-    service = make_service(tmp_path)
+    service, git = make_services(tmp_path)
     add_remote(service, tmp_path, upstream=False)
     service.note("无 upstream", topic="misc")
 
-    result = service.git_sync.sync("manual")
+    result = git.sync("manual")
 
     assert result.status == "partial"
     assert result.committed
@@ -271,19 +275,19 @@ def test_missing_upstream_reports_partial(tmp_path):
 
 
 def test_push_failure_preserves_commit_and_next_sync_pushes_it(tmp_path):
-    service = make_service(tmp_path)
+    service, git = make_services(tmp_path)
     remote = add_remote(service, tmp_path)
     _git("remote", "set-url", "origin", str(tmp_path / "missing.git"), cwd=service.config.vault)
     service.note("推送失败的记录", topic="misc")
 
-    failed = service.git_sync.sync("manual")
+    failed = git.sync("manual")
     assert failed.status == "partial"
     assert failed.committed and failed.commit_hash
     assert not failed.pushed
     assert failed.error
 
     _git("remote", "set-url", "origin", str(remote), cwd=service.config.vault)
-    recovered = service.git_sync.sync("manual")
+    recovered = git.sync("manual")
 
     assert recovered.status == "success"
     assert not recovered.committed  # 只补推已有提交
@@ -292,7 +296,7 @@ def test_push_failure_preserves_commit_and_next_sync_pushes_it(tmp_path):
 
 
 def test_diverged_remote_stops_push_without_force(tmp_path):
-    service = make_service(tmp_path)
+    service, git = make_services(tmp_path)
     remote = add_remote(service, tmp_path)
     other = tmp_path / "other"
     _git("clone", str(remote), str(other))
@@ -310,7 +314,7 @@ def test_diverged_remote_stops_push_without_force(tmp_path):
     _git("push", cwd=other)
     service.note("本地新记录", topic="misc")
 
-    result = service.git_sync.sync("manual")
+    result = git.sync("manual")
 
     assert result.status == "partial"
     assert result.committed
@@ -320,47 +324,47 @@ def test_diverged_remote_stops_push_without_force(tmp_path):
 
 
 def test_sensitive_file_blocks_commit(tmp_path):
-    service = make_service(tmp_path)
+    service, git = make_services(tmp_path)
     (service.config.vault / ".env").write_text("API_KEY=synthetic\n", encoding="utf-8")
     service.note("正常记录", topic="misc")
     before = _git("rev-list", "--count", "HEAD", cwd=service.config.vault).stdout.strip()
 
-    result = service.git_sync.sync("manual")
+    result = git.sync("manual")
 
     assert result.status == "failed"
     assert not result.committed
     assert result.error_kind == "sensitive"
     assert ".env" in result.error
-    assert service.repo.has_changes()
+    assert git.repo.has_changes()
     after = _git("rev-list", "--count", "HEAD", cwd=service.config.vault).stdout.strip()
     assert before == after
 
 
 @pytest.mark.parametrize("entrypoint", ["sync", "startup"])
 def test_sensitive_recheck_restores_partial_staging(tmp_path, monkeypatch, entrypoint):
-    service = make_service(tmp_path)
+    service, git = make_services(tmp_path)
     vault = service.config.vault
     path = vault / "sample.txt"
     path.write_text("staged version", encoding="utf-8")
     _git("add", "--", path.name, cwd=vault)
     path.write_text("working tree version", encoding="utf-8")
     before = _git("diff", "--cached", "--binary", cwd=vault).stdout
-    stage = service.repo.stage_all
+    stage = git.repo.stage_all
 
     def add_sensitive_file_then_stage():
         (vault / ".env").write_text("API_KEY=synthetic\n", encoding="utf-8")
         stage()
 
-    monkeypatch.setattr(service.repo, "stage_all", add_sensitive_file_then_stage)
+    monkeypatch.setattr(git.repo, "stage_all", add_sensitive_file_then_stage)
     if entrypoint == "sync":
-        result = service.git_sync.sync("manual")
+        result = git.sync("manual")
         assert result.error_kind == "sensitive"
         assert not result.committed and not result.pushed
     else:
         with pytest.raises(GitError, match=r"\.env") as raised:
-            service.commit_pending_changes()
+            git.commit_pending_changes()
         assert raised.value.kind == "sensitive"
-    assert service.repo.staged_paths() == [path.name]
+    assert git.repo.staged_paths() == [path.name]
     assert _git("diff", "--cached", "--binary", cwd=vault).stdout == before
     assert path.read_text(encoding="utf-8") == "working tree version"
     assert (vault / ".env").exists()
@@ -370,21 +374,21 @@ def test_sensitive_recheck_restores_partial_staging(tmp_path, monkeypatch, entry
 
 
 def test_standalone_vault_initializes_its_own_repository(tmp_path):
-    service = make_service(tmp_path)
+    service, git = make_services(tmp_path)
 
-    assert service.repo.is_repo
-    assert service.repo.foreign_repo_root() is None
-    assert service.repo.repo_root().resolve() == service.config.vault.resolve()
+    assert git.repo.is_repo
+    assert git.repo.foreign_repo_root() is None
+    assert git.repo.repo_root().resolve() == service.config.vault.resolve()
 
 
 def test_relative_vault_path_is_recognized(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    service = make_uninitialized_service(Path("vault"))
+    service, git = make_uninitialized_services(Path("vault"))
 
-    service.init_vault()
+    initialize_vault(git, service.initialize_files)
 
-    assert service.repo.is_repo
-    assert service.repo.repo_root().resolve() == (tmp_path / "vault").resolve()
+    assert git.repo.is_repo
+    assert git.repo.repo_root().resolve() == (tmp_path / "vault").resolve()
 
 
 def test_symlinked_vault_path_is_recognized(tmp_path):
@@ -395,16 +399,17 @@ def test_symlinked_vault_path_is_recognized(tmp_path):
         link.symlink_to(real, target_is_directory=True)
     except (OSError, NotImplementedError):
         pytest.skip("symlink unavailable")
-    service = make_uninitialized_service(link)
+    service, git = make_uninitialized_services(link)
 
-    service.init_vault()
+    initialize_vault(git, service.initialize_files)
 
-    assert service.repo.is_repo
+    assert git.repo.is_repo
     assert (real / ".git").exists()
     fact = service.note("Synthetic reading preference", topic="general/preferences")
     assert (real / "memories" / "general" / "preferences.md").is_file()
     assert service.read_topic("preferences")["entries"][0]["id"] == fact.id
-    assert make_uninitialized_service(real).store.find(fact.id).text == fact.text
+    reopened, _ = make_uninitialized_services(real)
+    assert reopened.store.find(fact.id).text == fact.text
 
 
 def test_vault_inside_parent_repository_is_not_reused(tmp_path):
@@ -413,12 +418,12 @@ def test_vault_inside_parent_repository_is_not_reused(tmp_path):
     _git("init", cwd=parent)
     vault = parent / "vault"
     vault.mkdir()
-    service = make_uninitialized_service(vault)
+    service, git = make_uninitialized_services(vault)
 
-    assert not service.repo.is_repo
-    assert service.repo.foreign_repo_root().resolve() == parent.resolve()
+    assert not git.repo.is_repo
+    assert git.repo.foreign_repo_root().resolve() == parent.resolve()
     with pytest.raises(GitError) as caught:
-        service.init_vault()
+        initialize_vault(git, service.initialize_files)
     assert caught.value.kind == "foreign_repo"
     assert not (vault / ".git").exists()
     assert not (vault / "README.md").exists()
@@ -436,10 +441,10 @@ def test_pre_staged_parent_files_are_never_committed(tmp_path):
     _git("add", "external.txt", cwd=parent)
     vault = parent / "vault"
     vault.mkdir()
-    service = make_uninitialized_service(vault)
+    service, git = make_uninitialized_services(vault)
 
     with pytest.raises(GitError, match="另一个 Git 仓库"):
-        service.init_vault()
+        initialize_vault(git, service.initialize_files)
 
     assert _git("rev-list", "--count", "HEAD", cwd=parent, check=False).returncode != 0
     staged = [
@@ -460,29 +465,29 @@ def test_sync_refuses_parent_repository_and_never_pushes(tmp_path):
     _git("remote", "add", "origin", str(remote), cwd=parent)
     vault = parent / "vault"
     vault.mkdir()
-    service = make_uninitialized_service(vault)
+    _, git = make_uninitialized_services(vault)
 
-    result = service.git_sync.sync("manual")
+    result = git.sync("manual")
 
     assert result.status == "failed"
     assert result.error_kind == "foreign_repo"
     assert "another Git repository" in result.error
     assert remote_log(remote) == []
     with pytest.raises(GitError) as caught:
-        service.commit(push=True)
+        git.commit(push=True)
     assert caught.value.kind == "foreign_repo"
 
 
 def test_own_vault_commit_and_push_still_work(tmp_path):
-    service = make_service(tmp_path)
+    service, git = make_services(tmp_path)
     remote = add_remote(service, tmp_path)
     service.note("合法仓库记录", topic="misc")
 
-    result = service.commit(push=True)
+    result = git.commit(push=True)
 
     assert result["committed"] and result["pushed"]
     assert any(result["hash"] in line for line in remote_log(remote))
-    assert service.repo.foreign_repo_root() is None
+    assert git.repo.foreign_repo_root() is None
 
 
 # ---------- VaultGitRepo.commit 的索引级最终保护 ----------
@@ -490,32 +495,32 @@ def test_own_vault_commit_and_push_still_work(tmp_path):
 
 @pytest.mark.parametrize("name", [".env", "keys.env", "my secrets.env", "密钥 文件.env"])
 def test_commit_rejects_staged_sensitive_file(tmp_path, name):
-    service = make_service(tmp_path)
+    service, git = make_services(tmp_path)
     vault = service.config.vault
     target = vault / name
     target.write_text("synthetic\n", encoding="utf-8")
     _git("add", name, cwd=vault)
     head_before = _git("rev-parse", "HEAD", cwd=vault).stdout.strip()
-    staged_before = service.repo.staged_paths()
+    staged_before = git.repo.staged_paths()
 
     with pytest.raises(GitError) as caught:
-        service.repo.commit("synthetic commit")
+        git.repo.commit("synthetic commit")
 
     assert caught.value.kind == "sensitive"
     assert name in str(caught.value)
     assert _git("rev-parse", "HEAD", cwd=vault).stdout.strip() == head_before
-    assert service.repo.staged_paths() == staged_before
+    assert git.repo.staged_paths() == staged_before
     assert target.exists()
 
 
 def test_commit_allows_staged_clean_file_with_unstaged_sensitive_file(tmp_path):
-    service = make_service(tmp_path)
+    service, git = make_services(tmp_path)
     vault = service.config.vault
     (vault / ".env").write_text("API_KEY=synthetic\n", encoding="utf-8")
     (vault / "notes.md").write_text("synthetic\n", encoding="utf-8")
     _git("add", "notes.md", cwd=vault)
 
-    commit_hash = service.repo.commit("synthetic commit")
+    commit_hash = git.repo.commit("synthetic commit")
 
     assert commit_hash
     tracked = _git("ls-files", cwd=vault).stdout.splitlines()
@@ -525,12 +530,12 @@ def test_commit_allows_staged_clean_file_with_unstaged_sensitive_file(tmp_path):
 
 
 def test_commit_normal_file_succeeds(tmp_path):
-    service = make_service(tmp_path)
+    service, git = make_services(tmp_path)
     vault = service.config.vault
     (vault / "notes.md").write_text("synthetic\n", encoding="utf-8")
     _git("add", "notes.md", cwd=vault)
 
-    commit_hash = service.repo.commit("synthetic commit")
+    commit_hash = git.repo.commit("synthetic commit")
 
     assert commit_hash
     assert _git("log", "-1", "--pretty=%s", cwd=vault).stdout.strip() == "synthetic commit"
@@ -542,11 +547,11 @@ def test_direct_commit_still_rejects_parent_repository(tmp_path):
     _git("init", cwd=parent)
     vault = parent / "vault"
     vault.mkdir()
-    service = make_uninitialized_service(vault)
+    _, git = make_uninitialized_services(vault)
     (vault / "notes.md").write_text("synthetic\n", encoding="utf-8")
 
     with pytest.raises(GitError) as caught:
-        service.repo.commit("synthetic commit")
+        git.repo.commit("synthetic commit")
 
     assert caught.value.kind == "foreign_repo"
     assert _git("rev-list", "--count", "HEAD", cwd=parent, check=False).returncode != 0
@@ -571,15 +576,15 @@ def test_direct_commit_still_rejects_parent_repository(tmp_path):
     ],
 )
 def test_sensitive_name_variants_are_detected(tmp_path, relative):
-    service = make_service(tmp_path)
+    service, git = make_services(tmp_path)
     path = service.config.vault / relative
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("synthetic\n", encoding="utf-8")
 
-    service.repo.stage_all()
+    git.repo.stage_all()
 
-    assert relative in service.repo.staged_paths()
-    assert relative in service.repo.sensitive_paths()
+    assert relative in git.repo.staged_paths()
+    assert relative in git.repo.sensitive_paths()
 
 
 @pytest.mark.parametrize(
@@ -587,25 +592,25 @@ def test_sensitive_name_variants_are_detected(tmp_path, relative):
     ["notes.md", "notes with space.md", "weird[1].md", "memories/2026-01.md"],
 )
 def test_normal_files_are_not_flagged_as_sensitive(tmp_path, relative):
-    service = make_service(tmp_path)
+    service, git = make_services(tmp_path)
     path = service.config.vault / relative
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("synthetic\n", encoding="utf-8")
 
-    service.repo.stage_all()
+    git.repo.stage_all()
 
-    assert relative in service.repo.staged_paths()
-    assert service.repo.sensitive_paths() == []
+    assert relative in git.repo.staged_paths()
+    assert git.repo.sensitive_paths() == []
 
 
 def test_init_vault_refuses_untracked_sensitive_file(tmp_path):
     vault = tmp_path / "vault"
     vault.mkdir()
     (vault / ".env").write_text("API_KEY=synthetic\n", encoding="utf-8")
-    service = make_uninitialized_service(vault)
+    service, git = make_uninitialized_services(vault)
 
     with pytest.raises(GitError) as caught:
-        service.init_vault()
+        initialize_vault(git, service.initialize_files)
 
     assert caught.value.kind == "sensitive"
     assert (vault / ".env").exists()
@@ -618,10 +623,10 @@ def test_init_vault_refuses_pre_staged_sensitive_file(tmp_path):
     _git("init", cwd=vault)
     (vault / ".env").write_text("API_KEY=synthetic\n", encoding="utf-8")
     _git("add", ".env", cwd=vault)
-    service = make_uninitialized_service(vault)
+    service, git = make_uninitialized_services(vault)
 
     with pytest.raises(GitError) as caught:
-        service.init_vault()
+        initialize_vault(git, service.initialize_files)
 
     assert caught.value.kind == "sensitive"
     assert (vault / ".env").exists()
@@ -642,10 +647,10 @@ def test_init_vault_refuses_staged_sensitive_file_even_if_gitignored(tmp_path):
     (vault / ".env").write_text("API_KEY=synthetic\n", encoding="utf-8")
     _git("add", ".gitignore", cwd=vault)
     _git("add", "-f", ".env", cwd=vault)
-    service = make_uninitialized_service(vault)
+    service, git = make_uninitialized_services(vault)
 
     with pytest.raises(GitError) as caught:
-        service.init_vault()
+        initialize_vault(git, service.initialize_files)
 
     assert caught.value.kind == "sensitive"
     assert ".env" in caught.value.args[0]
@@ -657,9 +662,9 @@ def test_init_vault_commits_normal_files(tmp_path):
     vault = tmp_path / "vault"
     vault.mkdir()
     (vault / "notes.md").write_text("# synthetic\n", encoding="utf-8")
-    service = make_uninitialized_service(vault)
+    service, git = make_uninitialized_services(vault)
 
-    result = service.init_vault()
+    result = initialize_vault(git, service.initialize_files)
 
     assert result["commit"]
     tracked = _git("ls-files", cwd=vault).stdout.splitlines()
@@ -668,16 +673,16 @@ def test_init_vault_commits_normal_files(tmp_path):
 
 
 def test_sync_never_calls_llm(monkeypatch, tmp_path):
-    service = make_service(tmp_path)
+    service, git = make_services(tmp_path)
     add_remote(service, tmp_path)
     calls: list[object] = []
     monkeypatch.setattr(
-        "syvrio.memory.service.summarize_diff",
+        "syvrio.infra.vault.sync.summarize_diff",
         lambda *args, **kwargs: calls.append(args) or "should not be used",
     )
     service.note("自动同步不调用模型", topic="misc")
 
-    result = service.git_sync.sync("scheduled", now=datetime(2026, 11, 2, 3, 0, tzinfo=TZ))
+    result = git.sync("scheduled", now=datetime(2026, 11, 2, 3, 0, tzinfo=TZ))
 
     assert result.status == "success"
     assert result.committed
@@ -685,7 +690,7 @@ def test_sync_never_calls_llm(monkeypatch, tmp_path):
 
 
 def test_sync_reports_real_stage_progress(tmp_path):
-    service = make_service(tmp_path)
+    service, git = make_services(tmp_path)
     add_remote(service, tmp_path)
     service.note("阶段测试", topic="misc")
     snapshots: list[dict[str, str]] = []
@@ -693,7 +698,7 @@ def test_sync_reports_real_stage_progress(tmp_path):
     def progress(stages):
         snapshots.append({stage.name: stage.state for stage in stages})
 
-    result = service.git_sync.sync("manual", progress)
+    result = git.sync("manual", progress)
 
     assert result.status == "success"
     assert snapshots
@@ -704,10 +709,10 @@ def test_sync_reports_real_stage_progress(tmp_path):
 
 
 def test_state_file_and_locks_are_gitignored(tmp_path):
-    service = make_service(tmp_path)
+    service, git = make_services(tmp_path)
     service.note("状态文件不应入库", topic="misc")
 
-    service.git_sync.sync("manual")
+    git.sync("manual")
 
     status = _git("status", "--porcelain", cwd=service.config.vault).stdout
     assert ".syvrio/git-sync-state.json" not in status
@@ -741,28 +746,26 @@ def test_git_error_classification(message, kind):
 
 
 def test_due_respects_daily_schedule_and_success_state(tmp_path):
-    service = make_service(tmp_path)
-    sync = service.git_sync
+    _, git = make_services(tmp_path)
     before = datetime(2026, 11, 2, 2, 59, tzinfo=TZ)
     at_time = datetime(2026, 11, 2, 3, 0, tzinfo=TZ)
 
-    assert not sync.due(before)
-    assert sync.due(at_time)
+    assert not git.due(before)
+    assert git.due(at_time)
 
-    result = sync.sync("scheduled", now=at_time)
+    result = git.sync("scheduled", now=at_time)
     assert result.status == "partial"  # 未配置 remote，但本地提交成功
-    state = read_state(service)
+    state = read_state(git)
     assert state.get("last_daily_success_date") != "2026-11-02"
     assert state["last_daily_attempt_date"] == "2026-11-02"
     assert state["last_daily_blocked_date"] == "2026-11-02"
-    assert not sync.due(datetime(2026, 11, 2, 23, 0, tzinfo=TZ))
-    assert sync.due(datetime(2026, 11, 3, 3, 0, tzinfo=TZ))
+    assert not git.due(datetime(2026, 11, 2, 23, 0, tzinfo=TZ))
+    assert git.due(datetime(2026, 11, 3, 3, 0, tzinfo=TZ))
 
 
 def test_due_is_disabled_and_retry_after_is_respected(tmp_path, monkeypatch):
-    service = make_service(tmp_path)
+    service, git = make_services(tmp_path)
     add_remote(service, tmp_path)
-    sync = service.git_sync
     at_time = datetime(2026, 11, 2, 3, 0, tzinfo=TZ)
     attempts = {"fail": True}
 
@@ -771,41 +774,40 @@ def test_due_is_disabled_and_retry_after_is_respected(tmp_path, monkeypatch):
             raise GitError("Could not resolve host: example.invalid", kind="network")
         return ""
 
-    monkeypatch.setattr(service.repo, "push", push)
+    monkeypatch.setattr(git.repo, "push", push)
     service.note("网络失败", topic="misc")
-    result = sync.sync("scheduled", now=at_time)
+    result = git.sync("scheduled", now=at_time)
 
     assert result.error_kind == "network"
-    state = read_state(service)
+    state = read_state(git)
     assert "last_daily_success_date" not in state
-    assert sync.next_sync_at(at_time) == at_time  # 已到期但等待重试
-    assert not sync.due(at_time + timedelta(minutes=29))
-    assert sync.due(at_time + timedelta(minutes=31))
+    assert git.next_sync_at(at_time) == at_time  # 已到期但等待重试
+    assert not git.due(at_time + timedelta(minutes=29))
+    assert git.due(at_time + timedelta(minutes=31))
 
     attempts["fail"] = False
-    recovered = sync.sync("scheduled", now=at_time + timedelta(minutes=31))
+    recovered = git.sync("scheduled", now=at_time + timedelta(minutes=31))
     assert recovered.status == "success"
     assert recovered.pushed
-    assert read_state(service)["last_daily_success_date"] == "2026-11-02"
+    assert read_state(git)["last_daily_success_date"] == "2026-11-02"
 
     service.config.git.auto_sync = False
-    assert not sync.due(datetime(2026, 11, 4, 3, 0, tzinfo=TZ))
+    assert not git.due(datetime(2026, 11, 4, 3, 0, tzinfo=TZ))
 
 
 def test_next_sync_at_rolls_to_next_day_after_success(tmp_path):
-    service = make_service(tmp_path)
-    sync = service.git_sync
+    _, git = make_services(tmp_path)
     at_time = datetime(2026, 11, 2, 3, 0, tzinfo=TZ)
-    sync.sync("scheduled", now=at_time)
+    git.sync("scheduled", now=at_time)
 
-    assert sync.next_sync_at(at_time) == at_time + timedelta(days=1)
+    assert git.next_sync_at(at_time) == at_time + timedelta(days=1)
 
 
 # ---------- 并发与跨进程 ----------
 
 
 def test_session_append_waits_for_vault_lock(tmp_path):
-    service = make_service(tmp_path)
+    service, _ = make_services(tmp_path)
     store = SessionStore(service.config.vault)
     session = store.create()
     finished = threading.Event()
@@ -866,7 +868,7 @@ def test_vault_lock_same_process_contention_times_out_without_releasing_owner(tm
 
 
 def test_git_lock_same_process_contention_causes_busy_result(tmp_path):
-    service = make_service(tmp_path)
+    service, git = make_services(tmp_path)
     lock = git_operation_lock(service.config.vault)
     entered, release = threading.Event(), threading.Event()
 
@@ -879,7 +881,7 @@ def test_git_lock_same_process_contention_causes_busy_result(tmp_path):
     thread.start()
     try:
         assert entered.wait(5)
-        result = service.git_sync.sync("manual", wait_for_git=False)
+        result = git.sync("manual", wait_for_git=False)
         assert result.status == "failed"
         assert result.error_kind == "busy"
     finally:
@@ -888,7 +890,7 @@ def test_git_lock_same_process_contention_causes_busy_result(tmp_path):
 
 
 def test_vault_lock_contention_does_not_commit_unprotected(tmp_path):
-    service = make_service(tmp_path)
+    service, git = make_services(tmp_path)
     service.note("待提交数据", topic="misc")
     lock = vault_write_lock(service.config.vault)
     entered, release = threading.Event(), threading.Event()
@@ -911,10 +913,10 @@ def test_vault_lock_contention_does_not_commit_unprotected(tmp_path):
 
         lock.acquire = acquire_short
         try:
-            result = service.git_sync.sync("manual")
+            result = git.sync("manual")
             assert result.status == "failed"
             assert result.error_kind == "vault_busy"
-            assert service.repo.has_changes()
+            assert git.repo.has_changes()
         finally:
             lock.acquire = original_acquire
     finally:
@@ -976,7 +978,7 @@ def test_git_operation_lock_is_cross_process(tmp_path):
 
 
 def test_sync_reports_busy_when_another_process_holds_git_lock(tmp_path):
-    service = make_service(tmp_path)
+    service, git = make_services(tmp_path)
     child = _lock_child(
         service.config.vault,
         "import time\nfrom syvrio.infra.storage.locking import git_operation_lock\n"
@@ -985,7 +987,7 @@ def test_sync_reports_busy_when_another_process_holds_git_lock(tmp_path):
     )
     try:
         assert child.stdout.readline().strip() == "locked"
-        result = service.git_sync.sync("manual", wait_for_git=False)
+        result = git.sync("manual", wait_for_git=False)
         assert result.status == "failed"
         assert result.error_kind == "busy"
     finally:
@@ -994,7 +996,7 @@ def test_sync_reports_busy_when_another_process_holds_git_lock(tmp_path):
 
 
 def test_second_sync_is_rejected_while_first_runs(tmp_path):
-    service = make_service(tmp_path)
+    service, git = make_services(tmp_path)
     add_remote(service, tmp_path)
     service.note("互斥测试", topic="misc")
     started, release = threading.Event(), threading.Event()
@@ -1004,17 +1006,17 @@ def test_second_sync_is_rejected_while_first_runs(tmp_path):
         assert release.wait(30)
         return ""
 
-    service.repo.push = slow_push
+    git.repo.push = slow_push
     result_box: dict[str, object] = {}
 
     def first_sync():
-        result_box["first"] = service.git_sync.sync("manual")
+        result_box["first"] = git.sync("manual")
 
     thread = threading.Thread(target=first_sync)
     thread.start()
     try:
         assert started.wait(30)
-        second = service.git_sync.sync("manual")
+        second = git.sync("manual")
         assert second.status == "failed"
         assert second.error_kind == "busy"
     finally:
@@ -1024,7 +1026,7 @@ def test_second_sync_is_rejected_while_first_runs(tmp_path):
 
 
 def test_push_network_wait_does_not_block_memory_writes(tmp_path):
-    service = make_service(tmp_path)
+    service, git = make_services(tmp_path)
     add_remote(service, tmp_path)
     service.note("推送前记录", topic="misc")
     started, release = threading.Event(), threading.Event()
@@ -1034,11 +1036,11 @@ def test_push_network_wait_does_not_block_memory_writes(tmp_path):
         assert release.wait(30)
         return ""
 
-    service.repo.push = slow_push
+    git.repo.push = slow_push
     result_box: dict[str, object] = {}
 
     def sync():
-        result_box["result"] = service.git_sync.sync("manual")
+        result_box["result"] = git.sync("manual")
 
     thread = threading.Thread(target=sync)
     thread.start()
@@ -1051,11 +1053,11 @@ def test_push_network_wait_does_not_block_memory_writes(tmp_path):
         release.set()
         thread.join(timeout=10)
     assert result_box["result"].status == "success"
-    assert service.repo.has_changes()  # Push 期间的新写入留给下次同步
+    assert git.repo.has_changes()  # Push 期间的新写入留给下次同步
 
 
 def test_session_jsonl_integrity_during_concurrent_sync(tmp_path):
-    service = make_service(tmp_path)
+    service, git = make_services(tmp_path)
     add_remote(service, tmp_path)
     store = SessionStore(service.config.vault)
     session = store.create()
@@ -1070,11 +1072,9 @@ def test_session_jsonl_integrity_during_concurrent_sync(tmp_path):
         assert release.wait(30)
         return ""
 
-    service.repo.push = slow_push
+    git.repo.push = slow_push
     result_box: dict[str, object] = {}
-    thread = threading.Thread(
-        target=lambda: result_box.setdefault("result", service.git_sync.sync("manual"))
-    )
+    thread = threading.Thread(target=lambda: result_box.setdefault("result", git.sync("manual")))
     thread.start()
     try:
         assert started.wait(30)
@@ -1153,16 +1153,15 @@ def test_git_config_load_validate_and_example(tmp_path):
 
 
 def test_nonretryable_daily_failure_is_blocked_not_success(tmp_path):
-    service = make_service(tmp_path)
-    sync = service.git_sync
+    _, git = make_services(tmp_path)
     stamp = datetime(2026, 11, 2, 3, 0, tzinfo=TZ)
-    result = sync.sync("scheduled", now=stamp)
+    result = git.sync("scheduled", now=stamp)
     assert result.status == "partial"
     assert result.error_kind == "no_remote"
-    state = read_state(service)
+    state = read_state(git)
     assert "last_daily_success_date" not in state
     assert state["last_daily_blocked_date"] == "2026-11-02"
     assert state["last_daily_attempt_date"] == "2026-11-02"
-    assert not sync.due(stamp + timedelta(hours=1))
-    assert sync.next_sync_at(stamp) == stamp + timedelta(days=1)
-    assert sync.due(stamp + timedelta(days=1))
+    assert not git.due(stamp + timedelta(hours=1))
+    assert git.next_sync_at(stamp) == stamp + timedelta(days=1)
+    assert git.due(stamp + timedelta(days=1))

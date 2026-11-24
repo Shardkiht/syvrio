@@ -170,9 +170,8 @@ class APIChannel(ResidentChannel):
     def edit_draft(self, session_id: str, message_id: str) -> MessageDraft:
         self._validate_session_id(session_id)
         self.scheduling.check_session(session_id, exact=True)
-        with self._service.write_lock:
-            session = self._sessions.load(session_id, include_reasoning=False)
-            inputs = session.latest_turn_inputs()
+        session = self._sessions.load(session_id, include_reasoning=False)
+        inputs = session.latest_turn_inputs()
         if not inputs or inputs[-1]["id"] != message_id:
             raise APIError("stale_message", "Only the latest user message can be edited.", 409)
         return MessageDraft(
@@ -189,10 +188,9 @@ class APIChannel(ResidentChannel):
     ) -> SessionListResponse:
         # 先读取任务，即使列举期间刚发布标题，也能在结束时刷新。
         pending = set() if archived else self._background.pending_titles()
-        with self._service.write_lock:
-            rows = self._sessions.list(
-                max(1, min(limit, 500)), with_tokens=False, archived=archived, offset=offset
-            )
+        rows = self._sessions.list(
+            max(1, min(limit, 500)), with_tokens=False, archived=archived, offset=offset
+        )
         current = self._conversation.current_id
         return SessionListResponse(
             items=[
@@ -228,10 +226,9 @@ class APIChannel(ResidentChannel):
     def _read_history_session(self, session_id: str, archived: bool) -> Session:
         self._validate_session_id(session_id)
         try:
-            with self._service.write_lock:
-                if archived:
-                    return self._sessions.load(session_id, archived=True)
-                return self._sessions.read_snapshot(session_id).session
+            if archived:
+                return self._sessions.load(session_id, archived=True)
+            return self._sessions.read_snapshot(session_id).session
         except KeyError as exc:
             raise APIError("session_not_found", "Session not found.", 404) from exc
         except (ValueError, OSError) as exc:
@@ -357,35 +354,22 @@ class APIChannel(ResidentChannel):
     ) -> DeleteSessionResponse:
         """在用户明确确认后永久删除已归档的对话记录。"""
         self._validate_session_id(session_id)
-        with self._service.write_lock:
-            if not self._sessions.exists(session_id, archived=True):
-                if self._sessions.exists(session_id):
-                    raise APIError(
-                        "archive_required",
-                        "Archive this conversation before permanently deleting it.",
-                        409,
-                    )
-                raise APIError("session_not_found", "Archived session not found.", 404)
-            if not confirmed:
-                raise APIError(
-                    "confirm_required",
-                    "Deleting a session is permanent; confirm the action first.",
-                    409,
-                )
-            try:
-                if not self._conversation.delete_session(session_id, pending_revision):
-                    raise APIError("session_not_found", "Session not found.", 404)
-            except SessionProtectedError as exc:
-                raise APIError("session_protected", str(exc), 409) from exc
-            except SessionDeletionChanged as exc:
-                raise APIError("pending_changed", str(exc), 409) from exc
-            except (OSError, ValueError) as exc:
-                record_event("session.delete_failed", exc)
-                raise APIError(
-                    "delete_failed",
-                    "Session could not be deleted; the file was kept.",
-                    500,
-                ) from exc
+        try:
+            if not self._conversation.delete_session(
+                session_id, pending_revision, confirmed=confirmed
+            ):
+                raise APIError("session_not_found", "Session not found.", 404)
+        except SessionProtectedError as exc:
+            raise APIError("session_protected", str(exc), 409) from exc
+        except SessionDeletionChanged as exc:
+            raise APIError("pending_changed", str(exc), 409) from exc
+        except (OSError, ValueError) as exc:
+            record_event("session.delete_failed", exc)
+            raise APIError(
+                "delete_failed",
+                "Session could not be deleted; the file was kept.",
+                500,
+            ) from exc
         return DeleteSessionResponse(session_id=session_id)
 
     # 设置与供应商，对应 TUI 的 Ctrl+P

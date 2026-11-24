@@ -15,8 +15,6 @@ from syvrio.infra.config import (
     default_config_path,
     default_vault_path,
 )
-from syvrio.memory.extractor import StaticExtractor
-from syvrio.memory.models import ExtractionResult
 from syvrio.memory.service import MemoryService
 
 
@@ -78,8 +76,10 @@ def test_runtime_metadata_uses_syvrio_directory(tmp_path: Path):
         llm=LLMConfig(),
         retrieval=RetrievalConfig(method="keyword"),
     )
-    service = MemoryService(config, extractor=StaticExtractor(ExtractionResult(memories=[])))
-    service.init_vault()
+    service = MemoryService(config)
+    from syvrio.backend.maintenance import initialize_vault
+
+    initialize_vault(config)
     assert service.paths.state_dir.is_dir()
     assert not (config.vault / ".syvrio").exists()
     service.note("品牌测试条目", topic="misc")

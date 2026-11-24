@@ -14,12 +14,23 @@ from ..infra.config import (
 )
 from ..infra.errors import SyvrioError
 from ..infra.storage import paths as local_paths
-from ..infra.storage.locking import LockTimeout
+from ..infra.storage.locking import LockTimeout, git_operation_lock, vault_write_lock
+from ..infra.storage.paths import SyvrioPaths
+from ..infra.storage.transaction import recover_vault_transaction
+from ..infra.vault.files import initialize_vault as provision_vault
+from ..infra.vault.sync import GitSyncService
 from .ownership import BackendLease, physical_vault_lock
 
 
 class MaintenanceError(SyvrioError, ValueError):
     pass
+
+
+def prepare_vault_runtime(paths: SyvrioPaths) -> None:
+    """调用方持有后端租约；切换绑定时按 Git、Vault 顺序保护派生状态。"""
+    with git_operation_lock(paths), vault_write_lock(paths):
+        paths.bind()
+        recover_vault_transaction(paths)
 
 
 def initialize_owned_vault(
@@ -31,7 +42,10 @@ def initialize_owned_vault(
     vault = config.vault
     if vault.exists() and any(vault.iterdir()) and not (vault / ".git").exists() and not force:
         raise MaintenanceError(f"{vault} 非空且不是 Syvrio 记忆库；确认无误后加 --force。")
-    return MemoryService(config, config_path=config_path).init_vault()
+    paths = config.paths(config_path)
+    prepare_vault_runtime(paths)
+    memory = MemoryService(config, config_path=config_path)
+    return provision_vault(GitSyncService(config, paths), memory.initialize_files)
 
 
 def initialize_vault(
@@ -87,7 +101,7 @@ def verify_local_attachments(vault: Path) -> tuple[int, list[str]]:
         checked, errors = client.call("verify_attachments")
         return checked, errors
     try:
-        return SessionQuery(vault).verify_attachments()
+        return SessionQuery(vault, offline=True).verify_attachments()
     finally:
         lock.release()
 

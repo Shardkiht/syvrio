@@ -11,12 +11,12 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from ..backend.api.commands import SLASH_COMMANDS, SLASH_SUBCOMMANDS, command_names, parse_command
 from ..infra.config import MIN_CONTEXT_WINDOW
 from ..infra.observability.diagnostics import record_event
 from ..infra.session.errors import ConversationError
 from ..infra.storage.transaction import vault_transaction
 from ..memory.turn_undo import TurnUndoError
+from .command_catalog import SLASH_COMMANDS, SLASH_SUBCOMMANDS, command_names, parse_command
 
 if TYPE_CHECKING:
     from .service import ApplicationService
@@ -155,7 +155,7 @@ def web_command_catalog() -> tuple[WebCommandInfo, ...]:
 
 
 MAX_TEXT = 2000
-MAX_ROWS = 20
+MODEL_TEXT_ROWS = 20
 
 
 @dataclass(frozen=True)
@@ -444,14 +444,13 @@ class CommandUseCases:
                     "ok", name, "topics", f"{topic['topic']}\n\n" + "\n".join(lines), data=topic
                 )
             rows = application.memory.topic_directory()
-            names = [str(row.get("topic") or row.get("title") or "") for row in rows]
-            names = [item for item in names if item]
+            names = [row["topic"] for row in rows]
             return CommandResult(
                 "ok",
                 name,
                 "topics",
                 f"{len(rows)} topics. " + ", ".join(names) if names else "No topics yet.",
-                data={"count": len(rows), "names": names, "topics": rows},
+                data={"count": len(rows), "topics": rows},
             )
 
         if name == "pending":
@@ -655,50 +654,11 @@ class CommandUseCases:
         llm = self.app.config.llm
         refresh = argument.lower() in MODEL_REFRESH
 
-        if refresh:
-            # TUI 由后台线程刷新模型目录，网页端通过显式的 /model refresh 刷新。
-            try:
-                catalog = settings.model_catalog(refresh=True)
-                options = settings.model_options(catalog, capabilities=False)
-            except Exception:
-                return CommandResult(
-                    "error",
-                    "model",
-                    "model",
-                    "Refreshing the model catalog failed. The current model is unchanged.",
-                )
-            found = sum(len(models) for models in catalog.values())
-        else:
+        if argument and not refresh:
             try:
                 options = settings.model_options(capabilities=False)
             except Exception:
                 options = []
-
-        payload = [
-            {
-                "provider": option.provider,
-                "model": option.model,
-                "label": option.label,
-                "current": (option.provider, option.model) == (llm.provider, llm.model),
-            }
-            for option in options[:MAX_ROWS]
-        ]
-        # 当进程缓存为空或供应商没有 /models 接口（如星火 MaaS 和本地服务）时，
-        # 选择器仍要提供可用选项。
-        if not any(
-            item["provider"] == llm.provider and item["model"] == llm.model for item in payload
-        ):
-            payload.insert(
-                0,
-                {
-                    "provider": llm.provider,
-                    "model": llm.model,
-                    "label": f"{llm.provider}/{llm.model}",
-                    "current": True,
-                },
-            )
-
-        if argument and not refresh:
             # 应用选择后省略 options，避免浏览器立即再次打开选择器。
             provider, _, model = argument.partition("/")
             known = any(option.provider == provider and option.model == model for option in options)
@@ -717,10 +677,35 @@ class CommandUseCases:
                 status, "model", "model", result.message, data={"model_changed": result.ok}
             )
 
+        try:
+            catalog = settings.model_catalog(refresh=refresh)
+        except Exception:
+            if refresh:
+                return CommandResult(
+                    "error",
+                    "model",
+                    "model",
+                    "Refreshing the model catalog failed. The current model is unchanged.",
+                )
+            catalog = {}
+        options = settings.model_choices(catalog)
+        found = sum(len(models) for models in catalog.values())
+        payload = [
+            {
+                "provider": option.provider,
+                "model": option.model,
+                "label": option.label,
+                "current": option.current,
+            }
+            for option in options
+        ]
+        # 只限制纯文字摘要，交给客户端选择的目录保留完整的供应商和模型标识。
         lines = [
             f"{'*' if item['current'] else ' '} {item['provider']}/{item['model']}"
-            for item in payload
+            for item in payload[:MODEL_TEXT_ROWS]
         ]
+        if len(payload) > MODEL_TEXT_ROWS:
+            lines.append(f"… ({len(payload)} models in the picker)")
         if refresh:
             detail = (
                 f"Refreshed the provider catalog: {found} model(s) found."
@@ -729,9 +714,9 @@ class CommandUseCases:
                 "or the request failed). The configured model stays available; "
                 "you can still use /model <provider>/<model> to switch by ID."
             )
-        elif len(payload) == 1:
+        elif not found:
             detail = (
-                "No cached model list yet. Use /model refresh to fetch the provider's "
+                "No provider model list available. Use /model refresh to fetch the provider's "
                 "list, or /model <provider>/<model> to switch by ID."
             )
         else:

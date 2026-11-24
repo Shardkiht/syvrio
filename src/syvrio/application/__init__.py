@@ -1,69 +1,51 @@
-"""Syvrio Application Layer：与前端无关的用例编排。"""
+"""与前端无关的应用用例，按需加载公开入口。"""
 
-from .commands import (
-    SLASH_COMMANDS,
-    SLASH_SUBCOMMANDS,
-    CommandResult,
-    CommandUseCases,
-    WebCapability,
-    WebCommandInfo,
-    web_command_catalog,
-)
-from .contracts import (
-    ImportChunkProgress,
-    ImportResult,
-    InferenceReview,
-    ModelOption,
-    PendingSnapshot,
-    ProfileSnapshot,
-    ProviderOption,
-    QueuedItem,
-    QueueSnapshot,
-    SessionSnapshot,
-    SettingsResult,
-    Submission,
-    SwitchResult,
-    TurnCallbacks,
-    TurnResult,
-    UndoOutcome,
-)
-from .conversation import SAFE_COMMANDS, ConversationUseCases, QueuedLine
-from .git import GitUseCases
-from .memory import MemoryUseCases
-from .reflection import ReflectionUseCases
-from .service import ApplicationService
-from .settings import SettingsUseCases
+from __future__ import annotations
 
-__all__ = [
-    "ApplicationService",
-    "CommandResult",
-    "CommandUseCases",
-    "ConversationUseCases",
-    "GitUseCases",
-    "ImportChunkProgress",
-    "ImportResult",
-    "InferenceReview",
-    "MemoryUseCases",
-    "ModelOption",
-    "PendingSnapshot",
-    "ProfileSnapshot",
-    "ProviderOption",
-    "QueueSnapshot",
-    "QueuedItem",
-    "QueuedLine",
-    "ReflectionUseCases",
-    "SAFE_COMMANDS",
-    "SLASH_COMMANDS",
-    "SLASH_SUBCOMMANDS",
-    "SessionSnapshot",
-    "SettingsResult",
-    "SettingsUseCases",
-    "Submission",
-    "SwitchResult",
-    "TurnCallbacks",
-    "TurnResult",
-    "UndoOutcome",
-    "WebCapability",
-    "WebCommandInfo",
-    "web_command_catalog",
-]
+from importlib import import_module
+from typing import Any
+
+# 读取轻量命令协议时，无需装配模型运行时和后台任务。
+_EXPORTS = {
+    "ApplicationService": ".service",
+    "CommandResult": ".commands",
+    "CommandUseCases": ".commands",
+    "ConversationUseCases": ".conversation",
+    "GitUseCases": ".git",
+    "ImportChunkProgress": ".contracts",
+    "ImportResult": ".contracts",
+    "InferenceReview": ".contracts",
+    "MemoryUseCases": ".memory",
+    "ModelOption": ".contracts",
+    "PendingSnapshot": ".contracts",
+    "ProfileSnapshot": ".contracts",
+    "ProviderOption": ".contracts",
+    "QueueSnapshot": ".contracts",
+    "QueuedItem": ".contracts",
+    "QueuedLine": ".conversation",
+    "ReflectionUseCases": ".reflection",
+    "SAFE_COMMANDS": ".conversation",
+    "SLASH_COMMANDS": ".command_catalog",
+    "SLASH_SUBCOMMANDS": ".command_catalog",
+    "SessionSnapshot": ".contracts",
+    "SettingsResult": ".contracts",
+    "SettingsUseCases": ".settings",
+    "Submission": ".contracts",
+    "SwitchResult": ".contracts",
+    "TurnCallbacks": ".contracts",
+    "TurnResult": ".contracts",
+    "UndoOutcome": ".contracts",
+    "WebCapability": ".commands",
+    "WebCommandInfo": ".commands",
+    "web_command_catalog": ".commands",
+}
+__all__ = list(_EXPORTS)
+
+
+def __getattr__(name: str) -> Any:
+    module = _EXPORTS.get(name)
+    if module is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(import_module(module, __name__), name)
+    globals()[name] = value
+    return value

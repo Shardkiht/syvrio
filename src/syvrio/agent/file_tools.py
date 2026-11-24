@@ -4,6 +4,7 @@ import re
 from pathlib import Path
 from typing import Callable
 
+from ..infra.config import LLMConfig
 from ..infra.security.secrets import redact_secrets
 from ..infra.session.model import Session
 from ..infra.storage.documents import SUPPORTED_SUFFIXES, read_document
@@ -33,9 +34,11 @@ def file_handlers(
     *,
     evidence: RecallContext | None = None,
     session: Session | None = None,
+    llm_config: LLMConfig | None = None,
 ) -> dict[str, Callable[[dict], dict]]:
     """本轮工具只可访问本轮用户明确给出的文件，不开放目录和任意路径读取。"""
     allowed = paths if isinstance(paths, dict) else {str(path): path for path in paths}
+    import_model = llm_config or service.config.llm
     cache: dict[str, str] = {}
     plans: dict[tuple[str, int], tuple[tuple, list[Candidate]]] = {}
 
@@ -79,7 +82,7 @@ def file_handlers(
         key = (name, index)
         version = service.evidence_version(include_pending=True)
         if key not in plans or plans[key][0] != version:
-            plans[key] = service.prepare_import(chunks[index - 1])
+            plans[key] = service.prepare_import(chunks[index - 1], llm_config=import_model)
         version, candidates = plans[key]
         drafts = [item.model_dump(exclude_none=True) for item in candidates]
         progress = {
