@@ -55,8 +55,13 @@ class AttachmentBatch:
 
     @classmethod
     def stage(cls, root: Path, streams: Iterable[tuple[str, BinaryIO]]) -> AttachmentBatch:
-        folder = _directory(root / ".incoming", uuid4().hex)
-        folder.mkdir(parents=True)
+        # 并发首次上传时，先创建共享目录，再校验其实际路径，避免在另一个请求创建目录时解析它。
+        _directory(root.parent)
+        root.mkdir(parents=True, exist_ok=True)
+        incoming = _directory(root) / ".incoming"
+        incoming.mkdir(exist_ok=True)
+        folder = _directory(incoming, uuid4().hex)
+        folder.mkdir()
         paths: list[Path] = []
         files: list[Attachment] = []
         total = 0
