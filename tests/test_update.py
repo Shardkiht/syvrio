@@ -23,7 +23,7 @@ def wheel(version: str, requires_python: str | None = None) -> dict:
 
 
 def fake_interpreter(directory: Path, version: str = "3.13.5", name: str = "python3.13") -> Path:
-    """A stand-in executable whose only observable behaviour is the version probe."""
+    """用于测试的可执行文件只对版本查询产生可观察的行为。"""
     script = directory / name
     script.write_text(f"#!/bin/sh\nprintf '{version}'\n", encoding="utf-8")
     script.chmod(0o755)
@@ -39,7 +39,7 @@ def patch_release_transport(monkeypatch) -> None:
 
 
 class FakeClock:
-    """Deterministic clock for settle loops: sleep advances simulated time."""
+    """用于等待循环的确定性时钟，休眠只推进模拟时间。"""
 
     def __init__(self):
         self.now = 1000.0
@@ -59,7 +59,7 @@ def use_fake_clock(monkeypatch):
 
 
 def patch_run_with_failing_stop(monkeypatch, old, events) -> None:
-    """_run mock where the version probe works and every stop command errors."""
+    """模拟 _run，版本查询成功，所有停止命令均报错。"""
 
     def run(*args, **kwargs):
         if args == (str(old), "--version"):
@@ -74,7 +74,7 @@ def patch_run_with_failing_stop(monkeypatch, old, events) -> None:
 
 
 def make_versions(tmp_path):
-    """Real old/new environment directories shaped like the updater builds them."""
+    """按更新器实际构建的布局创建新旧环境目录。"""
     old_env = tmp_path / "old-env"
     (old_env / "bin").mkdir(parents=True)
     old = old_env / "bin" / "syvrio"
@@ -626,7 +626,7 @@ def test_healthy_fails_after_deadline(monkeypatch):
     assert len(attempts) > 1
 
 
-# --- Rollback when the initial executable switch itself fails. ---
+# 检验首次切换可执行文件失败时的回滚。
 
 
 def _switch_failure_setup(tmp_path, monkeypatch):

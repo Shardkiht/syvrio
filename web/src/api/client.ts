@@ -39,11 +39,10 @@ async function readError(response: Response): Promise<ApiError> {
   }
 }
 
-/** A transport failure (as opposed to an HTTP error response). */
+/** 传输失败，尚未收到 HTTP 错误响应。 */
 export class NetworkError extends Error {}
 
-// Each document, including a duplicated tab, owns its navigation and shares
-// the conversation only when it selects the same session as another client.
+// 每个页面（包括复制的标签页）独立管理导航。只有选中同一会话的客户端才共享对话。
 export function newRequestId() {
   return Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('');
 }
@@ -188,8 +187,8 @@ export const api = {
 };
 
 /**
- * POST + SSE with the Fetch API. Frames are split on blank lines; TextDecoder
- * with stream:true keeps multi-byte UTF-8 characters intact across chunks.
+ * 通过 Fetch API 发起 POST 并读取 SSE，按空行分帧。
+ * TextDecoder 使用 stream:true，确保跨分块的 UTF-8 多字节字符仍能完整解码。
  */
 export interface TurnReceipt {
   turn_id: number;
@@ -265,11 +264,11 @@ async function consumeStream(response: Response, onEvent: (event: StreamEvent) =
       .filter((line) => line.startsWith('data:'))
       .map((line) => line.slice(5).trimStart())
       .join('\n');
-    if (!data) return; // comment / keep-alive frame
+    if (!data) return; // 注释帧或保活帧。
     try {
       onEvent(JSON.parse(data) as StreamEvent);
     } catch {
-      // A malformed frame is ignored; the terminal event still closes the turn.
+      // 忽略损坏的事件帧，终止事件仍正常关闭回合。
     }
   };
   try {

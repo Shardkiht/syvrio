@@ -1,4 +1,4 @@
-"""Process ownership independent of the chosen Runtime and Vault path aliases."""
+"""按物理 Vault 判定进程所有权，兼容路径别名及不同的 Runtime。"""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ class BackendLease:
         vault = self.paths.vault_dir.resolve()
         vault.mkdir(parents=True, exist_ok=True)
         stat = vault.stat()
-        # A renamed directory, junction, or symlink identifies the same Vault.
+        # 指向同一 Vault 的重命名目录、目录联接和符号链接共用同一标识。
         identity = f"{stat.st_dev}:{stat.st_ino}" if stat.st_ino else os.path.normcase(str(vault))
         key = hashlib.sha256(os.fsencode(identity)).hexdigest()
         self.vault_lock = VaultLock(syvrio_home() / "owners" / (key + ".lock"))

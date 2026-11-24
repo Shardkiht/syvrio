@@ -109,23 +109,20 @@ def update() -> None:
         record_event("update.failed", exc)
         typer.echo(f"更新失败：{exc}", err=True)
         raise typer.Exit(code=1) from exc
-    # Only the config lookup above owns the "missing configuration" wording: a FileNotFoundError
-    # raised while updating means a missing executable (uv, previously the service binary), and
-    # must not be reported as an unconfigured service.
+    # 只有上方读取配置时才能报告缺少配置。更新过程中出现 FileNotFoundError
+    # 表示找不到可执行文件（现为 uv，旧版为服务程序），应按实际原因报告。
     try:
         with show_update_progress() as display:
             result = apply_update(
                 root, *options, prepare_restart=prepare_restart, on_progress=display
             )
     except SyvrioError as exc:
-        # Deliberate, staged failure (missing uv, broken venv, failed switch…):
-        # the message already tells the user what to do.
+        # 分阶段报告的失败（缺少 uv、虚拟环境损坏或切换失败等）已经包含处理办法。
         record_event("update.failed", exc)
         typer.echo(f"更新失败：{exc}", err=True)
         raise typer.Exit(code=1) from exc
     except Exception as exc:
-        # Defense in depth for anything the updater does not stage itself; the
-        # full traceback lands in the diagnostics log via update.failed.
+        # 对更新器未按阶段处理的异常，使用 update.failed 将完整调用栈记入诊断日志。
         record_event("update.failed", exc)
         typer.echo(f"更新失败：{exc}", err=True)
         raise typer.Exit(code=1) from exc
@@ -765,8 +762,8 @@ def web(
 
 
 def main() -> None:
-    # Windows pipes use the locale code page, which may not encode CLI help.
-    # Keep native console handling intact; JSON/MCP and redirected CLI use UTF-8.
+    # Windows 管道默认使用本地代码页，可能无法输出帮助文本。
+    # 保留原生控制台处理，JSON、MCP 和重定向的 CLI 输出使用 UTF-8。
     if sys.platform == "win32":
         for stream in (sys.stdout, sys.stderr):
             if not stream.isatty() and hasattr(stream, "reconfigure"):
@@ -785,9 +782,8 @@ def main() -> None:
     try:
         app(obj=invocation)
     except (typer.Exit, click.Abort):
-        # Deliberate exits (fail(), --version, Ctrl+C on a prompt) are control
-        # flow, not failures; recording them hides the real cause. fail() with
-        # exc= already recorded cli.failed before raising.
+        # 主动退出（fail()、--version 或在提示时按 Ctrl+C）属于正常控制流程。
+        # 调用 fail() 时若传入 exc，原始错误已在退出前记入 cli.failed，重复记录会掩盖原因。
         raise
     except Exception as exc:
         record_event("cli.failed", exc, command=invocation.command)

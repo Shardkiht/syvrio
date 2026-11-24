@@ -122,9 +122,9 @@ it('uses the plus button to pick and send multiple attachments', () => {
 });
 
 /**
- * jsdom has no layout engine, so the tests pin the measurements the fit effect
- * reads. `offset`/`client` include the 1px borders + 11px padding of the real
- * textarea; `scroll` is the content height the browser would report.
+ * jsdom 没有布局引擎，测试直接指定输入框自适应高度所读取的尺寸。
+ * offset 和 client 按实际输入框的 1 像素边框及 11 像素内边距模拟，
+ * scroll 表示浏览器报告的内容高度。
  */
 function measure(
   input: HTMLTextAreaElement,

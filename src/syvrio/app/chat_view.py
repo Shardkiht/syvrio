@@ -1,4 +1,4 @@
-"""Shared Textual layout, transcript rendering, and input interactions."""
+"""共用的 Textual 布局、对话记录渲染和输入交互。"""
 
 from __future__ import annotations
 
@@ -127,7 +127,7 @@ class ChatViewMixin:
         if choice and choice != typed:
             self.fill_command(choice)
             return
-        # A prefix with suggestions remains editable even when its popup was dismissed.
+        # 即使已关闭提示框，仍可继续编辑有补全候选的前缀。
         matches = slash_matches(line[1:])
         if matches and not any(key == typed for key, _, _ in matches):
             self.notify("Complete the command before sending.")

@@ -401,7 +401,7 @@ def test_dual_windows_and_restart(tmp_path):
     restarted = UsageLimiter(limits, path, clock=lambda: now[0])
     assert restarted.acquire("exa")
     now[0] += 86400
-    assert not restarted.acquire("exa")  # month exhausted despite a new day
+    assert not restarted.acquire("exa")  # 即使跨天，月度额度仍已耗尽。
     now[0] = datetime(2025, 2, 1, 12).timestamp()
     assert restarted.acquire("exa")
 

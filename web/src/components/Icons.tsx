@@ -5,7 +5,7 @@ interface IconProps {
   className?: string;
 }
 
-/** One stroke style for every chrome icon, so the shell reads as one set. */
+/** 界面图标共用同一种描边样式。 */
 function Svg({ size = 18, className, children }: IconProps & { children: ReactNode }) {
   return (
     <svg

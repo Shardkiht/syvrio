@@ -1,4 +1,4 @@
-"""Verify the Syvrio wheel and source distribution produced by uv build."""
+"""校验 uv build 生成的 Syvrio wheel 和源码包。"""
 
 from __future__ import annotations
 

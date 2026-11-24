@@ -1,4 +1,4 @@
-"""Shared trusted-host rules and JSON errors for both HTTP listeners."""
+"""两个 HTTP 监听入口共用的主机信任规则和 JSON 错误响应。"""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ STATE_MODIFYING = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 
 def _hostname(value: str) -> str:
-    """Host/Origin host without port, comparable across proxies."""
+    """提取 Host 或 Origin 中不含端口的主机名，以便跨代理比较。"""
     value = value.strip().lower()
     if value.startswith("["):
         end = value.find("]")
@@ -37,7 +37,7 @@ def error_response(code: str, message: str, status: int) -> JSONResponse:
 
 
 def guard_hosts(app: FastAPI, host: str, extra: list[str] | None = None) -> None:
-    """Apply the same Host/Origin policy to all routes of either listener."""
+    """两个监听入口的所有路由使用同一套 Host 和 Origin 策略。"""
     trusted = _allowed_hosts(host, extra)
 
     @app.middleware("http")

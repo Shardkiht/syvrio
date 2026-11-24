@@ -1,4 +1,4 @@
-"""Keep synthetic evaluation data separate from the invoking user's Syvrio files."""
+"""将合成评测数据与调用者的 Syvrio 文件分开存放。"""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ else:
 
 
 def local_hybrid_config(vault: Path) -> Config:
-    """Use the same offline encoder for both field-retrieval benchmarks."""
+    """两种字段检索基准共用同一离线编码器。"""
     return Config(
         vault=vault,
         retrieval=RetrievalConfig(
@@ -28,7 +28,7 @@ def local_hybrid_config(vault: Path) -> Config:
 
 @contextmanager
 def eval_environment(root: Path) -> Iterator[Path]:
-    """Bind the process to one evaluation's paths and yield its Vault directory."""
+    """将进程绑定到本次评测的路径，并提供对应的 Vault 目录。"""
     root = root.resolve()
     paths = {
         "SYVRIO_CONFIG": root / "config.toml",

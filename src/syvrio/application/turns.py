@@ -1,4 +1,4 @@
-"""Application-owned turn identity, ordered events and receipts shared across clients."""
+"""应用层管理的回合标识、有序事件及跨客户端共享的回执。"""
 
 from __future__ import annotations
 
@@ -59,7 +59,7 @@ class MessageAttachment(BaseModel):
 
 
 class TurnEvent(BaseModel):
-    """A provider-independent conversation event. Sequence numbers are local to each turn."""
+    """与供应商无关的对话事件，序号在各回合内独立递增。"""
 
     seq: int
     type: EventType
@@ -67,16 +67,16 @@ class TurnEvent(BaseModel):
     session_id: str | None = None
     message_id: str | None = None
     attachments: list[MessageAttachment] | None = None
-    # Short-lived deltas (content/reasoning), tool display and error messages.
+    # 短暂保留的正文和思考增量、工具展示信息及错误消息。
     text: str = ""
     name: str | None = None
     seconds: float | None = None
-    # A model-request stage; reasoning from different tool rounds never shares it.
+    # 每个模型请求独占一个阶段，避免混入其他工具轮次的思考内容。
     phase: int | None = None
     steps: int | None = None
     estimated_tokens: int | None = None
     message: str | None = None
-    # Tool outcome on ``tool_end``: False means the call failed, None unknown.
+    # tool_end 携带的结果中，False 表示失败，None 表示未知。
     ok: bool | None = None
 
 
@@ -125,7 +125,7 @@ class ConversationTurn:
     async def events(
         self, after: int = 0, heartbeat: float = 15
     ) -> AsyncIterator[TurnEvent | None]:
-        """Replay from a cursor, then yield live events and idle heartbeats."""
+        """从游标处重放历史，然后继续提供实时事件和空闲心跳。"""
         loop = asyncio.get_running_loop()
         signal = asyncio.Event()
         with self._lock:
@@ -159,7 +159,7 @@ class ConversationTurn:
 
 
 class TurnRegistry:
-    """Keep live receipts plus recent completions for reconnecting consumers."""
+    """保留正在处理及近期完成的回执，供客户端重连。"""
 
     def __init__(self) -> None:
         self._instance = uuid4().hex
@@ -236,7 +236,7 @@ class TurnRegistry:
                     "history_only": True,
                 }
 
-            # Reserve before dispatch so a lost acknowledgement cannot start the same turn twice.
+            # 分发前先预留，以免回执丢失后重复启动同一回合。
             record = {"signature": signature, "instance": self._instance}
             atomic_write(path, json.dumps(record).encode())
             try:
@@ -253,11 +253,10 @@ class TurnRegistry:
 
 
 class TurnEvents:
-    """Turn TurnCallbacks into ordered conversation events (runs in the worker thread).
+    """在工作线程中将 TurnCallbacks 转换为有序的对话事件。
 
-    ``phase`` advances at each model request so reasoning from different tool
-    rounds never merges. Tool starts are paired with their result events in
-    call order, which also covers parallel tool batches.
+    每次请求模型时推进 phase，防止不同工具轮次的思考内容合并。
+    按调用顺序配对工具开始与结果事件，并行的一批调用也遵循该顺序。
     """
 
     def __init__(self, turn: ConversationTurn) -> None:
@@ -266,8 +265,8 @@ class TurnEvents:
         self._phase = 0
         self._session_id = turn.session_id
         self._pending_tools: list[str] = []
-        # Outcomes line up with ``_pending_tools``: the runtime reports a tool's
-        # result right before the event text that belongs to it.
+        # 结果按 _pending_tools 的顺序配对，运行时先报告结果，
+        # 紧接着发送该调用对应的事件文本。
         self._pending_ok: list[bool] = []
 
     def send(self, event_type: str, **fields: Any) -> None:
@@ -289,7 +288,7 @@ class TurnEvents:
         self.send("start")
 
     def on_session(self, session_id: str) -> None:
-        # The first message creates the session; later frames carry its real ID.
+        # 第一条消息创建会话，后续事件帧携带其真实 ID。
         self._session_id = session_id
 
     def on_user_message(self, message_id: str) -> None:
@@ -353,8 +352,7 @@ class TurnEvents:
     def _flush_tools(self) -> None:
         while self._pending_tools:
             self.send("tool_end", name=self._pending_tools.pop(0))
-        # Any outcome left here belongs to a call that never emitted text; drop
-        # it so the next tool cannot inherit the wrong state.
+        # 剩余结果对应未发出文本的调用，应丢弃，避免下一次调用继承错误的状态。
         self._pending_ok.clear()
 
     def finish(self, event_type: str, **fields: Any) -> None:

@@ -140,7 +140,7 @@ class QueryTerm:
     """参与匹配的词元；latin 用词边界，cjk 用子串。"""
 
     text: str  # 匹配用的小写形式
-    kind: str  # "latin" | "cjk_phrase" | "cjk_gram"
+    kind: str  # 匹配类型可取 latin（拉丁文本）、cjk_phrase（中日韩短语）或 cjk_gram（中日韩字符片段）。
     original: str = ""
 
 
@@ -353,7 +353,7 @@ def is_relevant(results: list[SearchResult], analysis: QueryAnalysis) -> bool:
 class GateDecision:
     should_stop: bool
     strong_count: int
-    reason: str  # multiple_strong / navigational / no_core_terms / insufficient
+    reason: str  # 判断结果可取 multiple_strong、navigational、no_core_terms 或 insufficient。
 
 
 def is_strong_hit(result: SearchResult, analysis: QueryAnalysis) -> bool:

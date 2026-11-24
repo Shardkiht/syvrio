@@ -6,17 +6,16 @@ afterEach(() => {
   window.sessionStorage.removeItem('syvrio.session');
 });
 
-// jsdom does not implement Element.scrollTo; component tests replace this
-// no-op with a spy when asserting instant versus smooth history scrolling.
+// jsdom 未实现 Element.scrollTo。组件测试在需要区分立即滚动和平滑滚动时，
+// 将此空实现替换为可记录调用的函数。
 Object.defineProperty(HTMLElement.prototype, 'scrollTo', {
   configurable: true,
   writable: true,
   value: () => {},
 });
 
-// jsdom does not implement Element.scrollIntoView either; command lists call it
-// to keep the arrow-key selection visible, and component tests replace this
-// no-op with a spy when asserting the scroll target and options.
+// jsdom 也未实现 Element.scrollIntoView。命令列表用它保持键盘选中项可见，
+// 组件测试会替换此空实现以核对滚动目标和参数。
 Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
   configurable: true,
   writable: true,

@@ -40,12 +40,12 @@ def _parse_stamp(value: str | None) -> datetime | None:
 @dataclass
 class SyncStage:
     name: str
-    state: str = "waiting"  # waiting / running / done / skipped / failed
+    state: str = "waiting"  # 同步状态可取 waiting、running、done、skipped 或 failed。
 
 
 @dataclass
 class SyncResult:
-    status: str  # success / partial / failed
+    status: str  # 同步结果可取 success、partial 或 failed。
     trigger: str = "manual"
     committed: bool = False
     commit_hash: str | None = None
@@ -108,8 +108,8 @@ class GitSyncService:
         try:
             self._write_state(state)
         except OSError as exc:
-            # The push itself succeeded; a lost timestamp only causes one extra
-            # sync later, but a persistently unwritable state file must be visible.
+            # 推送已成功，时间戳丢失只会多触发一次同步。
+            # 如果状态文件持续无法写入，仍需报告。
             from .diagnostics import record_once
 
             record_once("degraded.gitsync_state", exc)

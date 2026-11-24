@@ -4,7 +4,7 @@
 --apply 落盘并自动验证（ID 集合一致、条数不变、无空正文）后提交留回滚点。
 
 用法：
-    uv run python scripts/migrate_vault_2026_10.py            # dry-run
+    uv run python scripts/migrate_vault_2026_10.py            # 预演
     uv run python scripts/migrate_vault_2026_10.py --apply    # 实际迁移
 """
 

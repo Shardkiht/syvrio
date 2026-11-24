@@ -317,11 +317,10 @@ def test_record_once_retries_when_event_could_not_be_queued(monkeypatch):
 
 
 def test_all_record_event_literals_are_allowlisted():
-    """record_event() silently drops event names absent from _EVENTS.
+    """record_event() 会静默丢弃未列入 _EVENTS 的事件名。
 
-    A new event that forgets the whitelist vanishes without any error, which is
-    exactly the failure mode behind the update misdiagnosis. This scan keeps the
-    two in sync; latency.* names are built dynamically and covered by prefix.
+    遗漏登记的新事件会无声消失，曾导致误判更新失败原因。
+    此检查保持事件名与允许列表一致，动态生成的 latency.* 名称按前缀覆盖。
     """
     import re
 

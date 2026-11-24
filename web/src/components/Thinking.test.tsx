@@ -5,9 +5,9 @@ import { Thinking } from './Thinking';
 
 type ThinkingSegment = Extract<Segment, { kind: 'thinking' }>;
 
-// jsdom reports zero for every box: drive the capped fold body with fake metrics.
-// The whole suite runs in one jsdom (singleThread), so the prototype overrides
-// must be removed again or every later file inherits these numbers.
+// jsdom 对所有元素都返回零尺寸，用模拟的测量值驱动有高度上限的折叠区域。
+// 全套测试共用一个单线程 jsdom。测试后须还原原型上的覆盖，
+// 避免后续文件继承这些尺寸。
 let metrics = { scrollHeight: 600, clientHeight: 220 };
 
 beforeEach(() => {
@@ -95,7 +95,7 @@ describe('thinking scroll', () => {
     );
     expect(element.scrollTop).toBe(100);
 
-    element.scrollTop = 680; // bottom of a 900px trace inside a 220px window
+    element.scrollTop = 680; // 在 220 像素视口中滚动到 900 像素思考记录的底部。
     fireEvent.scroll(element);
     metrics.scrollHeight = 1200;
     rerender(

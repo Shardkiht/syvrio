@@ -1,7 +1,7 @@
-"""Paired top-7/top-10 retrieval on the frozen synthetic corpus (no chat LLM).
+"""在固定合成语料上对比前 7 条和前 10 条检索结果，无需对话模型。
 
 python evals/retrieval_eval.py [--keyword] [--failures] [--json PATH]
-python -m evals.retrieval_eval --json -  # machine-readable report on stdout
+python -m evals.retrieval_eval --json -  # 向标准输出写入机器可读的报告
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ if __package__:
     from .retrieval_fixture import MODEL, guard_vector, run_metadata, seed, tool_search
     from .retrieval_metrics import LIMITS, RankedResults, paired_evaluation, validate_data
     from .sandbox import eval_environment
-else:  # Running the documented command puts evals/ on sys.path.
+else:  # 按文档运行脚本时，evals/ 已在 sys.path 中。
     from retrieval_fixture import MODEL, guard_vector, run_metadata, seed, tool_search
     from retrieval_metrics import LIMITS, RankedResults, paired_evaluation, validate_data
     from sandbox import eval_environment
@@ -97,8 +97,8 @@ def _run(root: Path, *, keyword_only: bool) -> dict:
         packaged_default = config.retrieval.default_limit
 
         def chat_search(query, limit):
-            # Both arms exercise an omitted limit. Build each schema with its respective
-            # in-memory default; no configuration file is written.
+            # 两组调用都省略 limit，各自用内存中的默认值构建工具定义，
+            # 避免写入配置文件。
             config.retrieval.default_limit = limit
             try:
                 if limit not in tool_registries:

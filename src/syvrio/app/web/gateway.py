@@ -1,4 +1,4 @@
-"""Public Web listener that forwards browser requests to the local resident."""
+"""将浏览器请求转发到本地常驻服务的网页监听入口。"""
 
 from __future__ import annotations
 
@@ -69,8 +69,8 @@ def create_gateway(
         headers = {
             key: value for key, value in request.headers.items() if key.lower() in _REQUEST_HEADERS
         }
-        # Authorize the narrow software-update route only through a loopback gateway
-        # (including the GitHub-authenticated share). Never forward a browser token.
+        # 软件更新接口仅接受来自回环网关的授权，包括经 GitHub 验证的分享入口。
+        # 不转发浏览器令牌。
         admin = path == "api/update" and host in {"localhost", "127.0.0.1", "::1"}
         if admin and token:
             headers["X-Syvrio-Token"] = token
@@ -81,7 +81,7 @@ def create_gateway(
         try:
             response = await client.send(outgoing, stream=True)
         except httpx.ConnectError:
-            # A restarted resident can have a new ephemeral port. Only replay safe requests.
+            # 常驻服务重启后临时端口可能变更，只重放可安全重复的请求。
             endpoint = await asyncio.to_thread(locate) if locate else None
             if endpoint:
                 upstream = httpx.URL(endpoint[0])

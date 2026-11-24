@@ -1,4 +1,4 @@
-"""Web imports for the shared resident protocol types."""
+"""网页端使用的共享常驻服务协议类型。"""
 
 from ...backend.api.models import (
     ActionResponse,

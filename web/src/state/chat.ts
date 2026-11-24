@@ -1,6 +1,6 @@
 import type { HistoryItem, HistoryResponse, StreamEvent } from '../types';
 
-/** Ordered segments keep Thinking / Tool / Result / Thinking / Answer intact. */
+/** 有序片段保留思考、工具、结果、再次思考及回答的顺序。 */
 export type Segment =
   | { kind: 'text'; id: string; content: string }
   | {
@@ -19,7 +19,7 @@ export type Segment =
       name: string;
       done: boolean;
       display: string;
-      /** null while the call is still running or when the backend sent no state. */
+      /** 调用仍在运行或后端未发送状态时为 null。 */
       ok: boolean | null;
       expanded: boolean;
     }
@@ -74,9 +74,9 @@ export function startTurn(state: ChatState, text: string, sessionId: string | nu
   };
 }
 
-/** The live assistant turn may no longer be last: a command result (info)
- *  can be inserted while the reply streams. Search backwards instead of
- *  assuming the tail, otherwise deltas split into a second assistant bubble. */
+/** 流式回复期间可能插入命令结果，当前助手回合未必在列表末尾。
+ *  从末尾向前查找，避免将后续增量拆成第二个助手气泡。
+ *   */
 function liveIndex(messages: ChatMessage[]): number {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
@@ -85,7 +85,7 @@ function liveIndex(messages: ChatMessage[]): number {
   return -1;
 }
 
-/** Locate (or create) the live assistant message for the current turn. */
+/** 定位当前回合正在生成的助手消息，若缺失则创建。 */
 function withLive(state: ChatState): { messages: ChatMessage[]; index: number } {
   const messages = [...state.messages];
   const index = liveIndex(messages);
@@ -120,7 +120,7 @@ function patchLive(
   const { messages, index } = withLive(state);
   const live = messages[index];
   if (live.role !== 'assistant') return state;
-  // Copy each segment so the reducer never mutates objects shared with prior state.
+  // 复制各片段，避免状态更新函数修改与先前状态共用的对象。
   messages[index] = { ...live, segments: update(live.segments.map((segment) => ({ ...segment }))) };
   return { ...state, messages, sessionId: state.sessionId };
 }
@@ -143,7 +143,7 @@ export function reduceChat(state: ChatState, event: StreamEvent): ChatState {
       if (!event.message_id) return base;
       const user = [...base.messages].reverse().find((message) => message.role === 'user');
       if (!user) return base;
-      // A history read can see the new message before its receipt has a saved ID.
+      // 历史记录可能已含新消息，但回执尚未带回其持久化 ID。
       const saved = base.messages.findIndex(m => m !== user && m.role === 'user' && m.savedId === event.message_id);
       const messages = saved < 0 ? base.messages : [
         ...base.messages.slice(0, saved), ...base.messages.slice(base.messages.indexOf(user)),
@@ -171,8 +171,7 @@ export function reduceChat(state: ChatState, event: StreamEvent): ChatState {
             phase,
             text: '',
             done: false,
-            // Reasoning never streams into view; the summary row is the only
-            // signal until the user chooses to expand it.
+            // 思考流默认只更新摘要行，用户主动展开后才会看到正文。
             collapsed: true,
             expanded: false,
             seconds: null,
@@ -250,8 +249,7 @@ export function reduceChat(state: ChatState, event: StreamEvent): ChatState {
             ...(segments[target] as Extract<Segment, { kind: 'tool' }>),
             done: true,
             display: event.text || '',
-            // The stream carries the outcome so a failure reads as Failed right
-            // away instead of waiting for a history reload.
+            // 事件流携带调用结果，客户端可立即显示失败，无需等待重载历史。
             ok: event.ok ?? null,
           };
         }
@@ -295,7 +293,7 @@ export function reduceChat(state: ChatState, event: StreamEvent): ChatState {
   }
 }
 
-/** Fold state lives on the segment itself, so tool rows and reasoning share one path. */
+/** 将折叠状态保存在片段上，使工具行和思考区共用同一套逻辑。 */
 export function toggleSegment(state: ChatState, segmentId: string): ChatState {
   return {
     ...state,
@@ -314,7 +312,7 @@ export function toggleSegment(state: ChatState, segmentId: string): ChatState {
   };
 }
 
-/** Command results are informational messages, not assistant turns. */
+/** 命令结果按提示消息展示，不创建助手回合。 */
 export function addInfo(state: ChatState, content: string): ChatState {
   return {
     ...state,
@@ -341,9 +339,8 @@ export function loadHistory(state: ChatState, history: HistoryResponse): ChatSta
     if (item.role === 'user') {
       messages.push({ id: item.id || nextId('u'), savedId: item.id, role: 'user', content: item.content, at: item.at, attachments: item.attachments });
     } else if (item.role === 'assistant') {
-      // Tool results are separate journal records that follow their call. Fold
-      // them back into the call so the transcript shows one entry per call
-      // instead of a pill plus a duplicate "name ok" line.
+      // 工具结果在日志中单独记录，位于对应调用之后。将它们合并回调用，
+      // 确保每次调用只显示一个条目，避免在摘要之外重复显示结果行。
       const results: (typeof history.items)[number][] = [];
       let look = index + 1;
       while (look < history.items.length && history.items[look].role === 'tool') {
@@ -364,8 +361,8 @@ export function loadHistory(state: ChatState, history: HistoryResponse): ChatSta
           seconds: item.reasoning.seconds,
         });
       }
-      // Match by tool name first: a missing or extra record must not shift
-      // every later result onto the wrong call. Order is only the fallback.
+      // 优先按工具名称配对，避免一条记录缺失或多出就导致后续结果全部错位。
+      // 只有无法按名称匹配时才按顺序回退。
       const used = new Set<number>();
       const takeResult = (name: string) => {
         const named = results.findIndex(
@@ -402,7 +399,7 @@ export function loadHistory(state: ChatState, history: HistoryResponse): ChatSta
     } else if (item.role === 'error') {
       messages.push({ id: item.id, role: 'info', content: `Reply failed: ${item.content}`, at: item.at });
     } else if (item.role === 'tool') {
-      // A tool record with no preceding assistant turn: keep it, folded.
+      // 缺少前序助手回合的工具记录仍保留，并默认折叠。
       messages.push({
         id: item.id || nextId('i'),
         role: 'info',

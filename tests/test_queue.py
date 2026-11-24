@@ -37,7 +37,7 @@ def test_interrupted_session_deletion_recovers_pending_on_reopen(tmp_path, commi
     queue.add(make_item("other"))
     original = queue.pending_path.read_bytes()
     _, revision = queue.deletion_preview(session.id)
-    # Reopen from the bytes that survive a process exit at either side of the JSONL unlink.
+    # 分别模拟进程在移除 JSONL 文件前后退出，从留存的字节重新打开。
     with monkeypatch.context() as mp:
         unlink = Path.unlink
 

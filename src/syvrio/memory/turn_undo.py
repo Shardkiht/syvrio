@@ -1,4 +1,4 @@
-"""Record reversible Vault file effects alongside each committed model-tool write."""
+"""提交模型工具写入时，一并记录本回合可撤回的 Vault 文件变更。"""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ _CHANGE_LOG = "records/memory-changes.jsonl"
 
 
 class TurnUndoError(SyvrioError, ValueError):
-    """A turn's file effects cannot safely be reversed."""
+    """无法安全撤回该回合的文件变更。"""
 
 
 def _bytes(path: Path) -> bytes | None:
@@ -130,8 +130,7 @@ class TurnFileJournal:
             files = data["files"]
             earlier = files.get(relative)
             if earlier and _digest(before) != earlier["after"]:
-                # Another turn wrote this same file while we were awaiting the
-                # model. Preserve its bytes and make this turn non-reversible.
+                # 等待模型时，另一回合写入了同一文件。保留文件现状，将本回合标记为不可撤回。
                 data["conflict"] = True
             references = data["references"]
             old, new = _fact_records(relative, before), _fact_records(relative, after)
@@ -146,8 +145,7 @@ class TurnFileJournal:
             if earlier:
                 revision = earlier
             elif relative == _CHANGE_LOG:
-                # The canonical event log is append-only. The original prefix can
-                # be verified and recovered without copying all history per turn.
+                # 权威事件日志只追加记录，校验并恢复原有前缀即可，无需在每回合复制全部历史。
                 revision = {"prefix_size": len(before or b""), "prefix_hash": _digest(before)}
             else:
                 revision = {
@@ -158,7 +156,7 @@ class TurnFileJournal:
             tx.write(self.path, json.dumps(data, ensure_ascii=False).encode("utf-8"))
 
     def plan(self) -> dict[Path, bytes | None]:
-        """Preflight every file and all surviving incoming references before undo."""
+        """撤回前检查每个文件和恢复后仍会保留的所有外部引用。"""
         with vault_transaction(self.paths):
             data = self._load()
             if data.get("conflict"):

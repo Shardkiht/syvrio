@@ -1,4 +1,4 @@
-"""HTTP responses for the resident application's client views."""
+"""常驻应用为客户端视图提供的 HTTP 响应。"""
 
 from __future__ import annotations
 
@@ -75,7 +75,7 @@ class ClientViews:
             projection = self._histories.get(snapshot.history_revision)
             if projection is None:
                 history = self.owner.project_history(snapshot.session, current=True)
-                # Closing a chat and distillation append bookkeeping without changing its displayed history.
+                # 关闭聊天和提炼记忆会追加内部记录，界面显示的历史保持相同。
                 content = history.model_dump_json(exclude={"current"}).encode()
                 version = hashlib.sha256(content).hexdigest()
                 projection = (version, history)

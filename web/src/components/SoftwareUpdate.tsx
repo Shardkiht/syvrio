@@ -59,7 +59,7 @@ export function SoftwareUpdate({ version, onChanged, checkOnOpen = false }: {
     }
   }, [watchUpdate]);
 
-  // Restore any running job first. Opening About manually only reads local status.
+  // 先恢复进行中的任务，用户主动打开“关于”时只读取本地状态。
   useEffect(() => {
     const controller = new AbortController();
     let timer: number;
@@ -126,7 +126,7 @@ export function SoftwareUpdate({ version, onChanged, checkOnOpen = false }: {
       if (error instanceof ApiError && error.status && error.status < 500) {
         setMessage(error.message);
       } else {
-        // A gateway restart can interrupt the receipt. Reconcile without repeating the POST.
+        // 网关重启可能中断回执，此时查询任务状态，避免重复提交 POST。
         setMessage('Checking whether the update started…');
         watchUpdate();
       }

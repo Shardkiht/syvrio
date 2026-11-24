@@ -18,7 +18,7 @@ _SHORT_FIELD = re.compile(
 
 
 def short_field(text: str) -> tuple[str, str] | None:
-    """Recognize a bounded, standalone field without guessing its meaning."""
+    """根据明确边界识别独立字段，避免猜测含义。"""
     match = _SHORT_FIELD.fullmatch(text.strip())
     if match and (value := match["value"].strip()):
         return match["label"].strip(), value
@@ -26,7 +26,7 @@ def short_field(text: str) -> tuple[str, str] | None:
 
 
 class MemoryEmotion(BaseModel):
-    """The user's own wording, separated by when the feeling was experienced."""
+    """按感受发生的时点分别保留用户原话。"""
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True, str_min_length=1)
 
@@ -166,7 +166,7 @@ class MemoryUpdate(BaseModel):
 
 
 class Candidate(MemoryDraft):
-    """A draft returned by document extraction, optionally requiring clarification."""
+    """从文档提取的草稿，可能需要进一步澄清。"""
 
     question: str | None = Field(default=None, min_length=1)
     related_ids: list[str] = Field(default_factory=list)
@@ -323,8 +323,8 @@ class Entry(BaseModel):
                     values.setdefault(name, node.value)
                 elif phase := _EMOTION_KEYS.get(node.key):
                     emotions.setdefault(phase, node.value)
-            # A manually written v2 record can omit companion fields. Project only
-            # understood scalar values without inventing type or provenance.
+            # 手写的 v2 记录可能省略配套字段。只投影已识别的标量值，
+            # 避免推测类型或来源。
             for key in ("event_time", "valid_from", "valid_to"):
                 try:
                     MemoryContext.validate_date(values.get(key))

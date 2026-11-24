@@ -44,7 +44,7 @@ export function useDeliveries(
     try {
       if (next.length) sessionStorage.setItem(key, JSON.stringify(next.map(({ files: _files, ...item }) => item)));
       else sessionStorage.removeItem(key);
-    } catch { /* An open tab still retains the full message and files. */ }
+    } catch { /* 已打开的标签页仍保留完整消息和文件。 */ }
   }, []);
   const discard = useCallback((id: string) => {
     const hasFiles = pending.current.some(item => item.id === id && item.attachments.length > 0);

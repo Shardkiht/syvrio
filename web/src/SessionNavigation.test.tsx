@@ -123,7 +123,7 @@ it.each(['confirmed', 'failed', 'superseded'] as const)(
     const file = new File(['test'], 'b.txt');
     fireEvent.change(input(), { target: { value: 'B draft' } });
     fireEvent.change(screen.getByLabelText('Select attachments'), { target: { files: [file] } });
-    // Keep the native textarea newline available while the switch is pending.
+    // 等待切换期间，文本框仍支持原生换行。
     expect(fireEvent.keyDown(input(), { key: 'Enter', shiftKey: true })).toBe(true);
     expect(input().readOnly).toBe(false);
     fireEvent.keyDown(input(), { key: 'Enter' });

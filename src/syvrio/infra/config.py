@@ -45,7 +45,7 @@ _keyring_error_reporter: Callable[[Exception], None] | None = None
 
 
 def set_keyring_error_reporter(reporter: Callable[[Exception], None] | None) -> None:
-    """Attach the active diagnostic sink without making configuration depend on logging."""
+    """接入当前诊断输出端，使配置层无需依赖日志实现。"""
     global _keyring_error_reporter
     _keyring_error_reporter = reporter
 
@@ -102,7 +102,7 @@ class LLMConfig:
     def litellm_model(self) -> str:
         provider = (self.provider or "").strip().lower()
         model = (self.model or "").strip()
-        # These endpoints use OpenAI's wire protocol, including namespaced model IDs.
+        # 这些接口遵循 OpenAI 的传输协议，包括带命名空间的模型 ID。
         if provider in ("", "custom", "openai-compatible", "siliconflow", "spark", "qianwen"):
             return model if model.startswith("openai/") else f"openai/{model}"
         if model.startswith(f"{provider}/"):
@@ -209,7 +209,7 @@ def read_api_key(env_name: str) -> str:
 class UsageLimit:
     daily: int = 0
     monthly: int = 0
-    # Constructor compatibility for existing callers; TOML writers emit new fields.
+    # 构造函数兼容已有调用方，写入 TOML 时使用新字段。
     period: str | None = None
     max_calls: int = 0
 
@@ -556,7 +556,7 @@ def load_config(path: Path | str | None = None) -> Config:
 
 
 def _apply_changes(local: dict, before: dict, after: dict, defaults: dict) -> None:
-    """Update only fields edited by this caller, leaving concurrent independent edits intact."""
+    """只更新本次调用编辑过的字段，保留并发写入的其他字段。"""
     for key in before.keys() | after.keys():
         if key in before and key in after and before[key] == after[key]:
             continue

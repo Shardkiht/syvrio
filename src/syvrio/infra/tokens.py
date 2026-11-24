@@ -15,8 +15,7 @@ def _encoding():
 
             _ENCODING = tiktoken.get_encoding("cl100k_base")
         except Exception as exc:
-            # Token counts silently drift to the char estimate; without an event
-            # the drift is impossible to attribute later.
+            # 降级后会按字符数估算词元数量，若不记录事件，事后就难以定位计数偏差。
             from .diagnostics import record_once
 
             record_once("degraded.tiktoken", exc)
@@ -43,7 +42,7 @@ def estimate_messages_tokens(messages: list[dict]) -> int:
         total += 4
         content = message.get("content")
         if isinstance(content, list):
-            # Estimate image blocks independently of their base64 transport encoding.
+            # 单独估算图片块，避免将传输用的 Base64 编码计入图片用量。
             total += sum(
                 1024 if part.get("type") == "image_url" else estimate_tokens(part.get("text", ""))
                 for part in content

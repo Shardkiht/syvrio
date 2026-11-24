@@ -422,7 +422,7 @@ def test_large_corpus_keeps_explicit_short_fields_without_local_model(tmp_path):
     hybrid = HybridRetriever(keyword, DistractingVector())
     for field, query in SHORT_CASES:
         if query in {"我是谁", "我叫什么名字"}:
-            continue  # These require query rewriting or semantic embeddings.
+            continue  # 这些查询需要改写或语义嵌入。
         assert f"short-{field}" in {hit.id for hit in hybrid.search(query, 3)}, query
 
 

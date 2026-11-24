@@ -1,4 +1,4 @@
-"""Generate a complete profile before proposing new hypotheses in resumable batches."""
+"""先生成完整画像，再分批提出新推断，支持从检查点继续。"""
 
 from __future__ import annotations
 
@@ -93,7 +93,7 @@ def _next_batch(
     if count:
         return rows[:count], [index + count, 0]
 
-    # A single oversized record resumes at a character boundary with the same source ID.
+    # 超长的单条记录从字符边界继续处理，并沿用同一来源 ID。
     row = rows[0]
     text = row["text"]
     end = _largest_prefix(len(text), lambda n: fits([{**row, "text": text[:n]}]))
@@ -123,7 +123,7 @@ class Dream:
             return {k: v for k, v in job.items() if k not in {"partial", "version", "cursor"}}
 
     def _generate(self, job, config, prompt, payload, schema):
-        # Only the resident that reserved this particular request can report it as running.
+        # 只有预留该请求的常驻服务可以将其报告为运行中。
         request = (job["id"], job["generation"], job["requests"])
         with self.service.write_lock:
             self._active_request = request
@@ -144,7 +144,7 @@ class Dream:
         with vault_transaction(self.paths) as tx:
             job = read_job(self.path) or {}
             if job.get("state") == "queued":
-                # Leave an already-due or in-flight checkpoint byte-for-byte intact.
+                # 检查点已到期或正在处理时，逐字节保留原文件。
                 if retry_now and job.get("retry_at", 0) > time.time():
                     job["retry_at"] = 0
                     tx.write(self.path, encode_job(job))
@@ -178,13 +178,13 @@ class Dream:
         return job["state"] == "queued" and job.get("retry_at", 0) <= time.time()
 
     def step(self, stop: Event) -> None:
-        """One model request, followed by an atomic publication/checkpoint."""
+        """执行一次模型请求，随后原子地发布结果或保存检查点。"""
         with vault_transaction(self.paths) as tx:
             job = read_job(self.path)
             if not job or job["state"] != "queued" or stop.is_set():
                 return
             facts, confirmed, existing, version = _state(self.service)
-            # Plan and send with one snapshot, even if the user changes models in flight.
+            # 规划和发送使用同一快照，即使用户在请求期间切换了模型。
             settings = self.service.config
             config = replace(settings, llm=replace(settings.llm), dream=replace(settings.dream))
             window = effective_context_window(config.llm, config.dream.context_window)
@@ -199,7 +199,7 @@ class Dream:
                     partial="",
                 )
             elif "cursor" not in job:
-                # Legacy batch numbers cannot locate a source in the token-based plan.
+                # 旧版批次号无法定位按词元规划的来源。
                 job.update(batch=0, cursor=[0, 0], partial="")
                 job.pop("retry_output_tokens", None)
             if job.get("model") != model:
@@ -231,7 +231,7 @@ class Dream:
                     job.update(state="paused", updated_at=utc_timestamp())
                     tx.write(self.path, encode_job(job))
                     return
-                # Reserve before sending: a failed, interrupted or stale call still uses its budget.
+                # 发送前先预留，失败、中断或过期的调用仍计入预算。
                 if job.get("retry_output_tokens", 0) > MAX_DREAM_OUTPUT_TOKENS:
                     job["retry_output_tokens"] = MAX_DREAM_OUTPUT_TOKENS
                 job["requests"] += 1
@@ -305,7 +305,7 @@ class Dream:
                 job["state"] = "paused"
             job.update(updated_at=utc_timestamp(), failures=0, retry_at=0)
             job.pop("error", None)
-            # The next batch in this phase uses the allowance that produced a valid response.
+            # 本阶段的下一批沿用上次成功取得有效响应时的额度。
             if job["phase"] != phase or job["state"] == "completed":
                 job.pop("retry_output_tokens", None)
             tx.write(self.path, encode_job(job))

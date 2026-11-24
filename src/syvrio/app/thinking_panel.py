@@ -10,7 +10,7 @@ from textual.widgets import Button, TextArea
 
 
 class ThinkingText(TextArea):
-    """Keep focus and wheel scrolling inside the reasoning pane."""
+    """将焦点和滚轮滚动限制在思考区域内。"""
 
     def focus(self, scroll_visible: bool = False) -> Self:
         return super().focus(scroll_visible=scroll_visible)
@@ -110,7 +110,7 @@ class ThinkingPanel(Vertical):
             return
         area = self._area
         if self._mode == "collapsed":
-            # Load the complete, redacted text on demand.
+            # 按需读取完整的脱敏文本。
             self._initial = text
             self._pending.clear()
         else:

@@ -1,4 +1,4 @@
-"""Bounded, staggered dispatch for one search's upstream requests."""
+"""对一次搜索的上游请求分批错峰调度，并限制并发数。"""
 
 from __future__ import annotations
 
@@ -95,7 +95,7 @@ class SearchRun:
                         blocking=False
                     ):
                         break
-                    # Prefer an independent provider before speculating on more requests to one already running.
+                    # 优先调度其他供应商，再考虑向已在处理请求的供应商追加调用。
                     active_names = {attempt.name for attempt in active.values()}
                     index = next(
                         (i for i, item in enumerate(self.pending) if item.name not in active_names),

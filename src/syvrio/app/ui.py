@@ -60,7 +60,7 @@ def update_progress_text(event: UpdateProgress) -> str:
 
 class _UpdateConsole(Console):
     def on_broken_pipe(self) -> None:
-        # Rich normally exits the process. Losing a progress reader must not stop an upgrade.
+        # Rich 默认会退出进程，进度读取端断开时仍须让升级继续。
         self.quiet = True
 
 
@@ -140,10 +140,9 @@ def print_hits(query: str, hits, center: bool = False) -> None:
 
 
 def fail(message: str, center: bool = False, *, exc: BaseException | None = None) -> NoReturn:
-    # The original exception only survives here: this function converts it into
-    # typer.Exit, and main() deliberately does not record exits, so without this
-    # the diagnostics log would show a bare Exit with no cause (the update
-    # misdiagnosis bug). Callers that already recorded a specific event pass no exc.
+    # 本函数会把原始异常转换为 typer.Exit，只有此处能保存原始原因。
+    # main() 会跳过主动退出，若未在转换前记录，日志就只剩 Exit，曾导致误判更新失败原因。
+    # 调用方已记录具体事件时，无需再传 exc。
     if exc is not None:
         context = click.get_current_context(silent=True)
         command = context.command.name if context is not None and context.command else "unknown"

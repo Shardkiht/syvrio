@@ -1,4 +1,4 @@
-"""Schemas for agent memory tools. All writes are validated and performed by MemoryService."""
+"""定义记忆工具的参数，由 MemoryService 校验并执行所有写入。"""
 
 from __future__ import annotations
 

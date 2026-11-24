@@ -1,4 +1,4 @@
-"""Stage bounded uploads locally, then bind the whole batch to one session message."""
+"""先在本地暂存符合限制的上传文件，再将整批文件绑定到同一条会话消息。"""
 
 from __future__ import annotations
 
@@ -128,7 +128,7 @@ class AttachmentBatch:
         self.folder.rmdir()
 
     def documents(self) -> dict[str, Path]:
-        # Position disambiguates two uploaded files with identical display names.
+        # 用位置区分显示名称相同的两个上传文件。
         return {
             f"{index}. {item.name}": self.folder / item.filename
             for index, item in enumerate(self.files, 1)

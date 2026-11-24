@@ -1,4 +1,4 @@
-"""Resident-owned memory work. Model calls run outside the Vault write lock."""
+"""常驻服务管理的记忆任务，模型调用在 Vault 写锁之外执行。"""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ class BackgroundMemory:
             name: threading.Event() for name in ("distillation", "context", "dream", "title")
         }
         self._threads: list[threading.Thread] = []
-        # Changed under the Vault write lock, including during admission to a model call.
+        # 在 Vault 写锁内修改，模型调用的准入阶段也遵循这一约定。
         self._working_sessions: dict[str, str] = {}
 
     def session_job(self, session_id: str) -> str | None:
@@ -154,7 +154,7 @@ class BackgroundMemory:
             else:
                 session_id = job["id"]
             if session_id:
-                # Workers open active sessions only. Archive is never scanned for jobs or evidence.
+                # 后台任务只打开活动会话，查找任务和证据时均跳过归档。
                 if not self.sessions.exists(session_id):
                     tx.write(path, None)
                     return True

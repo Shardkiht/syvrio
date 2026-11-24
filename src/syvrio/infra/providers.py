@@ -27,7 +27,7 @@ from .credentials import delete_password, set_password
 from .tokens import format_tokens
 
 
-# The setup wizard loads terminal UI dependencies only when it is used.
+# 配置向导只在实际运行时加载终端界面依赖。
 def ask(question):
     from .dialogs import ask as ask_dialog
 
@@ -244,7 +244,7 @@ def save_api_key(env_name: str, api_key: str) -> bool:
     except Exception as exc:
         from .diagnostics import record_once
 
-        # A third-party backend's exception may contain the submitted password.
+        # 第三方后端的异常可能包含刚提交的密码。
         record_once("degraded.keyring", f"Credential save failed ({type(exc).__name__}).")
         return False
 

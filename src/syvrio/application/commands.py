@@ -1,9 +1,8 @@
-"""Shared slash-command catalog and frontend-neutral dispatch.
+"""共享的斜杠命令目录和独立于前端的命令分发。
 
-No Textual, Rich, HTTP or web-framework imports. Both clients read the same
-command names, usage strings and capability markers, but each owns its own
-presentation. ``CommandUseCases`` reuses the existing Application use cases;
-it never reimplements agent, memory or session logic.
+此模块独立于 Textual、Rich、HTTP 和网页框架。两个客户端共用命令名称、用法与能力标记，
+各自负责呈现。CommandUseCases 复用应用层已有用例，
+智能体、记忆和会话逻辑由各自模块负责。
 """
 
 from __future__ import annotations
@@ -81,7 +80,7 @@ MODEL_REFRESH = frozenset({"refresh", "--refresh", "-r"})
 
 
 def is_command_form(name: str, argument: str) -> bool:
-    """Check fixed forms before confirmation, scheduling or client-side actions."""
+    """在确认、调度或触发客户端操作前校验固定命令格式。"""
     if name not in command_names():
         return False
     argument = argument.strip()
@@ -106,18 +105,17 @@ def is_command_form(name: str, argument: str) -> bool:
 
 
 def parse_command(line: str) -> tuple[str, str]:
-    """Return (name, argument). An unknown name is never treated as a message."""
+    """返回命令名和参数。未知命令不能当作普通消息发送。"""
     if not line.startswith("/"):
         return "", line.strip()
     head, _, argument = line.partition(" ")
     return head[1:].lower(), argument.strip()
 
 
-# ---------- Web capability markers ----------
-# support: "server" (Web backend executes it), "client" (browser-only UI),
-# "unsupported" (explicit reason shown to the user; never silently ignored).
-# confirm: the browser must ask first AND the backend must independently
-# re-check the confirmed flag before any side effect.
+# 网页端能力标记
+# support 为 server 时由后端执行，client 表示仅由浏览器处理，
+# unsupported 必须向用户说明原因。
+# 需要确认的操作先由浏览器询问用户，后端在产生任何副作用前再次独立核验确认标记。
 
 SERVER = "server"
 CLIENT = "client"
@@ -195,7 +193,7 @@ class WebCommandInfo:
 
 
 def web_command_catalog() -> tuple[WebCommandInfo, ...]:
-    """One stable catalog for completion, the palette and /help."""
+    """补全、命令面板与 /help 共用的命令目录。"""
     rows: list[WebCommandInfo] = []
     for name, usage, description in SLASH_COMMANDS:
         capability = WEB_CAPABILITIES[name]
@@ -221,9 +219,9 @@ MAX_ROWS = 20
 
 @dataclass(frozen=True)
 class CommandResult:
-    """Stable result shape; clients decide how to render it."""
+    """返回值结构固定，由客户端决定如何展示。"""
 
-    status: str  # ok / client / unsupported / unknown / busy / confirm_required / error
+    status: str  # 结果状态可取 ok、client、unsupported、unknown、busy、confirm_required 或 error。
     command: str
     intent: str = ""
     message: str = ""
@@ -269,7 +267,7 @@ def _pending_data(items) -> dict[str, Any]:
 
 
 class CommandUseCases:
-    """Dispatch slash commands through existing Application use cases only."""
+    """使用应用层已有用例分发斜杠命令。"""
 
     def __init__(self, application: ApplicationService) -> None:
         self.app = application
@@ -278,8 +276,8 @@ class CommandUseCases:
     def catalog(self) -> tuple[WebCommandInfo, ...]:
         return web_command_catalog()
 
-    # Reads, interrupts, and settings for subsequent turns remain available
-    # while a session is generating. Mutating forms are checked individually.
+    # 会话生成期间仍允许读取、打断和调整后续回合的设置，
+    # 会修改状态的命令按具体用法判断。
     BUSY_READ_ONLY = frozenset(
         {
             "help",
@@ -299,8 +297,7 @@ class CommandUseCases:
     )
     TURN_SETTINGS = frozenset({"model", "think", "context"})
 
-    # Side-effecting command forms need a server-side confirmation even when
-    # the browser dialog was already shown (the dialog is not an auth boundary).
+    # 涉及写入等副作用时，后端必须核验确认标记。浏览器中的确认弹窗只负责交互。
     WRITE_ACTIONS = {
         **REVIEW_ACTIONS,
         "git": frozenset({"sync"}),
@@ -327,10 +324,10 @@ class CommandUseCases:
 
     @classmethod
     def is_mutating(cls, name: str, argument: str) -> bool:
-        """Whether a command *form* writes data or runs a long job.
+        """判断当前命令用法是否写入数据或运行耗时任务。
 
-        The busy gate and the Web command mutex key off the form, not the name:
-        /dream status is read-only while /dream run submits a reflection job.
+        忙碌检查与网页命令互斥均按具体用法判断。
+        例如 /dream status 仅读取状态，/dream run 会提交反思任务。
         """
         if not is_command_form(name, argument):
             return False
@@ -399,7 +396,7 @@ class CommandUseCases:
                         "edit_text": proposed or None,
                     },
                 )
-            # The server re-checks confirmation independently of any browser dialog.
+            # 服务器独立核验确认标记。
             if (capability.confirm or self._needs_confirmation(name, argument)) and not confirmed:
                 if name == "dream":
                     return CommandResult(
@@ -421,7 +418,7 @@ class CommandUseCases:
                     message=f"Confirm this action: /{name} {description}".strip()
                     + ". This changes stored data and cannot be undone.",
                 )
-            # A failed review receipt must leave the decision available for retry.
+            # 审核回执失败时保留原决定，以便重试。
             review_write = name in {"pending", "inferences"} and self.is_mutating(name, argument)
             with (
                 vault_transaction(self.app.memory.service.paths) if review_write else nullcontext()
@@ -430,7 +427,7 @@ class CommandUseCases:
         except TurnUndoError as exc:
             record_event("undo.failed", exc)
             return CommandResult("error", name, capability.intent, message=str(exc))
-        except Exception as exc:  # noqa: BLE001 - never leak a traceback to the browser
+        except Exception as exc:  # noqa: BLE001 - 避免向浏览器泄露异常调用栈
             record_event("command.failed", exc)
             return CommandResult(
                 "error", name, capability.intent, message=f"Command failed ({type(exc).__name__})."
@@ -450,8 +447,8 @@ class CommandUseCases:
             return CommandResult("ok", name, "help", "\n".join(lines))
 
         if name == "new":
-            # Reuse the runtime's lazy start: the session file is written with the
-            # first message, so an abandoned "new" leaves nothing on disk.
+            # 复用运行时的延迟创建机制，发送首条消息时才写入会话文件，
+            # 放弃新会话不会留下空文件。
             conversation.switch(None)
             return CommandResult(
                 "ok",
@@ -617,7 +614,7 @@ class CommandUseCases:
                         "commit_hash": result.commit_hash,
                     },
                 )
-            # Whitelist fields: never echo local paths or commit content.
+            # 只返回明确允许的字段，避免回显本机路径或提交内容。
             state = application.git.status()
             keys = (
                 "initialized",
@@ -718,8 +715,7 @@ class CommandUseCases:
         refresh = argument.lower() in MODEL_REFRESH
 
         if refresh:
-            # The TUI refreshes the catalog from a background worker. The Web
-            # client has no worker, so an explicit `/model refresh` does it.
+            # TUI 由后台线程刷新模型目录，网页端通过显式的 /model refresh 刷新。
             try:
                 catalog = settings.model_catalog(refresh=True)
                 options = settings.model_options(catalog, capabilities=False)
@@ -746,8 +742,8 @@ class CommandUseCases:
             }
             for option in options[:MAX_ROWS]
         ]
-        # A cold process cache, or a provider without a /models endpoint (Spark
-        # MaaS, local servers), must never produce an empty, meaningless picker.
+        # 当进程缓存为空或供应商没有 /models 接口（如星火 MaaS 和本地服务）时，
+        # 选择器仍要提供可用选项。
         if not any(
             item["provider"] == llm.provider and item["model"] == llm.model for item in payload
         ):
@@ -762,12 +758,11 @@ class CommandUseCases:
             )
 
         if argument and not refresh:
-            # Applying a choice is not a list: omit `options` so the browser
-            # does not reopen the picker immediately after the selection.
+            # 应用选择后省略 options，避免浏览器立即再次打开选择器。
             provider, _, model = argument.partition("/")
             known = any(option.provider == provider and option.model == model for option in options)
-            # Providers with no /models list still allow switching by explicit
-            # ID on the configured provider; unknown providers stay rejected.
+            # 已配置的供应商即使没有 /models 列表，也可通过明确的模型 ID 切换。
+            # 未知供应商仍会被拒绝。
             if not known and provider != llm.provider:
                 return CommandResult(
                     "error",
@@ -826,7 +821,7 @@ class CommandUseCases:
                 data={"current": current, "options": options},
             )
         value = argument.lower()
-        # The empty option is rendered as "default" in the browser picker.
+        # 浏览器选择器将空选项显示为“default”。
         if value == "default" and "" in options:
             value = ""
         if value not in options:

@@ -1,4 +1,4 @@
-"""Seed a synthetic Vault and measure the recall tool's serialized evidence."""
+"""填充合成 Vault，评估召回工具序列化后提供的证据。"""
 
 from __future__ import annotations
 
@@ -69,7 +69,7 @@ def require_healthy(vector) -> None:
 
 @contextmanager
 def guard_vector(vector) -> Iterator[Callable[[], None]]:
-    """Reject a run even if a later successful query clears the degradation flag."""
+    """即使后续查询成功并清除了降级标记，该次运行仍判为无效。"""
     if vector is None:
         yield lambda: None
         return
@@ -101,6 +101,6 @@ def tool_search(tools, query: str, frozen_text: dict[str, str]) -> RankedResults
     outcome = tools.execute("recall", {"query": query})
     if not outcome.ok:
         raise RuntimeError(f"recall failed for {query!r}: {outcome.display}")
-    # Parse the serialized evidence sent as the tool message, not the internal data.
+    # 解析作为工具消息发送的序列化证据，以覆盖模型实际收到的内容。
     results = json.loads(outcome.content)["results"]
     return RankedResults(evidence_ids(results, frozen_text), estimate_tokens(outcome.content))

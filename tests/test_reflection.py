@@ -136,7 +136,7 @@ def test_all_sources_contribute_across_profile_batches_before_publication(servic
     assert engine.status()["state"] == "paused"
     assert not service.profile.path.exists()
     restarted = Dream(service)
-    # Changing the chat budget between batches leaves the Dream cursor intact.
+    # 在批次间更改聊天预算不会使 Dream 游标失效。
     service.config.chat.context_window *= 2
     service.config.chat.default_budget = 20
     assert restarted.request() == job
@@ -535,7 +535,7 @@ def test_dream_keeps_bounded_retry_settings_for_remaining_batches_in_same_phase(
         engine.step(Event())
     engine.failed(truncated.value, job_id, engine.status()["generation"])
     assert engine.due() and engine.status()["remaining_requests"] == 1
-    # A checkpoint from an older build may already exceed the current cap.
+    # 旧版本留下的检查点可能已超过当前上限。
     checkpoint = read_job(engine.path)
     checkpoint["retry_output_tokens"] = 47332
     engine.path.write_bytes(encode_job(checkpoint))

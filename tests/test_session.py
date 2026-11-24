@@ -67,13 +67,13 @@ def test_title_job_survives_restart_and_uses_first_valid_exchange(service, monke
             "tool_calls": [{"name": "recall"}],
         },
         {"type": "tool", "id": "t1", "content": "tool result"},
-        {"type": "assistant", "content": "actual answer"},  # Older records can lack an ID.
+        {"type": "assistant", "content": "actual answer"},  # 旧记录可能没有 ID。
         {"type": "message", "role": "user", "id": "m3", "content": "later topic"},
         {"type": "assistant", "id": "a4", "content": "later answer"},
     ):
         store.append(session, item)
         store.append(untouched, item)
-    # Listing or restarting does not schedule historical conversations.
+    # 列出会话或重启服务都不会调度历史对话。
     assert len(store.list()) == 2 and not backend.pending_titles()
     backend.request_title(session.id)
     restarted = BackgroundMemory(service)

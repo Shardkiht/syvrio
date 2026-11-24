@@ -1,4 +1,4 @@
-"""Shared update operations for clients of a managed Syvrio installation."""
+"""供受管 Syvrio 安装的各客户端共用的软件更新操作。"""
 
 from __future__ import annotations
 
@@ -53,7 +53,7 @@ def _status(root: Path) -> dict:
     except FileNotFoundError:
         return {"state": "idle", "message": ""}
     if result["state"] == "running" and update._service_state(UNIT) in {"inactive", "failed"}:
-        # The worker can finish just before systemd reports its unit as inactive.
+        # 后台任务可能恰好在 systemd 将单元标记为未运行前完成。
         result = json.loads((root / "job.json").read_bytes())
         if result["state"] == "running":
             return _save(root, "failed", "The previous update was interrupted.")
@@ -90,9 +90,9 @@ def start(version: str, paths: SyvrioPaths) -> dict[str, str]:
     with VaultLock(root / "submit.lock"):
         if _status(root)["state"] == "running":
             raise update.UpdateError("busy", "An update is already running.")
-        # Only a locally configured installation may launch a job. The worker checks
-        # the exact confirmed version against official PyPI under the shared CLI lock.
-        # A separate user unit survives when the updater stops the managed Web unit.
+        # 只有本地已配置的安装可启动任务。工作进程持有与 CLI 共用的锁，
+        # 并向官方 PyPI 核验用户确认的确切版本。
+        # 使用独立的用户单元，使更新器停止受管网页单元后任务仍能运行。
         command = [
             "systemd-run",
             "--user",
@@ -137,7 +137,7 @@ def start(version: str, paths: SyvrioPaths) -> dict[str, str]:
                 capture_output=True,
             )
         except subprocess.TimeoutExpired:
-            # The systemd manager may already own the job. Keep its state for polling.
+            # systemd 可能已接管任务，保留状态供轮询使用。
             raise
         except (OSError, subprocess.CalledProcessError):
             _save(root, "failed", "Failed to start the update service.")

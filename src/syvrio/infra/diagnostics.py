@@ -102,12 +102,12 @@ _FIELDS = frozenset(
         "cursor_x",
         "cursor_y",
         "elapsed_ms",
-        # String state: which CLI command produced a cli.failed event.
+        # 字符串状态用于记录触发 cli.failed 的 CLI 命令。
         "command",
     }
 )
-# String-valued state keys; every other whitelisted key stays numeric/bool so
-# free-form text can never leak into latency-adjacent state by accident.
+# 仅列出的状态键可以保存字符串，其他允许的键只接受数值或布尔值，
+# 避免自由文本意外进入耗时诊断数据。
 _STR_FIELDS = frozenset({"command"})
 _LATENCY_FIELDS = frozenset(
     {
@@ -136,12 +136,12 @@ _RECORDED_ONCE: set[str] = set()
 
 class _QuietFileHandler(RotatingFileHandler):
     def handleError(self, record: logging.LogRecord) -> None:
-        # Logging must neither interrupt chat nor dump payloads onto MCP stdout.
+        # 记录日志不能打断聊天，也不能把消息内容写到 MCP 标准输出。
         pass
 
 
 def start_diagnostics(config_file: Path | None = None) -> Path | None:
-    """Start bounded, background-only diagnostics inside Runtime."""
+    """在 Runtime 内启动由后台处理且有队列上限的诊断记录。"""
     global _listener, _handler, _queue, _path
     with _lock:
         if _listener is not None:
@@ -182,15 +182,15 @@ def start_diagnostics(config_file: Path | None = None) -> Path | None:
 
 
 def stop_diagnostics() -> None:
-    """Drain queued events before closing the file; safe to call repeatedly."""
+    """关闭文件前排空事件队列，可以重复调用。"""
     global _listener, _handler, _queue, _path
     with _lock:
         if _listener is None:
             return
         set_keyring_error_reporter(None)
         record_event("app.stop")
-        # QueueListener.stop uses put_nowait for its sentinel: drain first so a
-        # full queue cannot prevent shutdown. No producers enqueue under this lock.
+        # QueueListener.stop 使用 put_nowait 放入结束标记。先排空队列，避免满队列阻碍关闭。
+        # 持锁期间，生产者无法向队列写入。
         _queue.join()
         _listener.stop()
         for handler in _listener.handlers:
@@ -199,7 +199,7 @@ def stop_diagnostics() -> None:
 
 
 def _safe_traceback(error: BaseException | str) -> str:
-    """Retain chained tracebacks and reasons, without locals or credentials."""
+    """保留异常链、调用栈和原因，排除局部变量与凭据。"""
     detail = (
         error
         if isinstance(error, str)
@@ -224,7 +224,7 @@ def _safe_traceback(error: BaseException | str) -> str:
 def record_event(
     event: str, error: BaseException | str | None = None, **state: bool | int | float | str
 ) -> bool:
-    """Return whether the allowlisted event was queued for writing."""
+    """返回允许记录的事件是否已排队等待写入。"""
     if event not in _EVENTS:
         return False
     with _lock:
@@ -265,15 +265,15 @@ def record_event(
         try:
             _queue.put_nowait(record)
         except Full:
-            return False  # Slow disks must not block the UI.
+            return False  # 磁盘写入缓慢时仍须保持界面响应。
         return True
 
 
 def record_once(event: str, error: BaseException | str) -> None:
-    """Record a degradation event at most once per process.
+    """同一降级事件在每个进程内最多记录一次。
 
-    Fallback paths (broken keyring backend, tiktoken download failure) sit on
-    hot code paths; without the guard a persistent failure would flood the log.
+    密钥环故障、tiktoken 下载失败等回退可能发生在频繁调用的路径上。
+    需要去重以免持续故障刷满日志。
     """
     with _lock:
         if event not in _RECORDED_ONCE and record_event(event, error):

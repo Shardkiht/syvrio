@@ -1,4 +1,4 @@
-"""Real HTTP, process discovery, multi-client queue/replay and terminal acceptance."""
+"""验证真实 HTTP、进程发现、多客户端排队与重放，以及终端客户端。"""
 
 from __future__ import annotations
 
@@ -38,7 +38,7 @@ def configuration(root: Path) -> Path:
 
 @pytest.fixture
 def headless_config(tmp_path, monkeypatch):
-    # Both startup entry points must work when even importing the Web package fails.
+    # 即使网页包无法导入，两个启动入口也必须可用。
     guard = tmp_path / "headless"
     guard.mkdir()
     (guard / "sitecustomize.py").write_text(
@@ -143,8 +143,7 @@ def test_automatic_process_discovery_cli_mcp_and_vault_ownership(tmp_path, headl
 
         asyncio.run(review())
 
-        # A different Runtime, even though it owns a distinct Runtime lock,
-        # must still acquire the same OS lock for the physical Vault.
+        # 不同 Runtime 各有独立的锁，但访问同一物理 Vault 时仍须获取同一把系统锁。
         other = tmp_path / "other-runtime"
         check = subprocess.run(
             [

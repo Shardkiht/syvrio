@@ -1,4 +1,4 @@
-/** Theme preference: follow the browser (default) or pin light/dark. */
+/** 主题可跟随浏览器（默认），也可固定使用浅色或深色。 */
 
 export type ThemeMode = 'auto' | 'light' | 'dark';
 
@@ -12,7 +12,7 @@ export function readTheme(): ThemeMode {
     const value = window.localStorage.getItem(STORAGE_KEY);
     if (value === 'light' || value === 'dark' || value === 'auto') return value;
   } catch {
-    // Private mode or blocked storage: fall back to the system preference.
+    // 隐私模式或存储不可用时沿用系统主题。
   }
   return 'auto';
 }
@@ -22,14 +22,12 @@ function systemPrefersDark(): boolean {
 }
 
 /**
- * Apply a preference to the document.
+ * 将主题偏好应用到当前文档。
  *
- * `auto` removes the override entirely so the `prefers-color-scheme` media
- * query in styles.css decides; an explicit mode wins over the media query via
- * `:root[data-theme=...]`. The address-bar colour follows the same decision.
+ * 自动模式移除主题覆盖，由 styles.css 中的 prefers-color-scheme 决定配色。
+ * 明确选定主题时，:root[data-theme=...] 优先于媒体查询，地址栏也同步使用所选颜色。
  *
- * `persist: false` is for the boot path: restoring what was already stored must
- * not write a value the user never chose.
+ * 启动时以 persist: false 恢复原有偏好，避免写入用户从未选择的值。
  */
 export function applyTheme(mode: ThemeMode, persist = true): void {
   const root = document.documentElement;
@@ -43,11 +41,11 @@ export function applyTheme(mode: ThemeMode, persist = true): void {
   try {
     window.localStorage.setItem(STORAGE_KEY, mode);
   } catch {
-    // Persisting is best effort; the current view is already correct.
+    // 保存失败也可继续使用当前视图已生效的主题。
   }
 }
 
-/** Notify when the OS switches scheme, so `auto` can keep the chrome in sync. */
+/** 系统切换配色时发出通知，使自动模式下的界面同步更新。 */
 export function watchSystemTheme(onChange: () => void): () => void {
   const media = window.matchMedia?.('(prefers-color-scheme: dark)');
   if (!media?.addEventListener) return () => {};

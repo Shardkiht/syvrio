@@ -1,4 +1,4 @@
-"""Check both client boundaries and restart handover without altering an installation."""
+"""核验两个客户端边界和重启交接，保留现有安装。"""
 
 from __future__ import annotations
 

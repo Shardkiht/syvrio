@@ -44,7 +44,7 @@ REWRITE_PROMPT = """为当前问题生成用于检索个人记忆的独立关键
 
 COMBINED_QUERY_MAX_CHARS = 400
 REWRITE_MAX_TOKENS = 120
-SPARK_REWRITE_MAX_TOKENS = 600  # Spark's completion cap includes its reasoning.
+SPARK_REWRITE_MAX_TOKENS = 600  # 星火的输出上限包含思考内容。
 REWRITTEN_QUERY_MAX_CHARS = 200
 REWRITE_TIMEOUT = DEFAULTS["recall"]["rewrite_timeout"]
 _REWRITE_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="syvrio-rewrite")
@@ -85,7 +85,7 @@ def should_auto_recall(text: str, recent_texts: list[str]) -> bool:
 
 
 def direct_recall_field(text: str) -> str:
-    """Only a standalone, explicitly named field can bypass contextual rewriting."""
+    """仅当查询独立且明确点名字段时，才跳过上下文改写。"""
     match = _DIRECT_FIELD_RE.fullmatch(normalize("NFKC", text).casefold().strip())
     return " ".join(match["field"].split()) if match else ""
 
@@ -149,8 +149,8 @@ class RecallQueryBuilder:
         except BaseException:
             _REWRITE_SLOTS.release()
             raise
-        # If the SDK is still unwinding a timed-out request, it keeps its slot
-        # until it actually exits. Slow rewrites cannot build up a queue.
+        # SDK 在超时后可能仍在清理请求，实际退出后才释放名额，
+        # 避免缓慢的改写请求积压。
         future.add_done_callback(lambda _: _REWRITE_SLOTS.release())
         try:
             response = future.result(timeout=timeout)

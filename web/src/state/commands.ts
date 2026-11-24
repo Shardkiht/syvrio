@@ -1,4 +1,4 @@
-/** Pure completion / palette logic over the shared server command catalog. */
+/** 共享服务端命令目录的补全和命令面板逻辑，无外部副作用。 */
 import { formatLocalTimestamp } from '../time';
 import type { CommandInfo, CommandResponse } from '../types';
 
@@ -10,7 +10,7 @@ export interface Suggestion {
   isSubcommand: boolean;
 }
 
-/** Prefix and sub-command completion. An argument in progress shows nothing. */
+/** 按前缀及子命令补全，正在输入参数时隐藏候选。 */
 export function suggestionsFor(value: string, catalog: CommandInfo[]): Suggestion[] {
   if (!value.startsWith('/')) return [];
   const inner = value.slice(1);
@@ -145,7 +145,7 @@ export function panelFor(result: CommandResponse): CommandPanel | null {
       return { kind: 'topics', document: { topic: data.topic, entries: data.entries as TopicDocument['entries'] } };
     }
     if (Array.isArray(data.topics)) return { kind: 'topics', topics: data.topics as TopicListItem[] };
-    // Earlier resident versions return the same topic keys without display metadata.
+    // 旧版常驻服务返回同样的主题键，但不带用于展示的元数据。
     if (Array.isArray(data.names)) return {
       kind: 'topics',
       topics: data.names.filter((name): name is string => typeof name === 'string').map(topic => ({ topic, title: '' })),
@@ -319,7 +319,7 @@ export function canOpenDuringSelection(line: string) {
   return !!readPanelTitle(line) || ['/pending', '/inferences', '/topics', '/model', '/think', '/context'].includes(line.trim().toLowerCase());
 }
 
-// Failed writes offer their read-only views. Retrying a mutation requires a fresh choice.
+// 写入失败后可以打开只读视图，重新写入须由用户再次选择。
 const READ_VIEWS = new Set([
   '/status', '/setup', '/model', '/think', '/context', '/pending', '/inferences', '/sessions',
   '/summary', '/git', '/dream status',

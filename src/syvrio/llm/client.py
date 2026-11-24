@@ -24,7 +24,7 @@ class ChatModelError(SyvrioError, RuntimeError):
 
 
 class GenerationCancelled(ChatModelError):
-    """The user stopped the current generation; never retry it."""
+    """用户主动停止了本次生成，不应重试。"""
 
 
 ModelCatalog = dict[str, tuple[str, ...] | None]
@@ -80,7 +80,7 @@ def _reasoning_fields(message) -> tuple[str, dict]:
 
 
 def _reasoning_route(config: LLMConfig) -> tuple[str, str]:
-    """Only verified request shapes can receive session reasoning."""
+    """只有已验证支持相应请求格式的接口才能接收会话思考内容。"""
     provider = config.provider.strip().lower()
     endpoint = (config.base_url or "").rstrip("/")
     url = urlsplit(endpoint)
@@ -93,7 +93,7 @@ def _reasoning_route(config: LLMConfig) -> tuple[str, str]:
         if model in {"qwen4-max", "qwen3.8-max", "qwen3.8-max-0902"}:
             policy = "history"
         elif model == "glm-5.3":
-            # GLM clears prior turns by default but retains the current tool chain.
+            # GLM 默认清除之前回合的思考内容，但保留当前工具调用链。
             policy = "turn"
         else:
             return "", ""
@@ -103,7 +103,7 @@ def _reasoning_route(config: LLMConfig) -> tuple[str, str]:
         and url.hostname in {"dashscope.aliyuncs.com", "dashscope-intl.aliyuncs.com"}
         and config.litellm_model() == "dashscope/deepseek-v4.1-flash-1017"
     ):
-        # Limit the compatible endpoint to the active tool chain.
+        # 对兼容接口仅发送当前活动工具调用链的思考内容。
         policy = "turn"
     else:
         return "", ""
@@ -261,7 +261,7 @@ def model_metadata(model: str) -> dict:
 
 
 def effective_context_window(llm: LLMConfig, configured: int) -> int:
-    """Bound a configured budget by the model's advertised input capacity."""
+    """按模型声明的输入容量约束配置的上下文预算。"""
     try:
         maximum = int(model_metadata(llm.litellm_model()).get("max_input_tokens") or 0)
     except (ValueError, TypeError):
@@ -308,7 +308,7 @@ def fetch_provider_models(
 
 
 def provider_reasoning_levels(config: LLMConfig) -> tuple[str, ...] | None:
-    """Return the active model's advertised choices, or None for an unspecified list."""
+    """返回当前模型声明的可选档位，未提供列表时返回 None。"""
     levels = _provider_catalog(config, timeout=3.0).get(config.model)
     if (
         levels is None
@@ -357,7 +357,7 @@ def clear_model_cache() -> None:
 
 def _advertised_levels(model, *, spark: bool) -> tuple[str, ...] | None:
     if spark:
-        # Spark requests use thinking.type, a different control from reasoning_effort.
+        # 星火通过 thinking.type 控制思考，有别于 reasoning_effort。
         declared = _field(_field(model, "thinking"), "supported_types")
     else:
         declared = _field(_field(model, "effort"), "supported_levels")
@@ -466,7 +466,7 @@ class LiteLLMChatModel:
                 raise ChatModelError(
                     "This model cannot read images. Select a vision-capable model."
                 )
-        # Qianwen Max also expects previous assistant reasoning in ordinary follow-ups.
+        # 千问 Max 在普通追问时也需要之前助手消息中的思考内容。
         if not tools and not self.config.uses_qianwen_api:
             source = ""
         if on_delta is None and on_reasoning is None:
@@ -523,7 +523,7 @@ class LiteLLMChatModel:
         return parser.finish()
 
     async def _cancellable_stream(self, request, parser, litellm, cancel: Event) -> AssistantTurn:
-        # Async transport cancellation also interrupts waiting for the first token.
+        # 取消异步传输也能打断等待首个词元的过程。
         async def consume() -> AssistantTurn:
             async with AsyncExitStack() as resources:
                 kwargs = request

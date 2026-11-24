@@ -96,7 +96,7 @@ class JsonApiClient:
                     raise error
         kind = _status_kind(response.status_code)
         if kind is not None:
-            # Only a bounded machine code is exposed, never the raw error body.
+            # 仅公开长度受限的机器错误码，避免泄露原始错误正文。
             code = safe_error_code(payload) if isinstance(payload, dict) else ""
             detail = f"HTTP {response.status_code}" + (f" code={code}" if code else "")
             raise ProviderError(self.provider_name, kind, detail, code=code)

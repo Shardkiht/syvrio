@@ -1,4 +1,4 @@
-"""Read the most recently published profile; Dream owns generation."""
+"""读取最近发布的画像，生成工作由 Dream 负责。"""
 
 from __future__ import annotations
 

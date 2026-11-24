@@ -1,4 +1,4 @@
-"""Crash-recoverable groups of local Vault and background-job writes."""
+"""管理一组本地 Vault 和后台任务写入，支持进程崩溃后恢复。"""
 
 from __future__ import annotations
 
@@ -43,7 +43,7 @@ def _owner():
 
 
 class VaultTransaction:
-    """Write through under the Vault lock. Removing the journal commits the entire group."""
+    """在 Vault 锁内直接写入，移除事务日志即表示整组变更已提交。"""
 
     def __init__(self, paths: SyvrioPaths) -> None:
         self.owner = _owner()
@@ -118,8 +118,8 @@ class VaultTransaction:
                 "before": before,
             }
         record = self.files[key]
-        # The process can die on either side of the rename. Accept only those two
-        # revisions or the original (if an earlier recovery already restored it).
+        # 进程可能在重命名前后退出，只接受对应的两个版本，
+        # 或在之前的恢复已还原文件时接受原版。
         record.update(previous=before, after=_digest(payload))
         self._save()
         if payload is None:

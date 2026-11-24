@@ -1,4 +1,4 @@
-"""Upgrade the old archive layout under the Vault and Git locks."""
+"""在持有 Vault 和 Git 锁时升级旧版归档布局。"""
 
 from __future__ import annotations
 
@@ -43,7 +43,7 @@ def migrate_archive(vault: Path) -> None:
                 f"Resolve the archive filename conflict before migrating: {target}"
             )
         moves[target] = source
-    # Check every destination before moving the first file. Renames are retryable.
+    # 移动第一个文件前先检查全部目标，重命名支持重试。
     for target in moves:
         if (
             target.exists()

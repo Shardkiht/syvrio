@@ -1,4 +1,4 @@
-"""Session channel owned by the resident backend and shared across clients."""
+"""常驻后端管理、多个客户端共享的会话通道。"""
 
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ TOOL_CONTENT_LIMIT = 300
 
 
 class APIError(SyvrioError):
-    """Expected failure with a stable error code for API clients."""
+    """为 API 客户端提供稳定错误码的预期异常。"""
 
     def __init__(self, code: str, message: str, status: int = 400) -> None:
         super().__init__(message)
@@ -74,7 +74,7 @@ class APIError(SyvrioError):
 
 
 class APIChannel(ResidentChannel):
-    """Adapt a resident conversation and its shared services to the shared HTTP protocol."""
+    """将常驻对话及其共享服务接入统一 HTTP 协议。"""
 
     def startup(self, ownership: BackendLease | None = None) -> None:
         try:
@@ -82,7 +82,7 @@ class APIChannel(ResidentChannel):
         except ConversationError as exc:
             raise APIError.from_conversation(exc) from exc
 
-    # ---------- queries ----------
+    # 查询
 
     def health(self, static_ready: bool = False) -> HealthResponse:
         busy, turn_id = self.scheduling.activity()
@@ -102,7 +102,7 @@ class APIChannel(ResidentChannel):
             self._validate_session_id(session_id)
             current = self._runtime.session
             if current is not None and current.id == session_id:
-                # Estimate from a snapshot while the turn may append new records.
+                # 从快照估算，因为活动回合可能同时追加记录。
                 session = replace(current, records=list(current.records))
             else:
                 try:
@@ -119,7 +119,7 @@ class APIChannel(ResidentChannel):
             compaction_trigger_tokens=limits.trigger_tokens,
         )
 
-    # ---------- slash commands ----------
+    # 斜杠命令
 
     def command_catalog(self) -> CommandCatalogResponse:
         return CommandCatalogResponse(
@@ -186,7 +186,7 @@ class APIChannel(ResidentChannel):
     def list_sessions(
         self, limit: int = 100, *, archived: bool = False, offset: int = 0
     ) -> SessionListResponse:
-        # Read jobs first: a title published during the listing still gets a final refresh.
+        # 先读取任务，即使列举期间刚发布标题，也能在结束时刷新。
         pending = set() if archived else self._background.pending_titles()
         with self._service.write_lock:
             rows = self._sessions.list(
@@ -307,7 +307,7 @@ class APIChannel(ResidentChannel):
             current=current,
         )
 
-    # ---------- session lifecycle ----------
+    # 会话生命周期
 
     def create_session(self) -> CreateSessionResponse:
         self.conversation.navigate(None)
@@ -339,7 +339,7 @@ class APIChannel(ResidentChannel):
     def delete_session(
         self, session_id: str, confirmed: bool, pending_revision: str = ""
     ) -> DeleteSessionResponse:
-        """Permanently delete an archived transcript after explicit confirmation."""
+        """在用户明确确认后永久删除已归档的对话记录。"""
         self._validate_session_id(session_id)
         with self._service.write_lock:
             if not self._sessions.exists(session_id, archived=True):
@@ -372,7 +372,7 @@ class APIChannel(ResidentChannel):
                 ) from exc
         return DeleteSessionResponse(session_id=session_id)
 
-    # ---------- settings / providers (TUI Ctrl+P equivalent) ----------
+    # 设置与供应商，对应 TUI 的 Ctrl+P
 
     def search_models(self, query: str, refresh: bool = False) -> ModelSearchResponse:
         items, unavailable = self._app_service.settings.search_models(query, refresh=refresh)
@@ -394,7 +394,7 @@ class APIChannel(ResidentChannel):
         )
 
     def provider_action(self, provider: str, body: ProviderActionRequest) -> ActionResponse:
-        """Provider credentials never leave the server; only booleans are returned."""
+        """供应商凭据只保存在服务器端，接口仅返回是否已配置。"""
         settings = self._app_service.settings
         if provider not in {option.key for option in settings.provider_options()}:
             raise APIError("unknown_provider", "Unknown provider.", 404)
@@ -424,7 +424,7 @@ class APIChannel(ResidentChannel):
             refresh_health=result.ok and result.config_changed,
         )
 
-    # ---------- chat streaming ----------
+    # 聊天流式传输
 
     def start_turn(
         self,

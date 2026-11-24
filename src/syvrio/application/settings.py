@@ -167,7 +167,7 @@ class SettingsUseCases:
                 return tuple(value for value in SPARK_THINKING_MODES if value in levels)
             return SPARK_THINKING_MODES
         if levels is not None:
-            # The empty choice drops the request parameter and restores the provider default.
+            # 选择空项时省略请求参数，恢复供应商的默认设置。
             return ("", *(level for level in levels if level != "default")) if levels else ()
         if "reasoning_effort" in supported_params(llm.litellm_model()):
             return ("", "low", "medium", "high")

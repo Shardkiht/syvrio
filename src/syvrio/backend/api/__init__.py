@@ -1,1 +1,1 @@
-"""HTTP protocol shared by clients of the resident backend."""
+"""常驻后端各客户端共用的 HTTP 协议。"""

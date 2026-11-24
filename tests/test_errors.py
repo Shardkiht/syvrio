@@ -1,9 +1,8 @@
-"""Exception taxonomy: every deliberate failure is a SyvrioError.
+"""异常类型约定：所有主动报告的失败均属于 SyvrioError。
 
-CLI boundary code catches ``SyvrioError`` for translated user-facing messages
-and falls back to ``except Exception`` only as defense in depth. The multiple
-inheritance keeps legacy ``except ValueError``/``except RuntimeError`` clauses
-working while the new base becomes available.
+CLI 边界层捕获 SyvrioError 并转换为用户可读的消息，其他异常由 except Exception 兜底。
+多重继承保留旧的 except ValueError 和 except RuntimeError 处理方式，
+同时允许统一按新基类捕获。
 """
 
 from __future__ import annotations
@@ -45,7 +44,7 @@ def test_custom_errors_inherit_syvrio_and_legacy_base(error_type, legacy):
 
 
 def _make(error_type):
-    """Construct an instance, honoring custom signatures."""
+    """按各异常类型的构造参数创建实例。"""
     if error_type is UpdateError:
         return error_type("stage", "detail")
     if error_type is ProviderError:
@@ -60,9 +59,9 @@ def test_instances_are_catchable_as_syvrio_error(error_type):
 
 
 def test_fail_records_cli_failed_with_command_before_exit(tmp_path, monkeypatch):
-    """fail() converts the exception into typer.Exit; the original cause must be
-    recorded first, with the failing command attached — the update misdiagnosis
-    happened precisely because this recording did not exist."""
+    """fail() 会将异常转换为 typer.Exit，必须在转换前记录原始原因及出错命令。
+    过去缺少该记录，曾导致误判更新失败原因。
+    """
     from syvrio.infra import diagnostics
 
     monkeypatch.setattr(diagnostics, "_path", None)

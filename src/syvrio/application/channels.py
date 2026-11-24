@@ -1,4 +1,4 @@
-"""Bind client views to the single running conversation for each open session."""
+"""将客户端视图关联到各已打开会话中唯一运行的对话。"""
 
 from __future__ import annotations
 
@@ -40,8 +40,7 @@ class ConversationDirectory[C: ConversationOwner]:
             raise ConversationError("shutting_down", "The service is shutting down.")
 
     def session_busy(self, session_id: str) -> bool:
-        # Background callers hold the Vault lock. Use the immutable channel
-        # snapshot so they never acquire the navigation lock in reverse order.
+        # 后台调用方已持有 Vault 锁，使用不可变的通道快照，避免反向获取导航锁。
         return any(
             channel.conversation.scheduling.session_busy(session_id) for channel in self._channels
         )
@@ -119,7 +118,7 @@ class ConversationDirectory[C: ConversationOwner]:
             return receipt
 
     def _navigation_channel(self, view: str, previous: C) -> C:
-        # A turn or paused queue owns its conversation even after its last reader leaves.
+        # 即使最后一个读取端离开，活动回合或暂停的队列仍持有该对话。
         if previous.conversation.scheduling.activity()[0] or any(
             key != view and owner is previous for key, owner in self._views.items()
         ):
@@ -150,7 +149,7 @@ class ConversationDirectory[C: ConversationOwner]:
             return channel.conversation.current
 
     def select_snapshot(self, view: str, session_id: str) -> SessionSnapshot:
-        """Bind this view and return the saved revision, including writes from other clients."""
+        """绑定此视图并返回已保存的修订版本，其中也包含其他客户端的写入。"""
         with self._lock:
             self.select(view, session_id)
             return self.owner.conversation.sessions.read_snapshot(session_id)

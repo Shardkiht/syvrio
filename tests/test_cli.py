@@ -14,7 +14,7 @@ runner = CliRunner()
 
 @pytest.fixture(autouse=True)
 def resident_transport(monkeypatch):
-    """Exercise the same authenticated HTTP routes with model fixtures in this process."""
+    """使用进程内的模型测试数据，检验相同的认证 HTTP 路由。"""
     from contextlib import ExitStack
 
     from fastapi.testclient import TestClient
@@ -200,7 +200,7 @@ def test_init_note_recall_commit(tmp_path):
     assert config.exists()
     assert (vault / ".git").is_dir()
 
-    # The manual commit must own this change even when the daily sync is due.
+    # 即使每日同步已经到期，该变更也仍须归入手工提交。
     settings = load_config(config)
     settings.git.auto_sync = False
     write_config(config, settings)

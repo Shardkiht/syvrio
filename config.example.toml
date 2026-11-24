@@ -1,20 +1,20 @@
-# Local entry file. Set only values that should override the packaged defaults.
-# Select this file via --config or SYVRIO_CONFIG. Place optional overrides in
-# models.toml ([llm]), chat.toml ([chat]) and memory.toml ([retrieval],
-# [retrieval.embedding], [recall], [distillation], [dream]) beside this file.
-# See src/syvrio/defaults/ for the complete shipped settings.
+# 这里只填写需要覆盖内置默认值的本地配置。
+# 用 --config 或 SYVRIO_CONFIG 指定此文件。同目录还可按用途提供配置：
+# models.toml 的 [llm]、chat.toml 的 [chat]，以及 memory.toml 的
+# [retrieval]、[retrieval.embedding]、[recall]、[distillation] 和 [dream]。
+# 完整的内置配置见 src/syvrio/defaults/。
 #
 # vault = "~/my-syvrio-vault"
 # runtime = "~/my-syvrio-runtime"
 # [git]
 # auto_sync = false
 #
-# Optional GitHub-protected ngrok sharing (syvrio web share only):
+# 可选的 ngrok 分享配置，使用 GitHub 身份验证，仅用于 syvrio web share。
 # [web_share]
 # domain = "demo.ngrok-free.dev"
 # github_user_id = "12345"
 #
-# Example for a separate memory.toml:
+# 独立 memory.toml 配置示例：
 # [retrieval]
 # default_limit = 15
 # [dream]

@@ -1,4 +1,4 @@
-"""Explicit local CLI/MCP operations. The public Web API cannot call these."""
+"""仅供本地 CLI 和 MCP 显式调用的操作，公开的网页 API 无权访问。"""
 
 from __future__ import annotations
 

@@ -310,20 +310,20 @@ async def test_inference_screen_filters_and_readonly_states(tmp_path):
         listing = screen.query_one("#inference-list", OptionList)
         assert {option.id for option in listing.options} == {pending.id, retained.id}
 
-        await pilot.press("right")  # Pending → Confirmed
+        await pilot.press("right")  # 从待确认切换到已确认。
         await pilot.pause()
         assert screen._filter == "confirmed"
         assert screen._current().id == confirmed.id
         assert screen.query_one("#inference-confirm", Button).disabled
         assert not screen.query_one("#inference-reject", Button).disabled
 
-        await pilot.press("right")  # Confirmed → Deprecated
+        await pilot.press("right")  # 从已确认切换到已弃用。
         await pilot.pause()
         assert screen._current().id == rejected.id
         assert all(button.disabled for button in screen.query("#inference-actions Button"))
         assert "Read-only record" in str(screen.query_one("#inference-detail-sources").render())
 
-        await pilot.press("right")  # Deprecated → All
+        await pilot.press("right")  # 从已弃用切换到全部。
         await pilot.pause()
         assert screen._filter == "all"
         assert len(listing.options) == 4
@@ -628,7 +628,7 @@ async def test_profile_view_does_not_invoke_model(resident_backend, service, mon
     monkeypatch.setattr(
         dream, "ask", lambda _, prompt, data, schema: schema(summary="Published profile")
     )
-    # Stop at the boundary between publishing the profile and generating hypotheses.
+    # 在画像发布后、开始生成推断前停止。
     service.config.chat.default_budget = 1
     owner._background.request_dream()
     async with asyncio.timeout(8):
@@ -2853,7 +2853,7 @@ async def test_input_cursor_is_vertical_bar(tmp_path):
         await pilot.pause()
         widget = app.query_one("#input", Input)
         assert isinstance(widget, BarInput)
-        # Exercise the visible phase without relying on the blink timer.
+        # 直接检验可见阶段，避免依赖闪烁定时器。
         widget._cursor_visible = True
         assert "│" in widget.render_line(0).text
         assert not widget.get_component_rich_style("input--cursor").underline
@@ -2923,7 +2923,7 @@ def test_search_warmup_thread_unavailable_keeps_backend_usable(service, monkeypa
         assert errors == ["backend.startup_hook_failed"]
     finally:
         owner.shutdown()
-    # A clean successor can acquire the same Vault and Runtime.
+    # 新启动的实例可以获取同一 Vault 和 Runtime 的所有权。
     successor = WebBackend(service=service)
     successor.startup()
     successor.shutdown()
@@ -3966,7 +3966,7 @@ async def test_native_input_cursor_tracks_editing_and_cleans_up(tmp_path, monkey
         writes = []
         cursor_shown = asyncio.Event()
 
-        # Focus schedules cursor output after refresh, which may lag a pilot pause.
+        # 聚焦后要等刷新才输出光标位置，可能晚于测试驱动的暂停。
         def capture_cursor(data):
             if data in ("\x1b[5 q\x1b[?25h", "\x1b[?25l\x1b[0 q"):
                 writes.append(data)
@@ -4038,7 +4038,7 @@ class GatedChatModel:
 async def _wait_ask_started(app, pilot, limit=200):
     for _ in range(limit):
         await pilot.pause()
-        # The UI flag precedes worker-side session creation on slower runners.
+        # 较慢的执行环境中，界面会先更新状态，工作线程稍后才创建会话。
         if app._ask_active and app.runtime.has_session:
             return
     raise AssertionError("请求未开始")
@@ -4863,7 +4863,7 @@ async def test_switch_during_ask_is_immediate_and_reply_lands_in_original(tmp_pa
         session_a = app.runtime.current.id
         model_status = app.query_one("#model-status", Static)
         model_label = app.application.conversation.model_label
-        app._progress_started -= 20  # Simulate a request already waiting before switching.
+        app._progress_started -= 20  # 模拟切换前已经在等待的请求。
         started = app._progress_started
         assert str(model_status.content) != model_label
 
@@ -6231,7 +6231,7 @@ async def test_reasoning_preview_expansion_follow_and_folding(tmp_path, monkeypa
             next_panel = list(app.query(ThinkingPanel))[-1]
             await until(pilot, lambda: next_panel.query_one(ThinkingText).size.height == 3)
             assert next_panel.query_one(ThinkingText).size.height == 3
-            assert area.display  # User explicitly opened the earlier stage.
+            assert area.display  # 用户曾主动展开较早的阶段。
             release_body.set()
             await _wait_idle(app, pilot)
             assert not next_panel.query_one(ThinkingText).display

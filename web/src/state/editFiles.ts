@@ -1,4 +1,4 @@
-/** Binary copies for edits whose originals can disappear from chat history. */
+/** 保存编辑所需的二进制副本，因为原件可能从聊天历史中消失。 */
 const database = 'syvrio-edit-recovery';
 const storeName = 'attachments';
 const week = 7 * 24 * 60 * 60 * 1000;
@@ -17,7 +17,7 @@ async function access<T>(mode: IDBTransactionMode, action: (store: IDBObjectStor
       const tx = db.transaction(storeName, mode);
       const store = tx.objectStore(storeName);
       if (mode === 'readwrite') {
-        // Closing a tab loses its sessionStorage manifest. Expire leftover file copies.
+        // 标签页关闭后，其 sessionStorage 清单会丢失，残留文件副本需到期清理。
         const expired = store.index('saved').openKeyCursor(IDBKeyRange.upperBound(Date.now() - week));
         expired.onsuccess = () => {
           const cursor = expired.result;

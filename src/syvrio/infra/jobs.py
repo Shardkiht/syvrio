@@ -1,4 +1,4 @@
-"""Durable requests shared by the Vault transaction and resident job workers."""
+"""Vault 事务和常驻后台任务共享的持久请求。"""
 
 from __future__ import annotations
 
@@ -39,7 +39,7 @@ def encode_job(record: dict) -> bytes:
 
 
 def enqueue_context_fill(paths: SyvrioPaths, memory_id: str, version: str) -> None:
-    """Commit the job with the edited fact and removal of the pending entry."""
+    """将任务与修改后的事实、待审条目的移除一起提交。"""
     path = job_path(paths, "context", memory_id)
     record = {"id": memory_id, "version": version}
     with vault_transaction(paths) as tx:

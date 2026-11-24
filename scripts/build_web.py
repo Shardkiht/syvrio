@@ -1,13 +1,12 @@
-"""Build the React client and stage it inside the Python package.
+"""构建 React 客户端，将产物放入 Python 包中。
 
-    python scripts/build_web.py            # pnpm install + build + copy + verify
-    python scripts/build_web.py --check    # verify staged assets only
-    python scripts/build_web.py --wheel dist/*.whl   # verify a built wheel too
+    python scripts/build_web.py            # 用 pnpm 安装依赖、构建、复制并校验
+    python scripts/build_web.py --check    # 只校验已放入包内的资源
+    python scripts/build_web.py --wheel dist/*.whl   # 同时校验构建好的 wheel
 
-A failed build or an incomplete bundle exits non-zero, so a release can never
-silently ship a wheel without Web assets. The staged ``static/`` directory is
-ignored by Git (see .gitignore) and forced into the wheel by hatchling's
-``artifacts`` setting.
+构建失败或资源不完整时以非零状态退出，防止发布缺少网页资源的 wheel。
+Git 按 .gitignore 忽略暂存的 static/ 目录，
+hatchling 通过 artifacts 将其纳入 wheel。
 """
 
 from __future__ import annotations
@@ -27,7 +26,7 @@ STATIC = ROOT / "src" / "syvrio" / "app" / "web" / "static"
 
 def run(command: str) -> None:
     print(f"> {command}", flush=True)
-    # shell=True lets Windows resolve corepack.cmd and Linux resolve corepack.
+    # shell=True 使 Windows 能找到 corepack.cmd，Linux 能找到 corepack。
     subprocess.run(command, cwd=WEB, shell=True, check=True)
 
 
@@ -45,7 +44,7 @@ def verify(directory: Path) -> None:
 
 
 def verify_wheel(path: Path) -> None:
-    """Assert that the published wheel will serve the UI without Node.js."""
+    """校验发布的 wheel 可在未安装 Node.js 时提供网页界面。"""
     if not path.is_file():
         raise SystemExit(f"Missing wheel: {path}")
     with zipfile.ZipFile(path) as archive:

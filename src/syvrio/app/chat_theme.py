@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from rich.theme import Theme
 
-# Scoped to reply rendering; other Rich/CLI output keeps its own theme.
+# 该主题仅用于回复渲染，其余 Rich 和 CLI 输出沿用各自主题。
 MARKDOWN_THEME = Theme(
     {
         "markdown.text": "#d5d5d5",
@@ -29,7 +29,7 @@ MARKDOWN_THEME = Theme(
 )
 
 APP_CSS = """
-    /* Evolution: neutral surfaces, a clear sky-blue accent, and content-led hierarchy. */
+    /* 中性底色搭配天蓝色强调色，突出对话内容的层次。 */
     $accent: #6cb6ff;
     $secondary: #a6a6a6;
     $warm: #a6a6a6;
@@ -185,7 +185,7 @@ APP_CSS = """
     /* 模型列表独立滚动，为小窗口的搜索框和快捷键提示保留空间。 */
     ModelPickerScreen #pick-card { height: 80%; max-height: 90%; max-width: 95%; }
     ModelPickerScreen #pick-list { height: 1fr; min-height: 1; }
-    /* Full pending text scrolls independently; decision actions stay visible. */
+    /* 待审正文独立滚动，审核按钮始终可见。 */
     #pick-card.has-detail { width: 76; max-width: 90%; height: auto; max-height: 85%; }
     #pick-detail { height: auto; max-height: 25vh; min-height: 1; margin-bottom: 1; padding: 0 1; background: $bg; }
     #pick-detail-text { height: auto; width: 1fr; color: #d5d5d5; }

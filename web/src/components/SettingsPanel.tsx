@@ -64,9 +64,8 @@ function readContext(result: CommandResponse): ContextState | null {
 }
 
 /**
- * Web settings panel: the counterpart of the TUI's /model, /think, /context
- * and /setup flows. Every value is read and written through the same
- * Application use cases that the TUI uses; the panel only presents them.
+ * 网页设置面板对应 TUI 中的 /model、/think、/context 和 /setup。
+ * 两端通过同一套应用层用例读写设置，面板只负责展示。
  */
 export function SettingsPanel({
   health,
@@ -107,7 +106,7 @@ export function SettingsPanel({
     if (refreshing && spin.playState === 'finished') spin.currentTime = 0;
     const turns = Number(spin.currentTime) / Number(spin.effect.getTiming().duration);
     if (refreshing) {
-      // A retry during the previous turn continues from its current angle.
+      // 在上一圈尚未转完时重试，从当前角度继续转动。
       earliestStop.current = Math.ceil(turns) + 1;
       spin.effect.updateTiming({ iterations: Infinity });
       spin.play();

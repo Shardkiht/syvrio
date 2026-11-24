@@ -94,7 +94,7 @@ def parse_extraction(content: str) -> ExtractionResult:
 
 
 def grounded_context(context: MemoryContext | None, *sources: str) -> MemoryContext | None:
-    """Keep the user's exact words for feelings, including negatives and modifiers."""
+    """保留用户描述感受的原话，包括否定词和修饰词。"""
     if context is None or context.emotion is None:
         return context
     words = context.emotion.model_dump(exclude_none=True)

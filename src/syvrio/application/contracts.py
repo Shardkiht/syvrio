@@ -49,7 +49,7 @@ class QueueSnapshot:
 class Submission:
     """忙碌期提交的路由结果；界面据此决定排入队列、直接执行或取消。"""
 
-    kind: str  # queued / command / undo / undo_busy / message
+    kind: str  # 输入处理方式可取 queued、command、undo、undo_busy 或 message。
     session_id: str | None = None
     item: QueuedItem | None = None
     message: str | None = None
@@ -64,8 +64,8 @@ class TurnCallbacks:
     on_user_message: Callable[[str], None] | None = None
     on_inserted: Callable[[str, str], None] | None = None
     on_thinking: Callable[[ThinkingUpdate], None] | None = None
-    # Outcome of the tool call whose display text arrives through ``on_event``
-    # next; the Web stream needs it to label failures without a history reload.
+    # on_event 随后会发送此工具调用的展示文本。网页事件流利用结果标记失败，
+    # 无需重载历史。
     on_tool: Callable[[bool], None] | None = None
     on_compaction: Callable[[CompactionPhase], None] | None = None
 
@@ -83,7 +83,7 @@ class UndoOutcome:
 
 @dataclass
 class TurnResult:
-    status: str  # ok / cancelled / failed / undo
+    status: str  # 回合结果可取 ok、cancelled、failed 或 undo。
     session_id: str | None = None
     user_message_id: str | None = None
     turn_id: int | None = None

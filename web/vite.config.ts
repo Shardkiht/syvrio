@@ -5,8 +5,7 @@ const frontendPort = 7987;
 
 export default defineConfig({
   plugins: [react()],
-  // Keep Vite/Vitest caches inside the project: some sandboxed environments
-  // deny writes to the OS temp directory.
+  // 将 Vite 和 Vitest 缓存放在项目内，兼容无法写入操作系统临时目录的环境。
   cacheDir: 'node_modules/.vite',
   server: {
     host: '127.0.0.1',
@@ -20,7 +19,7 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     emptyOutDir: true,
-    // Vite output is copied into the Python package by scripts/build_web.py.
+    // scripts/build_web.py 将 Vite 构建产物复制到 Python 包内。
     assetsDir: 'assets',
   },
   test: {

@@ -1,4 +1,4 @@
-"""Per-turn timing for chat requests. Only numeric measurements are logged."""
+"""记录对话请求每个回合的耗时，只保存数值指标。"""
 
 from __future__ import annotations
 
@@ -79,7 +79,7 @@ def mark_model(event: str) -> None:
 
 @contextmanager
 def track_completion() -> Iterator[None]:
-    """Time synchronous requests, including recall rewriting and memory extraction."""
+    """统计同步请求耗时，包括召回改写和记忆提取。"""
     active = _active_turn.get()
     if active is None:
         yield

@@ -1,4 +1,4 @@
-"""Textual controls for resident command results, review and selection."""
+"""展示常驻服务的命令结果、审核及选择控件。"""
 
 from __future__ import annotations
 
@@ -49,7 +49,7 @@ class ResidentCommands:
     async def _command(self, line, *, confirmed=False, extra=None, review_screen=None):
         name, argument = parse_command(line)
         origin, version = self.screen, self._version
-        # A reopened review must read after the preceding decision has finished.
+        # 重新打开审核界面前，先等待上一次决定处理完毕。
         lock = self._submitting if name == "new" else self._review_locks.get(name, nullcontext())
         async with lock:
             if self._version != version or (not argument and self.screen is not origin):
@@ -136,7 +136,7 @@ class ResidentCommands:
             except Exception:
                 if not feedback:
                     raise
-                # The server already saved this decision. Retrying the write could change it twice.
+                # 服务器已经保存了决定，重试写入可能导致重复修改。
                 if self.screen is review_screen and isinstance(
                     review_screen, (PendingScreen, InferenceScreen)
                 ):

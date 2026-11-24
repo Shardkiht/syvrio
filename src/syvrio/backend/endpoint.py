@@ -1,4 +1,4 @@
-"""Discover a local resident by its runtime binding and start it on demand."""
+"""通过 Runtime 绑定发现本地常驻服务，并按需启动。"""
 
 from __future__ import annotations
 
@@ -70,8 +70,8 @@ def connect(paths) -> tuple[str, str]:
     existing = discover(paths)
     if existing:
         return existing
-    # A short startup lock only serializes discovery/spawn. The running service
-    # holds its separate ownership lock until all writers have stopped.
+    # 临时启动锁只用于串行化服务发现和启动。常驻服务另行持有所有权锁，
+    # 直到所有写入方都已停止。
     with VaultLock(paths.lock_dir / "backend-start.lock"):
         existing = discover(paths)
         if existing:

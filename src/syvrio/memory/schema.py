@@ -1,4 +1,4 @@
-"""Human-readable Vault records with byte-preserving edit spans."""
+"""可读的 Vault 记录，按字节范围编辑并保留其余原文。"""
 
 from __future__ import annotations
 
@@ -169,8 +169,7 @@ def parse_blocks(raw: str, source_path: str) -> tuple[str, list[Block]]:
                         re.escape(fence.markup[0]) + r"{" + str(len(fence.markup)) + r",}", closing
                     ):
                         fail(first, f"unclosed text block for {key}")
-                    # Preserve author whitespace, CRLF and blank lines by reading
-                    # physical source; the final separator belongs to the fence.
+                    # 读取原始行以保留空白、CRLF 和空行，末尾分隔符属于代码围栏。
                     indent = len(lines[start]) - len(lines[start].lstrip(" "))
                     body = "".join(
                         line[indent:] if line.startswith(" " * indent) else line
@@ -180,7 +179,7 @@ def parse_blocks(raw: str, source_path: str) -> tuple[str, list[Block]]:
                     if not value.strip() or "\x00" in value:
                         fail(first, f"empty text for {key}")
                     if not nested:
-                        # Editing a scalar written as a fence replaces only its value.
+                        # 编辑以围栏表示的标量时，只替换其中的值。
                         left = offsets[first] + len(lines[first].rstrip("\r\n"))
                         right = offsets[end - 1] + len(lines[end - 1].rstrip("\r\n"))
                         positions[section, key] = (left, right)
@@ -251,7 +250,7 @@ def _render_fields(items, indent: str, newline: str) -> str:
         elif key == "text" and ("\n" in value or "\r" in value):
             fence = "~" * max(3, 1 + max((len(r) for r in re.findall("~+", value)), default=0))
             pad = indent + "  "
-            # Preserve individual line endings independently of the document's style.
+            # 逐行保留原有换行符，兼容同一文档中的不同换行格式。
             body = re.sub(r"(\r\n|\r|\n)", r"\g<0>" + pad, value)
             result += (
                 prefix

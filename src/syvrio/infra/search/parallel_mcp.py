@@ -108,8 +108,8 @@ class ParallelMcpFetchProvider:
         except Exception as exc:
             raise _fetch_error(exc) from None
         if getattr(result, "is_error", False):
-            # Tool errors may be sent in an HTTP 200 response. Classify known
-            # upstream errors without including arbitrary tool text in diagnostics.
+            # 工具可能在 HTTP 200 响应中报告错误。对已知上游错误分类，
+            # 避免将任意工具文本写入诊断日志。
             for item in getattr(result, "content", None) or ():
                 text = getattr(item, "text", "")
                 if not isinstance(text, str):
@@ -126,8 +126,8 @@ class ParallelMcpFetchProvider:
         items = _extract_results(result)
         if items is None:
             raise ProviderError(NAME, ProviderErrorKind.BAD_RESPONSE, "无法解析 MCP 抓取响应")
-        # Only one URL was requested. Per-URL errors (including target-site
-        # 401/429) are not account errors and must not pause this provider.
+        # 每次只请求一个网址。该网址的错误（包括目标站点的 401 或 429）
+        # 不代表供应商账户故障，无需暂停供应商。
         if len(items) != 1 or not isinstance(items[0], dict):
             raise ProviderError(NAME, ProviderErrorKind.BAD_RESPONSE, "MCP 响应没有单一网页结果")
         item = items[0]
@@ -163,8 +163,8 @@ def _fetch_client(headers: dict[str, str], timeout: float):
 
 def _fetch_error(exc: Exception) -> ProviderError:
     error = _translate_error(exc)
-    # FastMCP can wrap transport errors during negotiation. Inspect the cause
-    # and the SDK's JSON-RPC error code without forwarding its message.
+    # FastMCP 可能在协商时包装传输异常。检查底层原因和 SDK 的 JSON-RPC 错误码，
+    # 避免转发原始错误消息。
     if error.kind == ProviderErrorKind.NETWORK:
         cause = exc.__cause__
         if isinstance(cause, Exception):

@@ -23,11 +23,11 @@ from ..errors import SyvrioError
 from .locking import VaultLock
 
 PYPI = "https://pypi.org/pypi/syvrio/json"
-# Recognize legacy installed candidates when upgrading to the stable release.
+# 升级到稳定版时也识别旧版已安装的候选版本。
 VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)(?:rc(\d+))?")
-# The managed unit stops itself with TimeoutStopSec=5min; out-wait it before judging a stop failed.
+# 受管单元自行停止的 TimeoutStopSec 为 5 分钟，须等足该时限再判定失败。
 STOP_TIMEOUT = 360
-# Warm starts may run slow initialization or memory catch-up before /api/health responds.
+# 热启动可能要先初始化或补做记忆任务，然后 /api/health 才会响应。
 STARTUP_SECONDS = 120
 
 
@@ -53,12 +53,12 @@ def _report(
         try:
             callback(UpdateProgress(stage, message, downloaded, total))
         except Exception:
-            # A disconnected display or unwritable status file must never interrupt a handover.
+            # 展示端断开或状态文件无法写入，都不能中断交接。
             logging.getLogger(__name__).debug("Update progress delivery failed", exc_info=True)
 
 
 class UpdateError(SyvrioError, ValueError):
-    """An update failure tagged with the stage that produced it."""
+    """附带出错阶段的更新异常。"""
 
     def __init__(self, stage: str, detail: str):
         super().__init__(f"{stage} failed: {detail}")
@@ -116,7 +116,7 @@ def select_release(releases: dict, current: str, channel: str) -> tuple[str, dic
 
 
 def _satisfies(version: tuple[int, int, int], requires_python: str | None) -> bool:
-    """Apply the distribution's Requires-Python before downloading its wheel."""
+    """下载 wheel 前按发行包的 Requires-Python 检查版本。"""
     try:
         allowed = SpecifierSet(requires_python or "")
     except InvalidSpecifier as exc:
@@ -125,7 +125,7 @@ def _satisfies(version: tuple[int, int, int], requires_python: str | None) -> bo
 
 
 def _probe(candidate: Path) -> tuple[int, int, int] | None:
-    """Run the interpreter in isolation and report its (major, minor, micro) version."""
+    """独立运行解释器，返回主版本、次版本和修订号。"""
     try:
         output = subprocess.run(
             (
@@ -146,20 +146,20 @@ def _probe(candidate: Path) -> tuple[int, int, int] | None:
 
 
 def _interpreter(python: str | None, requires_python: str | None) -> str:
-    """Pick a local interpreter for the new venv; uv must never download one."""
+    """为新虚拟环境选择本地解释器，禁止 uv 下载解释器。"""
     if python:
         candidates = [Path(python).expanduser()]
     elif sys.prefix == sys.base_prefix:
         candidates = [Path(sys.executable)]
     else:
-        # The updater runs inside the previous version's venv. Base the new environment on
-        # that venv's underlying interpreter instead of reusing the old venv itself.
+        # 更新器在上一版本的虚拟环境内运行。用该环境的基础解释器创建新环境，
+        # 避免复用旧虚拟环境本身。
         version = f"{sys.version_info[0]}.{sys.version_info[1]}"
         candidates = [Path(sys.base_prefix) / "bin" / f"python{version}", Path(sys.executable)]
     attempts = []
     for candidate in candidates:
-        # A symlinked venv python resolves to its base interpreter; a copied (--copies) one
-        # stays inside the old venv and must never become the base of the new environment.
+        # 虚拟环境中的 Python 符号链接可解析到基础解释器，而 --copies 生成的副本仍在旧环境内，
+        # 不能用作新环境的基础解释器。
         candidate = candidate.resolve()
         if sys.prefix != sys.base_prefix and candidate.is_relative_to(sys.prefix):
             attempts.append(f"{candidate} is inside the running venv")
@@ -271,7 +271,7 @@ def _healthy(client: httpx.Client, url: str, version: str, seconds: int = 20) ->
 
 
 def _uv(uv: str | None) -> str:
-    """Resolve uv once, before any download, so the caller's PATH cannot decide the outcome."""
+    """下载前一次性确定 uv 的路径，避免结果取决于调用方后续的 PATH。"""
     if uv:
         candidate = Path(uv).expanduser()
         if not candidate.is_file() or not os.access(candidate, os.X_OK):
@@ -295,13 +295,13 @@ def _install(
     uv: str | None = None,
     on_progress: ProgressCallback | None = None,
 ) -> Path:
-    # uv and the interpreter are checked before the download: neither may fail after it.
+    # 下载前先核验 uv 和解释器，避免下载后才发现缺少工具。
     _report(on_progress, "prepare", f"Preparing to install Syvrio {version}")
     command = _uv(uv)
     interpreter = _interpreter(python, wheel.get("requires_python"))
     versions = root / "versions"
     versions.mkdir(exist_ok=True)
-    # A venv's entry-point shebang contains its absolute path. Keep it where it was built.
+    # 虚拟环境入口脚本记录绝对路径，因此必须保留构建时的位置。
     environment = Path(tempfile.mkdtemp(prefix=f"{version}-", dir=versions))
     try:
         with tempfile.TemporaryDirectory(dir=root) as temp:
@@ -310,9 +310,8 @@ def _install(
                 _download(client, wheel, target, on_progress)
             except (httpx.HTTPError, OSError, ValueError) as error:
                 raise UpdateError("download", f"{wheel['filename']}: {error}") from error
-            # An explicit local interpreter plus --no-python-downloads (and the matching env
-            # var, so no uv step can ever fetch a managed CPython) keeps the install strictly
-            # local: the old hard-coded 3.12 hung 120 s on 3.13-only hosts.
+            # 指定本地解释器并设置 --no-python-downloads 和对应环境变量，确保各 uv 步骤只使用本机 Python。
+            # 旧实现固定指定 3.12，在仅安装 3.13 的主机上曾因此卡住 120 秒。
             no_downloads = {"UV_PYTHON_DOWNLOADS": "never"}
             _report(on_progress, "venv", "Creating the Python environment")
             try:
@@ -335,8 +334,7 @@ def _install(
                 requirement = str(target)
                 previous_python = (root / "current").resolve().with_name("python")
                 if previous_python.is_file():
-                    # Restore installed extras from the managed installation even if
-                    # the CLI doing the upgrade is from a different environment.
+                    # 从受管安装恢复已装的可选依赖，即使执行升级的 CLI 来自其他环境。
                     extras = _run(
                         str(previous_python),
                         "-I",
@@ -404,14 +402,14 @@ def _service_state(unit: str) -> str:
 
 
 def _stop_service(unit: str) -> None:
-    """Stop the unit and return only with a confirmed stop; otherwise abort the update."""
+    """请求停止单元并确认已经停止，否则中止更新。"""
     try:
         _run("systemctl", "--user", "stop", unit, timeout=STOP_TIMEOUT)
         return
     except subprocess.SubprocessError:
         pass
-    # The stop job may still be concluding (the unit stops itself with a 5 min timeout);
-    # wait for it to settle instead of switching under a unit that is going away anyway.
+    # 停止任务可能尚未结束，单元自身的停止超时为 5 分钟。
+    # 等状态稳定后再切换，避免在即将退出的单元上更换版本。
     deadline = time.monotonic() + 60
     while True:
         try:
@@ -425,8 +423,7 @@ def _stop_service(unit: str) -> None:
         if time.monotonic() >= deadline:
             break
         time.sleep(2)
-    # Still not confirmed stopped: the unit may go down on its own later, e.g. while
-    # deactivating. Keep the old link untouched and leave the decision to the operator.
+    # 尚未确认停止时，单元仍可能自行退出。保留旧链接，将后续决定交给操作者。
     raise UpdateError(
         "stop",
         f"{unit} still reports {state!r} after a failed stop command, so the stop is "
@@ -448,7 +445,7 @@ def update(
     prepare_restart: Callable[[httpx.Client, int, ExitStack], Callable[[], None] | None]
     | None = None,
 ) -> str:
-    """Update the executable behind the configured user systemd service."""
+    """更新已配置的 systemd 用户服务所指向的可执行文件。"""
     link = root / "current"
     if not re.fullmatch(r"[A-Za-z0-9_.@-]+\.service", unit) or unit.startswith("-"):
         raise ValueError("Update requires an explicit systemd user service name.")
@@ -472,13 +469,13 @@ def update(
         if release is None:
             return f"Syvrio {installed} is up to date."
         version, wheel = release
-        # Built and verified while the old service keeps serving.
+        # 在旧服务继续处理请求期间构建并校验。
         new = _install(pypi, root, version, wheel, python, uv, on_progress)
         new_environment = new.parent.parent
 
         def discard_install() -> None:
-            # The fresh environment is ours alone. Drop it only once current cannot point
-            # into it, so the previous version, current and every other environment stay.
+            # 新环境仅由本次更新创建。确认 current 不再指向它后才清理，
+            # 保留旧版本、current 以及其他已有环境。
             try:
                 if not link.resolve(strict=True).is_relative_to(new_environment):
                     shutil.rmtree(new_environment, ignore_errors=True)
@@ -527,8 +524,7 @@ def update(
             except (UpdateError, OSError, KeyboardInterrupt) as error:
                 _report(on_progress, "rollback", f"Restoring Syvrio {installed}")
                 try:
-                    # A failed switch may leave the old executable selected.
-                    # Inspect the actual target before changing the link again.
+                    # 切换失败时，可能仍选中旧可执行文件。再次更改链接前先检查实际目标。
                     try:
                         current = link.resolve(strict=True)
                     except (OSError, RuntimeError) as state_error:
@@ -537,7 +533,7 @@ def update(
                             f"cannot resolve current executable {link}: {state_error}",
                         ) from state_error
                     if current == new:
-                        # The new executable is selected; stop it before restoring old.
+                        # 已选中新版可执行文件，先停止它再恢复旧版。
                         _stop_service(unit)
                         _switch(link, previous)
                     elif current != previous:
@@ -546,7 +542,7 @@ def update(
                             f"{link} points to unexpected executable {current}; "
                             "refusing to overwrite it",
                         )
-                    # The old target needs no second link write.
+                    # 已指向旧目标，无需再次写入链接。
                     _run(*service, "start", unit)
                     if not _healthy(local, url, installed, seconds=STARTUP_SECONDS):
                         raise UpdateError(
@@ -565,8 +561,7 @@ def update(
                         f"({rollback}); check {link} (expected {previous}) "
                         f"and start {unit} manually",
                     ) from error
-                # Rollback succeeded: current is back on the old version, so the fresh
-                # environment is unreachable and safe to remove.
+                # 回滚成功后，current 已重新指向旧版本。此时新环境不再被引用，可安全清理。
                 discard_install()
                 raise UpdateError(
                     "restored", f"Update failed; restored Syvrio {installed}."

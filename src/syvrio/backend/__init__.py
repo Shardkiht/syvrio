@@ -1,1 +1,1 @@
-"""Client discovery and private adapters for the resident Syvrio service."""
+"""常驻服务的客户端发现机制和内部适配器。"""

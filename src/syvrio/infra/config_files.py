@@ -1,4 +1,4 @@
-"""Packaged settings, sparse overlays and recoverable writes for a configuration directory."""
+"""配置目录的内置默认设置、局部覆盖和可恢复写入。"""
 
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ MEMORY_SECTIONS = {
 
 
 class ConfigError(SyvrioError, ValueError):
-    """A configuration file cannot be read or validated."""
+    """配置文件无法读取或未通过校验。"""
 
 
 def read_toml(path) -> dict:

@@ -17,7 +17,7 @@ function toolState(segment: ToolSegment): string {
   return segment.ok === false ? 'Failed' : 'Done';
 }
 
-/** A single tool call: a folded row whose result appears only on demand. */
+/** 单次工具调用显示为折叠行，展开后才显示结果。 */
 function ToolView({ segment, onToggle }: { segment: ToolSegment; onToggle: () => void }) {
   const state = toolState(segment);
   if (!segment.display) {
@@ -44,7 +44,7 @@ function ToolView({ segment, onToggle }: { segment: ToolSegment; onToggle: () =>
   );
 }
 
-/** Several calls in a row read as one line, expanded into a list. */
+/** 连续调用合并为一行，展开后按列表显示。 */
 function ToolGroup({
   segments,
   onToggle,
@@ -55,8 +55,7 @@ function ToolGroup({
   if (segments.length === 1) {
     return <ToolView segment={segments[0]} onToggle={() => onToggle(segments[0].id)} />;
   }
-  // The group rides on its first member's flag; expanding toggles every member
-  // so a reloaded group never comes back half-open.
+  // 组的展开状态取自首个成员，切换时同步设置全部成员，避免重新载入后只有部分展开。
   const expanded = segments[0].expanded;
   const running = segments.some((segment) => !segment.done);
   return (
@@ -81,7 +80,7 @@ function ToolGroup({
   );
 }
 
-/** Compacted history stays folded; command output keeps its normal row. */
+/** 压缩后的历史保持折叠，命令输出仍用普通消息行展示。 */
 function InfoLine({ message }: { message: InfoMessage }) {
   const [open, setOpen] = useState(false);
   if (!message.folded) return <div className="info-line">{message.content}</div>;
@@ -106,7 +105,7 @@ function SegmentView({ segment, onToggle }: { segment: Segment; onToggle: () => 
   return <div className="event-line">{segment.text}</div>;
 }
 
-/** Consecutive tool segments collapse into a single folded group. */
+/** 将连续的工具片段合并为一个折叠组。 */
 function renderSegments(segments: Segment[], onToggle: (id: string) => void): ReactNode[] {
   const nodes: ReactNode[] = [];
   let group: ToolSegment[] = [];
@@ -174,7 +173,7 @@ export function MessageList({
   const [announcement, setAnnouncement] = useState('');
   const lastTop = useRef(0);
   const previousSession = useRef<string | null | undefined>(undefined);
-  // A first receipt assigns a session ID without a navigation. Only a new selection enters.
+  // 首个回执只分配会话 ID，只有主动选择新会话才触发进入动画。
   const lastShownSelection = useRef(selectionVersion ?? 0);
   const contentReady = !loading || messages.length > 0;
 
@@ -201,8 +200,7 @@ export function MessageList({
     const top = element.scrollTop;
     const distance = element.scrollHeight - top - element.clientHeight;
     const nearBottom = distance < 48;
-    // An event can arrive after content grows, while the scroll offset still
-    // equals the previous bottom. Only upward movement pauses following.
+    // 内容增高后才抵达的事件可能仍报告原来的底部位置，只有向上滚动才暂停自动跟随。
     if (nearBottom || top < lastTop.current) following.current = nearBottom;
     lastTop.current = top;
     setShowJump(!following.current && element.clientHeight > 0 && distance > element.clientHeight / 2);
@@ -220,7 +218,7 @@ export function MessageList({
     }
     const bottom = element.scrollHeight - element.clientHeight;
     if (following.current && (sessionChanged || element.scrollTop < bottom)) {
-      // Smooth scrolling emits intermediate events and can fall behind streamed updates.
+      // 平滑滚动会发出中间事件，可能落后于流式内容的更新。
       element.scrollTo({ top: element.scrollHeight, behavior: 'instant' });
       lastTop.current = element.scrollTop;
     }
@@ -264,7 +262,7 @@ export function MessageList({
         setAnnouncement('At latest message');
         return;
       }
-      // Apply the eased fraction of the remaining distance to the live bottom.
+      // 按缓动进度移动剩余距离，每次都以最新底部为目标。
       const eased = t * t * (3 - 2 * t);
       const remaining = list.scrollHeight - list.clientHeight - list.scrollTop;
       list.scrollTo({ top: list.scrollTop + remaining * (eased - previous) / (1 - previous), behavior: 'instant' });
@@ -307,7 +305,7 @@ export function MessageList({
     const element = ref.current;
     const content = contentRef.current;
     if (!element || !content || typeof ResizeObserver === 'undefined') return;
-    // Images can finish loading and the composer can resize after a message renders.
+    // 消息渲染后，图片加载完成或输入框大小变化仍可能改变布局。
     const observer = new ResizeObserver(() => followLatest(element));
     observer.observe(element);
     observer.observe(content);

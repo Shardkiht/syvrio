@@ -1,4 +1,4 @@
-"""Textual client for the shared resident. Its timers only refresh the display."""
+"""连接共享常驻服务的 Textual 客户端，定时器仅负责刷新界面。"""
 
 from __future__ import annotations
 
@@ -86,7 +86,7 @@ class ResidentChatApp(ResidentCommands, ChatViewMixin, App):
         try:
             await self._request("POST", "/api/view/disconnect")
         except (ValueError, OSError, httpx.TransportError):
-            # During a software update the old resident may already have stopped.
+            # 软件更新期间，旧的常驻服务可能已经停止。
             pass
 
     async def _request(self, method, path, **values):
@@ -226,7 +226,7 @@ class ResidentChatApp(ResidentCommands, ChatViewMixin, App):
                     self._show_event(event)
                 break
             except KeyError:
-                # A restarted resident can serve the saved history after its event stream expires.
+                # 重启后即使事件流已过期，常驻服务仍可返回保存的历史记录。
                 break
             except ValueError as exc:
                 self.notify(str(exc), severity="error")

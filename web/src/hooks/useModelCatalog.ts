@@ -40,7 +40,7 @@ export function useModelCatalog(visible: boolean, query: string, health: HealthR
 
   useEffect(() => {
     if (feedback?.kind === 'pending') return;
-    // Consume the manual response once. Later searches use the latest typed filter.
+    // 手动请求的响应只消费一次，后续搜索使用最新输入的筛选条件。
     const completed = refreshed.current;
     refreshed.current = null;
     if (!visible) return;

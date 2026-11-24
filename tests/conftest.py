@@ -138,7 +138,7 @@ def service(config):
 
 @pytest.fixture
 def resident_backend(service):
-    """Run the terminal's normal HTTP client against a temporary resident."""
+    """使用终端的常规 HTTP 客户端访问临时常驻服务。"""
     import secrets
     import socket
     import threading

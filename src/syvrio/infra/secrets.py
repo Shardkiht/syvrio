@@ -1,4 +1,4 @@
-"""Credential detection shared by session storage and memory validation."""
+"""会话存储和记忆校验共用的凭据识别逻辑。"""
 
 import re
 

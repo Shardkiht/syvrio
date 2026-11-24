@@ -1,4 +1,4 @@
-"""Resolve and serve the browser bundle and its client-side routes."""
+"""定位浏览器资源包，提供静态资源和客户端路由。"""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Custom browser hostnames, in addition to the loopback hosts."""
+"""除回环主机外允许浏览器使用的自定义主机名。"""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Run Git's existing due policy independently of connected clients."""
+"""按 Git 已有的到期规则运行同步，无需客户端保持连接。"""
 
 from __future__ import annotations
 

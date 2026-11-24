@@ -1,9 +1,8 @@
 import { useId, type ReactNode, type Ref } from 'react';
 
 /**
- * One row of folded chrome: a pill summary plus an optional body.
- * Everything that is not the answer itself (reasoning, tool calls, compaction
- * notes) starts collapsed so the transcript reads as conversation, not logs.
+ * 可折叠内容占一行，由胶囊状摘要和可选正文组成。
+ * 思考、工具调用及压缩提示默认折叠，让读者能直接阅读对话正文。
  */
 export function Collapsible({
   label,
@@ -24,7 +23,7 @@ export function Collapsible({
   className?: string;
   testId?: string;
   bodyTestId?: string;
-  /** The bounded scroll area itself: callers that follow streamed content need it. */
+  /** 返回设有高度上限的滚动区域，供调用方跟随流式内容。 */
   bodyRef?: Ref<HTMLDivElement>;
 }) {
   const root = ['fold', expanded ? 'fold-open' : '', className ?? ''].filter(Boolean).join(' ');

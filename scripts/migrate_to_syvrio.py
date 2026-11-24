@@ -1,11 +1,10 @@
-"""One-shot QuietMemo -> Syvrio data migration.
+"""将 QuietMemo 数据一次性迁移到 Syvrio。
 
-Default is a dry-run. ``--apply`` backs up the source data, migrates the
-Vault metadata directory and config file, rewrites escaped memory tags, and
-optionally migrates Keyring entries. The old metadata directory is removed
-only after every validation passes; the backup is never removed.
+默认只预演。指定 --apply 后，先备份源数据，再迁移 Vault 元数据目录和配置文件，
+改写转义的记忆标签，并按需迁移系统密钥环条目。
+全部校验通过后才删除旧元数据目录，始终保留备份。
 
-Usage:
+用法：
     uv run python scripts/migrate_to_syvrio.py --dry-run
     uv run python scripts/migrate_to_syvrio.py --apply
 """
@@ -144,7 +143,7 @@ def _session_fingerprint(vault: Path) -> dict[str, int]:
 
 
 def _jsonl_stats(path: Path) -> tuple[int, int, int]:
-    """Return (lines, valid_json_lines, damaged_tail_lines)."""
+    """返回总行数、有效 JSON 行数和尾部损坏行数。"""
     if not path.exists():
         return 0, 0, 0
     raw_lines = path.read_bytes().splitlines()

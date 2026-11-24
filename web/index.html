@@ -7,18 +7,18 @@
       content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content"
     />
     <meta name="color-scheme" content="light dark" />
-    <!-- Updated by state/theme.ts so the mobile address bar matches the UI. -->
+    <!-- 由 state/theme.ts 更新，使手机地址栏颜色与界面一致。 -->
     <meta name="theme-color" content="#f6f7f9" />
     <script>
-      // Set an explicit preference before the stylesheet paints. "auto" needs
-      // no attribute because the CSS media query already follows the browser.
+      // 样式表绘制前先应用用户明确选择的主题。
+      // 自动模式由 CSS 媒体查询跟随浏览器，无需设置属性。
       try {
         const theme = localStorage.getItem('syvrio.theme');
         if (theme === 'light' || theme === 'dark') {
           document.documentElement.dataset.theme = theme;
         }
       } catch {
-        // Storage may be blocked; the system theme remains the fallback.
+        // 本地存储不可用时，沿用系统主题。
       }
     </script>
     <link rel="icon" href="/syvrio.svg?v=2" type="image/svg+xml" />

@@ -27,7 +27,7 @@ def reviewed_write(tools, evidence, name, payload):
 def read_page(sessions, session, tools, filename):
     result = tools.execute("read_file", {"path": filename})
     assert result.ok, result.content
-    # The resident appends the delivered result before sending it to the model.
+    # 常驻服务先追加工具实际返回的结果，再将其发送给模型。
     sessions.append(
         session,
         {

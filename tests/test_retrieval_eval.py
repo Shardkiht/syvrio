@@ -1,4 +1,4 @@
-"""Scoring and production-tool wiring for the synthetic, paired retrieval benchmark."""
+"""成对合成检索基准的评分和生产工具接入。"""
 
 from __future__ import annotations
 
@@ -73,7 +73,7 @@ def freeze(tmp_path, monkeypatch, corpus, cases):
 
 
 def test_keyword_recall_tool_runs_against_frozen_synthetic_data(tmp_path, monkeypatch):
-    # Keep this a fast integration test. The CLI benchmarks the complete corpus.
+    # 集成测试只使用小样本以便快速运行，CLI 基准会评估完整语料。
     corpus = [{"category": "items", "text": f"合成编号清单项目 {i} 的记录。"} for i in range(12)]
     cases = [{"category": "items", "query": "合成编号清单", "target": 0}]
     freeze(tmp_path, monkeypatch, corpus, cases)

@@ -1,4 +1,4 @@
-"""Compose each resident conversation and manage resources owned by the Vault process."""
+"""组装各常驻对话，管理持有 Vault 的进程所拥有的资源。"""
 
 from __future__ import annotations
 
@@ -76,7 +76,7 @@ class ResidentChannel:
     def conversation(self) -> ConversationUseCases:
         return self._conversation
 
-    # ---------- lifecycle ----------
+    # 生命周期
 
     def startup(self, ownership: BackendLease | None = None) -> None:
         try:
@@ -125,8 +125,8 @@ class ResidentChannel:
                     channel.shutdown()
         if not self.scheduling.shutdown():
             return
-        # Keep the client lock until every writer has stopped. Shutdown records
-        # the remaining work for startup, without launching another model call.
+        # 在所有写入方停止后才释放客户端锁。关闭时登记剩余工作，
+        # 供下次启动处理，避免在关闭过程中再次调用模型。
         with self.scheduling.command_lock:
             try:
                 self._runtime.close(distill=False)

@@ -1,4 +1,4 @@
-"""Admission, ordering and completion of work on one conversation."""
+"""管理单个对话的任务准入、排序和完成。"""
 
 from __future__ import annotations
 
@@ -53,8 +53,8 @@ class ConversationScheduler:
         )
 
     def session_busy(self, session_id: str) -> bool:
-        # Background workers ask while holding the Vault lock. Acquiring the
-        # admission lock here would invert the order used to start or archive a turn.
+        # 后台任务查询时已持有 Vault 锁。此处再获取准入锁，
+        # 会与启动回合或归档时的加锁顺序相反。
         return self.conversation.ask_in_flight == session_id or (
             self.conversation.current_id == session_id and self.busy
         )

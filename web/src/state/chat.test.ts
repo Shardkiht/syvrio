@@ -133,7 +133,7 @@ describe('chat reducer', () => {
       display: 'timeout',
       expanded: false,
     });
-    // Tool rows share the same fold path as reasoning.
+    // 工具行与思考区共用折叠逻辑。
     state = toggleSegment(state, tool.id);
     expect(segmentsOf(state)[0]).toMatchObject({ expanded: true });
   });

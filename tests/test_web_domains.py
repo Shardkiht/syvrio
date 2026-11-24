@@ -1,4 +1,4 @@
-"""Local domain mapping tests: pure functions plus an isolated hosts file."""
+"""使用纯函数和独立的 hosts 文件测试本地域名映射。"""
 
 from __future__ import annotations
 

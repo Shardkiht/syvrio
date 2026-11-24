@@ -1,4 +1,4 @@
-"""Request, response and event shapes shared by resident HTTP clients."""
+"""常驻服务 HTTP 客户端共享的请求、响应和事件结构。"""
 
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ class HealthResponse(BaseModel):
     model: str
     busy: bool = False
     active_turn_id: int | None = None
-    # Multiple clients share the resident owner and its per-session queue.
+    # 所有客户端共享常驻实例及其按会话维护的队列。
     single_client: bool = False
     static_ready: bool = False
 
@@ -74,7 +74,7 @@ class SessionListResponse(BaseModel):
 
 
 class CreateSessionResponse(BaseModel):
-    """A fresh conversation. ``session_id`` stays null until the first message."""
+    """新对话在发送第一条消息前，session_id 始终为空。"""
 
     session_id: str | None = None
     title: str = ""
@@ -202,12 +202,12 @@ class SwitchSessionHistoryResponse(SwitchSessionResponse):
 
 
 class CommandInfo(BaseModel):
-    """One row of the shared TUI/Web command catalog."""
+    """TUI 与网页端共享的命令目录条目。"""
 
     name: str
     usage: str
     description: str
-    support: str  # server / client / unsupported
+    support: str  # 命令支持方式可取 server、client 或 unsupported。
     intent: str = ""
     confirm: bool = False
     note: str = ""
@@ -229,7 +229,7 @@ class CommandRequest(BaseModel):
 
 
 class CommandResponse(BaseModel):
-    status: str  # ok / client / unsupported / unknown / busy / confirm_required / error
+    status: str  # 结果状态可取 ok、client、unsupported、unknown、busy、confirm_required 或 error。
     command: str
     intent: str = ""
     message: str = ""
@@ -240,6 +240,6 @@ class CommandResponse(BaseModel):
 
 
 def sse_frame(event: TurnEvent) -> str:
-    """Serialize as UTF-8 text; Starlette encodes the response body."""
+    """序列化为 UTF-8 文本，由 Starlette 编码响应正文。"""
     payload = event.model_dump_json(exclude_none=True)
     return f"id: {event.seq}\nevent: {event.type}\ndata: {payload}\n\n"

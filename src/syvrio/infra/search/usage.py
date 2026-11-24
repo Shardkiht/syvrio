@@ -1,4 +1,4 @@
-"""Local request protection; calendar counters are not provider billing balances."""
+"""本地请求保护按日历周期计数，供应商账户余额另行计算。"""
 
 from __future__ import annotations
 
@@ -57,7 +57,7 @@ class UsageLimiter:
 
     def _entry(self, provider: str) -> dict:
         entry = self._counts.setdefault(provider, {})
-        # Old records identify their one known period by the window shape.
+        # 根据窗口结构识别旧记录中唯一已知的周期。
         old_window = entry.get("window", "")
         if isinstance(old_window, str) and isinstance(entry.get("count"), int):
             period = (
@@ -120,7 +120,7 @@ class UsageLimiter:
         return "已达到本地调用上限，本次跳过该厂商"
 
     def acquire(self, provider: str) -> bool:
-        """Atomic in-process check + conservative accounting before dispatch."""
+        """在进程内原子检查额度，并在分发前按保守方式预扣。"""
         with self._lock:
             if not self.allows(provider):
                 return False
@@ -133,19 +133,17 @@ class UsageLimiter:
             entry = self._entry(provider)
             for period in ("daily", "monthly"):
                 entry[period]["count"] += 1
-            # Preserve the old shape for callers still inspecting legacy records.
+            # 保留旧结构，供仍读取旧版记录的调用方使用。
             limit = self._limits.get(provider)
             if getattr(limit, "period", None) in ("daily", "monthly"):
                 entry.update(entry[limit.period])
             self._save()
 
     def release(self, provider: str) -> None:
-        """Give one pre-charged call back when dispatch failed.
+        """请求分发失败时退回一次预扣的调用额度。
 
-        ``acquire`` charges before the request so a crash cannot overshoot the
-        limit; a failure that never produced a result must not consume budget.
-        Window rollover resets the counter first, so a late release can never
-        eat into the new window.
+        acquire 在请求前预扣，避免进程崩溃导致超额。未获得结果的失败调用应退还额度。
+        先处理窗口切换并重置计数，防止迟到的退款扣减新窗口的计数。
         """
         with self._lock:
             self._load()

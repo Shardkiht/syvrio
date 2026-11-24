@@ -992,7 +992,7 @@ def test_documented_quota_errors_only(cls, status, payload, paused, kind):
     assert bool(caught.value.pause_reason) is paused
     assert caught.value.kind.value == kind
     assert "must-not-be-echoed" not in str(caught.value)
-    assert caught.value.resume_at is None  # no invented reset date
+    assert caught.value.resume_at is None  # 不推测重置日期。
 
 
 def test_volcengine_preserves_safe_business_code_without_raw_message():

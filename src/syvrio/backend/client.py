@@ -1,4 +1,4 @@
-"""Synchronous protocol adapter for the CLI, Textual and MCP."""
+"""供 CLI、Textual 和 MCP 使用的同步协议适配器。"""
 
 from __future__ import annotations
 

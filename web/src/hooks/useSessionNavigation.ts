@@ -12,8 +12,8 @@ type Options = {
   onDeliveryError: (error: unknown) => void;
 };
 
-/** Order changes to one browser view with message admission and edits. The
- * backend keeps generating after it acknowledges a submitted message. */
+/** 同一浏览器视图的变更与消息受理和编辑按顺序执行。
+ * 后端确认收到消息后仍会继续生成。 */
 export function useSessionNavigation({ currentSession, onRequested, switchHistory, onSelected, onFailure, onSettled, onDeliveryError }: Options) {
   const navigation = useRef<Promise<boolean> | null>(null);
   const submissions = useRef<Promise<void> | null>(null);
@@ -60,7 +60,7 @@ export function useSessionNavigation({ currentSession, onRequested, switchHistor
         onSelected(id, navigation.current === next, confirmed);
         return true;
       } catch (error) {
-        // The gateway may have changed the binding before the reply was lost.
+        // 回执丢失前，网关可能已更改绑定。
         const uncertain = error instanceof NetworkError || error instanceof TypeError || error instanceof SyntaxError ||
           (error instanceof ApiError && error.status != null && error.status >= 500);
         if (uncertain) {

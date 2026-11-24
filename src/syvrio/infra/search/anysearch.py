@@ -94,8 +94,8 @@ class AnySearchFetchProvider:
         try:
             response = self._client.post_json("/extract", {"url": query.url}, headers)
         except ProviderError as exc:
-            # A 402 can carry generated credentials in the response message.
-            # Do not propagate the server's text or error-code fields.
+            # HTTP 402 响应的错误信息可能包含生成的凭据。
+            # 避免转发服务器的错误文本或错误码字段。
             parts = exc.detail.split(maxsplit=2)
             detail = "抓取 API 请求失败"
             if len(parts) >= 2 and parts[0] == "HTTP":

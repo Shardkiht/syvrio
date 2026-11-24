@@ -19,7 +19,7 @@ const commandResult = (patch: Partial<CommandResponse>): CommandResponse => ({
   session_id: null, refresh_sessions: false, refresh_history: false, ...patch,
 });
 
-/** Serve the four read commands plus provider actions; record every line. */
+/** 提供四个只读命令及供应商操作，并记录每一条命令。 */
 function installFetch(initialBudget = 100000) {
   const lines: string[] = [];
   vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {

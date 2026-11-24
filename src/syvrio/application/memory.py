@@ -21,7 +21,7 @@ class MemoryUseCases:
     def __init__(self, service: MemoryService) -> None:
         self.service = service
 
-    # ---------- Pending ----------
+    # 待确认记忆
 
     def pending(self) -> PendingSnapshot:
         return PendingSnapshot(list(self.service.pending()))
@@ -57,7 +57,7 @@ class MemoryUseCases:
     def reject(self, item_id: str):
         return self.service.reject(item_id)
 
-    # ---------- Inferences ----------
+    # 推断
 
     def load_inference_review(self, *, include_sources: bool = True) -> InferenceReview:
         items = self.service.list_inferences()
@@ -95,7 +95,7 @@ class MemoryUseCases:
             if entry.id in source_ids
         }
 
-    # ---------- Topics ----------
+    # 主题
 
     def topics(self) -> list[dict]:
         return self.service.topics()
@@ -106,7 +106,7 @@ class MemoryUseCases:
     def topic_entries(self, topic: str):
         return self.service.topic_entries(topic)
 
-    # ---------- Import ----------
+    # 导入
 
     def import_path(
         self,
@@ -205,7 +205,7 @@ class MemoryUseCases:
                 )
             )
 
-    # ---------- Profile ----------
+    # 画像
 
     def profile(self) -> ProfileSnapshot:
         summary = self.service.profile.profile_summary()

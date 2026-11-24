@@ -1,4 +1,4 @@
-"""Policy for running a complete Dream independently of connected clients."""
+"""独立于客户端连接执行完整 Dream 的策略。"""
 
 from __future__ import annotations
 

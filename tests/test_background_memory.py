@@ -237,7 +237,7 @@ def test_resident_startup_retries_durable_session_without_open_client(service, m
     owner.start()
     try:
         assert called.wait(5)
-        # A slow provider must never hold the write lock or stall unrelated sessions.
+        # 响应缓慢的供应商不能长期占用写锁或阻塞其他会话。
         saved = Event()
         thread = Thread(
             target=lambda: (service.add(MemoryDraft(topic="t", text="另一事实")), saved.set())

@@ -1,4 +1,4 @@
-"""Generate titles only for conversations that have been actively continued."""
+"""仅为用户实际继续过的对话生成标题。"""
 
 from collections.abc import Callable
 from pathlib import Path
@@ -54,7 +54,7 @@ def generate(service, user: str, answer: str) -> str:
     config = service.config.llm
     if config.requires_api_key() and not config.api_key():
         return ""
-    # Bound each side independently so a large paste cannot crowd out the answer.
+    # 分别限制对话两侧的长度，避免一次长粘贴挤掉回答。
     budget = min(480, max(32, service.config.chat.context_window // 8))
     payload = {
         "question": truncate_to_tokens(user, budget),
@@ -84,15 +84,15 @@ def process(
     try:
         title = generate(service, pair[0]["content"], pair[1]["content"])
     except Exception as exc:
-        # A failed title never breaks chat. A later completed turn can request it again.
+        # 标题生成失败不影响聊天，后续回合完成后可再次请求。
         record_event("session.title_failed", exc)
         title = ""
     with vault_transaction(service.paths) as tx:
         if stop.is_set() or read_job(path) != job:
             return False
         if title and _exchange(sessions, job) == pair:
-            # Update a live session's event sequence as well as its file; compaction
-            # uses physical record offsets, and another view may still hold that session.
+            # 同时更新活动会话的事件序列和文件。上下文压缩依赖物理记录偏移，
+            # 且其他视图可能仍持有该会话。
             target = live_session(job["id"]) or sessions.load(job["id"], include_reasoning=False)
             sessions.append(
                 target,

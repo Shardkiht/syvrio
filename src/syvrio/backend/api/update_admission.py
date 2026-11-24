@@ -1,4 +1,4 @@
-"""Reserve the interval between the idle check and stopping the Web service."""
+"""在检查空闲状态与停止网页服务之间预留独占时段。"""
 
 from __future__ import annotations
 
@@ -23,8 +23,8 @@ class UpdateAdmission:
 
     def _reserved(self) -> bool:
         if self._ticket:
-            # The worker owns this OS lock until switching or rollback is finished.
-            # A killed worker releases it automatically, so a client is never stranded.
+            # 工作进程在切换或回滚完成前持有这把系统锁。
+            # 即使进程被终止，系统也会释放锁，客户端可以继续操作。
             update_lock = VaultLock(syvrio_home() / "update" / "update.lock")
             try:
                 update_lock.acquire(timeout=0)

@@ -167,7 +167,7 @@ async def test_stream_restore_resize_and_copy(width, tmp_path):
         assert reply.get_selection(SELECT_ALL)[0] == final
         visual = reply.visual
         reply.update(SAMPLE)
-        assert reply.visual is visual  # identical final update skips reparsing
+        assert reply.visual is visual  # 最终更新内容相同时跳过重新解析。
         store = SessionStore(tmp_path / "vault")
         session = store.create()
         store.append(session, {"type": "assistant", "content": SAMPLE})
@@ -179,8 +179,8 @@ async def test_stream_restore_resize_and_copy(width, tmp_path):
         assert store.load(session.id).records[-1]["content"] == SAMPLE
         reply.text_select_all()
         await pilot.press("ctrl+c")
-        # Copy can flush the scrollbar layout after mounting the restored reply.
-        # Compare with the current display width, not its pre-refresh snapshot.
+        # 复制操作可能在恢复的回复挂载后触发滚动条重新布局。
+        # 与当前显示宽度比较，避免误用刷新前的快照。
         assert app.clipboard == reply.get_selection(SELECT_ALL)[0]
         await pilot.resize_terminal(80 if width != 80 else 120, 50)
         await pilot.pause()

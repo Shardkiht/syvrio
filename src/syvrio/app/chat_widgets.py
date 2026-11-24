@@ -50,7 +50,7 @@ def _cjk_strong(state: StateInline, silent: bool) -> bool:
     can_close = unicodedata.category(before).startswith("P") and 0x3400 <= ord(after) <= 0x9FFF
     if not (can_open or can_close):
         return False
-    # Keep markdown-it's delimiter pairing, escapes and code rules intact.
+    # 沿用 markdown-it 的分隔符配对、转义与代码解析规则。
     emphasis.tokenize(state, silent)
     for delimiter in state.delimiters[-2:]:
         delimiter.open = delimiter.open or can_open
@@ -65,7 +65,7 @@ class _ReplyHeading(Heading):
 
 class _ReplyCodeBlock(CodeBlock):
     def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
-        # Remove only the fence's terminal newline, never code indentation/spaces.
+        # 只去除代码围栏末尾的换行，保留代码中的缩进和空格。
         yield Syntax(
             str(self.text).removesuffix("\n"),
             self.lexer_name,
@@ -86,7 +86,7 @@ class _ReplyMarkdown(RichMarkdown):
 
     def __init__(self, markdown: str) -> None:
         compatible = bool(_CJK_EMPHASIS.search(markdown))
-        # Initialize Rich's rendering state without parsing an affected reply twice.
+        # 初始化 Rich 渲染状态，避免对同一回复重复解析。
         super().__init__(
             "" if compatible else markdown, code_theme="github-dark", style="markdown.text"
         )
@@ -210,7 +210,7 @@ class TranscriptView(VerticalScroll):
     def scroll_to_follow(self) -> None:
         if self.reading_paused:
             return
-        # Textual can snap to an older animation target before scrolling to the bottom.
+        # Textual 在滚动到底部前可能先跳到旧的动画目标。
         self._following_scroll = True
         try:
             self.scroll_end(animate=False, immediate=True)
@@ -218,11 +218,11 @@ class TranscriptView(VerticalScroll):
             self._following_scroll = False
 
     def on_resize(self) -> None:
-        # Buffered Markdown can change virtual height one layout after flush.
+        # 刷出缓冲的 Markdown 后，虚拟高度可能要到下一次布局才更新。
         self.scroll_to_follow()
 
     def watch_virtual_size(self) -> None:
-        # A reply may grow without changing the viewport or emitting Resize.
+        # 即使视口未变且未触发 Resize，回复也可能变长。
         if self.is_mounted and not self.reading_paused:
             self.app._scroll_end()
 
@@ -372,7 +372,7 @@ class TranscriptView(VerticalScroll):
 
 
 class HomePanel(Vertical):
-    """Seven-row terminal wordmark with rounded strokes and dot transitions."""
+    """七行终端字标，使用圆润笔画和点阵过渡。"""
 
     WORDMARK = "Syvrio"
     GLYPHS = {

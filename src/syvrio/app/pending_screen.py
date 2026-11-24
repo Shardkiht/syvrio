@@ -1,4 +1,4 @@
-"""Review pending facts in one modal while the app handles queue writes."""
+"""在同一弹窗中审核待确认事实，由应用负责写入队列。"""
 
 from __future__ import annotations
 

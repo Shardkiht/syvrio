@@ -1,4 +1,4 @@
-"""Read-only session history, listing and original-message lookup."""
+"""只读的会话历史、会话列表与原始消息查询。"""
 
 from __future__ import annotations
 
@@ -26,8 +26,8 @@ def _session_sort_time(value: str) -> datetime:
 
 
 def _validate_record(record: Any) -> None:
-    # Syntactically valid JSON may still be unusable session data. Do not
-    # classify such complete records as torn tails or coerce historical data.
+    # JSON 语法正确的完整记录仍可能不是有效的会话数据。
+    # 不能把它误判为尾部写入中断，也不能强制转换历史数据。
     if not isinstance(record, dict) or not isinstance(record.get("type"), str):
         raise ValueError("Session record must be an object with a string type")
     for key in ("id", "at", "started_at", "title", "role", "up_to"):
@@ -80,7 +80,7 @@ class SessionQuery:
         return self._path(session_id, archived=archived).exists()
 
     def verify_attachments(self) -> tuple[int, list[str]]:
-        """Verify the archive against every original message, including undone turns."""
+        """对照所有原始消息核验归档，包括已撤回的回合。"""
         checked = 0
         errors = []
         if not self.root.is_dir():
@@ -145,7 +145,7 @@ class SessionQuery:
                 errors[number] = exc
                 continue
             _validate_record(record)
-            record.pop("reasoning", None)  # Only local Runtime attachments can carry replay data.
+            record.pop("reasoning", None)  # 只有本地 Runtime 的附属文件可以携带重放数据。
             records.append(record)
             if record.get("type") == "recovery":
                 ignored = record.get("ignored_line")
@@ -186,7 +186,7 @@ class SessionQuery:
                         ):
                             raise ValueError("Invalid local session reasoning")
                     except FileNotFoundError:
-                        continue  # Runtime is local and may be absent after a Vault sync.
+                        continue  # Runtime 保存在本机，同步 Vault 后可能缺失。
                     except (OSError, ValueError, RecursionError) as exc:
                         _LOG.warning(
                             "Skipping unreadable reasoning attachment for %s/%s (%s)",
@@ -350,7 +350,7 @@ class SessionQuery:
             try:
                 session = self._load_path(path, include_reasoning=False)
             except (KeyError, FileNotFoundError):
-                continue  # A conversation can be archived after enumeration.
+                continue  # 列举完成后，会话仍可能被归档。
             title = session.title()
             origin = {"session_id": session.id, "title": title}
             if pattern.search(title):
@@ -414,12 +414,12 @@ class SessionQuery:
         )
 
     def user_message(self, session_id: str, message_id: str, *, active_only: bool = False) -> dict:
-        """Look up exactly one original user message without loading reasoning or other sidecars."""
+        """精确查找一条原始用户消息，无需加载思考记录或其他附属文件。"""
         session = self.load(session_id, include_reasoning=False)
         return self._user_message(session, message_id, active_only=active_only)
 
     def review_source(self, session_id: str, message_id: str) -> dict:
-        """Explicit review may follow a saved reference into an archived conversation."""
+        """显式审核时可沿着已保存的引用查阅归档会话。"""
         archived = False
         try:
             session = self.load(session_id, include_reasoning=False)

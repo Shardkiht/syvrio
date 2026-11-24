@@ -148,7 +148,7 @@ describe('recovering a message edit', () => {
 
   it('restores an in-flight edit and its files after an offline reload without resubmitting it', async () => {
     const { requests, tokens, reads } = fixture('inflight');
-    // jsdom has no IndexedDB. The manifest and component use a separate blob store.
+    // jsdom 没有 IndexedDB，清单和组件另用独立的二进制存储。
     const batches = mockFileStore();
     await clickResend();
     await waitFor(() => expect(requests).toHaveLength(1));

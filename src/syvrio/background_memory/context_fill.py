@@ -1,4 +1,4 @@
-"""Fill missing context once after the user confirms an edited pending fact."""
+"""用户改写并确认待审事实后，补全一次缺少的上下文。"""
 
 from __future__ import annotations
 
@@ -66,7 +66,7 @@ def fill(service, path: Path, stop: Event) -> None:
         with vault_transaction(service.paths) as tx:
             if stop.is_set() or read_job(path) != job:
                 return
-            # If applying the patch fails on disk, a retry reuses this single model response.
+            # 补丁写盘失败时，重试复用已取得的这份模型响应。
             job = {**job, "context": suggested}
             tx.write(path, encode_job(job))
     if stop.is_set():
@@ -90,7 +90,7 @@ def fill(service, path: Path, stop: Event) -> None:
                     service.apply(updates=[update])
             tx.write(path, None)
     except ValueError as exc:
-        # Malformed/conflicting context is not grounds to change an already confirmed fact.
+        # 上下文格式错误或冲突时，保留已经确认的事实。
         record_event("catchup.failed", exc)
         with vault_transaction(service.paths) as tx:
             if read_job(path) == job:

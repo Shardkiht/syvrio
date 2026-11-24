@@ -29,8 +29,8 @@ export function persistEdit(edit: FailedEdit): FailedEdit {
     sessionStorage.setItem(key, JSON.stringify({ ...current, draft }));
     return current;
   } catch {
-    // A quota error can otherwise leave an older, now inaccurate draft on disk.
-    try { sessionStorage.removeItem(key); } catch { /* Storage is inaccessible. */ }
+    // 存储额度不足时，要防止旧的失实草稿继续留在磁盘上。
+    try { sessionStorage.removeItem(key); } catch { /* 无法访问本地存储。 */ }
     return { ...edit, warning: tabOnly };
   }
 }
@@ -48,9 +48,9 @@ export function loadEdits(): Record<string, FailedEdit> {
           if (edit.mode === 'compose' && !edit.dirty) forgetEdit(edit.sessionId, edit.draft.editId);
           else entries.push([edit.sessionId, edit]);
         }
-      } catch { /* Ignore a damaged entry without disturbing other sessions. */ }
+      } catch { /* 忽略损坏条目，保留其他会话的数据。 */ }
     }
-  } catch { /* Storage may be disabled. New edits still work in memory. */ }
+  } catch { /* 本地存储可能被禁用，新编辑仍可在内存中进行。 */ }
   return Object.fromEntries(entries);
 }
 
@@ -61,6 +61,6 @@ export function forgetEdit(sessionId: string, id?: string) {
     const storedId: string | undefined = saved ? JSON.parse(saved).draft.editId : undefined;
     if (!id || id === storedId) sessionStorage.removeItem(key);
     id ??= storedId;
-  } catch { /* In-memory recovery can still be dismissed. */ }
+  } catch { /* 仅从内存恢复的内容也可以关闭。 */ }
   if (id) void removeEditFiles(id).catch(() => undefined);
 }

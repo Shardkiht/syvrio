@@ -64,8 +64,7 @@ export function useTurnStream({ chat, selectionHistory, syncQueue, update, reloa
       }
     };
     try {
-      // Start replay on top of the selected session's history. Its current user
-      // message may already have been saved when this view was elsewhere.
+      // 在所选会话的历史之上重放事件。视图之前切换到别处时，当前用户消息可能已经保存。
       if (selectionHistory.current) await selectionHistory.current;
       if (!current()) return;
       update(prev => {

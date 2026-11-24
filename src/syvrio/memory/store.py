@@ -283,7 +283,7 @@ class MemoryStore:
             return result
 
     def topic_directory(self) -> list[dict[str, str]]:
-        """Read headings for the browser without decoding every memory record."""
+        """只读取网页端所需的标题，无需解码每条记忆。"""
         with vault_transaction(self.paths):
             rows = []
             for path in self._files():

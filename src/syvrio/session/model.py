@@ -1,4 +1,4 @@
-"""Session event projection and rendering, independent of storage and clients."""
+"""会话事件的投影与呈现，独立于存储和客户端。"""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ def new_message_id() -> str:
 def title_message_key(record: dict) -> str:
     if record.get("id"):
         return record["id"]
-    # Early archives can lack message IDs. Bind their title to the content and timestamp.
+    # 早期归档可能缺少消息 ID，使用正文和时间戳关联标题。
     text = record.get("at", "") + "\0" + (record.get("content") or "")
     return "legacy-" + hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -66,7 +66,7 @@ class Session:
         return [record for record in self.active_records() if record.get("type") == "message"]
 
     def latest_turn_inputs(self) -> list[dict]:
-        """Original user input followed by any messages inserted in that same turn."""
+        """原始用户输入以及同一回合中依次插入的消息。"""
         users = [record for record in self.messages if record.get("role") == "user"]
         if not users:
             return []
@@ -120,7 +120,7 @@ class Session:
         return (self.saved_title() or "未命名会话")[:width]
 
     def title_exchange(self) -> tuple[dict, dict] | None:
-        """First completed exchange, excluding undone, interrupted and tool-only output."""
+        """首次完整问答，不计入已撤回、中断或仅有工具输出的回合。"""
         user = answer = None
         for item in self.active_records():
             kind = item.get("type")

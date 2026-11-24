@@ -1,4 +1,4 @@
-"""Handover of a managed gateway and its resident, including separately started residents."""
+"""交接受管网关及其常驻服务，包括单独启动的常驻服务。"""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ def prepare_restart(
 ) -> Callable[[], None] | None:
     response = client.get(f"http://127.0.0.1:{port}/api/update/instance")
     if response.status_code == 404 and paths is None:
-        # Legacy CLI upgrades predate resident identity. Keep their original service lifecycle.
+        # 旧版 CLI 升级早于常驻服务标识机制，沿用原来的服务启停流程。
         return None
     response.raise_for_status()
     gateway = response.json()
@@ -50,7 +50,7 @@ def prepare_restart(
             try:
                 client.post(f"{base}/api/resident/update_resume", headers=headers, json=ticket)
             except httpx.TransportError:
-                pass  # A lost worker/connection also releases admission via update.lock.
+                pass  # 工作进程或连接丢失时，update.lock 也会释放准入限制。
 
     cleanup.callback(resume)
     drain = client.post(f"{base}/api/resident/update_drain", headers=headers, json=ticket)
@@ -62,12 +62,12 @@ def prepare_restart(
         nonlocal stopped
         try:
             try:
-                # A systemd child already stopped with the gateway. A resident started
-                # from another client still holds the lease and needs a graceful shutdown.
+                # 随网关运行的 systemd 子进程已一同停止。其他客户端启动的常驻服务
+                # 仍持有租约，需要正常关闭。
                 result = client.post(f"{base}/api/resident/shutdown", headers=headers, json={})
                 result.raise_for_status()
             except httpx.TransportError:
-                pass  # Confirm actual release of ownership below.
+                pass  # 下方还会核实所有权确已释放。
             lease = BackendLease(paths)
             lease.acquire(timeout=update.STOP_TIMEOUT)
             lease.release()

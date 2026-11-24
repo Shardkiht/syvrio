@@ -55,7 +55,7 @@ describe('SSE client', () => {
     const second = frame({ seq: 2, type: 'content_delta', text: '你好' });
     const third = frame({ seq: 3, type: 'done', text: '你好' });
     const bytes = encoder.encode(second);
-    // Cut inside the last multi-byte character; stream:true must reassemble it.
+    // 从最后一个多字节字符中间切分，验证 stream:true 能将其完整还原。
     const split = bytes.length - 4;
     vi.stubGlobal('fetch', async () => sseResponse(
       first,

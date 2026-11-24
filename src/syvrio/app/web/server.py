@@ -1,4 +1,4 @@
-"""Browser gateway entry and the embeddable Web application."""
+"""浏览器网关入口和可嵌入网页应用。"""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ def create_app(
     host: str = DEFAULT_HOST,
     resident_token: str | None = None,
 ) -> FastAPI:
-    """Build the in-process Web application with the same API and browser assets."""
+    """使用相同的 API 和浏览器资源构建进程内网页应用。"""
     from ...backend.api.channel import APIChannel
     from ...backend.api.routes import create_api
 
@@ -68,7 +68,7 @@ def run_server(
     domains: list[str] | None = None,
     share: WebShareConfig | None = None,
 ) -> None:
-    """Serve browser assets and requests without owning the Vault or background tasks."""
+    """提供浏览器资源并处理请求，Vault 和后台任务由常驻服务管理。"""
     import uvicorn
 
     from ...backend.endpoint import client_paths, connect, discover

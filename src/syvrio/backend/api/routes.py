@@ -1,4 +1,4 @@
-"""Shared HTTP and SSE routes of the resident backend."""
+"""常驻后端共享的 HTTP 与 SSE 路由。"""
 
 from __future__ import annotations
 
@@ -63,7 +63,7 @@ def create_api(
     host: str = "127.0.0.1",
     resident_token: str | None = None,
 ) -> FastAPI:
-    """Expose the shared protocol for an owner whose lifetime is set by the caller."""
+    """对外提供共享协议，服务实例的生命周期由调用方管理。"""
     views = ClientViews(owner)
 
     def view_key(request: Request) -> str:
@@ -110,7 +110,7 @@ def create_api(
 
     @app.exception_handler(Exception)
     async def _unexpected(request: Request, exc: Exception):
-        # Never leak a stack trace or chat content to the browser.
+        # 避免将异常调用栈或聊天内容泄露给浏览器。
         record_event("web.unhandled", exc)
         return error_response("internal_error", "Internal server error.", 500)
 
@@ -510,7 +510,7 @@ def create_api(
         try:
             return await stream_reply(request, body, batch, replace=replace)
         except Exception:
-            # A failed journal append may already have discarded its bound batch.
+            # 追加日志失败时，与之绑定的一批记录可能已被丢弃。
             if batch.folder.exists():
                 batch.discard()
             raise
@@ -549,8 +549,8 @@ def create_api(
             edit_id = request.headers.get("x-syvrio-edit")
             if edit_id is not None and not re.fullmatch(r"[a-f0-9]{32}", edit_id):
                 raise APIError("invalid_request", "Invalid edit receipt identifier.", 422)
-            # A reload owns a fresh navigation view, but can claim its original
-            # receipt with the saved edit token, session, target and payload.
+            # 页面重载会获得新的导航视图。凭已保存的编辑令牌、会话、目标和请求内容，
+            # 仍能取回原来的回执。
             receipt_owner = f"edit:{edit_id}" if edit_id else view_key(request)
             turn = await asyncio.to_thread(
                 selected.scheduling.replace,

@@ -1,4 +1,4 @@
-"""Evaluate the production recall tool against a fully labeled synthetic fact table."""
+"""用完整标注的合成事实表评估实际使用的召回工具。"""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ DATA = Path(__file__).parent / "data" / "recall_gold.json"
 
 
 def build_fixture(data: dict) -> tuple[list[dict], list[str | None], dict[str, str]]:
-    """Only memory text goes into the Vault. Slot membership stays in the scoring key."""
+    """只将记忆正文写入 Vault，所属评分项仅保存在评分依据中。"""
     records = []
     slots = []
     values = {}

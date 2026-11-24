@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Migrate into a fresh Vault/Runtime pair. Never edits the input or uses Git remotes."""
+"""迁移到新的 Vault 和 Runtime，保留源数据，全程只使用本地 Git。"""
 
 from __future__ import annotations
 
@@ -143,8 +143,8 @@ def legacy_memory(raw: bytes, old_path: str, new_path: str) -> tuple[bytes, list
         )
         draft = render_record(entry.text, core, context, extensions)
         projected = parse_document(draft, new_path, new_path).records[0].entry
-        # Reproduce the v1 semantic snapshot used by existing inference records,
-        # without putting session/record offsets in future evidence identities.
+        # 复现现有推断记录使用的 v1 语义快照，
+        # 避免把会话或记录偏移量写入新的证据标识。
         payload = entry.model_dump(
             include={"id", "topic", "text", "timestamp", "status", "supersedes", "metadata"}
         )
@@ -228,7 +228,7 @@ def build(
         path = source / name
         rel = Path(name)
         if name.endswith("/"):
-            # Git needs directories such as objects and refs even in an empty repo.
+            # 即使仓库为空，Git 也需要 objects 和 refs 等目录。
             if rel.parts[0] not in {".syvrio", "sessions", "memories"}:
                 (vault / rel).mkdir(parents=True, exist_ok=True)
             continue
@@ -337,8 +337,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("source Vault, destination Vault and Runtime directories must not overlap")
     if not src.is_dir() or old_run and not old_run.is_dir():
         parser.error("source directory does not exist")
-    # Keep both renames on one filesystem. Runtime is published first: an
-    # interrupted run can never expose a Vault without its prepared Runtime.
+    # 两次重命名都在同一文件系统内完成。先发布 Runtime，
+    # 这样迁移中断时也不会暴露尚未配好 Runtime 的 Vault。
     if dst.parent != run.parent or not dst.parent.is_dir():
         parser.error("destination Vault and Runtime must share an existing parent directory")
     try:

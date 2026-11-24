@@ -1,4 +1,4 @@
-"""UTC storage and parsing for absolute timestamps."""
+"""绝对时间戳的 UTC 存储和解析。"""
 
 from datetime import UTC, date, datetime, tzinfo
 
@@ -30,12 +30,12 @@ def parse_timestamp(value: str) -> datetime:
 
 
 def timestamp_calendar_date(value: str) -> date:
-    """Calendar date in the offset explicitly supplied with a source message."""
+    """根据来源消息明确提供的时区偏移量求取日历日期。"""
     return _parse_aware(value).date()
 
 
 def local_timestamp(value: str) -> str:
-    """An explicit local offset for prompts and relative calendar calculations."""
+    """为提示词和相对日期计算提供明确的本地时区偏移。"""
     return parse_timestamp(value).astimezone().isoformat()
 
 

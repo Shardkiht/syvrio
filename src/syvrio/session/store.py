@@ -1,4 +1,4 @@
-"""Reliable writes and recovery for the session JSONL archive and its sidecars."""
+"""会话 JSONL 归档及其附属文件的可靠写入和恢复。"""
 
 from __future__ import annotations
 
@@ -46,16 +46,16 @@ def _reasoning_versions(folder: Path) -> dict[str, _FileVersion]:
 
 
 class HistoryRevision:
-    """Identity for cached projections; pure close markers preserve it."""
+    """为投影缓存标识版本，仅追加关闭标记时沿用原标识。"""
 
 
 @dataclass(frozen=True)
 class SessionSnapshot:
-    """A read-only journal revision shared by readers. Runtime takes a detached copy."""
+    """多个读取方共享的只读日志版本，Runtime 另取独立副本。"""
 
     session: Session
     version: _FileVersion
-    # None means the transcript references no local reasoning at all.
+    # None 表示对话记录完全没有引用本地思考内容。
     reasoning: dict[str, _FileVersion] | None
     history_revision: HistoryRevision = field(default_factory=HistoryRevision)
 
@@ -70,7 +70,7 @@ def _finish_sidecar_deletion(folder: Path) -> None:
     try:
         shutil.rmtree(folder)
     except OSError as exc:
-        # A viewer can keep a file open on Windows. Recovery retries after restart.
+        # Windows 上查看器可能仍打开着文件，重启后会再次尝试恢复。
         logging.getLogger(__name__).warning("Session sidecar cleanup deferred: %s", exc)
 
 
@@ -125,11 +125,11 @@ class SessionStore(SessionQuery):
         self._snapshots: OrderedDict[Path, SessionSnapshot] = OrderedDict()
 
     def load_snapshot(self, session_id: str) -> Session:
-        """Return a detached copy that Runtime can append to or undo."""
+        """返回独立副本，供 Runtime 追加或撤回。"""
         return deepcopy(self.read_snapshot(session_id).session)
 
     def read_snapshot(self, session_id: str) -> SessionSnapshot:
-        """Verify the saved revision and share its records across read-only projections."""
+        """核验已保存的版本，在只读投影之间共享其记录。"""
         with self._lock:
             path = self._path(session_id)
             try:
@@ -142,7 +142,7 @@ class SessionStore(SessionQuery):
                 if cached is None or cached.version != version or cached.reasoning is not None:
                     reasoning = _reasoning_versions(self._reasoning_root / session_id)
             except (OSError, ValueError, RuntimeError):
-                # The normal reader skips individual unavailable/redirected sidecars.
+                # 常规读取时跳过单个缺失或被重定向的附属文件。
                 return SessionSnapshot(self._load_path(path, include_reasoning=True), version, None)
             if cached is None or cached.version != version or cached.reasoning != reasoning:
                 session = self._load_path(path, include_reasoning=True)
@@ -164,7 +164,7 @@ class SessionStore(SessionQuery):
             session_id = f"s-{stamp:%Y%m%d-%H%M%S}-{secrets.token_hex(2)}"
             path = archive / f"{session_id}.jsonl"
             known = {item.stem for item in self._files()}
-            # Exclusive creation also protects the collision window between processes.
+            # 独占创建还能防止进程间同时创建文件时发生冲突。
             while True:
                 if (
                     session_id in known
@@ -210,7 +210,7 @@ class SessionStore(SessionQuery):
         record = _redact_record(record)
         reasoning = record.pop("reasoning", None)
         if reasoning and reasoning != raw_reasoning:
-            # A scrubbed reasoning fragment must never be replayed as original protocol data.
+            # 已脱敏的思考片段不能作为原始协议数据重放。
             reasoning.pop("source", None)
         _stamp_event(record)
         # 损坏尾行原样保留：只追加换行和恢复标记，后续加载据此跳过该行。
@@ -256,7 +256,7 @@ class SessionStore(SessionQuery):
                     handle.flush()
                     version = _version(os.fstat(handle.fileno()))
             if cached is not None:
-                # Keep the saved close event for Runtime, while the visible history is identical.
+                # 为 Runtime 保留已保存的关闭事件，界面显示的历史保持一致。
                 saved = replace(cached.session, records=[*cached.session.records, record.copy()])
                 self._snapshots[session.path] = replace(cached, session=saved, version=version)
             if reasoning:
@@ -265,7 +265,7 @@ class SessionStore(SessionQuery):
         return record
 
     def append_event_transactionally(self, session: Session, event: dict, *following: dict) -> None:
-        """Publish related events in a single file replacement under the caller's transaction."""
+        """在调用方的事务中一次替换文件，一并发布关联事件。"""
         from ..infra.transaction import vault_transaction
 
         with vault_transaction(self.paths) as tx:
@@ -289,7 +289,7 @@ class SessionStore(SessionQuery):
             tx.append(current.path, prefix + payload.encode("utf-8"))
 
     def advance_distilled(self, session: Session, message_id: str) -> None:
-        """Commit the next cursor with all the facts extracted from that message."""
+        """将下一个游标与从该消息提取的所有事实一同提交。"""
         from ..infra.transaction import vault_transaction
 
         with vault_transaction(self.paths):
@@ -312,7 +312,7 @@ class SessionStore(SessionQuery):
                 tx.write(pending, None)
 
     def set_archived(self, session_id: str, archived: bool) -> None:
-        """Move only the transcript. Source IDs and all original sidecars stay intact."""
+        """仅移动对话记录，保留来源 ID 及所有原始附属文件。"""
         with self._lock:
             source = self._path(session_id, archived=not archived)
             existing = self._path(session_id, archived=archived)

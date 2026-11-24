@@ -47,13 +47,13 @@ def _field_key(text: str) -> str:
 
 
 def _query_field_labels(query: str, fields: dict[str, list[int]]) -> set[str]:
-    """Match complete label spans and suppress labels nested inside a longer one."""
+    """匹配完整标签区间，忽略嵌套在更长标签中的短标签。"""
     query = _field_key(query)
     if jieba is not None:
         tokens = tuple(jieba.tokenize(query))
         starts = {start for _, start, _ in tokens}
         ends = {end for _, _, end in tokens}
-    else:  # pragma: no cover - jieba is a required dependency
+    else:  # pragma: no cover - jieba 是必需依赖
         tokens = tuple(re.finditer(r"[^\W_]+|[^\w\s]", query))
         starts = {token.start() for token in tokens}
         ends = {token.end() for token in tokens}
@@ -76,7 +76,7 @@ def _query_field_labels(query: str, fields: dict[str, list[int]]) -> set[str]:
 def _lookup_fields(
     query: str, labels: set[str], fields: dict[str, list[int]], entries: list[Entry]
 ) -> dict[int, str]:
-    """Give exact priority to field lookups, with evidence for contextual qualifiers."""
+    """优先精确匹配字段查询，并为上下文限定词提供证据。"""
     query = _field_key(query).rstrip("?.!。！？")
     if not labels:
         return {}

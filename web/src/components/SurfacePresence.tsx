@@ -13,7 +13,7 @@ function SurfaceFrame({ surface, dismiss }: { surface: Surface; dismiss: (id: nu
     if (!node || !closing) return;
     node.inert = true;
     const root = node.firstElementChild;
-    // Only the popup or dialog itself controls its lifetime; its content can animate indefinitely.
+    // 只由弹层或对话框本身的动效决定何时卸载，内部内容可以持续播放动画。
     const panel = root?.querySelector(':scope > [aria-modal="true"]');
     const animations = [...(root?.getAnimations?.() ?? []), ...(panel?.getAnimations?.() ?? [])];
     let mounted = true;
@@ -27,7 +27,7 @@ function SurfaceFrame({ surface, dismiss }: { surface: Surface; dismiss: (id: nu
     aria-hidden={closing || undefined}>{surface.child}</div>;
 }
 
-/** Keep the mounted surface for its visual exit while the app handles dismissal immediately. */
+/** 关闭请求立即生效，同时保留已挂载的界面以播放退出动画。 */
 export function SurfacePresence({ children, modal = false }: { children: ReactNode; modal?: boolean }) {
   const committed = useRef<Surface[]>([]);
   const [, redraw] = useReducer(value => value + 1, 0);

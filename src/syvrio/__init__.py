@@ -1,3 +1,3 @@
-"""Syvrio: local-first personal AI agent with persistent memory."""
+"""Syvrio 是优先在本地运行、具有持久记忆的个人 AI 助手。"""
 
 __version__ = "0.6.2"

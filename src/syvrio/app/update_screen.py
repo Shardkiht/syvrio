@@ -1,4 +1,4 @@
-"""Software update controls for the resident terminal client."""
+"""常驻服务终端客户端的软件更新控件。"""
 
 from __future__ import annotations
 
@@ -42,7 +42,7 @@ class UpdateScreen(ModalScreen):
             result = await self.app._request("GET", "/api/update")
         except Exception as exc:
             self.query_one("#update-version", Static).update(f"Release check failed: {exc}")
-            # Local install results remain available even if PyPI is unreachable.
+            # 即使无法访问 PyPI，仍可查看本地安装结果。
             await self._watch()
             return
         self._latest = result["latest"]
@@ -80,7 +80,7 @@ class UpdateScreen(ModalScreen):
         if install and self.is_mounted:
             self.query_one("#update-install", Button).disabled = True
             self._show_job({"state": "running", "message": "Requesting installation…"})
-            # The confirmed submission belongs to the app even if this screen is dismissed.
+            # 提交经确认后由应用接管，关闭当前界面不影响它。
             self.app._run_request(self._install())
 
     async def _install(self) -> None:
@@ -89,7 +89,7 @@ class UpdateScreen(ModalScreen):
                 "POST", "/api/update", json={"version": self._latest, "confirmed": True}
             )
         except httpx.TransportError:
-            # The server may already have started the job. Only read its receipt.
+            # 服务器可能已启动任务，此处只读取回执。
             if self.is_mounted:
                 self.query_one("#update-status", Static).update("Checking installation status…")
                 self.run_worker(self._watch())

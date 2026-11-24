@@ -1,4 +1,4 @@
-"""Measure short-field retrieval on a deterministic Vault with over 1,200 records."""
+"""在包含超过 1,200 条固定记录的 Vault 中评估短字段检索。"""
 
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ SHORT_FIELD_MARKERS = tuple(text.split("：")[0] for _, _, _, text in SHORT_FACT
 
 
 def legacy_cases() -> list[tuple[str, set[str]]]:
-    """Score each frozen query once, accepting the best rank among all its targets."""
+    """每个固定查询只计分一次，取所有目标中的最佳名次。"""
     _, cases = load_data()
     return [
         (
@@ -68,7 +68,7 @@ def seed_vault(vault: Path, *, short_fields: bool = True) -> int:
             continue
         topics["legacy-" + item["category"]].append((f"legacy-{index:04}", text))
     if short_fields:
-        # This independent fixture has one known owner/value per requested field.
+        # 这组独立数据为每个待查字段指定了唯一的归属和值。
         for label, topic, title, text in SHORT_FACTS:
             topics[topic].append((f"short-{label}", text))
             titles[topic] = title
@@ -159,7 +159,7 @@ def main() -> None:
                     service.config.retrieval.default_limit = limit
                     measure(service, cases, args.details)
                     if group == "short" and args.details:
-                        # A broad identity question has no single ground-truth name record.
+                        # 宽泛的身份问题没有唯一正确的姓名记录。
                         with guard_vector(service.retriever.vector):
                             probe = service.recall("我是谁")
                         print(

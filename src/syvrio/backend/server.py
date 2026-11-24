@@ -1,4 +1,4 @@
-"""Own the private listener and Vault for the lifetime of one resident process."""
+"""在常驻进程的整个生命周期内持有内部监听端口和 Vault。"""
 
 from __future__ import annotations
 
@@ -40,7 +40,7 @@ def serve_resident(config_path: Path | None, vault_path: Path) -> None:
             try:
                 server.run(sockets=[sock])
             finally:
-                # Remove our descriptor while the Vault lease still belongs to this process.
+                # 在本进程仍持有 Vault 租约时移除自己的服务描述文件。
                 try:
                     if json.loads(descriptor.read_bytes()).get("token") == token:
                         descriptor.unlink(missing_ok=True)

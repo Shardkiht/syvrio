@@ -125,7 +125,7 @@ class SearchCache:
         """ttl 为空时用实例默认值；空结果等短命条目传更短的 ttl。"""
         if self.ttl <= 0:
             return
-        # Parallel tools may share this cache. Merge and publish under one lock.
+        # 多个并行工具可能共用该缓存，合并与发布须在同一把锁内完成。
         with _WRITE_LOCK:
             data = self._load()
             now = self.clock()

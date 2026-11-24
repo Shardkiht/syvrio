@@ -1,4 +1,4 @@
-"""Submit Dream requests and display the resident scheduler's status."""
+"""提交 Dream 请求并展示常驻调度器的状态。"""
 
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ class ReflectionUseCases:
                 "error", "dream", "dream", "Open Syvrio with its resident service to use Dream."
             )
 
-        # A fast worker can finish immediately. Take the receipt before it advances the job.
+        # 后台线程可能立即完成，须在任务推进前取得回执。
         with vault_transaction(self.background.service.paths):
             before = self.background.dream_status()
             status = before

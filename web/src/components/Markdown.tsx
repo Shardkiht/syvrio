@@ -26,7 +26,7 @@ function CodeBlock({ language, content }: { language: string; content: string })
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch {
-      // Clipboard may be unavailable on plain HTTP; keep the code visible.
+      // 在普通 HTTP 下剪贴板可能不可用，仍要保留可见代码。
     }
   };
   return (
@@ -40,7 +40,7 @@ function CodeBlock({ language, content }: { language: string; content: string })
   );
 }
 
-// Read-only documents can cite links and images without navigating or loading them.
+// 只读文档可以引用链接和图片，展示时避免跳转或加载资源。
 const readingReferences: Components = {
   a({ href, children }) {
     return <span>{children}{href && children !== href && <span className="reading-reference"> ({href})</span>}</span>;
@@ -50,7 +50,7 @@ const readingReferences: Components = {
   },
 };
 
-/** react-markdown never renders raw HTML; rehype-sanitize is a second boundary. */
+/** react-markdown 不渲染原始 HTML，rehype-sanitize 提供额外过滤。 */
 export function Markdown({ text, reading = false }: { text: string; reading?: boolean }) {
   return (
     <div className="markdown">

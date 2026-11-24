@@ -1,4 +1,4 @@
-"""An optional user supplement handed from the UI to a running model turn."""
+"""界面在当前模型回合中转交的可选用户补充。"""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ class TurnInsertion:
 
     @contextmanager
     def model_request(self) -> Iterator[None]:
-        """Reserve an insertion during generation; tool batches never open this window."""
+        """只在生成期间预留插入机会，执行一批工具时始终关闭插入窗口。"""
         with self._lock:
             self._accepting = True
         try:

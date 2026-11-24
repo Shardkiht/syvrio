@@ -1,4 +1,4 @@
-"""Review routing is determined by an explicit model question and validated references."""
+"""根据模型明确提出的问题和已核验的引用决定审核流程。"""
 
 from __future__ import annotations
 

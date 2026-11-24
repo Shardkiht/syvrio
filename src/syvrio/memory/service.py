@@ -99,7 +99,7 @@ def _ensure_vault_gitignore(vault: Path) -> None:
     except FileNotFoundError:
         atomic_write(path, VAULT_GITIGNORE.encode("utf-8"))
         return
-    # A later negation can override the directory rule. Keep user rules in place.
+    # 后续的否定规则可能覆盖目录规则，须保留用户规则的位置。
     required = [b"/attachments/", b"/archived/"]
     for rule in reversed(original.splitlines()):
         if rule in required:
@@ -450,7 +450,7 @@ class MemoryService:
             extractor = ImportExtractor(
                 self.config.llm, topics=[item.topic for item in self.store.topics()]
             )
-        # Extraction may call a remote provider. Recheck the evidence before admitting its drafts.
+        # 提取过程可能调用远程供应商，接受草稿前再次核验证据。
         for _ in range(3):
             version = self.evidence_version(include_pending=True)
             evidence = {
@@ -559,9 +559,9 @@ class MemoryService:
     def memory_references(
         self, ids: set[str], restored: dict[Path, bytes | None]
     ) -> dict[str, set[str]]:
-        """Incoming structured references that survive the proposed file restoration.
+        """找出恢复文件之后仍然存在、且指向这些文件内容的结构化引用。
 
-        Called under the Vault write lock. Inactive records retain their sources too.
+        应在 Vault 写锁内调用，已弃用的记录也保留其来源。
         """
         result: dict[str, set[str]] = {key: set() for key in ids}
         surviving = [

@@ -30,14 +30,14 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
   const [historyRevision, setHistoryRevision] = useState(0);
   const [online, setOnline] = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(() => {
-    // Desktop honours the last choice; the mobile drawer always starts closed.
+    // 桌面端沿用上次选择，移动端抽屉初始总是关闭。
     if (window.innerWidth < 768) return false;
     try {
       const stored = window.localStorage.getItem('syvrio.sidebar');
       if (stored === 'open') return true;
       if (stored === 'closed') return false;
     } catch {
-      // Blocked storage: fall back to the width default.
+      // 本地存储不可用时，按默认宽度处理。
     }
     return true;
   });
@@ -46,7 +46,7 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
     try {
       window.localStorage.setItem('syvrio.sidebar', sidebarOpen ? 'open' : 'closed');
     } catch {
-      // Best effort only.
+      // 存储不可用时仍保留当前界面状态。
     }
   }, [sidebarOpen]);
   const [catalog, setCatalog] = useState<CommandInfo[]>([]);
@@ -102,8 +102,7 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
   const commandWaitingForSwitch = useRef<number | null>(null);
   const reviewCache = useRef<Partial<Record<ReviewPanel['kind'], Pick<ReviewPanel, 'rows' | 'count'>>>>({});
 
-  // Crossing the mobile breakpoint must fold the drawer away; otherwise a
-  // desktop window narrowed to phone width leaves the scrim covering the chat.
+  // 跨入移动端宽度时收起抽屉，避免桌面窗口缩窄后遮罩仍覆盖对话。
   useEffect(() => {
     let wide = window.innerWidth >= 768;
     const onResize = () => {
@@ -123,7 +122,7 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
       try {
         if (next.sessionId) window.sessionStorage.setItem('syvrio.session', next.sessionId);
         else window.sessionStorage.removeItem('syvrio.session');
-      } catch { /* Browsing works when storage is disabled. */ }
+      } catch { /* 本地存储不可用时仍可浏览。 */ }
     }
     chatRef.current = next;
     setChat(next);
@@ -151,7 +150,7 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
     try {
       setHealth(await api.health());
     } catch {
-      // Keep the last known label; a failed probe must not disable the composer.
+      // 探测失败时保留上次的标签，输入框仍可用。
     }
   }, []);
 
@@ -195,7 +194,7 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
     update(prev => ({ ...prev, error: error instanceof Error ? error.message : '发送失败' }));
   }, [update]);
   const onSelected = useCallback((sessionId: string | null, latest: boolean, confirmed?: ChatState) => {
-    // Detach only after the backend has committed this view's new binding.
+    // 后端提交当前视图的新绑定后才解除原关联。
     ++navigationVersion.current;
     detach();
     navigationHistory.current = null;
@@ -240,7 +239,7 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
     };
     setPanel(opening);
     try {
-      // Both lists belong to the Vault and can be read while a chat switch is pending.
+      // 两份列表均属于 Vault，等待切换会话时也可读取。
       const result = await api.runCommand({ line: '/' + kind, session_id: null, confirmed: false });
       const next = panelFor(result);
       if (result.status !== 'ok' || !next || !('rows' in next) || next.kind !== kind) {
@@ -268,7 +267,7 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
     if (bare === '/pending' || bare === '/inferences') {
       return openReview(bare === '/pending' ? 'pending' : 'inferences');
     }
-    // Native file selection must happen inside the keyboard or pointer gesture.
+    // 原生文件选择器必须在键盘或指针事件触发时打开。
     const native = catalog.find((entry) => entry.support === 'client' && entry.intent === 'pick_attachments'
       && requestLine.toLowerCase() === '/' + entry.name);
     if (native && openFiles) {
@@ -286,7 +285,7 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
       return;
     }
     if (requestLine.toLowerCase() === '/topics') {
-      // Show the browser immediately; it loads the shared command result and owns retries.
+      // 立即打开浏览面板，由面板载入共享命令结果并处理重试。
       setPanel({ kind: 'topics' });
       return;
     }
@@ -386,8 +385,7 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
         return;
       }
       if (commandPanel && canPresent()) setPanel(commandPanel);
-      // /model, /think and /context can change the active model; keep the
-      // header label in sync without a full page reload.
+      // /model、/think 和 /context 都可能改变当前模型，需同步刷新顶栏标签，无需重新加载页面。
       if (result.data?.model_changed === true) void refreshHealth();
       if (result.refresh_sessions) void refreshSessions();
       if (result.refresh_history && !chatRef.current.busy) {
@@ -487,8 +485,7 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
     const editId = newRequestId();
     const edit: FailedEdit = { sessionId, messageId, draft: { ...input, editId }, mode: 'compose', dirty: false, error: '', warning };
     if (input.files?.length) {
-      // Commit attachment copies before the first keystroke. A reload can
-      // therefore restore even a change immediately followed by Ctrl+R.
+      // 首次按键前先保存附件副本，这样即使编辑后立刻按 Ctrl+R 也能还原。
       edit.warning = persistEdit(edit).warning;
       if (edit.warning !== tabOnly) {
         try {
@@ -534,8 +531,8 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
       sessionId, messageId, draft, mode: 'edit', error: 'This edit was interrupted before it was submitted.',
     }).warning;
     try {
-      // Make the original files recoverable before a successful replacement
-      // can invalidate their download links, including if this tab reloads mid-POST.
+      // 替换成功可能使原下载链接失效，应提前保存可恢复的原文件，
+      // 也要覆盖标签页在 POST 期间重载的情况。
       if (offlineRecoverySession.current === sessionId) {
         await api.switchSession(sessionId);
         offlineRecoverySession.current = null;
@@ -576,8 +573,7 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
         else void syncQueue().catch(() => undefined);
       }
     }
-    // A failed draft now lives outside the original row, which another client
-    // or our own accepted request may already have removed.
+    // 将失败的草稿保存在原消息行之外，因为其他客户端或本端已受理的请求可能已移除该行。
     return true;
   }, [beginEdit, checkingSelection, discardFailedEdit, reloadHistory, runCommand, showFailedEdit, stream, syncQueue]);
 
@@ -586,7 +582,7 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
       assignDraft?.(blankDraftId.current, receipt.session_id);
       update(prev => ({ ...prev, sessionId: receipt.session_id }));
     }
-    if (navigation.current) return; // The destination will synchronize its own queue.
+    if (navigation.current) return; // 目标会话会自行同步队列。
     if (receipt.history_only) {
       void reloadHistory(receipt.session_id);
       return;
@@ -599,7 +595,7 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
       setQueuePaused(state.paused);
       if (!stream.current) void observe(state.active ?? receipt);
     }).catch(() => {
-      // Admission already succeeded. Reconnect to its stream without submitting again.
+      // 请求已受理，重新连接事件流即可，避免重复提交。
       if (current() && !stream.current) void observe(receipt);
     });
   }, [assignDraft, blankDraftId, changeQueue, navigation, observe, readQueue, reloadHistory, stream, update]);
@@ -629,7 +625,7 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
     let stopped = false;
     let timer: ReturnType<typeof setTimeout>;
     const refresh = async () => {
-      try { await syncQueue(); } catch { /* The next display refresh retries. */ }
+      try { await syncQueue(); } catch { /* 下次刷新界面时重试。 */ }
       if (!stopped) timer = setTimeout(refresh, 1000);
     };
     void refresh();
@@ -737,9 +733,9 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
     void (async () => {
       try {
         let saved: string | null = null;
-        try { saved = window.sessionStorage.getItem('syvrio.session'); } catch { /* Optional. */ }
+        try { saved = window.sessionStorage.getItem('syvrio.session'); } catch { /* 此项可选。 */ }
         if (saved && failedEditsRef.current[saved] && version === navigationVersion.current) {
-          // The user can read the locally recovered edit before the gateway is reachable.
+          // 网关恢复连接前，用户也能阅读本地恢复的编辑内容。
           offlineRecoverySession.current = saved;
           update(prev => ({ ...prev, sessionId: saved }));
         }

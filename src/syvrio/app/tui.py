@@ -1,4 +1,4 @@
-"""Start the Textual client against the resident selected by the CLI."""
+"""根据 CLI 选定的常驻服务启动 Textual 客户端。"""
 
 from __future__ import annotations
 

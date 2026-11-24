@@ -66,7 +66,7 @@ def test_systemd_key_survives_native_backend_changes_and_stays_deleted(
 ):
     import keyring
 
-    # A custom key name may contain characters inappropriate for a filename or credential ID.
+    # 自定义密钥名可能包含不适合文件名或凭据标识符的字符。
     name = "../../synthetic/provider"
     llm = LLMConfig(api_key_env=name)
     assert save_api_key(name, "fake-first-key")

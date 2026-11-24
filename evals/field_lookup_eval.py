@@ -1,4 +1,4 @@
-"""Evaluate exact label boundaries on a fixed, synthetic field corpus."""
+"""用固定的合成字段数据评估标签边界是否匹配准确。"""
 
 from __future__ import annotations
 

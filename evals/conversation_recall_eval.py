@@ -1,9 +1,9 @@
-"""Measure automatic memory injection and explicit tool evidence on frozen synthetic dialogues.
+"""用固定的合成对话评估自动记忆注入及显式工具调用返回的证据。
 
-The explicit tool uses a frozen standalone search string, including the referent of a
-follow-up. Automatic prefetch receives the real dialogue with the production no-key rewrite
-fallback. A historical statement and a current one can both be valid stored facts. The
-benchmark labels each question's required and misleading IDs and does not score answer text.
+显式调用使用预先固定的独立查询，追问中的指代也已补全。
+自动预取接收原始对话，并使用生产环境无密钥时的改写方式。
+历史陈述和当前陈述都可能是有效事实。
+评测按每个问题标注必要及误导条目的 ID，只评估检索结果。
 """
 
 from __future__ import annotations
@@ -65,7 +65,7 @@ def load_corpus(path: Path) -> dict:
 
 class OfflineLLMConfig(LLMConfig):
     def api_key(self) -> None:
-        # Select the production no-key rewrite fallback without inspecting credentials.
+        # 选用生产环境无密钥时的查询改写方式，避免读取凭据。
         return None
 
 
@@ -109,8 +109,8 @@ def summarize(rows: list[dict], channel: str) -> dict:
     answerable = [row[channel] for row in rows if row["required"]]
     ambiguous = [score for score in answerable if score["forbidden_before_target"] is not None]
     unknown = [row[channel] for row in rows if row["expected_trigger"] and not row["required"]]
-    # Unanswerable queries can have relevant context. Only labeled distractors are scored
-    # as misleading; any returned candidates are separately reported, not scored as errors.
+    # 无法作答的问题也可能检索到相关背景。只有标注的干扰项才算误导，
+    # 其他返回的候选单独统计。
     return {
         "answerable": len(answerable),
         "all_required": sum(s["all_required"] for s in answerable),
@@ -183,7 +183,7 @@ def evaluate(method: str = "keyword") -> dict:
                     "explicit_query": case["query"],
                 }
                 for limit in LIMITS:
-                    # Omit limit from the tool call to exercise its configured default.
+                    # 调用工具时省略 limit，以检验配置的默认值。
                     with patch.object(config.retrieval, "default_limit", limit):
                         tools = build_tools(service, runtime.current)
                         result = tool_search(tools, case["query"], corpus["facts"])

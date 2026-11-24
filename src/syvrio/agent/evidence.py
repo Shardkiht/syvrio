@@ -1,4 +1,4 @@
-"""Bind a proposed write to the facts actually reviewed in a later model request."""
+"""将拟写入的内容与后续模型请求实际核对过的事实关联。"""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from ..session.model import Session
 
 
 def emotion_sources(session: Session, message_id: str) -> list[str]:
-    """Only the active user's words and file pages actually returned for that message."""
+    """仅使用当前用户的原话，以及为该消息实际返回的文件页。"""
     pages = []
     for row in reversed(session.active_records()):
         if row.get("type") == "message" and row.get("role") == "user":
@@ -85,8 +85,8 @@ class RecallContext:
                 self.reviewed = None
                 return write()
         self.reviewed = None
-        # Network embeddings must not hold the Vault write lock. Register evidence only
-        # if both the search and the directly referenced records came from the same version.
+        # 调用远程嵌入服务时释放 Vault 写锁。只有检索结果与直接引用的记录
+        # 来自同一版本时，才登记证据。
         for _ in range(3):
             facts = [
                 item

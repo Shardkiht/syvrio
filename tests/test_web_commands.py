@@ -1,7 +1,7 @@
-"""Slash-command compatibility tests for the Web adapter.
+"""网页适配器的斜杠命令兼容性测试。
 
-Everything runs against an isolated Vault and a fake model: no real API keys,
-no network, no reads of the user's configuration or memory files.
+全部测试使用独立 Vault 和模拟模型，无需真实密钥或联网，
+也不读取用户的配置和记忆文件。
 """
 
 from __future__ import annotations
@@ -62,8 +62,7 @@ class FakeModel(LiteLLMChatModel):
 
 @pytest.fixture
 def backend(tmp_path, monkeypatch):
-    # /model walks the provider presets, which would otherwise query the real
-    # system credential store. Tests must stay fully isolated.
+    # /model 会遍历供应商预设，通常会查询系统凭据存储。测试中须隔离此访问。
     monkeypatch.setattr(keyring, "get_password", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         SettingsUseCases,
@@ -100,7 +99,7 @@ def run(client, line, **extra):
     return client.post("/api/commands", json=payload)
 
 
-# ---------- shared catalog ----------
+# 共享命令目录
 
 
 def test_tui_catalog_is_a_thin_forward_of_the_shared_definition():
@@ -108,7 +107,7 @@ def test_tui_catalog_is_a_thin_forward_of_the_shared_definition():
 
     assert list(SLASH_COMMANDS) == list(TUI_COMMANDS)
     assert dict(SLASH_SUBCOMMANDS) == dict(TUI_SUBCOMMANDS)
-    # The TUI passes the text after the slash (chat_app.py: palette.open(value[1:])).
+    # TUI 传入斜杠后面的文本，见 chat_app.py 中的 palette.open(value[1:])。
     assert slash_matches("mod") == [row for row in TUI_COMMANDS if row[0].startswith("mod")]
     assert slash_matches("model re")[0][0] == "model refresh"
 
@@ -126,18 +125,18 @@ def test_every_command_has_a_capability_marker(client):
     assert by_name["exit"]["support"] == CLIENT
     assert by_name["quit"]["support"] == CLIENT
     assert by_name["undo"]["confirm"] is False
-    # Sub-commands travel with the row so the browser never owns a second list.
+    # 子命令随目录条目下发，使浏览器可以共用同一份列表。
     assert by_name["model"]["subcommands"][0]["name"] == "refresh"
 
 
 def test_web_busy_policy_stays_within_tui_safe_commands():
     safe = {name.lstrip("/") for name in SAFE_COMMANDS}
-    # /undo is the one deliberate addition: in the Web it also cancels the turn.
+    # 网页端专门补充了 /undo，用于同时取消当前回合。
     assert CommandUseCases.busy_safe() - {"undo"} <= safe
     assert "undo" in CommandUseCases.busy_safe()
 
 
-# ---------- routing and safety ----------
+# 路由与安全
 
 
 def test_unknown_command_is_never_forwarded_to_the_llm(client, backend):
@@ -600,7 +599,7 @@ def test_command_api_rejects_cross_site_writes(client):
     assert response.json()["error"]["code"] == "untrusted_origin"
 
 
-# ---------- busy policy ----------
+# 忙碌期间的命令策略
 
 
 def test_running_tool_turn_keeps_settings_and_queued_and_new_sessions_pick_up_changes(
@@ -715,8 +714,8 @@ def test_summary_offers_compaction_for_an_existing_idle_session(backend):
 
 def test_busy_blocks_mutating_forms_of_otherwise_safe_names(backend):
     commands = backend._commands
-    # The name alone is read-only-ish, but these forms write data or run jobs and
-    # must not run concurrently with a streaming reply.
+    # 单看命令名可能以为只读，这些具体用法却会写数据或启动任务，
+    # 因此不能与流式回复并发执行。
     for line in (
         "/dream",
         "/dream run",
@@ -726,8 +725,8 @@ def test_busy_blocks_mutating_forms_of_otherwise_safe_names(backend):
         "/inferences confirm x",
     ):
         assert commands.execute(line, busy=True, confirmed=True).status == "busy", line
-    # Read-only forms of the same names stay available (even if dispatch errors,
-    # the busy gate must not be what rejects them).
+    # 同名命令的只读用法在生成期间仍可使用。即使分发出错，
+    # 也不应是忙碌检查拒绝了请求。
     assert commands.execute("/dream status", busy=True).status != "busy"
     assert commands.execute("/pending", busy=True).status != "busy"
     assert commands.execute("/git", busy=True).status != "busy"
@@ -746,14 +745,14 @@ def test_is_mutating_distinguishes_command_forms():
     assert CommandUseCases.is_mutating("undo", "") is True
 
 
-# ---------- option panels ----------
+# 选项面板
 
 
 def test_listing_produces_options_but_applying_does_not(client):
     listing = run(client, "/model").json()
     assert listing["status"] == "ok"
     assert isinstance(listing["data"].get("options"), list)
-    # An applied choice must not reopen the picker in the browser.
+    # 应用所选项后，浏览器不能再次打开选择器。
     applied = run(client, "/model no-such-provider/no-such-model").json()
     assert applied["status"] == "error"
     assert "options" not in (applied["data"] or {})
@@ -763,8 +762,7 @@ def test_listing_produces_options_but_applying_does_not(client):
 
 
 def test_empty_model_catalog_still_lists_the_current_model(client, monkeypatch):
-    # A cold process cache (or a provider without /models) previously produced
-    # "Models:\n\n\nSelect with ..." with no explanation at all.
+    # 过去进程缓存为空或供应商没有 /models 时，只会显示空的模型列表和选择提示，缺少解释。
     monkeypatch.setattr(SettingsUseCases, "model_options", lambda self, *a, **k: [])
     body = run(client, "/model").json()
     assert body["status"] == "ok"
@@ -800,7 +798,7 @@ def test_explicit_model_id_is_switchable_without_a_catalog(client, monkeypatch):
     body = run(client, "/model custom/other-model").json()
     assert body["status"] == "ok"
     assert "Model switched: custom/other-model" in body["message"]
-    # Applying a choice must not reopen the picker.
+    # 应用选项后应关闭选择器。
     assert "options" not in (body["data"] or {})
 
 
@@ -809,7 +807,7 @@ def test_new_session_command_only_opens_the_empty_view(client, backend):
     before = len(backend._sessions.list())
     body = run(client, "/new").json()
     assert body["status"] == "ok"
-    # Reuses the runtime's lazy start: nothing is written to disk here.
+    # 复用运行时的延迟创建机制，此处尚无数据落盘。
     assert body["session_id"] is None
     assert body["refresh_sessions"] is True
     assert body["refresh_history"] is True

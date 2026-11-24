@@ -16,7 +16,7 @@ KEYRING_SERVICE = "syvrio"
 
 
 class CredentialStoreError(SyvrioError):
-    """The selected credential storage cannot be used safely."""
+    """当前选定的凭据存储无法安全使用。"""
 
 
 def _credential_path(env_name: str) -> Path | None:
@@ -107,7 +107,7 @@ def set_password(env_name: str, password: str) -> None:
 def delete_password(env_name: str) -> None:
     path = _credential_path(env_name)
     if path is not None and _has_file(path):
-        # Keep this name on the same backend even if an older native keyring returns.
+        # 即使旧版本地密钥环重新可用，这个名称仍沿用已选的存储后端。
         atomic_write(path, b"")
         return
 

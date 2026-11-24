@@ -13,8 +13,8 @@ from ..time import format_local_timestamp, parse_timestamp, serialize_timestamp
 
 LOCAL_TIMEOUT = 15.0
 PUSH_TIMEOUT = 120.0
-# Keep the root directory name a glob. Git add treats a literal "archived/"
-# prefix as an explicitly requested ignored directory and exits with an error.
+# 根目录名使用通配模式。Git 会将字面前缀 archived/ 当作显式指定被忽略的目录，
+# 导致 git add 报错退出。
 ACTIVE_VAULT_PATHS = [
     "--",
     ".",
@@ -303,7 +303,7 @@ class GitRepo:
 
     @contextmanager
     def stage_checked(self):
-        """Restore the previous index if validation rejects our staged changes."""
+        """暂存变更未通过校验时恢复之前的索引。"""
         index = self._index_path()
         try:
             previous = index.read_bytes()
@@ -328,7 +328,7 @@ class GitRepo:
         return self._run(["diff", "--cached", "--stat", *ACTIVE_VAULT_PATHS]).stdout
 
     def staged_diff(self, max_chars: int = 24000) -> str:
-        # A moved transcript's deletion would otherwise send its old text to the model.
+        # 忽略已移动对话记录原路径上的删除，否则旧正文会被发给模型。
         diff = self._run(
             ["diff", "--cached", "--irreversible-delete", "--unified=1", *ACTIVE_VAULT_PATHS]
         ).stdout
@@ -347,7 +347,7 @@ class GitRepo:
         return self._run(["rev-parse", "--short", "HEAD"]).stdout.strip()
 
     def _refuse_staged_sensitive(self) -> None:
-        # A manually staged archive must stay in the user's index without joining a managed commit.
+        # 手工暂存的归档保留在用户索引中，并排除在托管提交之外。
         if self._run(["diff", "--cached", "--quiet", "--", "archived", "archive"]).returncode == 1:
             raise GitError(
                 "Archive changes are already staged. Finish that Git operation first.",

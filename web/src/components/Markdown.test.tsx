@@ -18,7 +18,7 @@ describe('Markdown', () => {
     expect(container.querySelectorAll('tbody tr')).toHaveLength(2);
     expect(screen.getByText('USER_STATUS')).toBeTruthy();
     expect(screen.getByText('在矫')).toBeTruthy();
-    // The raw pipe source must not survive as literal text.
+    // 表格源码中的竖线不能作为普通文本残留。
     expect(container.textContent).not.toContain('| --- |');
   });
 
@@ -26,7 +26,7 @@ describe('Markdown', () => {
     const { container } = render(<Markdown text={TABLE} />);
     const wrap = container.querySelector('.table-wrap');
     expect(wrap?.tagName).toBe('DIV');
-    // A table is never a bare child of .markdown: it always has the scroller.
+    // 表格始终包在滚动容器中，不能直接挂在 .markdown 下。
     expect(container.querySelector('.markdown > table')).toBeNull();
   });
 
@@ -70,8 +70,8 @@ describe('Markdown', () => {
 
   it('still drops raw HTML instead of executing it', () => {
     const { container } = render(<Markdown text={'<img src=x onerror="alert(1)">'} />);
-    // remark-gfm does not enable raw HTML parsing: the node is dropped entirely,
-    // so neither the element nor its handler can reach the DOM.
+    // remark-gfm 未启用原始 HTML 解析，整个节点会被丢弃，
+    // 其中的元素和事件处理器均无法进入 DOM。
     expect(container.querySelector('img')).toBeNull();
     expect(container.innerHTML).not.toContain('onerror');
   });

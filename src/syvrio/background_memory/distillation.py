@@ -1,4 +1,4 @@
-"""Incremental, source-bound session distillation; one commit per original message."""
+"""按来源逐步提炼会话，每条用户原始消息单独提交。"""
 
 from __future__ import annotations
 
@@ -62,7 +62,7 @@ def _first(sessions: SessionStore, job: dict):
 def process(
     service, sessions: SessionStore, path: Path, busy: Callable[[str], bool], stop: Event
 ) -> bool:
-    """Return false when work is deferred because the session/evidence is changing."""
+    """会话或证据正在变化而需要推迟处理时，返回 False。"""
     with vault_transaction(service.paths) as tx:
         job = read_job(path)
         if not job:

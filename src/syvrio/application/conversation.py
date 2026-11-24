@@ -58,7 +58,7 @@ SAFE_COMMANDS = frozenset(
 
 
 class ConversationUseCases:
-    """Own the queue and active turn of one conversation, independent of its clients."""
+    """独立于客户端管理单个对话的等待队列与当前回合。"""
 
     def __init__(
         self,
@@ -615,7 +615,7 @@ class ConversationUseCases:
                 raise SessionProtectedError(reason)
             self.sessions.set_archived(session_id, archived)
             if archived and self.current_id == session_id:
-                # The transcript has moved. Closing it would request distillation.
+                # 会话记录已移走，关闭它会触发记忆提炼。
                 self.runtime.start()
                 self.scheduling.history_changed()
 
@@ -697,7 +697,7 @@ class ConversationUseCases:
         return self.runtime.estimate_usage(session)
 
     def context_limits(self, session_id: str | None) -> ContextLimits:
-        """Use the running turn's budget until that turn finishes."""
+        """在当前回合结束前沿用该回合的预算。"""
         with self._lock:
             active = (
                 self._turn_settings if session_id and self.ask_in_flight == session_id else None

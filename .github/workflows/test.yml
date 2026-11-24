@@ -31,9 +31,9 @@ jobs:
         run: uv run --frozen ruff check src tests scripts evals
       - name: Check Python formatting
         run: uv run --frozen ruff format --check src tests scripts evals
-      # The staged Web bundle is git-ignored. Building it here is mandatory:
-      # hatchling force-includes it into the sdist, and `uv build` builds the
-      # wheel FROM the sdist. Without this step the wheel ships no Web UI.
+      # Git 忽略暂存的网页资源，因此必须先构建前端。
+      # hatchling 会将资源强制纳入源码包，uv build 再从源码包构建 wheel。
+      # 跳过构建会导致 wheel 缺少网页界面。
       - name: Build and stage Web assets
         run: uv run python scripts/build_web.py
       - name: Verify staged Web assets

@@ -387,7 +387,7 @@ class ChatFlowMixin:
             if any(panel.record_id == update.record_id for panel in chat.query(ThinkingPanel)):
                 if widget is not None:
                     widget.remove()
-                return  # A session switch already loaded the finalized record.
+                return  # 切换会话时已载入最终记录。
             if widget is None and update.text.strip():
                 chat.mount(
                     ThinkingPanel(update.text, record_id=update.record_id, seconds=update.seconds),

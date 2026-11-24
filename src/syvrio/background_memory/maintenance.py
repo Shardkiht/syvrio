@@ -1,1 +1,1 @@
-"""Reserved for future Vault maintenance."""
+"""预留给后续的 Vault 维护操作。"""

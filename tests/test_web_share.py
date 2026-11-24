@@ -87,7 +87,7 @@ def test_ngrok_argv_and_restricted_policy(monkeypatch):
 
 
 async def test_agent_exit_stops_gateway_and_gateway_exit_stops_agent():
-    # Real Uvicorn + child processes, without creating any public endpoint.
+    # 使用真实的 Uvicorn 与子进程，监听范围仅限本机。
     for program in ["pass", "import time; time.sleep(60)"]:
         with socket.socket() as listener:
             listener.bind(("127.0.0.1", 0))

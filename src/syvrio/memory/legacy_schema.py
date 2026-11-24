@@ -1,4 +1,4 @@
-"""Parse v2 Markdown using CommonMark blocks; keep source offsets for writes."""
+"""按 CommonMark 块解析 v2 Markdown，保留写回所需的源码位置。"""
 
 from __future__ import annotations
 
@@ -181,7 +181,7 @@ def parse_document(raw: str, source_path: str, topic: str) -> Document:
             try:
                 core = Core.model_validate(core_data)
             except ValueError as exc:
-                # Avoid echoing the record itself in errors.
+                # 避免在错误消息中回显记录正文。
                 fail(start, f"invalid Core ({', '.join(str(e['loc'][0]) for e in exc.errors())})")
             if core.id in ids:
                 fail(start, "duplicate memory id")
@@ -323,6 +323,6 @@ def source_fingerprint(entry: Entry) -> str:
         and re.fullmatch(r"[0-9a-f]{64}", previous)
         and markers.get("migration.evidence_v2") == digest
     ):
-        # A migrated record keeps its old evidence identity until its content changes.
+        # 迁移后的记录沿用原证据标识，直到内容发生变化。
         return previous
     return digest

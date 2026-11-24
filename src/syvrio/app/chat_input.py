@@ -15,7 +15,7 @@ from ..infra.diagnostics import record_event
 
 
 class BarInput(Input):
-    """Input with a thin vertical-bar cursor instead of a full-cell block."""
+    """使用细竖线光标的输入框。"""
 
     _hint = ""
 
@@ -46,8 +46,8 @@ class BarInput(Input):
             return False
         if sys.platform == "win32":
             return self._terminal_supports_native_cursor()
-        # Windows OpenSSH starts the remote TUI inside WSL without WT_SESSION.
-        # Its xterm-compatible frontend still anchors IME to the terminal caret.
+        # 通过 Windows OpenSSH 在 WSL 中启动远程 TUI 时没有 WT_SESSION，
+        # 但兼容 xterm 的前端仍按终端光标定位输入法。
         return (
             sys.platform == "linux"
             and "microsoft" in platform.release().lower()
@@ -66,8 +66,7 @@ class BarInput(Input):
         viewport = self.scrollable_content_region
         if not viewport.width:
             return
-        # Commit the scroll before publishing the terminal coordinate. A deferred
-        # scroll can otherwise leave the caret using the previous viewport.
+        # 先完成滚动，再公布终端坐标。延迟滚动可能让光标沿用上一个视口的位置。
         cell = self._position_to_cell(self.cursor_position)
         self.scroll_x = min(cell, max(self.scroll_offset.x, cell - viewport.width + 1))
         if self.has_focus:
@@ -101,7 +100,7 @@ class BarInput(Input):
             and not self.disabled
             and not self._cursor_suspended
         ):
-            # IME preedit belongs to the terminal; a painted glyph cannot follow it.
+            # 输入法预编辑由终端负责，自绘符号无法跟随它移动。
             app = self.app
             app.cursor_position = self.cursor_screen_offset
             position = self.screen.outer_size.clamp_offset(app.cursor_position)

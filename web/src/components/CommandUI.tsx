@@ -20,7 +20,7 @@ export function moveOption(event: KeyboardEvent, buttons: HTMLButtonElement[]): 
   buttons[next].focus();
 }
 
-/** Prefix/child completions anchored just above the composer. */
+/** 在输入框正上方展示前缀及子命令补全。 */
 export function CommandSuggestions({
   suggestions,
   index,
@@ -58,7 +58,7 @@ export function CommandSuggestions({
   );
 }
 
-/** Lightweight palette over the same catalog, with its own keyboard handling. */
+/** 命令面板使用共享目录，单独处理键盘交互。 */
 export function CommandPalette({
   catalog,
   onRun,
@@ -133,7 +133,7 @@ export function CommandPalette({
   );
 }
 
-/** Server-required confirmation; the backend re-checks independently. */
+/** 服务端要求确认，并会独立核验确认结果。 */
 export function ConfirmDialog({
   message,
   onConfirm,

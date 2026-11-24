@@ -28,7 +28,7 @@ class SyvrioPaths:
     config_file: Path | None = None
 
     def __post_init__(self) -> None:
-        # The configured Vault root may be an alias. Check its children against the physical root.
+        # 配置中的 Vault 根目录可能是别名，检查其子路径时使用物理根目录。
         object.__setattr__(self, "vault_dir", self.vault_dir.expanduser().resolve())
 
     @property
@@ -107,7 +107,7 @@ class SyvrioPaths:
                 raise ValueError("Runtime subdirectories cannot redirect outside Runtime")
 
     def bind(self) -> None:
-        """Called under Git and Vault locks. Only known, vault-derived files are invalidated."""
+        """在 Git 和 Vault 锁内调用，只使已知的 Vault 派生文件失效。"""
         self.validate()
         marker = self.state_dir / "vault-binding.json"
         vault = str(self.vault_dir.resolve())

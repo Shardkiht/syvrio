@@ -1,4 +1,4 @@
-"""Encode the application conversation stream as server-sent events for resident clients."""
+"""将应用层对话流编码为服务端推送事件，供常驻服务客户端消费。"""
 
 from __future__ import annotations
 

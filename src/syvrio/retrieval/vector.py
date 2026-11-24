@@ -157,7 +157,7 @@ class VectorRetriever:
             self._save_cache(self._entries, matrix)
 
     def search(self, query: str, limit: int = 10) -> list[SearchHit]:
-        # Keep the matrix and its entry IDs from one revision for this query.
+        # 本次查询的矩阵和条目 ID 必须来自同一修订版本。
         with self._index_lock:
             return self._search(query, limit)
 

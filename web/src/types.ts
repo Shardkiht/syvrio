@@ -1,4 +1,4 @@
-/** Mirrors src/syvrio/backend/api/models.py. Keep these in sync with the Schema. */
+/** 与 src/syvrio/backend/api/models.py 的协议结构保持一致。 */
 
 export type EventType =
   | 'start'
@@ -31,7 +31,7 @@ export interface StreamEvent {
   estimated_tokens?: number | null;
   message?: string | null;
   interrupted?: boolean;
-  /** Tool outcome: false marks a failed call, null when unknown. */
+  /** 工具调用结果为 false 表示失败，null 表示结果未知。 */
   ok?: boolean | null;
 }
 
@@ -114,7 +114,7 @@ export interface ActionResponse {
 }
 
 export interface CreateSessionResponse {
-  // Null until the first message: a new chat only opens the empty view.
+  // 新聊天先打开空视图，发送首条消息前会话 ID 为 null。
   session_id: string | null;
   title: string;
   draft?: boolean;
@@ -156,7 +156,7 @@ export interface MessageDraft {
 }
 
 export interface HistoryResponse {
-  /** Version accompanying a full HTTP history read. */
+  /** 读取完整 HTTP 会话历史时一并返回的修订版本。 */
   history_version?: string;
   session_id: string;
   title: string;

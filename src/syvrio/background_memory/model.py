@@ -1,4 +1,4 @@
-"""Structured model calls used by resident memory tasks."""
+"""常驻记忆任务使用的结构化模型调用。"""
 
 from __future__ import annotations
 
@@ -113,7 +113,7 @@ def ask(
     )
     choice = response.choices[0]
     if dream and getattr(choice, "finish_reason", None) == "length":
-        # Reasoning can exhaust the output allowance before any JSON is produced.
+        # 模型可能在生成 JSON 前就将输出额度全部用于思考。
         raise DreamOutputTruncated(budget, min(budget * 4, available))
     text = (choice.message.content or "").strip()
     if text.startswith("```") and text.endswith("```"):

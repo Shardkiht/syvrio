@@ -1,4 +1,4 @@
-"""Run the private resident on an available local port."""
+"""在可用的本地端口运行内部常驻服务。"""
 
 import argparse
 from pathlib import Path

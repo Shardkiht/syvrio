@@ -216,7 +216,7 @@ def test_validation_failure_restores_tags_metadata_and_config(tmp_path, monkeypa
     def fingerprint(path):
         calls["count"] += 1
         current = real(path)
-        if calls["count"] >= 3:  # before / backup manifest / after tags
+        if calls["count"] >= 3:  # 写入前标记、备份清单与写入后标记。
             return {**current, "digest": current["digest"] + "changed"}
         return current
 

@@ -1,4 +1,4 @@
-"""Give external models the same write-before/after-recall boundary as chat."""
+"""对外部模型的写入也执行与聊天相同的召回核验。"""
 
 import secrets
 import threading

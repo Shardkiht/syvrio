@@ -46,7 +46,7 @@ export function useSelectionHistory(
   }, [chat]);
 
   const switchHistory = useCallback(async (id: string) => {
-    // Retain the exact snapshot sent for comparison, even if a separate refresh finishes in flight.
+    // 保留实际发出的快照以便比较，即使另一轮刷新在其间完成。
     binding.current = id;
     const intent = active.current?.key;
     const cached = cache.current.get(id);
@@ -56,7 +56,7 @@ export function useSelectionHistory(
       throw error;
     });
     if (result.session_id !== id) throw new NetworkError('Could not confirm the requested conversation.');
-    if (binding.current !== id) return undefined; // An overlapping archive discarded this snapshot.
+    if (binding.current !== id) return undefined; // 并发的归档操作已丢弃这份快照。
     if (result.history?.session_id === id) return remember(result.history, result.history_version);
     if (result.history === null && cached?.version && result.history_version === cached.version) {
       if (cache.current.get(id) === cached) {
@@ -66,7 +66,7 @@ export function useSelectionHistory(
       const visible = active.current;
       return visible?.source === cached && visible.key === intent ? visible.chat : cached.chat;
     }
-    // Older backends acknowledge the binding without returning a snapshot.
+    // 旧版后端会确认绑定，但不返回快照。
     return undefined;
   }, [forget, remember]);
 
@@ -98,7 +98,7 @@ export function useSelectionHistory(
         onRefresh();
       }
     } catch {
-      // The currently displayed conversation remains usable after a failed refresh.
+      // 刷新失败后，当前显示的对话仍可使用。
     }
   }, [chat, onRefresh, remember, update, version]);
 

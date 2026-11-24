@@ -14,7 +14,7 @@ export function useSessionActivity(sessions: SessionInfo[], refreshSessions: () 
         (ids.length !== lastReplying.current.size || ids.some(id => !lastReplying.current.has(id)))) {
       lastReplying.current = new Set(ids);
       setReplyingSessionIds(lastReplying.current);
-      // Another view may have created a chat or finished its first turn.
+      // 其他视图可能新建了聊天或完成了首个回合。
       void refreshSessions();
     }
     return state;

@@ -4,14 +4,12 @@ import { Collapsible } from './Collapsible';
 
 type ThinkingSegment = Extract<Segment, { kind: 'thinking' }>;
 
-/** Distance from the bottom that still counts as "watching the tail". */
+/** 距底部多近时仍视为正在跟随最新内容。 */
 const FOLLOW_THRESHOLD = 24;
 
 /**
- * Reasoning is never shown inline, not even while it streams: the summary row
- * carries the only signal ("Thinking…" → "Thought for 3.2s") and expanding is
- * an explicit opt-in. A long trace lives in a fixed-height scroll area so it
- * can never stretch the chat layout.
+ * 思考流式输出时也默认折叠，只在摘要行显示进行中或耗时提示。
+ * 用户主动展开后才能阅读思考记录。长记录使用限高的滚动区域，避免撑高聊天布局。
  */
 export function Thinking({
   segment,
@@ -20,19 +18,19 @@ export function Thinking({
   segment: ThinkingSegment;
   onToggle: () => void;
 }) {
-  // The scroll container is the capped fold body, not the text node inside it.
+  // 设有高度上限的折叠正文容器负责滚动，内部文本节点只显示内容。
   const bodyRef = useRef<HTMLDivElement>(null);
   const following = useRef(true);
 
   useEffect(() => {
     const body = bodyRef.current;
     if (!segment.expanded || !body) return;
-    // A finished trace is read from the top; a live one opens at the newest line.
+    // 已完成的思考从头阅读，正在生成的思考打开时定位到最新一行。
     following.current = !segment.done;
     body.scrollTop = segment.done ? 0 : body.scrollHeight;
   }, [segment.expanded]);
 
-  // Reasoning arrives as deltas: keep the tail visible unless the user scrolled up.
+  // 思考内容按增量到达，用户未向上滚动时让末尾保持可见。
   useEffect(() => {
     const body = bodyRef.current;
     if (!segment.expanded || !body || !following.current) return;

@@ -1,12 +1,11 @@
-/** One place for every Web shortcut and its browser-conflict fallback.
+/** 集中管理网页快捷键及与浏览器快捷键冲突时的替代键位。
  *
- * Checked against the TUI's real bindings (chat_app.py):
- *   Ctrl+P -> manage providers in model choices
- *   Ctrl+B -> toggle sidebar
- *   Ctrl+Q -> quit
- *   Escape -> close overlay / cancel generation
- * Browser-reserved keys are deliberately NOT hijacked: Ctrl+P prints the page
- * and Ctrl+Q quits the browser. Each has an explicit alternative below.
+ * 键位与 TUI 的实际绑定核对，见 chat_app.py。
+ *   Ctrl+P 在模型选项中管理供应商
+ *   Ctrl+B 展开或收起侧栏
+ *   Ctrl+Q 退出
+ *   Escape 关闭浮层或取消生成
+ * Ctrl+P 和 Ctrl+Q 留给浏览器打印页面和退出，网页端另设下列替代键位。
  */
 
 export type ShortcutAction = 'palette' | 'model' | 'settings' | 'sidebar' | 'escape' | 'stop';
@@ -14,13 +13,13 @@ export type ShortcutAction = 'palette' | 'model' | 'settings' | 'sidebar' | 'esc
 export interface KeyBinding {
   action: ShortcutAction;
   key: string;
-  ctrl?: boolean; // ctrlKey or metaKey (macOS)
+  ctrl?: boolean; // 匹配 Ctrl 键，macOS 上也匹配 Command 键。
   shift?: boolean;
   alt?: boolean;
   label: string;
 }
 
-/** Ordered: the more specific binding must come first. */
+/** 按顺序匹配，更具体的键位必须排在前面。 */
 export const KEY_BINDINGS: KeyBinding[] = [
   { action: 'palette', key: 'p', ctrl: true, shift: true, label: 'Ctrl+Shift+P' },
   { action: 'palette', key: 'p', alt: true, label: 'Alt+P' },
@@ -37,7 +36,7 @@ export interface ShortcutHelp {
   note?: string;
 }
 
-/** Keys the Web client intentionally leaves to the browser. */
+/** 网页端留给浏览器自行处理的按键。 */
 export const RESERVED_KEYS: ShortcutHelp[] = [
   {
     keys: 'Ctrl+P',
@@ -96,7 +95,7 @@ type ComposableEvent = {
   nativeEvent?: { isComposing?: boolean };
 };
 
-/** IME composition must never trigger Enter, Tab or a shortcut. */
+/** 输入法组词期间不能触发 Enter、Tab 或其他快捷键。 */
 export function isComposing(event: ComposableEvent): boolean {
   return Boolean(event.isComposing || event.nativeEvent?.isComposing)
     || event.keyCode === 229

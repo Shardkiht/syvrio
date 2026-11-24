@@ -1,4 +1,4 @@
-"""Opt-in, single-account ngrok sharing for the browser gateway."""
+"""按需为浏览器网关启用限定单个账户的 ngrok 分享。"""
 
 from __future__ import annotations
 
@@ -95,7 +95,7 @@ class _SharedServer(uvicorn.Server):
         self.agent: subprocess.Popen | None = None
 
     async def main_loop(self) -> None:
-        # Uvicorn enters this loop only after the gateway owns the selected port.
+        # 只有网关已成功占用所选端口，Uvicorn 才会进入此循环。
         try:
             self.agent = subprocess.Popen(self.command, stdin=subprocess.DEVNULL)
         except OSError as exc:

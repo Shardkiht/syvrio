@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Normalize known Syvrio timestamps while preserving historical calendar fields."""
+"""统一已知 Syvrio 时间戳的格式，保留历史日历字段。"""
 
 from __future__ import annotations
 
@@ -199,7 +199,7 @@ def migrate_markdown(
             continue
         try:
             if len(old) == 10:
-                # Some v2 imports retain recorded dates at day precision.
+                # 部分 v2 导入记录的日期精度仅到天。
                 date.fromisoformat(old)
                 continue
             value = normalize(old, source_zone)
@@ -219,7 +219,7 @@ def migrate_markdown(
         digest = evidence_v2(new.entry)
         span = new.migration_spans.get("migration.evidence_v2")
         if span and previous != evidence_v2(old.entry):
-            # Keep an already-valid Vault v2 evidence alias valid after rewriting its timestamp.
+            # 改写时间戳后，保留原本有效的 Vault v2 证据别名。
             markers.append((*span, _span_code(digest)))
         else:
             if new.entry.id in evidence:
@@ -248,7 +248,7 @@ def targets(args: argparse.Namespace) -> Iterator[Target]:
 def migrate_session_jsonl(
     raw: bytes, target: Target, zone: ZoneInfo | None, label: str
 ) -> tuple[bytes, int]:
-    """Keep repaired physical lines byte-for-byte, as the session reader does."""
+    """与会话读取器一致，逐字节保留已修复的原始行。"""
     rows = raw.splitlines(keepends=True)
     damaged: set[int] = set()
     recovered: set[int] = set()
@@ -262,7 +262,7 @@ def migrate_session_jsonl(
         except (UnicodeDecodeError, json.JSONDecodeError):
             damaged.add(number)
             continue
-        # Keep the usual strict object and duplicate-key checks for complete records.
+        # 对完整记录继续严格校验对象及重复键。
         updated, count = migrate_object(line, target, zone, f"{label}:{number}", {})
         if count:
             rows[number - 1] = updated.encode("utf-8")

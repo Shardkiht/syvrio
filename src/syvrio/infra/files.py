@@ -18,7 +18,7 @@ def safe_component(name: str) -> bool:
 
 
 def sync_directory(path: Path) -> None:
-    """Persist directory entries on systems supporting directory fsync."""
+    """在支持对目录执行 fsync 的系统上持久化目录项。"""
     if os.name != "nt":
         fd = os.open(path, os.O_RDONLY)
         try:
@@ -28,7 +28,7 @@ def sync_directory(path: Path) -> None:
 
 
 def atomic_write(path: Path, payload: bytes) -> None:
-    """Publish complete bytes in the destination directory, preserving permissions."""
+    """在目标目录发布完整字节内容并保留权限。"""
     directory = path.parent
     missing = []
     while directory != directory.parent and not directory.exists():

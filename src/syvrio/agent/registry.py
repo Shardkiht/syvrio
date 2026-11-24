@@ -1,4 +1,4 @@
-"""Tool schemas, execution, and timeouts shared by the agent's integrations."""
+"""各集成共用的工具参数定义、执行流程与超时处理。"""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from typing import Callable
 
 # 进程级复用线程池：每轮 ask 新建池又不关闭会累积空闲线程。
 _EXECUTOR = ThreadPoolExecutor(max_workers=4)
-# Use the same limit for the network worker pool and the per-round batches.
+# 网络线程池与每轮分批使用相同的并发上限。
 PARALLEL_NETWORK_LIMIT = 8
 _NETWORK_EXECUTOR = ThreadPoolExecutor(
     max_workers=PARALLEL_NETWORK_LIMIT,

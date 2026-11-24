@@ -1,4 +1,4 @@
-"""Web adapter tests: isolated Vault, fake model, no network and no real keys."""
+"""在独立 Vault 和模拟模型上测试网页适配器，无需联网或真实密钥。"""
 
 from __future__ import annotations
 
@@ -102,7 +102,7 @@ def test_concurrent_redelivery_returns_one_turn_even_if_first_receipt_was_lost(
 
 
 class FakeModel(LiteLLMChatModel):
-    """Subclass so AgentRuntime takes the native streaming/reasoning path."""
+    """使用子类，让 AgentRuntime 走原生流式输出和思考处理路径。"""
 
     def __init__(self, turns):
         super().__init__(LLMConfig())
@@ -416,7 +416,7 @@ def test_one_view_can_leave_a_running_session_and_return_to_its_queue(client, ba
         assert client.post(f"/api/sessions/{other}/switch").is_success
     finally:
         model.release.set()
-    # Both turns complete even when this was the only view and it is still elsewhere.
+    # 即使唯一的视图已切换到别处且尚未返回，两个回合仍会完成。
     assert backend.scheduling.registry.get(queued["turn_id"], sid).finished.wait(10)
     assert backend._sessions.load(sid).user_texts() == ["first", "second"]
     assert client.get("/api/chat/queue").json()["session_id"] == other
@@ -471,7 +471,7 @@ def test_sidebar_activity_tracks_concurrent_replies_after_leaving_a_view(client,
     assert observed() == set()
 
 
-# ---------- health, sessions, history ----------
+# 健康检查、会话与历史
 
 
 def test_health_and_openapi(client, backend):
@@ -515,7 +515,7 @@ def test_session_lifecycle(client, backend):
     created = client.post("/api/sessions")
     assert created.status_code == 201
     body = created.json()
-    # A new chat only opens the empty view; the file appears with message one.
+    # 新聊天先打开空视图，发送第一条消息时才创建文件。
     assert body["session_id"] is None
     assert body["draft"] is True
     assert len(backend._sessions.list()) == before
@@ -539,8 +539,7 @@ def test_first_message_persists_the_session(client, backend):
     before = len(backend._sessions.list())
     events = collect(client)
     assert len(backend._sessions.list()) == before + 1
-    # ``start`` is emitted before the worker creates the file, so the id shows
-    # up on the following frames; the client adopts it from there.
+    # 工作线程在 start 事件之后才创建文件。客户端从后续事件帧中取得真实会话 ID。
     ids = {event["session_id"] for event in events if event.get("session_id")}
     assert len(ids) == 1
     session_id = ids.pop()
@@ -658,8 +657,8 @@ def test_web_undo_during_generation_returns_saved_text_and_waits_for_rollback(cl
                 },
             ).json()
             assert stale["status"] == "error" and not backend._conversation.undo_requested
-            # A different command already holds the ordinary command mutex.
-            # Undo still registers its cancellation before that lock is released.
+            # 普通命令互斥锁已由另一条命令持有。
+            # 撤回会在该锁释放前登记取消请求。
             with backend.scheduling.command_lock:
                 command = pool.submit(
                     client.post,
@@ -742,7 +741,7 @@ def test_undo_during_tool_write_reverts_the_completed_write_and_stops_the_next(
     assert backend._conversation.current.user_texts() == []
 
 
-# ---------- session deletion ----------
+# 会话删除
 
 
 def test_searches_all_configured_models_and_can_select_a_result_beyond_the_first_page(
@@ -982,8 +981,8 @@ def test_permanent_deletion_rechecks_pending_revision_and_saved_memory_sources(c
 def test_delete_rejects_unknown_traversal_and_cross_site(client):
     assert client.delete("/api/sessions/s-missing", params={"confirmed": "true"}).status_code == 404
     traversal = client.delete("/api/sessions/../vault", params={"confirmed": "true"})
-    # Normalised to /api/vault: the GET-only SPA fallback answers 405 for
-    # DELETE; either way the traversal never reaches the session store.
+    # 路径规范化后为 /api/vault。仅处理 GET 的单页应用回退会对 DELETE 返回 405，
+    # 路径穿越请求始终无法到达会话存储。
     assert traversal.status_code in (404, 405, 422)
     assert (
         client.delete(
@@ -1135,7 +1134,7 @@ def test_sidebar_orders_by_last_message_not_control_records(client, backend):
             "at": "2026-11-09T10:00:00+08:00",
         },
     )
-    # A rename (or summary / distill / undo) must not promote an older chat.
+    # 重命名、生成摘要、提炼或撤回都不能让旧会话排到前面。
     store.append(
         older,
         {
@@ -1217,7 +1216,7 @@ def test_conditional_switch_returns_history_and_reuses_it_after_leaving(
         "session_id": second.id,
         "title": second.title(),
     }
-    # Leaving appends a close marker to the journal. Its display revision still matches.
+    # 离开会话时追加关闭标记，不影响用于显示的历史修订版本。
     assert store.load(first.id).records[-1]["type"] == "closed"
     before = (len(reads), len(projections))
     back = client.post(f"{url}/switch", params=params).json()
@@ -1247,7 +1246,7 @@ def test_conditional_switch_uses_committed_history_even_while_bound(client, back
     assert changed["history"] == client.get(url).json()
     assert changed["history"]["items"][-1]["reasoning"]["text"] == "After"
 
-    # A different process commits an undo and replacement without touching the resident Runtime object.
+    # 另一个进程提交撤回和替换操作，未改动常驻服务的 Runtime 对象。
     subprocess.run(
         [
             sys.executable,
@@ -1274,7 +1273,7 @@ store.append_event_transactionally(store.load(sid), {"type":"undo","message_id":
     assert edited["history_version"] != changed["history_version"]
     assert edited["history"] == client.get(url).json()
     assert [item["content"] for item in edited["history"]["items"]] == ["Edited"]
-    # A real write between our last snapshot and our close event must survive the close shortcut.
+    # 从上一次快照到关闭事件之间的真实写入，必须在关闭快捷路径中得到保留。
     params["known_version"] = edited["history_version"]
     store.rename(session, "New title")
     other = store.create()
@@ -1361,7 +1360,7 @@ def test_history_and_switch_share_one_read_across_views(client, backend, monkeyp
     assert [item["id"] for item in history()] == ["answer"]
 
 
-# ---------- streaming ----------
+# 流式传输
 
 
 def test_stream_events_are_ordered_and_utf8(client, backend):
@@ -1390,8 +1389,8 @@ def test_thinking_folds_when_answer_starts(client, backend):
     )
     events = collect(client, "hi")
     order = types(events)
-    # Runtime order: reasoning deltas -> body deltas -> finalised reasoning
-    # record. The frontend folds thinking on the first content_delta.
+    # 运行时依次发送思考增量、正文增量和最终思考记录。
+    # 前端收到首个 content_delta 时折叠思考区。
     assert order.index("reasoning_delta") < order.index("content_delta")
     assert order.index("content_delta") < order.index("reasoning_end")
     assert order[-1] == "done"
@@ -1411,8 +1410,7 @@ def test_tool_call_rounds_keep_reasoning_phases_apart(client, backend):
     events = collect(client, "check my note")
     assert "tool_start" in types(events)
     assert "tool_end" in types(events)
-    # The outcome rides along so the client can label a failure without
-    # waiting for a history reload.
+    # 事件一并携带工具结果，以便客户端立即标记失败，无需等到重载历史。
     tool_end = next(event for event in events if event["type"] == "tool_end")
     assert tool_end["name"] == "recall"
     assert tool_end["ok"] is True
@@ -1507,7 +1505,7 @@ def test_partial_reply_and_failure_reason_survive_refresh_and_follow_turn_undo(c
     assert client.get(f"/api/sessions/{sid}").json()["items"] == []
 
 
-# ---------- cancellation, FIFO, disconnect ----------
+# 取消、先进先出队列与断连
 
 
 def test_cancel_only_the_active_turn(backend):
@@ -1522,7 +1520,7 @@ def test_cancel_only_the_active_turn(backend):
         response = controller.post("/api/chat/cancel", json={"turn_id": turn_id})
         assert response.status_code == 200
         assert response.json()["cancelled"] is True
-        # A stale turn id must not cancel anything.
+        # 过期的回合 ID 不能取消任何任务。
         assert (
             controller.post("/api/chat/cancel", json={"turn_id": turn_id + 999}).json()["cancelled"]
             is False
@@ -1613,7 +1611,7 @@ def test_reselecting_active_session_preserves_the_turn(backend):
         future.result(timeout=15)
 
 
-# ---------- security ----------
+# 安全检查
 
 
 def test_host_and_origin_are_checked(client):
@@ -1622,7 +1620,7 @@ def test_host_and_origin_are_checked(client):
         client.post("/api/sessions", headers={"Origin": "https://evil.example"}).status_code == 403
     )
     assert client.post("/api/sessions", headers={"Origin": BASE_URL}).status_code == 201
-    # Proxy headers must not widen trust.
+    # 代理请求头不能扩大信任范围。
     assert (
         client.get("/api/health", headers={"X-Forwarded-Host": "evil.example"}).status_code == 200
     )
@@ -1643,8 +1641,8 @@ def test_custom_local_domain_is_trusted_for_host_and_origin(backend):
 
 
 def test_consistent_error_shape_and_no_stacktrace(backend, monkeypatch):
-    # raise_server_exceptions=False matches uvicorn: the ServerErrorMiddleware
-    # returns our JSON response and the server keeps running.
+    # raise_server_exceptions=False 对应 Uvicorn 的实际行为，
+    # ServerErrorMiddleware 返回应用的 JSON 响应，服务器继续运行。
     probe = TestClient(
         create_app(backend, autostart=False),
         base_url=BASE_URL,
@@ -1681,12 +1679,11 @@ def test_client_busy_is_reported(backend, monkeypatch):
     assert error.value.code == "client_busy"
 
 
-# ---------- static assets ----------
+# 静态资源
 
 
 def test_missing_assets_are_reported_explicitly(backend, tmp_path, monkeypatch):
-    # Point at an empty directory: a locally built static/ bundle must not
-    # change this test's outcome.
+    # 指向空目录，避免本地构建的 static/ 资源影响测试结果。
     monkeypatch.delenv("SYVRIO_WEB_STATIC", raising=False)
     app = create_app(backend, autostart=False, static_dir=tmp_path / "no-assets")
     probe = TestClient(app, base_url=BASE_URL)
@@ -1710,7 +1707,7 @@ def test_static_files_and_spa_fallback(backend, tmp_path):
     assert probe.get("/api/unknown").status_code == 404
 
 
-# ---------- command concurrency ----------
+# 命令并发
 
 
 def test_long_command_keeps_health_and_dream_status_responsive(backend, monkeypatch):
@@ -1736,13 +1733,13 @@ def test_long_command_keeps_health_and_dream_status_responsive(backend, monkeypa
             )
         )
         assert entered.wait(timeout=10)
-        # Health reflects the running command and must not block behind its lock.
+        # 健康检查反映正在执行的命令，且不会阻塞在该命令的锁上。
         assert controller.get("/api/health").json()["busy"] is True
-        # A chat request is rejected busy instead of overlapping the command.
+        # 命令运行期间，聊天请求应收到忙碌响应，避免并发执行。
         chat = controller.post("/api/chat", json={"message": "hi"})
         assert chat.status_code == 409
         assert chat.json()["error"]["code"] == "busy"
-        # Reading progress stays available while the manual submission holds the command mutex.
+        # 手工提交占用命令互斥锁时，仍可读取进度。
         status = controller.post("/api/commands", json={"line": "/dream status"})
         assert status.status_code == 200 and status.json()["data"]["state"] == "idle"
         release.set()
@@ -2026,7 +2023,7 @@ def test_targeted_edit_checks_uploads_and_replays_only_same_submission(client, b
     assert response.status_code == 202, response.text
     receipt = response.json()
     assert client.get(f"/api/chat/turns/{receipt['turn_id']}").status_code == 200
-    # Retrying a lost receipt with a freshly staged file returns the existing turn.
+    # 回执丢失后，即使用重新暂存的文件重试也应返回原有回合。
     assert submit().json()["turn_id"] == receipt["turn_id"]
     assert submit(b"changed bytes").status_code == 409
     assert backend._runtime.model.calls == 2
@@ -2229,7 +2226,7 @@ def test_failed_edit_preserves_the_original_tool_writes(
     def fail_after_publish(tx, path, payload):
         append(tx, path, payload)
         if path == transcript:
-            assert not topic.exists()  # The transaction has already reversed the tool write.
+            assert not topic.exists()  # 事务已撤回工具写入。
             raise OSError("synthetic write failure")
 
     with monkeypatch.context() as patch:

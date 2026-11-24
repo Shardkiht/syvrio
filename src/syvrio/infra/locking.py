@@ -52,7 +52,7 @@ class _FileLock:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600)
         if os.name == "nt" and os.fstat(fd).st_size == 0:
-            # Windows byte-range locks need a byte to lock; zero-length is otherwise racy.
+            # Windows 的字节范围锁需要锁定至少一个字节，空文件会产生竞争。
             os.write(fd, b"\0")
         while True:
             try:
@@ -166,10 +166,9 @@ def git_operation_lock(vault: Path | SyvrioPaths) -> VaultLock:
 
 
 def client_instance_lock(vault: Path | SyvrioPaths) -> VaultLock:
-    """Single-client marker: only one TUI or Web process may write the Vault.
+    """单客户端标记，同一时间仅允许一个 TUI 或网页进程写入 Vault。
 
-    Unlike vault.lock this is held for the whole client lifetime rather than a
-    single write. The OS releases it when the process exits, so a crash cannot
-    leave a stale lock behind.
+    此锁在客户端的整个生命周期内持有，vault.lock 则用于单次写入。
+    进程退出时操作系统会释放锁，即使崩溃也不会留下失效锁。
     """
     return _shared(_lock_path(vault, "client.lock"))

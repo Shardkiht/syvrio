@@ -8,7 +8,7 @@ import { SurfacePresence } from './SurfacePresence';
 import { DraftAttachmentIcon } from './AttachmentImage';
 import { PlusIcon, SendIcon, StopIcon } from './Icons';
 
-/** Starter commands shown under the home composer, in display order. */
+/** 首页输入框下的快捷命令，按显示顺序排列。 */
 const STARTER_COMMANDS = ['model', 'status', 'help', 'sessions'];
 export type ComposerDraft = { text: string; files: File[] };
 
@@ -59,7 +59,7 @@ export function Composer({
   onStop: () => void;
   catalog?: CommandInfo[];
   focusSignal?: number;
-  /** Centred home layout: narrower card plus a row of starter commands. */
+  /** 首页使用居中布局，较窄的输入框下方是一行快捷命令。 */
   hero?: boolean;
 }) {
   const [value, setValue] = useState(() => drafts?.get(sessionId)?.text ?? '');
@@ -67,8 +67,7 @@ export function Composer({
   const previousId = useRef(sessionId);
   useLayoutEffect(() => {
     if (!drafts) return;
-    // The same composer stays mounted when its first send gets a session ID,
-    // or when an archive moves its unfinished input back to the empty view.
+    // 首次发送取得会话 ID，或归档时将未完成的输入移回空视图，均复用已挂载的输入框。
     if (previousId.current !== sessionId) drafts.delete(previousId.current);
     previousId.current = sessionId;
     if (value || files.length) drafts.set(sessionId, { text: value, files });
@@ -86,11 +85,10 @@ export function Composer({
   const ref = useRef<HTMLTextAreaElement>(null);
   const lastFocusSignal = useRef(focusSignal);
 
-  // `rows={3}` gives the textarea its intrinsic three-line height; this effect
-  // only grows it past that. `overflow-y` is driven by the same measurement so
-  // an idle composer never shows a scrollbar: with border-box, setting
-  // height = scrollHeight drops the padding and leaves a 1-2px overflow, which
-  // is what produced the permanent scrollbar track.
+  // rows={3} 让文本框具有三行固有高度，此处仅在内容更多时增高。
+  // overflow-y 也由同一测量值控制，空闲输入框无需显示滚动条。
+  // 在 border-box 下直接取 scrollHeight 作高度会漏算边距，留下 1 至 2 像素溢出，
+  // 导致滚动条轨道一直可见。
   useLayoutEffect(() => {
     const element = ref.current;
     if (!element) return;
@@ -100,16 +98,14 @@ export function Composer({
       const needed = element.scrollHeight + borders;
       const style = window.getComputedStyle(element);
       const max = Number.parseFloat(style.maxHeight) || 200;
-      // +1 absorbs sub-pixel line-height rounding; without it the box would
-      // creep one pixel taller on every keystroke.
+      // 加 1 用于吸收行高的亚像素舍入误差，避免每次按键都让输入框增高一个像素。
       if (needed > element.offsetHeight + 1) {
         element.style.height = `${Math.min(needed, max)}px`;
       }
       element.style.overflowY = needed > max ? 'auto' : 'hidden';
     };
     fit();
-    // Wrapping changes when the pane width changes (sidebar toggle, rotation),
-    // but our own height writes must not re-trigger the observer.
+    // 侧栏开关或设备旋转会改变宽度和换行。只观察宽度，避免写入高度再次触发观察器。
     let width = element.clientWidth;
     const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => {
       if (element.clientWidth === width) return;
@@ -172,7 +168,7 @@ export function Composer({
         setFileError('');
         release();
       }).finally(() => {
-        if (!handedOff) release(); // A failed or superseded bind leaves this draft intact.
+        if (!handedOff) release(); // 绑定失败或被后续请求取代时，保留当前草稿。
       });
       return;
     }
@@ -203,7 +199,7 @@ export function Composer({
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    // A Chinese/Japanese IME composition must never trigger shortcuts.
+    // 中日文输入法组词期间不能触发快捷键。
     if (isComposing(event)) return;
     if (checkingSelection && event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();

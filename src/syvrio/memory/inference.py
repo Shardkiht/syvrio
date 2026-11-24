@@ -21,7 +21,7 @@ from .store import MemoryStore, read_utf8, tracked_write
 
 
 def source_fingerprint(entry: Entry) -> str:
-    """Detect changes to a snapshot used for an asynchronous job."""
+    """检查异步任务使用的快照是否已变化。"""
     record = entry.topic + "\x00" + entry.raw_markdown.rstrip("\r\n")
     return hashlib.sha256(record.encode("utf-8")).hexdigest()
 

@@ -1,4 +1,4 @@
-"""Per-question scores for the frozen synthetic retrieval benchmark."""
+"""固定合成检索基准中每个问题的得分。"""
 
 from __future__ import annotations
 

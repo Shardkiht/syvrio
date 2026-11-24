@@ -85,7 +85,7 @@ class PendingQueue:
         return raw, self._records(raw, "memories/pending.md")
 
     def recover_session_deletion(self) -> None:
-        """The session file's removal commits its prepared pending removals."""
+        """移除会话文件时，同时提交已准备好的待审条目移除操作。"""
         with self._lock:
             journal = self._delete_journal
             if journal.resolve() != journal:

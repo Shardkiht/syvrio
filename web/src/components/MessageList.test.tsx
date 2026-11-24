@@ -205,7 +205,7 @@ describe('message list scrolling', () => {
     list.scrollTop = 2000;
     fireEvent.scroll(list);
 
-    // A late event from the previous scroll sees the new height at the old position.
+    // 前一次滚动的延迟事件可能在高度更新后仍报告旧位置。
     Object.defineProperty(list, 'scrollHeight', { value: 3000 });
     fireEvent.scroll(list);
     scrollTo.mockClear();
@@ -224,7 +224,7 @@ describe('message list scrolling', () => {
     const { list, scrollTo } = measureList();
     list.scrollTop = 2000;
     fireEvent.scroll(list);
-    // The update can render before the browser dispatches the user's scroll event.
+    // 浏览器派发用户滚动事件前，页面可能已经渲染了更新。
     list.scrollTop = 1200;
     scrollTo.mockClear();
     rerender(<MessageList messages={[...messages]} sessionId="s-1" onToggle={() => {}} />);
@@ -260,7 +260,7 @@ describe('message list scrolling', () => {
       fireEvent.scroll(list);
       scrollTo.mockClear();
 
-      // A larger composer reduces the viewport without changing message data.
+      // 输入框变大后，消息数据虽未变，可用视口已经缩小。
       Object.defineProperty(list, 'clientHeight', { value: 310 });
       resize();
       expect(scrollTo).toHaveBeenLastCalledWith({ top: 2400, behavior: 'instant' });

@@ -58,7 +58,7 @@ jobs:
       - name: Build
         run: uv build --clear
 
-      # Fail the release before publishing if the wheel would ship without the UI.
+      # 发布前检查 wheel 是否包含网页界面，缺少资源就终止发布。
       - name: Verify wheel contains Web assets
         run: uv run python scripts/build_web.py --wheel dist/*.whl
 

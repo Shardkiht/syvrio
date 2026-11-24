@@ -1,4 +1,4 @@
-"""New Fetch adapters: wire contracts, safe normalization, and routing."""
+"""网页抓取适配器的传输协议、数据规范化和路由。"""
 
 from __future__ import annotations
 
