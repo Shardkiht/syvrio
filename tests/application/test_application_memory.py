@@ -6,6 +6,9 @@ import pytest
 
 from syvrio.application.contracts import ImportDocument
 from syvrio.application.memory import MemoryUseCases
+from syvrio.infra.storage.transaction import vault_transaction
+from syvrio.memory import reflection
+from syvrio.memory.background.jobs import encode_job
 from syvrio.memory.extractor import StaticExtractor
 from syvrio.memory.models import Candidate, ExtractionResult
 from syvrio.memory.service import MemoryService
@@ -131,7 +134,8 @@ def test_import_continues_after_chunk_failure(config, tmp_path, monkeypatch):
     assert result.chunks >= 1  # 后续块继续处理
 
 
-def test_profile_without_summary_is_read_only(config, monkeypatch):
+@pytest.mark.parametrize("text", ["", "Restored profile"])
+def test_profile_is_read_only_before_first_write(config, monkeypatch, text):
     service = build_service(config)
     memory = MemoryUseCases(service)
 
@@ -146,10 +150,37 @@ def test_profile_without_summary_is_read_only(config, monkeypatch):
     monkeypatch.setattr(
         "syvrio.infra.llm.client._litellm", lambda: pytest.fail("Unexpected model call")
     )
+    if text:
+        service.profile.path.write_text(text, encoding="utf-8")
     before = files()
     snapshot = memory.profile()
 
-    assert snapshot.status == "Not generated"
-    assert "/dream" in snapshot.body
+    if text:
+        assert snapshot.status == "Generated profile" and snapshot.body == text
+    else:
+        assert snapshot.status == "Not generated" and "/dream" in snapshot.body
+    assert service.profile.read_text() == text
     assert files() == before
     assert service.current_facts() == []
+
+
+def test_profile_reloads_text_and_metadata_when_first_publication_overlaps(config, monkeypatch):
+    service = build_service(config)
+    service.profile.path.write_text("Earlier profile", encoding="utf-8")
+    read_job = reflection.read_job
+
+    def publish_then_read(path):
+        monkeypatch.setattr(reflection, "read_job", read_job)
+        with vault_transaction(service.paths) as tx:
+            tx.write(service.profile.path, b"Published profile")
+            tx.write(path, encode_job({"fact_count": 3, "unique_count": 2}))
+        return read_job(path)
+
+    monkeypatch.setattr(reflection, "read_job", publish_then_read)
+    snapshot = MemoryUseCases(service).profile()
+
+    assert (snapshot.body, snapshot.fact_count, snapshot.unique_count) == (
+        "Published profile",
+        3,
+        2,
+    )
