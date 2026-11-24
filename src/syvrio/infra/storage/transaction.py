@@ -76,7 +76,10 @@ class VaultTransaction:
             or rel.drive
             or ".." in rel.parts
             or any(not safe_component(p) for p in rel.parts)
-            or (root_name == "jobs" and rel.parts[0].casefold() == TRANSACTION_FILENAME)
+            or (
+                root_name == "jobs"
+                and rel.parts[0].casefold() in {TRANSACTION_FILENAME, "vault-transactions"}
+            )
             or (root_name == "undo" and (len(rel.parts) != 2 or rel.suffix != ".json"))
         ):
             raise TransactionError("Invalid path in Vault transaction.")

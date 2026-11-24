@@ -273,3 +273,22 @@ def test_gateway_without_instance_cannot_authorize_restart():
     with httpx.Client(transport=transport) as client, ExitStack() as cleanup:
         with pytest.raises(update.UpdateError, match="resident instance"):
             update_worker.prepare_restart(client, 8765, cleanup)
+
+
+def test_restored_update_explains_the_failed_health_check(tmp_path, monkeypatch):
+    monkeypatch.setattr(update, "config_options", lambda root: ())
+
+    def failed(*args, **kwargs):
+        try:
+            raise update.UpdateError("health", "synthetic details")
+        except update.UpdateError as error:
+            raise update.UpdateError("restored", "restored") from error
+
+    monkeypatch.setattr(update, "update", failed)
+    paths = SyvrioPaths(tmp_path / "vault", tmp_path / "runtime")
+    with pytest.raises(update.UpdateError, match="restored"):
+        update_worker.run_worker("0.7.1", tmp_path, paths)
+    status = jobs._status(tmp_path)
+    assert status["state"] == "failed"
+    assert "did not become healthy" in status["message"]
+    assert "previous version is running again" in status["message"]

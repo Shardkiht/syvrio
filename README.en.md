@@ -52,6 +52,8 @@ The development frontend runs at `http://127.0.0.1:7987/`. Start its gateway wit
 
 Enter `/update` in the Web app or TUI to check for stable releases on PyPI. In the Web app, you can also choose **Settings → About → Check for updates**. If a systemd user service manages the installation, choose Install and confirm the target version to start the upgrade. Connected clients briefly disconnect during the restart. See the [update guide](docs/web.md#pypi-自动更新).
 
+On upgrade from 0.6.2, the first startup imports the paired Vault’s background checkpoints and keeps the originals for rollback. A conflict or an unknown owner stops startup and preserves the files. [Upgrade and recovery](docs/vault-v2.md#runtime-与恢复)
+
 `syvrio update` shows progress as it downloads, verifies, installs dependencies and restarts the service. Downloads show a percentage when the size is known. The interactive terminal shows elapsed time while it waits. Updates started from the Web app or TUI also report progress in the update panel.
 
 ## Configuration

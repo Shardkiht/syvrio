@@ -17,10 +17,10 @@ from ..infra.errors import SyvrioError
 from ..infra.storage import paths as local_paths
 from ..infra.storage.locking import LockTimeout, vault_write_lock
 from ..infra.storage.paths import SyvrioPaths, runtime_path
-from ..infra.storage.transaction import recover_vault_transaction
 from ..infra.vault.files import initialize_vault as provision_vault
 from ..infra.vault.sync import GitSyncService
 from .ownership import BackendLease, physical_vault_lock
+from .updates.runtime_layout import prepare_runtime_upgrade
 
 
 class MaintenanceError(SyvrioError, ValueError):
@@ -31,7 +31,7 @@ def prepare_vault_runtime(paths: SyvrioPaths) -> None:
     """调用方持有后端租约，在写入前核对部署目录并恢复未完成的事务。"""
     with vault_write_lock(paths):
         paths.bind()
-        recover_vault_transaction(paths)
+        prepare_runtime_upgrade(paths)
 
 
 def initialize_owned_vault(

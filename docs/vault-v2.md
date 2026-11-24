@@ -73,12 +73,15 @@ Context 支持 `event_time`、`valid_from`、`valid_to`、`location` 和情绪�
 | `locks/`、`state/git-sync.json` | 写入、单会话日志协调与 Git 同步状态 |
 | `indexes/`、`cache/` | 可重建索引与缓存 |
 | `jobs/background-memory/{distillation,context,dream,title}/` | 后台任务、版本和续跑进度 |
+| `jobs/upgrade-0.7-background.json` | 已接管的旧进度文件及其 SHA-256，供重试和回退后再升级使用 |
 | `jobs/vault-transaction.json` | 跨文件写入与永久删除会话的恢复记录 |
 | `session-reasoning/<session-id>/<message-id>.json` | 本机保存的助手推理附件 |
 | `turn-undo/<session-id>/<first-user-message-id>.json` | 最新回合文件撤回需要的原始状态与校验值 |
 | `logs/` | 本地诊断日志 |
 
-升级前请先用原版本恢复未完成的事务并停掉后端。如果旧布局的 `jobs/vault-transactions/` 中仍有事务日志，需用原版本和原来的 Vault、Runtime 完成恢复。如果 `jobs/background-memory/<路径摘要>/` 中仍有任务或进度文件，核实属于当前 Vault 后，停机将各任务类型目录下的文件移到对应的新目录并保留文件名。遇到同名文件应先核对内容。新版检测到这些遗留工作时会停止启动并保留文件。
+修复版首次启动时在后端租约及 Vault 写锁内升级 Runtime。已绑定 Vault 的 `0.6.2` 后台任务和进度按原字节接入当前目录；旧目录保留，更新健康检查失败时旧版仍能读取原件。升级记录只保存文件摘要。重复启动不会重新排入已经完成的任务；回退后再次升级会接续旧版新增、修改或删除的任务。
+
+单份、归属明确且内容可校验的旧 Vault 事务会先恢复。遇到其他 Vault 的进度、两边对同一任务做了不同修改、损坏的日志或未完成的旧会话删除，启动会停止，并在后端日志说明原因。旧会话删除应先用原版本完成恢复。升级器负责程序切换和健康检查；完整备份仍须包含 Vault、Runtime 及附件。
 
 多文件修改先在 Runtime 保存恢复记录，再在 Vault 锁内逐个替换目标文件。操作全部成功才清除恢复记录。进程异常退出后，下次访问会先恢复整个未完成操作。若文件被其他写入方改成了无法验证的版本，恢复会停下并报告冲突。Git 快照与 Vault 写入共用同一把写锁。
 

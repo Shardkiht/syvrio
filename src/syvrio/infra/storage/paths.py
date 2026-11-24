@@ -166,7 +166,6 @@ class SyvrioPaths:
                     "Runtime belongs to a different Vault. Use its matching Runtime."
                 )
 
-        self._check_job_layout()
         if saved is not None:
             return
         # 首次配置可能已经写入锁、日志和供应商用量，这些内容不由具体 Vault 拥有。
@@ -177,13 +176,22 @@ class SyvrioPaths:
             self.state_dir / "reflection.json",
             self.state_dir / "git-sync.json",
             self.jobs_dir / TRANSACTION_FILENAME,
+            self.jobs_dir / "upgrade-0.7-background.json",
         )
         roots = (
             self.runtime_dir / TURN_UNDO_DIR,
             self.runtime_dir / "session-reasoning",
             self.state_dir / "chat-receipts",
         )
-        has_jobs = next((self.jobs_dir / "background-memory").glob("*/*.json"), None) is not None
+        has_jobs = any(
+            next(self.jobs_dir.glob(pattern), None) is not None
+            for pattern in (
+                "background-memory/*/*.json",
+                "background-memory/*/*/*.json",
+                "vault-transactions/*.json",
+                "session-deletions/*.json",
+            )
+        )
         if (
             has_jobs
             or any(path.exists() for path in files)
@@ -195,22 +203,6 @@ class SyvrioPaths:
         atomic_write(
             marker, json.dumps({"version": 2, "vault": str(self.vault_dir)}).encode("utf-8")
         )
-
-    def _check_job_layout(self) -> None:
-        # 只在启动时检查遗留工作，不在每次事务中遍历队列。
-        journals = self.jobs_dir / "vault-transactions"
-        if journals.is_symlink() or next(journals.glob("*.json"), None) is not None:
-            raise RuntimeBindingError(
-                "Unfinished Vault transaction in the old layout. Recover it with its original version before startup."
-            )
-        background = self.jobs_dir / "background-memory"
-        for directory in background.glob("?" * 64):
-            if re.fullmatch(r"[0-9a-f]{64}", directory.name) and (
-                directory.is_symlink() or next(directory.glob("*/*.json"), None) is not None
-            ):
-                raise RuntimeBindingError(
-                    "Background jobs use a different layout. Move the matching job directories offline before startup."
-                )
 
 
 def vault_paths(vault: Path) -> SyvrioPaths:

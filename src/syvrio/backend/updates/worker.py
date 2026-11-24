@@ -96,8 +96,14 @@ def run_worker(version: str, root: Path, paths: SyvrioPaths) -> None:
     except Exception as exc:
         record_event("update.failed", exc)
         stage = exc.stage if isinstance(exc, update.UpdateError) else "installation"
+        cause = exc.__cause__
+        reason = {
+            "health": "The new Web service did not become healthy.",
+            "start": "The new service could not be started.",
+            "switch": "The new executable could not be selected.",
+        }.get(getattr(cause, "stage", ""), "The new service could not take over.")
         message = {
-            "restored": "Update failed. The previous version is running again.",
+            "restored": f"{reason} The previous version is running again. See the service journal.",
             "rollback": "Update and rollback failed. Check the managed service on the host.",
             "busy": "Active work prevented the update. Wait for it to finish and try again.",
             "version": "The available release changed. Check for updates again.",
