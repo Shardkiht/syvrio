@@ -18,7 +18,8 @@ from syvrio.infra.search.base import (
 from syvrio.infra.search.fetch_router import (
     build_fetch_registry,
 )
-from syvrio.infra.search.router import _EXTERNAL_PROVIDERS, build_registry
+from syvrio.infra.search.providers.catalog import PROVIDERS
+from syvrio.infra.search.router import build_registry
 
 pytestmark = pytest.mark.search
 
@@ -33,8 +34,8 @@ def _install_keys_and_empty_keyring(monkeypatch):
     fake = types.ModuleType("keyring")
     fake.get_password = lambda service, name: None
     monkeypatch.setitem(sys.modules, "keyring", fake)
-    for env_name in {entry[1] for entry in _EXTERNAL_PROVIDERS.values()}:
-        monkeypatch.setenv(env_name, KEY)
+    for name in _SEARCH_EXTERNALS:
+        monkeypatch.setenv(PROVIDERS[name].key_env, KEY)
 
 
 def test_all_five_search_providers_register_with_keys(monkeypatch):

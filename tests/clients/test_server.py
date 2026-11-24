@@ -42,6 +42,22 @@ async def test_mcp_memorize_recall_pending(resident_backend):
         assert (await client.call_tool("review_pending", {})).data == []
 
 
+async def test_mcp_rejects_deprecated_target_before_review(resident_backend):
+    _, resident = resident_backend
+    async with Client(build_server(client=resident)) as client:
+        saved = await reviewed(client, "note", {"text": "合成旧事实", "topic": "test"})
+        await reviewed(client, "deprecate", {"entry_id": saved["id"]})
+        for action in ("correct", "transition"):
+            response = await client.call_tool(
+                action,
+                {"entry_id": saved["id"], "draft": {"text": "合成新事实", "topic": "test"}},
+                raise_on_error=False,
+            )
+            assert response.is_error and "active memory" in response.content[0].text
+        again = await reviewed(client, "deprecate", {"entry_id": saved["id"]})
+        assert again["id"] == saved["id"]
+
+
 async def test_mcp_topics_status_and_stale_evidence(resident_backend):
     _, resident = resident_backend
     async with Client(build_server(client=resident)) as client:

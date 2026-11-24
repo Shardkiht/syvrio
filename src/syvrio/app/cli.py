@@ -29,7 +29,6 @@ app = typer.Typer(
 )
 
 CONFIG_OPTION = typer.Option(None, "--config", "-c", help="配置文件路径")
-VAULT_OPTION = typer.Option(None, "--vault", help="覆盖配置中的记忆库路径")
 
 
 @dataclass
@@ -53,7 +52,7 @@ def _root(
     if not sys.stdin.isatty():
         console.print(ctx.get_help())
         return
-    service = _service(None, None)
+    service = _service(None)
     try:
         run_chat(service)
     except Exception as exc:
@@ -62,8 +61,8 @@ def _root(
         console.print(ctx.get_help())
 
 
-def _service(config: Path | None, vault: Path | None) -> ResidentClient:
-    return ResidentClient(config, vault)
+def _service(config: Path | None) -> ResidentClient:
+    return ResidentClient(config)
 
 
 @app.command("verify-attachments")
@@ -117,13 +116,12 @@ def init(
 @app.command()
 def setup(
     config: Path | None = CONFIG_OPTION,
-    vault: Path | None = VAULT_OPTION,
 ) -> None:
     """交互式配置模型、搜索与网页抓取 API。"""
     from .setup import run_setup
 
     try:
-        result = run_setup(config, vault)
+        result = run_setup(config)
     except KeyboardInterrupt:
         fail("已取消。")
         return
@@ -156,10 +154,9 @@ def setup(
 def chat(
     resume: str | None = typer.Option(None, "--resume", "-r", help="恢复指定会话 ID"),
     config: Path | None = CONFIG_OPTION,
-    vault: Path | None = VAULT_OPTION,
 ) -> None:
     """启动交互式记忆 Agent。支持 /new /sessions /compact 等命令。"""
-    run_chat(_service(config, vault), resume)
+    run_chat(_service(config), resume)
 
 
 @app.command("sessions")
@@ -172,7 +169,6 @@ def list_sessions(
         None, "--delete-permanently", metavar="ID", help="确认后永久删除已归档的会话"
     ),
     config: Path | None = CONFIG_OPTION,
-    vault: Path | None = VAULT_OPTION,
 ) -> None:
     """列出、归档或还原会话。"""
     if sum(value is not None for value in (archive, restore, purge)) + archived > 1:
@@ -180,7 +176,7 @@ def list_sessions(
     target = next((value for value in (archive, restore, purge) if value is not None), None)
     if target is not None and not SESSION_ID_RE.fullmatch(target):
         raise typer.BadParameter("无效的会话 ID。")
-    service = _service(config, vault)
+    service = _service(config)
     if target is None:
         print_sessions(
             service.call("sessions", limit=limit, archived=True)
@@ -220,11 +216,10 @@ def memorize(
     text: str = typer.Argument(..., help="已确认的事实原文"),
     topic: str = typer.Option("uncategorized", "--topic", "-t", help="记忆主题"),
     config: Path | None = CONFIG_OPTION,
-    vault: Path | None = VAULT_OPTION,
 ) -> None:
     """保存一条明确事实。"""
     try:
-        entry = _service(config, vault).memorize(MemoryDraft(text=text, topic=topic))
+        entry = _service(config).memorize(MemoryDraft(text=text, topic=topic))
         console.print(f"已记录 [{entry.topic}] {entry.text}", markup=False)
     except ValueError as exc:
         fail(str(exc), exc=exc)
@@ -237,7 +232,6 @@ def import_memories(
     ],
     apply: bool = typer.Option(False, "--apply", help="实际写入；默认只打印计划"),
     config: Path | None = CONFIG_OPTION,
-    vault: Path | None = VAULT_OPTION,
 ) -> None:
     """导入文本或文档：AI 整理成条目，程序裁决写入；默认 dry-run（仍调用模型）。"""
     try:
@@ -250,7 +244,7 @@ def import_memories(
             if path.is_dir()
             else [path]
         )
-        result = _service(config, vault).import_files(files, apply)
+        result = _service(config).import_files(files, apply)
     except (OSError, ValueError) as exc:
         fail(str(exc), exc=exc)
     for file, chunks in result["file_chunks"]:
@@ -282,11 +276,10 @@ def recall(
     location: str | None = typer.Option(None, "--location", help="明确记载的地点"),
     emotion: str | None = typer.Option(None, "--emotion", help="明确表达的情绪"),
     config: Path | None = CONFIG_OPTION,
-    vault: Path | None = VAULT_OPTION,
 ) -> None:
     """检索记忆。"""
     try:
-        hits = _service(config, vault).recall(
+        hits = _service(config).recall(
             query,
             limit,
             time_range={"start": date_from, "end": date_to} if date_from or date_to else None,
@@ -308,13 +301,12 @@ def transition(
     effective_from: str | None = typer.Option(None, "--from", help="新状态的起始日期"),
     previous_valid_to: str | None = typer.Option(None, "--previous-until", help="旧状态的截止日期"),
     config: Path | None = CONFIG_OPTION,
-    vault: Path | None = VAULT_OPTION,
 ) -> None:
     """记录已发生的状态变化，保留历史；原先记错请使用 correct。"""
     try:
         context = MemoryContext(valid_from=effective_from) if effective_from else None
         draft = MemoryDraft(text=text, topic=topic, context=context)
-        entry = _service(config, vault).transition(entry_id, draft, previous_valid_to)
+        entry = _service(config).transition(entry_id, draft, previous_valid_to)
         console.print(f"已记录时间变化：{entry.id}")
     except (ValueError, KeyError) as exc:
         fail(str(exc), exc=exc)
@@ -323,11 +315,10 @@ def transition(
 @app.command("profile")
 def profile(
     config: Path | None = CONFIG_OPTION,
-    vault: Path | None = VAULT_OPTION,
 ) -> None:
     """查看最近一次 Dream 生成的画像。"""
     console.print(
-        _service(config, vault).call("profile") or "暂无画像，可运行 syvrio dream。", markup=False
+        _service(config).call("profile") or "暂无画像，可运行 syvrio dream。", markup=False
     )
 
 
@@ -340,10 +331,9 @@ class DreamAction(StrEnum):
 def dream(
     action: Annotated[DreamAction, typer.Argument()] = DreamAction.run,
     config: Path | None = CONFIG_OPTION,
-    vault: Path | None = VAULT_OPTION,
 ) -> None:
     """更新画像并生成待审推断，或查看 Dream 状态。"""
-    result = _service(config, vault).call("dream", action=action.value)
+    result = _service(config).call("dream", action=action.value)
     if result["status"] != "ok":
         fail(result["message"])
     console.print(result["message"], markup=False)
@@ -355,10 +345,9 @@ def inferences(
     action: str | None = typer.Option(None, "--action", help="confirm / reject / correct"),
     text: str | None = typer.Option(None, "--text", help="更正后的假设内容"),
     config: Path | None = CONFIG_OPTION,
-    vault: Path | None = VAULT_OPTION,
 ) -> None:
     """查看或审查推断；确认不会自动写入事实记忆。"""
-    service = _service(config, vault)
+    service = _service(config)
     try:
         if action:
             if not inference_id:
@@ -379,10 +368,9 @@ def inferences(
 @app.command()
 def pending(
     config: Path | None = CONFIG_OPTION,
-    vault: Path | None = VAULT_OPTION,
 ) -> None:
     """列出待确认候选。"""
-    items = _service(config, vault).pending()
+    items = _service(config).pending()
     if not items:
         console.print("[dim]没有待确认项。[/dim]")
         return
@@ -401,11 +389,10 @@ def pending(
 def approve(
     item_id: str = typer.Argument(..., help="待确认项 ID"),
     config: Path | None = CONFIG_OPTION,
-    vault: Path | None = VAULT_OPTION,
 ) -> None:
     """确认一条候选并写入记忆库。"""
     try:
-        entry = _service(config, vault).approve(item_id)
+        entry = _service(config).approve(item_id)
     except KeyError as exc:
         fail(str(exc), exc=exc)
         return
@@ -419,11 +406,10 @@ def approve(
 def reject(
     item_id: str = typer.Argument(..., help="待确认项 ID"),
     config: Path | None = CONFIG_OPTION,
-    vault: Path | None = VAULT_OPTION,
 ) -> None:
     """拒绝一条待确认候选，保留处理记录。"""
     try:
-        item = _service(config, vault).reject(item_id)
+        item = _service(config).reject(item_id)
     except KeyError as exc:
         fail(str(exc), exc=exc)
         return
@@ -436,11 +422,10 @@ def correct(
     text: str = typer.Argument(..., help="更正后的完整表述"),
     topic: str = typer.Option(..., "--topic", "-t", help="更正后的主题"),
     config: Path | None = CONFIG_OPTION,
-    vault: Path | None = VAULT_OPTION,
 ) -> None:
     """写入更正后的新条目并将原记忆标为弃用。"""
     try:
-        entry = _service(config, vault).correct(entry_id, MemoryDraft(text=text, topic=topic))
+        entry = _service(config).correct(entry_id, MemoryDraft(text=text, topic=topic))
     except KeyError as exc:
         fail(str(exc), exc=exc)
         return
@@ -456,11 +441,10 @@ def correct(
 def deprecate(
     entry_id: str = typer.Argument(..., help="要弃用的记忆 ID"),
     config: Path | None = CONFIG_OPTION,
-    vault: Path | None = VAULT_OPTION,
 ) -> None:
     """弃用一条记忆，保留 ID、原文、来源和审计记录。"""
     try:
-        entry = _service(config, vault).deprecate(entry_id)
+        entry = _service(config).deprecate(entry_id)
     except KeyError as exc:
         fail(str(exc), exc=exc)
         return
@@ -473,10 +457,9 @@ def deprecate(
 @app.command("topics")
 def list_topics(
     config: Path | None = CONFIG_OPTION,
-    vault: Path | None = VAULT_OPTION,
 ) -> None:
     """列出记忆主题。"""
-    topics = _service(config, vault).topics()
+    topics = _service(config).topics()
     if not topics:
         console.print("[dim]记忆库为空。[/dim]")
         return
@@ -494,10 +477,9 @@ def list_topics(
 def history(
     limit: int = typer.Option(10, "--limit", "-n"),
     config: Path | None = CONFIG_OPTION,
-    vault: Path | None = VAULT_OPTION,
 ) -> None:
     """查看提交历史。"""
-    commits = _service(config, vault).history(limit)
+    commits = _service(config).history(limit)
     if not commits:
         console.print("[dim]暂无提交。[/dim]")
         return
@@ -516,10 +498,9 @@ def commit(
         None, "--push/--no-push", help="是否推送到 remote；默认读取 auto_push"
     ),
     config: Path | None = CONFIG_OPTION,
-    vault: Path | None = VAULT_OPTION,
 ) -> None:
     """生成总结并提交变更，供本人审阅。"""
-    service = _service(config, vault)
+    service = _service(config)
     try:
         result = service.commit(push=push)
     except ValueError as exc:
@@ -544,10 +525,9 @@ def commit(
 @app.command()
 def status(
     config: Path | None = CONFIG_OPTION,
-    vault: Path | None = VAULT_OPTION,
 ) -> None:
     """查看记忆库状态。"""
-    info = _service(config, vault).status()
+    info = _service(config).status()
     console.print(f"记忆库：{info['vault']}")
     console.print(
         f"主题 {info['topics']} · 条目 {info['entries']} · 待确认 {info['pending']} · 未提交 {info['dirty']}"
@@ -558,10 +538,9 @@ def status(
 @app.command()
 def serve(
     config: Path | None = CONFIG_OPTION,
-    vault: Path | None = VAULT_OPTION,
 ) -> None:
     """以 stdio 启动 MCP server。"""
-    service = _service(config, vault)
+    service = _service(config)
     from .server import build_server
 
     build_server(client=service).run()
@@ -571,17 +550,17 @@ def serve(
 def backend_command(
     action: str = typer.Argument("status", help="run / start / status / stop"),
     config: Path | None = CONFIG_OPTION,
-    vault: Path | None = VAULT_OPTION,
 ) -> None:
     """查看、启动或关闭此 Vault 的常驻后端。"""
     from ..backend.endpoint import client_paths, connect, discover
 
-    paths = client_paths(config, vault)
     if action == "run":
         from ..backend.server import serve_resident
 
-        serve_resident(config, paths.vault_dir)
-    elif action == "start":
+        serve_resident(config)
+        return
+    paths = client_paths(config)
+    if action == "start":
         base, _ = connect(paths)
         typer.echo(f"Running: {base}")
     elif action == "status":
@@ -626,7 +605,6 @@ def web(
     remove_domain: bool = typer.Option(False, "--remove-domain", help="删除该域名的 hosts 映射"),
     map_hosts: bool = typer.Option(True, "--hosts/--no-hosts", help="是否自动更新系统 hosts 文件"),
     config: Path | None = CONFIG_OPTION,
-    vault: Path | None = VAULT_OPTION,
 ) -> None:
     """启动私有 Web 客户端，或为本机/远程实例配置本地域名映射。"""
     from ..backend.hosts import ensure_hosts_mapping, normalize_domain, remove_hosts_mapping
@@ -638,7 +616,7 @@ def web(
         if host != "127.0.0.1" or map_only or remove_domain or domain_ip != "127.0.0.1":
             fail("web share 仅使用 127.0.0.1 网关，无需 hosts 映射。")
         try:
-            start_share(port, domain, github_id, yes, config, vault)
+            start_share(port, domain, github_id, yes, config)
         except SyvrioError as exc:
             fail(str(exc), exc=exc)
         return
@@ -682,7 +660,7 @@ def web(
             "Restrict the network (e.g. Tailscale) or keep --host 127.0.0.1."
         )
     try:
-        run_server(host, port, config_path=config, vault_path=vault, domains=domains)
+        run_server(host, port, config_path=config, domains=domains)
     except RuntimeError as exc:
         fail(str(exc), exc=exc)
 

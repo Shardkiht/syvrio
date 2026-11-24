@@ -64,28 +64,37 @@ Context 支持 `event_time`、`valid_from`、`valid_to`、`location` 和情绪�
 
 ## Runtime 与恢复
 
-Vault 与 Runtime 使用独立路径。配置中的 `vault`、`runtime` 与环境覆盖规则见[配置示例](../config.example.toml)。Runtime 应位于 Git 工作树之外。Web、TUI、CLI 和 MCP 的业务请求连接同一个常驻后端。后端按实际 Vault 身份获取独占权，Runtime 里另外保存本地端点和运行锁。
+每套部署使用一个 Vault 和一个 Runtime，分别存放在独立目录。首次使用时 Runtime 记录 Vault 的物理路径，启动发现路径不符就停止并保留现有文件。配置中的 `vault`、`runtime` 与环境覆盖规则见[配置示例](../config.example.toml)。Runtime 应位于 Git 工作树之外。Web、TUI、CLI 和 MCP 的业务请求连接同一个常驻后端。后端按实际 Vault 身份获取独占权，Runtime 里另外保存本地端点和运行锁。
 
 | 相对 Runtime 的路径 | 用途 |
 | --- | --- |
+| `state/vault-binding.json` | 此 Runtime 配对的 Vault 绝对路径 |
 | `state/backend.json` | 本地端口、访问令牌和绑定的 Vault |
 | `locks/`、`state/git-sync.json` | 写入、单会话日志协调与 Git 同步状态 |
 | `indexes/`、`cache/` | 可重建索引与缓存 |
-| `jobs/background-memory/<vault-hash>/{distillation,context,dream}/` | 后台任务、版本和续跑进度 |
-| `jobs/vault-transactions/` | 跨文件写入与永久删除会话的恢复记录 |
+| `jobs/background-memory/{distillation,context,dream,title}/` | 后台任务、版本和续跑进度 |
+| `jobs/vault-transaction.json` | 跨文件写入与永久删除会话的恢复记录 |
 | `session-reasoning/<session-id>/<message-id>.json` | 本机保存的助手推理附件 |
 | `turn-undo/<session-id>/<first-user-message-id>.json` | 最新回合文件撤回需要的原始状态与校验值 |
 | `logs/` | 本地诊断日志 |
+
+升级前请先用原版本恢复未完成的事务并停掉后端。如果旧布局的 `jobs/vault-transactions/` 中仍有事务日志，需用原版本和原来的 Vault、Runtime 完成恢复。如果 `jobs/background-memory/<路径摘要>/` 中仍有任务或进度文件，核实属于当前 Vault 后，停机将各任务类型目录下的文件移到对应的新目录并保留文件名。遇到同名文件应先核对内容。新版检测到这些遗留工作时会停止启动并保留文件。
 
 多文件修改先在 Runtime 保存恢复记录，再在 Vault 锁内逐个替换目标文件。操作全部成功才清除恢复记录。进程异常退出后，下次访问会先恢复整个未完成操作。若文件被其他写入方改成了无法验证的版本，恢复会停下并报告冲突。Git 快照与 Vault 写入共用同一把写锁。
 
 `/undo` 只处理最新回合。安全插入的用户消息通过 `turn_root` 关联到首条消息。撤回时校验受影响文件和仍会存续的来源引用，再统一恢复文件并追加会话撤回事件。编辑重发时，撤回事件与替代用户消息一起追加，并与工具文件恢复一起提交。写入失败时，恢复记录会还原原会话与这些文件。新增记忆在无冲突时可以随这次撤回消失。这是正式记忆允许物理移除的例外。别的写者修改了受影响文件或新增了依赖时保留整个回合。已发出的联网请求无法收回。需要撤回工具写入的回合必须有对应 Runtime 日志。
 
+## 停机后在原目录更换数据
+
+先让常驻后端正常退出，再在原 Vault 路径切换 Git 版本、修改文件或用备份替换目录。保留部署配置和 Vault 的绝对路径。重启会从当前目录读取正式记忆和会话。整库恢复时用备份替换整个目录，避免新版独有的文件残留。Git 历史只覆盖已跟踪的文件。
+
+恢复整套历史时，优先同时还原同一时点的 Runtime。单独回退记忆文件或会话正文不会回退 Runtime 里的思考附件、工具撤回凭据和排队任务。只持有 Vault 备份，又希望从该版本重新开始时，可先将停机后的 Runtime 完整另存，再在原 Runtime 路径启动。届时会重新建立索引，已另存的旧任务和旧撤回记录不会参与新一次运行。
+
 ## 附件和备份
 
 Web 与 TUI 可以一起上传多份文档或图片。每份原件在会话中有稳定 ID、显示名、字节数、媒体类型和 SHA-256。恢复原件时按这些标识核对。手动核验包含活动与归档会话，以及已撤回消息的上传原件。Vault 根的 `.gitignore` 排除 `/attachments/` 与 `/archived/`，仅克隆 Git 仓库无法还原上传原件。
 
-迁机或完整备份时先停掉常驻后端及其他写入者，复制整个 Vault，包括 `attachments/`。如果上次运行异常退出，先用原先配对的 Vault 和 Runtime 重开并完成恢复，再制作快照或切换 Runtime。需要保留历史思考面板、撤回能力或未完成任务时同时复制匹配的 Runtime，并妥善保护其中的本地凭据和原文件快照。助手消息的 `reasoning_local` 标记关联 Runtime 附件。推理附件缺失时，仍可读取会话回复。
+迁机或完整备份时先停掉常驻后端及其他写入者，复制整个 Vault，包括 `attachments/`。如果上次运行异常退出，先用原先配对的 Vault 和 Runtime 重开并完成恢复，再制作快照。需要保留历史思考面板、撤回能力或未完成任务时同时复制匹配的 Runtime，并妥善保护其中的本地凭据和原文件快照。若迁机后 Vault 的绝对路径发生变化，确认目标是同一套停机备份后，在目标副本的 `state/vault-binding.json` 中将 `vault` 更新为新目录的物理绝对路径，保留其余字段。旧的工具撤回凭据记录了原绝对路径，跨路径搬迁后仅新回合可生成可用的工具撤回凭据。助手消息的 `reasoning_local` 标记关联 Runtime 附件。推理附件缺失时，仍可读取会话回复。
 
 归档只移动会话正文，保留稳定 ID、原始附件、思考和撤销记录。
 

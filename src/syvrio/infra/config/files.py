@@ -148,6 +148,17 @@ class ConfigFiles:
                 atomic_write(self.paths[name], content.encode("utf-8"))
             self.journal.unlink()
 
+    def initialize_vault(self, vault: Path) -> None:
+        """在首次初始化时固定部署目录，保留已有设置和配置文件原文。"""
+        with self.lock:
+            data = self.read()
+            if stored := data.get("vault"):
+                if Path(stored).expanduser().resolve() != vault.expanduser().resolve():
+                    raise ConfigError("部署目录已变更，请重新打开配置。")
+                return
+            data["vault"] = vault.resolve().as_posix()
+            self.write(data, initialize=not self.paths["config.toml"].exists())
+
     def write(self, data: dict, *, initialize: bool = False) -> None:
         updates = {}
         for name, path in self.paths.items():

@@ -11,13 +11,15 @@ from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
+from ..config import FetchConfig, SearchConfig
 from .base import (
     DEFAULT_FAKE_IP_CIDRS,
     DEFAULT_FAKE_IPV4,
     ProviderError,
     ProviderErrorKind,
 )
-from .providers.open_websearch import NAME, npx_command
+from .providers.catalog import OPEN_WEBSEARCH, uses_websearch_daemon
+from .providers.open_websearch import npx_command
 
 START_TIMEOUT = 20.0
 HEALTH_TIMEOUT = 1.5
@@ -80,13 +82,19 @@ def ensure_daemon(
         if check():
             return "started"
     raise ProviderError(
-        NAME,
+        OPEN_WEBSEARCH,
         ProviderErrorKind.TIMEOUT,
         f"open-websearch 启动超时（{timeout:.0f}s），日志：{target_log}",
     )
 
 
-ensure_search_daemon = ensure_daemon
+def warm_search_daemon(search: SearchConfig, fetch: FetchConfig) -> str | None:
+    if not search.auto_start or not uses_websearch_daemon(search.transport):
+        return None
+    search_uses_daemon = search.enabled and OPEN_WEBSEARCH in search.providers
+    if search_uses_daemon or OPEN_WEBSEARCH in fetch.providers:
+        return ensure_daemon(search.base_url)
+    return None
 
 
 def _daemon_fake_ip_cidrs() -> str:
@@ -134,7 +142,7 @@ def _spawn_daemon(command: list[str], log_path: Path) -> None:
             )
     except OSError as exc:
         raise ProviderError(
-            NAME,
+            OPEN_WEBSEARCH,
             ProviderErrorKind.NETWORK,
             f"无法启动 open-websearch：{exc}；日志：{log_path}",
         ) from exc

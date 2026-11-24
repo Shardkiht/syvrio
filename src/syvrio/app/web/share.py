@@ -25,9 +25,8 @@ def start_share(
     github_id: str | None,
     yes: bool,
     config: Path | None,
-    vault: Path | None,
 ) -> None:
-    client = ResidentClient(config, vault)
+    client = ResidentClient(config)
     share = WebShareConfig(**client.call("web_share", domain=domain, github_id=github_id))
     hostname, account = share.domain, share.github_user_id
     if not shutil.which("ngrok"):
@@ -38,9 +37,7 @@ def start_share(
     if not yes:
         typer.confirm("保存此设置并通过 ngrok 开放这个 Web 网关？", default=False, abort=True)
     client.call("web_share", domain=hostname, github_id=account, save=True)
-    run_server(
-        DEFAULT_HOST, port, config_path=config, vault_path=vault, domains=[hostname], share=share
-    )
+    run_server(DEFAULT_HOST, port, config_path=config, domains=[hostname], share=share)
 
 
 def run_shared_gateway(gateway: FastAPI, port: int, share: WebShareConfig) -> None:

@@ -21,6 +21,7 @@ _REQUEST_HEADERS = {
     "content-type",
     "content-length",
     "if-none-match",
+    "if-range",
     "range",
     "x-syvrio-view",
     "x-syvrio-edit",

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 from pathlib import Path
 from typing import Literal
 
@@ -15,9 +14,7 @@ JobKind = Literal["context", "distillation", "dream", "title"]
 
 
 def job_directory(paths: SyvrioPaths, kind: JobKind) -> Path:
-    vault = os.path.normcase(str(paths.vault_dir.resolve()))
-    binding = hashlib.sha256(vault.encode("utf-8")).hexdigest()
-    return paths.jobs_dir / "background-memory" / binding / kind
+    return paths.jobs_dir / "background-memory" / kind
 
 
 def job_path(paths: SyvrioPaths, kind: JobKind, key: str) -> Path:

@@ -387,6 +387,32 @@ def test_fetch_router_rejects_private_final_url(public_dns):
         router.fetch("https://example.com/start", 1000)
 
 
+@pytest.mark.parametrize(
+    ("enabled", "search", "fetch", "transport", "auto_start", "warm"),
+    [
+        (True, ["open_websearch"], [], "http", True, True),
+        (False, ["open_websearch"], ["open_websearch"], "http", True, True),
+        (False, ["open_websearch"], [], "http", True, False),
+        (True, ["searxng"], [], "http", True, False),
+        (True, ["open_websearch"], ["open_websearch"], "mcp", True, False),
+        (True, ["open_websearch"], ["open_websearch"], "http", False, False),
+    ],
+)
+def test_warmup_follows_configured_capabilities(
+    monkeypatch, enabled, search, fetch, transport, auto_start, warm
+):
+    from syvrio.infra.config import FetchConfig
+    from syvrio.infra.search import daemon
+
+    config = SearchConfig(
+        enabled=enabled, providers=search, transport=transport, auto_start=auto_start
+    )
+    calls = []
+    monkeypatch.setattr(daemon, "ensure_daemon", calls.append)
+    daemon.warm_search_daemon(config, FetchConfig(providers=fetch))
+    assert calls == ([config.base_url] if warm else [])
+
+
 def test_build_fetch_router_from_config_defaults_to_open_websearch(tmp_path):
     from syvrio.infra.config import FetchConfig
 

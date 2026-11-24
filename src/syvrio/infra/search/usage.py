@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from threading import RLock
@@ -18,6 +19,14 @@ _LOCKS_GUARD = RLock()
 def window_key(period: str, now: float) -> str:
     moment = datetime.fromtimestamp(now)
     return moment.strftime("%Y-%m-%d") if period == "daily" else moment.strftime("%Y-%m")
+
+
+@dataclass(slots=True)
+class UsageReservation:
+    provider: str
+    daily: str
+    monthly: str
+    refunded: bool = False
 
 
 class UsageLimiter:
@@ -64,9 +73,10 @@ class UsageLimiter:
         os.replace(tmp, self._path)
 
     def _entry(self, provider: str) -> dict:
+        now = self._clock()
         entry = self._counts.setdefault(provider, {})
         for period in ("daily", "monthly"):
-            key = window_key(period, self._clock())
+            key = window_key(period, now)
             counter = entry.get(period)
             if not isinstance(counter, dict) or counter.get("window") != key:
                 entry[period] = {"window": key, "count": 0}
@@ -74,7 +84,7 @@ class UsageLimiter:
                 counter["count"] = 0
         paused = entry.get("paused")
         if isinstance(paused, dict) and isinstance(paused.get("resume_at"), (int, float)):
-            if self._clock() >= paused["resume_at"]:
+            if now >= paused["resume_at"]:
                 entry.pop("paused", None)
         return entry
 
@@ -82,20 +92,23 @@ class UsageLimiter:
         with self._lock:
             self._load()
             entry = self._entry(provider)
-            limit = self._limits.get(provider)
-            result = {"paused": dict(entry.get("paused") or {})}
-            for period in ("daily", "monthly"):
-                maximum = getattr(limit, period, 0)
-                count = entry[period]["count"]
-                result[period] = {
-                    "limit": maximum,
-                    "used": count,
-                    "remaining": max(0, maximum - count) if maximum > 0 else None,
-                }
-            return result
+            return self._status(provider, entry)
 
-    def remaining(self, provider: str) -> int | None:
-        status = self.status(provider)
+    def _status(self, provider: str, entry: dict) -> dict:
+        limit = self._limits.get(provider)
+        result = {"paused": dict(entry.get("paused") or {})}
+        for period in ("daily", "monthly"):
+            maximum = getattr(limit, period, 0)
+            count = entry[period]["count"]
+            result[period] = {
+                "limit": maximum,
+                "used": count,
+                "remaining": max(0, maximum - count) if maximum > 0 else None,
+            }
+        return result
+
+    @staticmethod
+    def _remaining(status: dict) -> int | None:
         if status["paused"]:
             return 0
         values = [
@@ -105,9 +118,11 @@ class UsageLimiter:
         ]
         return min(values) if values else None
 
+    def remaining(self, provider: str) -> int | None:
+        return self._remaining(self.status(provider))
+
     def allows(self, provider: str) -> bool:
-        remaining = self.remaining(provider)
-        return remaining is None or remaining > 0
+        return self.remaining(provider) != 0
 
     def reason(self, provider: str) -> str:
         status = self.status(provider)
@@ -115,36 +130,42 @@ class UsageLimiter:
             return "Official quota pause: " + str(status["paused"].get("reason", "quota exhausted"))
         return "已达到本地调用上限，本次跳过该厂商"
 
-    def acquire(self, provider: str) -> bool:
-        """在进程内原子检查额度，并在分发前按保守方式预扣。"""
+    def acquire(self, provider: str) -> UsageReservation | None:
+        """在同一日历时刻检查并预扣额度，记录各自所属的计数周期。"""
         with self._lock:
-            if not self.allows(provider):
-                return False
-            self.record(provider)
-            return True
+            self._load()
+            entry = self._entry(provider)
+            if self._remaining(self._status(provider, entry)) == 0:
+                return None
+            self._increment(entry)
+            return UsageReservation(provider, entry["daily"]["window"], entry["monthly"]["window"])
+
+    def _increment(self, entry: dict) -> None:
+        for period in ("daily", "monthly"):
+            entry[period]["count"] += 1
+        self._save()
 
     def record(self, provider: str) -> None:
         with self._lock:
             self._load()
-            entry = self._entry(provider)
-            for period in ("daily", "monthly"):
-                entry[period]["count"] += 1
-            self._save()
+            self._increment(self._entry(provider))
 
-    def release(self, provider: str) -> None:
-        """请求分发失败时退回一次预扣的调用额度。
-
-        acquire 在请求前预扣，避免进程崩溃导致超额。未获得结果的失败调用应退还额度。
-        先处理窗口切换并重置计数，防止迟到的退款扣减新窗口的计数。
-        """
+    def release(self, reservation: UsageReservation) -> None:
+        """原日或月窗口仍有效时才退回其计数。"""
         with self._lock:
+            if reservation.refunded:
+                return
             self._load()
-            entry = self._entry(provider)
-            for period in ("daily", "monthly"):
+            entry = self._entry(reservation.provider)
+            for period, charged_window in (
+                ("daily", reservation.daily),
+                ("monthly", reservation.monthly),
+            ):
                 counter = entry[period]
-                if counter["count"] > 0:
+                if counter["window"] == charged_window and counter["count"] > 0:
                     counter["count"] -= 1
             self._save()
+            reservation.refunded = True
 
     def pause(self, provider: str, reason: str, resume_at: float | None = None) -> None:
         with self._lock:

@@ -189,6 +189,43 @@ def types(events):
     return [event["type"] for event in events]
 
 
+def test_gateway_preserves_attachment_if_range(resident_backend):
+    from dataclasses import asdict
+    from io import BytesIO
+
+    from syvrio.app.web.gateway import create_gateway
+    from syvrio.infra.session.attachments import AttachmentBatch
+
+    owner, resident = resident_backend
+    sessions = owner._sessions
+    session = sessions.create()
+    data = b"synthetic attachment"
+    batch = AttachmentBatch.stage(sessions.attachments_dir, [("notes.txt", BytesIO(data))])
+    batch.bind(session.id, "m-file")
+    item = batch.files[0]
+    sessions.append(
+        session,
+        {
+            "type": "message",
+            "role": "user",
+            "content": "notes",
+            "id": "m-file",
+            "attachments": [asdict(item)],
+        },
+    )
+    path = f"/api/sessions/{session.id}/messages/m-file/attachments/{item.id}"
+    gateway = create_gateway(resident.base, "127.0.0.1")
+    with TestClient(gateway, base_url=BASE_URL) as browser:
+        full = browser.get(path)
+        assert full.status_code == 200 and full.content == data
+        current = browser.get(
+            path, headers={"Range": "bytes=0-4", "If-Range": full.headers["etag"]}
+        )
+        assert current.status_code == 206 and current.content == data[:5]
+        stale = browser.get(path, headers={"Range": "bytes=0-4", "If-Range": '"outdated"'})
+        assert stale.status_code == 200 and stale.content == data
+
+
 def test_mixed_attachments_reach_model_and_survive_move(client, backend, tmp_path, monkeypatch):
     import base64
     from io import BytesIO

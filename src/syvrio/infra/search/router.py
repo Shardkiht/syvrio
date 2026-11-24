@@ -22,6 +22,7 @@ from .base import (
     normalize_url,
 )
 from .cache import SearchCache
+from .providers.catalog import OPEN_WEBSEARCH, PROVIDERS
 from .providers.open_websearch import OpenWebSearchProvider
 from .quality import (
     QueryAnalysis,
@@ -32,8 +33,6 @@ from .quality import (
     score_entry,
 )
 
-DEFAULT_PROVIDER = "open_websearch"
-KNOWN_PROVIDERS = {DEFAULT_PROVIDER}
 SEARCH_STRATEGIES = ("auto", "compare", "strict")
 MAX_SELECTED_PROVIDERS = 8
 
@@ -49,22 +48,6 @@ def _dedupe_failures(failures: Sequence[SearchFailure]) -> list[SearchFailure]:
         seen.add(key)
         unique.append(failure)
     return unique
-
-
-# 需要厂商 API Key 的外部搜索服务；列进 providers 且 Key 可读才会注册。
-_EXTERNAL_PROVIDERS = {
-    "baidu_search": ("baidu.py:BaiduSearchProvider", "BAIDU_SEARCH_API_KEY"),
-    "tavily": ("tavily.py:TavilySearchProvider", "TAVILY_API_KEY"),
-    "exa": ("exa.py:ExaSearchProvider", "EXA_API_KEY"),
-    "you": ("you.py:YouSearchProvider", "YDC_API_KEY"),
-    "volcengine": ("volcengine.py:VolcengineSearchProvider", "VOLCENGINE_SEARCH_API_KEY"),
-}
-
-# 匿名可用、配置 Key 后自动升级认证的外部搜索服务。
-_OPTIONAL_KEY_PROVIDERS = {
-    "anysearch": "ANYSEARCH_API_KEY",
-    "parallel_mcp": "PARALLEL_API_KEY",
-}
 
 
 def _build_optional_provider(name: str, api_key: str, config: SearchConfig) -> SearchProvider:
@@ -217,7 +200,7 @@ def weak_share_hint(merged: list[SearchResult], analysis: QueryAnalysis) -> str:
 def build_registry(config: SearchConfig) -> dict[str, SearchProvider]:
     registry: dict[str, SearchProvider] = {}
     for name in config.providers:
-        if name == DEFAULT_PROVIDER:
+        if name == OPEN_WEBSEARCH:
             registry[name] = OpenWebSearchProvider(
                 base_url=config.base_url,
                 timeout=config.timeout,
@@ -225,18 +208,12 @@ def build_registry(config: SearchConfig) -> dict[str, SearchProvider]:
                 engines=config.engines,
                 fetch_timeout=config.fetch_timeout,
             )
-        elif name in _EXTERNAL_PROVIDERS:
-            env_name = _EXTERNAL_PROVIDERS[name][1]
-            api_key = read_api_key(env_name)
-            if not api_key:
-                # 未配置 Key 的厂商直接跳过：不参与尝试，也不报错。
-                continue
-            registry[name] = _build_external_provider(name, api_key, config.timeout)
-        elif name in _OPTIONAL_KEY_PROVIDERS:
-            # 无 Key 也注册：适配器按空 Key 走匿名模式，配置 Key 后自动认证。
-            registry[name] = _build_optional_provider(
-                name, read_api_key(_OPTIONAL_KEY_PROVIDERS[name]), config
-            )
+        elif (spec := PROVIDERS.get(name)) and spec.key_env:
+            key = read_api_key(spec.key_env)
+            if spec.optional_key:
+                registry[name] = _build_optional_provider(name, key, config)
+            elif key:
+                registry[name] = _build_external_provider(name, key, config.timeout)
         elif name == "searxng":
             from .providers.searxng import SearxngProvider
 

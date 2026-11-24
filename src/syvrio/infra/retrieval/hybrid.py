@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import re
 
-from .base import Retriever, SearchHit
+from .base import RecordSnapshot, Retriever, SearchHit
+from .keyword import KeywordRetriever
 from .matching import bigram_coverage, has_literal_bigrams
 
 RRF_K = 60
@@ -20,10 +21,14 @@ class HybridRetriever:
         self.keyword = keyword
         self.vector = vector
 
-    def search(self, query: str, limit: int = 10) -> list[SearchHit]:
+    def search(
+        self, query: str, limit: int = 10, *, snapshot: RecordSnapshot | None = None
+    ) -> list[SearchHit]:
+        if snapshot is None and isinstance(self.keyword, KeywordRetriever):
+            snapshot = self.keyword.store.snapshot()
         deep = max(limit * 3, 12)
-        keyword_hits = self.keyword.search(query, deep)
-        vector_hits = self.vector.search(query, deep)
+        keyword_hits = self.keyword.search(query, deep, snapshot=snapshot)
+        vector_hits = self.vector.search(query, deep, snapshot=snapshot)
         # 查询本身也可能触发降级；纯关键词兜底不套用于融合降噪的字面闸。
         if not vector_hits or getattr(self.vector, "degraded", False):
             return keyword_hits[:limit]

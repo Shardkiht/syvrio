@@ -23,8 +23,8 @@ class ResidentRequestError(SyvrioError, ValueError):
 
 
 class ResidentClient:
-    def __init__(self, config: Path | None = None, vault: Path | None = None):
-        self.base, self.token = connect(client_paths(config, vault))
+    def __init__(self, config: Path | None = None):
+        self.base, self.token = connect(client_paths(config))
         self.view = uuid4().hex
 
     @classmethod

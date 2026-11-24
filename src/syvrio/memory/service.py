@@ -16,6 +16,7 @@ from ..infra.config import (
     default_config_path,
     load_config,
 )
+from ..infra.errors import SyvrioError
 from ..infra.llm import LiteLLMEmbedder
 from ..infra.retrieval import (
     Embedder,
@@ -52,6 +53,7 @@ from .schema import parse_document
 from .store import (
     STATUS_ACTIVE,
     STATUS_DEPRECATED,
+    MemorySnapshot,
     MemoryStore,
     normalize_text,
 )
@@ -111,6 +113,10 @@ class MemorizeResult:
 
 def pending_view(item: PendingItem) -> dict:
     return item.model_dump(exclude={"created_at", "session_id", "message_id"}, exclude_none=True)
+
+
+class MemoryTargetError(SyvrioError, ValueError):
+    """目标记忆不存在或当前状态不允许本次操作。"""
 
 
 class MemoryService:
@@ -184,7 +190,7 @@ class MemoryService:
             if draft is not None:
                 self.validate_draft(draft)
                 if supersedes is not None:
-                    self._active_entry(supersedes)
+                    self.require_entry(supersedes)
                 if entry_id is None and session_id is not None:
                     identity = [
                         session_id,
@@ -238,18 +244,20 @@ class MemoryService:
         if contains_secret(draft.model_dump_json(exclude_none=True)):
             raise ValueError("检测到凭据，已拦截写入。")
 
-    def _active_entry(self, entry_id: str) -> Entry:
+    def require_entry(self, entry_id: str, *, include_deprecated: bool = False) -> Entry:
         entry = self.store.find(entry_id)
-        if entry is None or entry.status != STATUS_ACTIVE:
-            raise ValueError("The target must be an active memory.")
-        return entry
+        if entry is not None and (include_deprecated or entry.status == STATUS_ACTIVE):
+            return entry
+        if include_deprecated:
+            raise MemoryTargetError("The target memory does not exist.")
+        raise MemoryTargetError("The target must be an active memory.")
 
     def memorize(self, draft: MemoryDraft, **source) -> Entry:
         return self.add(draft, **source)
 
     def correct(self, entry_id: str, draft: MemoryDraft, **source) -> Entry:
         with vault_transaction(self.paths):
-            old = self._active_entry(entry_id)
+            old = self.require_entry(entry_id)
             draft = MemoryDraft.model_validate(draft)
             if draft.text == old.text:
                 raise ValueError("A correction requires a changed fact.")
@@ -269,7 +277,7 @@ class MemoryService:
         **source,
     ) -> Entry:
         with vault_transaction(self.paths):
-            self._active_entry(entry_id)
+            self.require_entry(entry_id)
             changes = []
             if previous_valid_to is not None:
                 changes.append(
@@ -503,7 +511,7 @@ class MemoryService:
         )
         with vault_transaction(self.paths):
             for key in item.source_ids:
-                self._active_entry(key)
+                self.require_entry(key)
             for record in self.inferences.all():
                 if (record.kind, normalize_text(record.text), record.source_ids) == (
                     item.kind,
@@ -555,7 +563,9 @@ class MemoryService:
             self.inferences.record(updated)
             return updated
 
-    def current_field(self, query: str) -> RecallEntry | None:
+    def current_field(
+        self, query: str, *, snapshot: MemorySnapshot | None = None
+    ) -> RecallEntry | None:
         if len(query) > 24:
             return None
         keyword = (
@@ -565,7 +575,7 @@ class MemoryService:
         )
         if not isinstance(keyword, KeywordRetriever):
             return None
-        entry = keyword.unique_field(query)
+        entry = keyword.unique_field(query, snapshot=snapshot)
         if entry is None:
             return None
         context = entry.context
@@ -594,14 +604,15 @@ class MemoryService:
         if type(limit) is not int or limit < 1:
             raise ValueError("Recall limit must be a positive integer.")
         period = TimeRange.model_validate(time_range) if time_range is not None else None
+        snapshot = self.store.snapshot()
         if not (period or location or emotion or original_query):
-            if exact := self.current_field(query):
+            if exact := self.current_field(query, snapshot=snapshot):
                 return [exact]
-        entries = {entry.id: entry for entry in self.store.entries()}
+        entries = {entry.id: entry for entry in snapshot.records}
         depth = max(len(entries), limit)
-        hits = self.retriever.search(query, depth)
+        hits = self.retriever.search(query, depth, snapshot=snapshot)
         if original_query and original_query != query:
-            original = self.retriever.search(original_query, depth)
+            original = self.retriever.search(original_query, depth, snapshot=snapshot)
             combined = {hit.id: hit for hit in original if hit.matched_field}
             for pair in zip_longest(hits, original):
                 for hit in pair:
@@ -741,14 +752,9 @@ class MemoryService:
 
 def get_service(
     config_path: Path | None = None,
-    vault: Path | None = None,
     *,
     retriever: Retriever | None = None,
 ) -> MemoryService:
     resolved = Path(config_path).expanduser() if config_path else default_config_path()
     config = load_config(config_path)
-    if vault is not None:
-        config.vault = Path(vault).expanduser().resolve()
-        if config._baseline is not None:
-            config._baseline["vault"] = config.vault.as_posix()
     return MemoryService(config, retriever=retriever, config_path=resolved)

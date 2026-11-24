@@ -28,8 +28,8 @@ def resident_transport(monkeypatch):
         clients = {}
 
         class LocalClient(ResidentClient):
-            def __init__(self, config, vault):
-                service = get_service(config, vault)
+            def __init__(self, config):
+                service = get_service(config)
                 api = create_app(WebBackend(service=service), resident_token="fixture")
                 self.transport = instances.enter_context(
                     TestClient(api, base_url="http://localhost")
@@ -43,11 +43,10 @@ def resident_transport(monkeypatch):
                 self._check(response)
                 return response.json() if response.content else None
 
-        def use(config, vault):
-            key = (config, vault)
-            if key not in clients:
-                clients[key] = LocalClient(config, vault)
-            return clients[key]
+        def use(config):
+            if config not in clients:
+                clients[config] = LocalClient(config)
+            return clients[config]
 
         monkeypatch.setattr("syvrio.app.cli._service", use)
         yield
@@ -55,6 +54,17 @@ def resident_transport(monkeypatch):
 
 def invoke(args):
     return runner.invoke(app, args)
+
+
+def test_only_initialization_and_offline_verification_accept_a_vault_path():
+    from typer.main import get_command
+
+    commands = get_command(app).commands
+    assert {
+        name
+        for name, cmd in commands.items()
+        if any("--vault" in param.opts for param in cmd.params)
+    } == {"init", "verify-attachments"}
 
 
 def test_bare_invocation_falls_back_to_help_without_tty():
@@ -86,7 +96,7 @@ def test_resident_dream_rejects_legacy_operations_and_budget_overrides(monkeypat
     from syvrio.memory.background import BackgroundMemory
 
     monkeypatch.setattr(BackgroundMemory, "start", lambda self: None)
-    api = _service(None, None).transport
+    api = _service(None).transport
     for operation in ("dream_status", "cancel_dream"):
         assert api.post(f"/api/resident/{operation}", json={}).status_code == 404
     overridden = api.post("/api/resident/dream", json={"max_requests": 1})
@@ -131,7 +141,7 @@ def test_offline_token_truncation_respects_small_budgets(monkeypatch, budget, te
     assert tokens.estimate_tokens(truncated) <= budget
 
 
-def test_init_vault_updates_existing_config(tmp_path):
+def test_init_uses_existing_vault_and_refuses_to_replace_it(tmp_path):
     import tomllib
 
     config = tmp_path / "syvrio.toml"
@@ -139,11 +149,31 @@ def test_init_vault_updates_existing_config(tmp_path):
     new_vault = tmp_path / "new-vault"
     assert invoke(["init", "--vault", str(old_vault), "--config", str(config)]).exit_code == 0
 
-    result = invoke(["init", "--vault", str(new_vault), "--config", str(config)])
-    assert result.exit_code == 0, result.output
+    assert invoke(["init", "--config", str(config)]).exit_code == 0
+    before = config.read_bytes()
+    result = invoke(["init", "--vault", str(new_vault), "--config", str(config), "--force"])
+    assert result.exit_code != 0 and "已配置 Vault" in result.output
+    assert not new_vault.exists()
+    assert config.read_bytes() == before
 
     data = tomllib.loads(config.read_text(encoding="utf-8"))
-    assert data["vault"] == new_vault.as_posix()
+    assert data["vault"] == old_vault.as_posix()
+
+
+def test_init_pins_default_vault_in_an_existing_configuration(tmp_path, monkeypatch):
+    import tomllib
+
+    config = tmp_path / "settings.toml"
+    config.write_text("[git]\nauto_sync = false\n", encoding="utf-8")
+    vault = tmp_path / "selected"
+    monkeypatch.setenv("SYVRIO_VAULT", str(vault))
+    result = invoke(["init", "--config", str(config)])
+    assert result.exit_code == 0, result.output
+    saved = tomllib.loads(config.read_text(encoding="utf-8"))
+    assert saved["vault"] == vault.as_posix() and saved["git"]["auto_sync"] is False
+    monkeypatch.setenv("SYVRIO_VAULT", str(tmp_path / "unused"))
+    assert invoke(["init", "--config", str(config)]).exit_code == 0
+    assert not (tmp_path / "unused").exists()
 
 
 def test_layout_widths_wide_left():
@@ -272,7 +302,7 @@ def test_import_checks_all_upload_records_before_mutation(monkeypatch):
     monkeypatch.setattr(
         MemoryUseCases, "import_documents", lambda *args, **kwargs: called.append(True)
     )
-    api = _service(None, None).transport
+    api = _service(None).transport
     records = b'{"name":"first.txt","content":"b2s="}\n{"private-fixture":"private-value"}\n'
     response = api.post("/api/resident/import-documents?apply=true", content=records)
     assert response.status_code == 422
@@ -329,17 +359,19 @@ def test_import_dry_run_then_apply(tmp_path, monkeypatch, suffix):
 
 
 def test_cli_correct_and_forget(tmp_path):
-    from syvrio.infra.config import Config, LLMConfig
+    from syvrio.infra.config import Config, LLMConfig, write_config
     from syvrio.memory.service import MemoryService
 
     vault = tmp_path / "vault"
     config = Config(vault=vault, llm=LLMConfig())
+    path = tmp_path / "settings.toml"
+    write_config(path, config)
     service = MemoryService(config)
     service.initialize_files()
     entry = service.note("旧表述：住在城西", topic="housing")
 
     result = invoke(
-        ["correct", entry.id, "新表述：住在滨江", "--topic", "housing", "--vault", str(vault)]
+        ["correct", entry.id, "新表述：住在滨江", "--topic", "housing", "--config", str(path)]
     )
     assert result.exit_code == 0, result.output
     assert "已更正" in result.output
@@ -348,7 +380,7 @@ def test_cli_correct_and_forget(tmp_path):
 
     active = service.store.entries(topic="housing")
     assert len(active) == 1
-    result = invoke(["deprecate", active[0].id, "--vault", str(vault)])
+    result = invoke(["deprecate", active[0].id, "--config", str(path)])
     assert result.exit_code == 0, result.output
     assert "已弃用" in result.output
     assert service.store.entries(topic="housing") == []
@@ -356,18 +388,20 @@ def test_cli_correct_and_forget(tmp_path):
 
 
 def test_cli_correct_rejects_inactive_entry(tmp_path):
-    from syvrio.infra.config import Config, LLMConfig
+    from syvrio.infra.config import Config, LLMConfig, write_config
     from syvrio.memory.service import MemoryService
 
     vault = tmp_path / "vault"
     config = Config(vault=vault, llm=LLMConfig())
+    path = tmp_path / "settings.toml"
+    write_config(path, config)
     service = MemoryService(config)
     service.initialize_files()
     entry = service.note("一条记录", topic="misc")
     service.deprecate(entry.id)
 
     result = invoke(
-        ["correct", entry.id, "试图更正已弃用的记忆", "--topic", "misc", "--vault", str(vault)]
+        ["correct", entry.id, "试图更正已弃用的记忆", "--topic", "misc", "--config", str(path)]
     )
     assert result.exit_code == 1
     assert "active memory" in result.output

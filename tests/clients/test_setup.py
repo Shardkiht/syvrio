@@ -893,7 +893,7 @@ def test_run_setup_routes_to_search_wizard(tmp_path, monkeypatch):
     _script_answers(monkeypatch, ["search", "providers", "open_websearch", "back", "done"])
     from syvrio.app.setup import run_setup
 
-    result = run_setup(config_path, None)
+    result = run_setup(config_path)
     assert result["mode"] == "search"
     assert result["search_providers"] == ["open_websearch"]
     # 未做任何启停时，重写出的配置保持原样。
@@ -944,7 +944,7 @@ def test_llm_setup_discovers_models_using_the_entered_workspace_and_key(
 
     monkeypatch.setattr(providers, "_choose_reasoning", check_options)
     path = tmp_path / "config.toml"
-    result = providers.run_setup(path, tmp_path / "vault")
+    result = providers.run_setup(path)
     assert result["model"] == model
     saved = load_config(path).llm
     assert saved.provider_urls[provider] == endpoint
@@ -953,6 +953,88 @@ def test_llm_setup_discovers_models_using_the_entered_workspace_and_key(
     assert calls == [provider]
     assert keys == {env_name: "synthetic-key"}
     assert "synthetic-key" not in path.read_text(encoding="utf-8")
+
+
+def test_setup_uses_environment_key_for_preview_connection_and_credentials(
+    tmp_path, monkeypatch, capsys
+):
+    from syvrio.app import setup as wizard
+    from syvrio.backend.setup import SetupSession
+
+    preset = next(item for item in PRESETS if item.key == "spark")
+    env_name = preset.api_key_env
+    path = tmp_path / "config.toml"
+    vault = tmp_path / "vault"
+    previous = {env_name: "synthetic-stored"}
+    _install_fake_keyring(monkeypatch, previous)
+    monkeypatch.setenv(env_name, "  synthetic-environment  ")
+    keys = []
+    model = "spark-synthetic"
+    endpoint = "https://fixture.invalid/v1"
+
+    def models(source, **kwargs):
+        keys.append(kwargs["api_key"])
+        return [model]
+
+    def levels(source, **kwargs):
+        keys.append(kwargs["api_key"])
+        return ("auto",)
+
+    def complete(source, *args, **kwargs):
+        keys.append(source.api_key())
+
+    monkeypatch.setattr("syvrio.infra.llm.fetch_provider_models", models)
+    monkeypatch.setattr("syvrio.infra.llm.reasoning_values", levels)
+    monkeypatch.setattr("syvrio.infra.llm.model_metadata", lambda _: {})
+    monkeypatch.setattr("syvrio.infra.llm.complete", complete)
+    setup = SetupSession(Config(vault=vault), path)
+    setup.model_list("spark", endpoint, env_name, "synthetic-ignored")
+    setup.model_limits("spark", endpoint, env_name, model, "synthetic-ignored")
+    assert not setup.set_key(env_name, "synthetic-ignored")
+    assert not setup.remove_key(env_name)
+
+    # 环境变量提供密钥时跳过密码输入，仍可确认使用实际凭据进行连接测试。
+    _script_answers(monkeypatch, ["llm", preset, endpoint, model, "auto", 50000, True, False])
+    result = wizard.run_setup(path)
+    assert not result["key_saved"] and result["checked"]
+    output = capsys.readouterr().out
+    assert env_name in output and "synthetic-environment" not in output
+    assert previous == {env_name: "synthetic-stored"}
+    assert keys == ["synthetic-environment"] * 5
+
+
+def test_mcp_fetch_can_be_removed_but_not_reenabled(tmp_path, monkeypatch):
+    from syvrio.app import setup as wizard
+    from syvrio.backend.setup import SetupSession
+    from syvrio.infra.config import FetchConfig
+    from syvrio.infra.search.fetch_router import build_fetch_registry
+
+    config = Config(
+        vault=tmp_path / "vault",
+        search=SearchConfig(transport="mcp"),
+        fetch=FetchConfig(providers=["open_websearch"]),
+    )
+    setup = SetupSession(config, tmp_path / "config.toml")
+    shown = []
+
+    def select(title, choices):
+        if title == "选择厂商":
+            return "open_websearch"
+        shown.append([choice.value for choice in choices])
+        return "fetch" if len(shown) == 1 else "back"
+
+    monkeypatch.setitem(sys.modules, "questionary", _FakeQuestionary())
+    monkeypatch.setattr(wizard, "_select", select)
+    assert not build_fetch_registry(config.fetch, config.search)
+    wizard._configure_search_provider(setup, [])
+    assert "fetch" in shown[0] and "fetch" not in shown[1]
+    assert not setup.sources("fetch")
+    with pytest.raises(ValueError, match="transport"):
+        setup.toggle("open_websearch", "fetch")
+    config.search.transport = "http"
+    assert setup.can_toggle_fetch("open_websearch")
+    setup.toggle("open_websearch", "fetch")
+    assert "open_websearch" in build_fetch_registry(config.fetch, config.search)
 
 
 def test_search_setup_saves_key_and_enables_search_and_fetch(tmp_path, monkeypatch):
@@ -977,7 +1059,7 @@ def test_search_setup_saves_key_and_enables_search_and_fetch(tmp_path, monkeypat
             "done",
         ],
     )
-    result = providers_module.run_setup(config_path, None)
+    result = providers_module.run_setup(config_path)
 
     # save/read 走同一个假 keyring：保存后立即可读，env 变量未设置。
     assert store == {"TAVILY_API_KEY": "sk-tavily-placeholder"}
@@ -1002,7 +1084,7 @@ def test_search_setup_enables_optional_provider_anonymously(tmp_path, monkeypatc
         ["search", "providers", "anysearch", "", "search", "back", "done"],
     )
 
-    result = providers_module.run_setup(config_path, None)
+    result = providers_module.run_setup(config_path)
 
     assert result["search_providers"] == ["open_websearch", "anysearch"]
     assert any("匿名模式" in message for message in result["messages"])
@@ -1034,7 +1116,7 @@ def test_search_setup_configures_searxng_without_key(tmp_path, monkeypatch):
         ],
     )
 
-    result = providers_module.run_setup(config_path, None)
+    result = providers_module.run_setup(config_path)
 
     assert result["search_providers"] == ["open_websearch", "searxng"]
     data = tomllib.loads(config_path.read_text(encoding="utf-8"))
@@ -1058,7 +1140,7 @@ def test_search_setup_clears_optional_key_back_to_anonymous(tmp_path, monkeypatc
         ["search", "providers", "anysearch", "", "clear_key", "back", "done"],
     )
 
-    providers_module.run_setup(config_path, None)
+    providers_module.run_setup(config_path)
 
     assert store == {}
 
@@ -1075,7 +1157,7 @@ def test_search_setup_refuses_enable_without_key(tmp_path, monkeypatch):
         ["search", "providers", "tavily", "", "search", "back", "done"],
     )
 
-    result = providers_module.run_setup(config_path, None)
+    result = providers_module.run_setup(config_path)
 
     assert result["search_providers"] == ["open_websearch"]
     assert any("未检测到有效 Key" in message for message in result["messages"])
@@ -1092,7 +1174,7 @@ def test_search_setup_updates_existing_key(tmp_path, monkeypatch):
         monkeypatch,
         ["search", "providers", "tavily", "new", "back", "done"],
     )
-    providers_module.run_setup(config_path, None)
+    providers_module.run_setup(config_path)
     assert store == {"TAVILY_API_KEY": "new"}
 
 
@@ -1115,7 +1197,7 @@ def test_search_setup_adjusts_provider_order(tmp_path, monkeypatch):
         ],
     )
 
-    result = providers_module.run_setup(config_path, None)
+    result = providers_module.run_setup(config_path)
     assert result["search_providers"] == ["tavily", "open_websearch"]
     data = tomllib.loads(config_path.read_text(encoding="utf-8"))
     assert data["search"]["providers"] == ["tavily", "open_websearch"]
@@ -1142,7 +1224,7 @@ def test_search_setup_search_and_fetch_independent(tmp_path, monkeypatch):
         ],
     )
 
-    result = providers_module.run_setup(config_path, None)
+    result = providers_module.run_setup(config_path)
     assert result["search_providers"] == ["open_websearch", "exa"]
     assert result["fetch_providers"] == ["open_websearch"]
 
@@ -1170,7 +1252,7 @@ def test_llm_setup_can_enter_a_model_manually_when_api_discovery_is_unavailable(
     monkeypatch.setattr("syvrio.infra.llm.client.supported_params", lambda _: ())
     monkeypatch.setattr("syvrio.infra.llm.model_metadata", lambda _: {})
 
-    result = providers_module.run_setup(config_path, None)
+    result = providers_module.run_setup(config_path)
 
     assert result["provider"] == "custom"
     assert result["base_url"] == "https://api.example.com/v1"
@@ -1208,7 +1290,7 @@ def test_search_setup_can_edit_daily_and_monthly_limits(tmp_path, monkeypatch):
         ],
     )
 
-    result = providers_module.run_setup(config_path, None)
+    result = providers_module.run_setup(config_path)
 
     assert result["search_providers"] == ["open_websearch", "tavily"]
     data = tomllib.loads(config_path.read_text(encoding="utf-8"))
@@ -1237,7 +1319,7 @@ def test_search_setup_uses_exa_monthly_default(tmp_path, monkeypatch):
         ],
     )
 
-    providers_module.run_setup(config_path, None)
+    providers_module.run_setup(config_path)
     import tomllib
 
     data = tomllib.loads(config_path.read_text(encoding="utf-8"))

@@ -28,15 +28,12 @@ class ResidentChannel:
     def __init__(
         self,
         config_path: Path | None = None,
-        vault_path: Path | None = None,
         service: MemoryService | None = None,
         *,
         parent: ResidentChannel | None = None,
     ) -> None:
         self._parent = parent
-        self._service = (
-            parent._service if parent else service or get_service(config_path, vault_path)
-        )
+        self._service = parent._service if parent else service or get_service(config_path)
         self.git = (
             parent.git if parent else GitSyncService(self._service.config, self._service.paths)
         )

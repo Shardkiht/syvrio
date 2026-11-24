@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from threading import Barrier
+from threading import Barrier, Event
 
 import numpy as np
 import pytest
@@ -103,6 +103,73 @@ def test_concurrent_queries_share_one_complete_vector_index(tmp_path):
     assert len(embedder.passages) == 2
 
 
+@pytest.mark.parametrize("mode", ["keyword", "vector", "hybrid"])
+def test_concurrent_correction_does_not_drop_a_recalled_fact(service, mode, monkeypatch):
+    from syvrio.memory.models import MemoryDraft
+
+    old = service.note("常喝拿铁咖啡", topic="preferences")
+    keyword = KeywordRetriever(service.store)
+    vector = VectorRetriever(service.store, FakeEmbedder(GROUPS), cache_dir=service.paths.index_dir)
+    service.retriever = {
+        "keyword": keyword,
+        "vector": vector,
+        "hybrid": HybridRetriever(keyword, vector),
+    }[mode]
+    searching, resume = Event(), Event()
+    first_branch = vector if mode == "vector" else keyword
+    search = first_branch.search
+
+    def pause_search(*args, **kwargs):
+        if not searching.is_set():
+            searching.set()
+            assert resume.wait(10)
+        return search(*args, **kwargs)
+
+    monkeypatch.setattr(first_branch, "search", pause_search)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        read = pool.submit(service.recall, "咖啡", original_query="常喝哪种咖啡")
+        try:
+            assert searching.wait(10)
+            new = pool.submit(
+                service.correct, old.id, MemoryDraft(text="常喝美式咖啡", topic="preferences")
+            ).result(timeout=10)
+            assert [hit.id for hit in service.recall("咖啡")] == [new.id]
+        finally:
+            resume.set()
+        assert [hit.id for hit in read.result(timeout=10)] == [old.id]
+
+    if mode != "keyword":
+        with np.load(vector.cache_path, allow_pickle=False) as cached:
+            assert cached["ids"].tolist() == [new.id]
+    assert [hit.id for hit in service.recall("咖啡")] == [new.id]
+
+
+def test_hybrid_recall_reads_each_topic_once_for_both_queries(service, monkeypatch):
+    from collections import Counter
+    from pathlib import Path
+
+    coffee = service.note("常喝拿铁咖啡", topic="preferences")
+    other = service.note("使用键盘工作", topic="devices")
+    paths = {service.store.topic_path(entry.topic) for entry in (coffee, other)}
+    service.retriever = HybridRetriever(
+        KeywordRetriever(service.store),
+        VectorRetriever(service.store, FakeEmbedder(GROUPS), cache_dir=service.paths.index_dir),
+    )
+    reads = Counter()
+    read_bytes = Path.read_bytes
+
+    def count_read(path):
+        if path in paths:
+            reads[path] += 1
+        return read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", count_read)
+    for _ in range(2):
+        reads.clear()
+        assert service.recall("咖啡", original_query="常喝什么咖啡")[0].id == coffee.id
+        assert reads == {path: 1 for path in paths}
+
+
 def test_cache_persists_across_instances(tmp_path):
     store = seeded_store(tmp_path)
     VectorRetriever(store, FakeEmbedder(GROUPS), cache_dir=store.paths.index_dir).search("房子", 3)
@@ -202,7 +269,7 @@ class StubRetriever:
     def __init__(self, ids: list[str]):
         self.ids = ids
 
-    def search(self, query: str, limit: int = 10) -> list[SearchHit]:
+    def search(self, query: str, limit: int = 10, *, snapshot=None) -> list[SearchHit]:
         return [SearchHit(id=i, text=f"text-{i}", topic="t") for i in self.ids[:limit]]
 
 
@@ -248,14 +315,14 @@ def test_literal_coverage_does_not_join_words_across_separators():
 
 def test_hybrid_preserves_keyword_hits_without_literal_signal():
     class Keyword:
-        def search(self, query, limit):
+        def search(self, query, limit, *, snapshot=None):
             return [SearchHit(id="keyword", text="docker 部署命令", topic="work")]
 
     class Vector:
         def __init__(self, hits):
             self.hits = hits
 
-        def search(self, query, limit):
+        def search(self, query, limit, *, snapshot=None):
             return self.hits
 
     other = SearchHit(id="vector", text="其他命中", topic="work")
@@ -315,7 +382,7 @@ def test_short_field_coverage_keeps_exact_hit_without_restoring_noise(tmp_path):
     query = "姓名 名字 称呼 身份"
 
     class SemanticHits:
-        def search(self, query, limit):
+        def search(self, query, limit, *, snapshot=None):
             return [SearchHit(id=competing.id, text=competing.text, topic=competing.topic)]
 
     keyword = KeywordRetriever(store)
@@ -421,7 +488,7 @@ def test_large_corpus_keeps_explicit_short_fields_without_local_model(tmp_path):
     keyword = KeywordRetriever(store)
 
     class DistractingVector:
-        def search(self, query, limit):
+        def search(self, query, limit, *, snapshot=None):
             return [
                 SearchHit(id=f"distractor-{n:04}", text="同领域干扰", topic="archive")
                 for n in range(min(limit, 80))
@@ -548,6 +615,7 @@ def test_malformed_cache_ids_rebuild_instead_of_crashing(tmp_path):
 
 def test_retrievers_read_an_independent_source_and_write_only_their_cache(tmp_path):
     from dataclasses import dataclass
+    from types import SimpleNamespace
 
     @dataclass(frozen=True)
     class Record:
@@ -565,11 +633,10 @@ def test_retrievers_read_an_independent_source_and_write_only_their_cache(tmp_pa
     class Source:
         rows = (Record(),)
 
-        def entries(self):
-            return self.rows
+        revision = 1
 
-        def fingerprint(self):
-            return self.rows
+        def snapshot(self):
+            return SimpleNamespace(records=self.rows, revision=self.revision)
 
         def topic_path(self, topic):
             return tmp_path / f"{topic}.md"
@@ -590,4 +657,5 @@ def test_retrievers_read_an_independent_source_and_write_only_their_cache(tmp_pa
     assert vector.cache_path.is_file()
     assert set(tmp_path.iterdir()) - before == {cache}
     source.rows = ()
+    source.revision += 1
     assert keyword.search("口味") == vector.search("茶") == []

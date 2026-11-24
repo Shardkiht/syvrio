@@ -30,16 +30,9 @@ from syvrio.infra.search.base import (  # noqa: E402
     SearchQuery,
     assert_public_fetch_url,
 )
-from syvrio.infra.search.fetch_router import (  # noqa: E402
-    _EXTERNAL_FETCH_PROVIDERS,
-    _OPTIONAL_FETCH_KEY_PROVIDERS,
-    build_fetch_registry,
-)
-from syvrio.infra.search.router import (  # noqa: E402
-    _EXTERNAL_PROVIDERS,
-    _OPTIONAL_KEY_PROVIDERS,
-    build_registry,
-)
+from syvrio.infra.search.fetch_router import build_fetch_registry  # noqa: E402
+from syvrio.infra.search.providers.catalog import PROVIDERS, supports_fetch  # noqa: E402
+from syvrio.infra.search.router import build_registry  # noqa: E402
 
 # 冒烟用中性查询与公开页面，不含任何个人数据。
 SMOKE_QUERY = "OpenAI"
@@ -57,13 +50,6 @@ UNVERIFIED_FIELDS = {
     "parallel_mcp": "匿名速率和厂商额度",
     "searxng": "实例是否启用 JSON 输出与 publishedDate 字段形状",
 }
-
-
-def _search_key_env(name: str) -> str | None:
-    entry = _EXTERNAL_PROVIDERS.get(name)
-    if entry is not None:
-        return entry[1]
-    return _OPTIONAL_KEY_PROVIDERS.get(name)
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -91,19 +77,15 @@ def _dry_report(config) -> list[dict]:
         ("search", config.search.providers),
         ("fetch", config.fetch.providers),
     ):
-        optional = (
-            _OPTIONAL_KEY_PROVIDERS if operation == "search" else _OPTIONAL_FETCH_KEY_PROVIDERS
-        )
         for name in listed:
-            if operation == "search":
-                env_name = _search_key_env(name)
-            else:
-                env_name = (
-                    optional.get(name) or _EXTERNAL_FETCH_PROVIDERS.get(name, (None, None))[1]
-                )
+            spec = PROVIDERS.get(name)
+            env_name = spec.key_env if spec else None
             key_present = None if env_name is None else bool(read_api_key(env_name))
-            # 匿名 Provider 无 Key 也注册；官方厂商必须有 Key。
-            would_register = env_name is None or name in optional or key_present
+            would_register = bool(
+                spec
+                and (operation == "search" or supports_fetch(name, config.search.transport))
+                and (env_name is None or spec.optional_key or key_present)
+            )
             row = {
                 "provider": name,
                 "operation": operation,

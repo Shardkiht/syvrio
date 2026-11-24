@@ -12,7 +12,7 @@ from .endpoint import client_paths
 
 def start_diagnostics(config_file: Path | None = None) -> Path | None:
     try:
-        paths = client_paths(config_file, None)
+        paths = client_paths(config_file)
         paths.validate()
     except (OSError, ConfigError, ValueError):
         print("Local diagnostics unavailable: cannot open log file.", file=sys.stderr)

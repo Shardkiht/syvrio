@@ -160,11 +160,7 @@ def register_memory_tools(
                     payload["context"] = grounded.model_dump(exclude_none=True)
         query = draft.text if draft else target
         if target:
-            entry = service.store.find(target)
-            if entry is None:
-                raise ValueError("The target memory does not exist.")
-            if name != "deprecate" and entry.status != "active":
-                raise ValueError("The target memory is deprecated.")
+            entry = service.require_entry(target, include_deprecated=name == "deprecate")
             query = f"{entry.text} {draft.text}" if draft else entry.text
         boundary = payload.get("previous_valid_to")
         if boundary is not None:

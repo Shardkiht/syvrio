@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from syvrio.infra.config import Config, EmbeddingConfig, RetrievalConfig
+from syvrio.infra.storage.locking import vault_write_lock
 from syvrio.infra.storage.paths import SyvrioPaths
 
 if __package__:
@@ -39,7 +40,9 @@ def eval_environment(root: Path) -> Iterator[Path]:
     previous = {key: os.environ.get(key) for key in paths}
     try:
         os.environ.update({key: str(path) for key, path in paths.items()})
-        SyvrioPaths(paths["SYVRIO_VAULT"], paths["SYVRIO_RUNTIME"]).bind()
+        layout = SyvrioPaths(paths["SYVRIO_VAULT"], paths["SYVRIO_RUNTIME"])
+        with vault_write_lock(layout):
+            layout.bind()
         yield paths["SYVRIO_VAULT"]
     finally:
         for key, value in previous.items():

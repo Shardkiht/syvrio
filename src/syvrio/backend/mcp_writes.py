@@ -24,9 +24,7 @@ class MCPWrites:
             service.validate_draft(draft)
         query = draft.text if draft else ""
         if entry_id:
-            previous = service.store.find(entry_id)
-            if previous is None:
-                raise ValueError("The target memory does not exist.")
+            previous = service.require_entry(entry_id, include_deprecated=action == "deprecate")
             query = f"{previous.text} {query}".strip()
         if not query:
             raise ValueError("The operation requires a draft or a target memory.")

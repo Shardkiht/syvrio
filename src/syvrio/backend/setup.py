@@ -13,49 +13,22 @@ from ..infra.config import (
     UsageLimit,
     context_window_options,
     default_usage_limits,
-    default_vault_path,
-    load_config,
     read_api_key,
-    resolve_config_path,
     write_config,
 )
-from ..infra.config.files import ConfigFiles
 from ..infra.llm.providers import PRESETS as PRESETS
 from ..infra.llm.providers import ProviderPreset as ProviderPreset
 from ..infra.llm.providers import normalize_provider_url as normalize_provider_url
 from ..infra.llm.providers import provider_base_url as provider_base_url
-from ..infra.search.fetch_router import FETCH_PROVIDERS
+from ..infra.search.providers.catalog import PROVIDERS, supports_fetch
 from ..infra.search.providers.searxng import normalize_base_url
 from ..infra.search.usage import UsageLimiter
-from ..infra.security.credentials import delete_api_key, save_api_key
-from .endpoint import client_paths
-from .ownership import BackendLease
+from ..infra.security.credentials import delete_api_key, environment_key, save_api_key
+from .maintenance import configured_maintenance, prepare_vault_runtime
 
-SEARCH_PROVIDER_LABELS = {
-    "open_websearch": "open-websearch（免费，无需 Key）",
-    "anysearch": "AnySearch（匿名可用，可选 Key）",
-    "parallel_mcp": "Parallel MCP（匿名可用，可选 Key）",
-    "searxng": "自托管 SearXNG（无需 Key）",
-    "baidu_search": "百度千帆 AI 搜索",
-    "tavily": "Tavily",
-    "exa": "Exa",
-    "you": "You.com",
-    "volcengine": "火山引擎豆包搜索",
-}
-
-# 各官方厂商的 Key 环境变量名；open-websearch 无需 Key。
-SEARCH_KEY_ENVS = {
-    "anysearch": "ANYSEARCH_API_KEY",
-    "parallel_mcp": "PARALLEL_API_KEY",
-    "baidu_search": "BAIDU_SEARCH_API_KEY",
-    "tavily": "TAVILY_API_KEY",
-    "exa": "EXA_API_KEY",
-    "you": "YDC_API_KEY",
-    "volcengine": "VOLCENGINE_SEARCH_API_KEY",
-}
-
-# 没有 Key 也能启用；有 Key 时自动切换到认证模式。
-ANONYMOUS_SEARCH_PROVIDERS = {"anysearch", "parallel_mcp"}
+SEARCH_PROVIDER_LABELS = {name: spec.label for name, spec in PROVIDERS.items()}
+SEARCH_KEY_ENVS = {name: spec.key_env for name, spec in PROVIDERS.items() if spec.key_env}
+ANONYMOUS_SEARCH_PROVIDERS = {name for name, spec in PROVIDERS.items() if spec.optional_key}
 
 
 def test_connection(llm: LLMConfig) -> tuple[bool, str]:
@@ -77,25 +50,9 @@ def test_connection(llm: LLMConfig) -> tuple[bool, str]:
 
 
 @contextmanager
-def local_setup(config_path: Path | None, vault: Path | None) -> Iterator[SetupSession]:
-    path = resolve_config_path(config_path)
-
-    layout = ConfigFiles(path)
-    selected = (
-        client_paths(path, vault)
-        if path.exists() or layout.journal.exists()
-        else Config(vault=vault or default_vault_path()).paths(path)
-    )
-    with BackendLease(selected):
-        config = (
-            load_config(path)
-            if path.exists() or layout.journal.exists()
-            else Config(vault=default_vault_path())
-        )
-        if vault is not None:
-            config.vault = vault.expanduser().resolve()
-        if config.paths(path) != selected:
-            raise ValueError("Vault or Runtime changed. Reopen setup.")
+def local_setup(config_path: Path | None) -> Iterator[SetupSession]:
+    with configured_maintenance(config_path) as (config, path):
+        prepare_vault_runtime(config.paths(path))
         yield SetupSession(config, path)
 
 
@@ -109,6 +66,9 @@ class SetupSession:
 
     def has_key(self, name: str) -> bool:
         return bool(read_api_key(name))
+
+    def key_from_environment(self, name: str) -> bool:
+        return bool(environment_key(name))
 
     def set_key(self, name: str, value: str) -> bool:
         return save_api_key(name, value)
@@ -162,13 +122,17 @@ class SetupSession:
             else self._config.fetch.providers
         )
 
+    def can_toggle_fetch(self, name: str) -> bool:
+        # 已勾选的厂商即使当前传输不支持抓取，也必须能从配置中移除。
+        return name in self._config.fetch.providers or supports_fetch(
+            name, self._config.search.transport
+        )
+
     def toggle(self, name: str, capability: str) -> str:
-        if (
-            name not in SEARCH_PROVIDER_LABELS
-            or capability not in ("search", "fetch")
-            or (capability == "fetch" and name not in FETCH_PROVIDERS)
-        ):
+        if name not in PROVIDERS or capability not in ("search", "fetch"):
             raise ValueError("Unsupported search provider or capability.")
+        if capability == "fetch" and not self.can_toggle_fetch(name):
+            raise ValueError("This provider cannot fetch using the configured transport.")
         names = self._sources(capability)
         if name in names:
             names.remove(name)
@@ -218,7 +182,9 @@ class SetupSession:
         source = self._model(provider, base_url, env_name)
         from ..infra.llm import fetch_provider_models
 
-        return fetch_provider_models(source, refresh=True, api_key=key or None)
+        return fetch_provider_models(
+            source, refresh=True, api_key=read_api_key(source.api_key_env, proposed=key) or None
+        )
 
     def model_limits(self, provider: str, base_url: str, env_name: str, model: str, key: str):
         source = self._model(provider, base_url, env_name, model)
@@ -232,7 +198,9 @@ class SetupSession:
             maximum = None
         return (
             maximum,
-            reasoning_values(source, api_key=key or None),
+            reasoning_values(
+                source, api_key=read_api_key(source.api_key_env, proposed=key) or None
+            ),
             source.spark_thinking if source.is_spark else source.reasoning_effort,
             context_window_options(maximum),
         )

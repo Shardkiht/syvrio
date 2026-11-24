@@ -4,7 +4,11 @@ import hashlib
 import json
 import re
 import secrets
+from collections.abc import Iterable, Iterator
+from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import cached_property
+from itertools import count
 from pathlib import Path
 
 from ..infra.storage.files import safe_component
@@ -61,11 +65,41 @@ def _recorded_time(value: str) -> datetime:
     return parse_timestamp(value) if value else datetime.min.replace(tzinfo=UTC)
 
 
+def _entries_from(documents: Iterable[Document], include_inactive: bool) -> Iterator[Entry]:
+    ids = set()
+    for document in documents:
+        for record in document.records:
+            entry = record.entry
+            if entry.id in ids:
+                raise SchemaError(
+                    f"{entry.source_path}:{entry.line}: duplicate memory id across topics"
+                )
+            ids.add(entry.id)
+            if include_inactive or entry.status == STATUS_ACTIVE:
+                yield entry
+
+
+_revisions = count(1)
+
+
+@dataclass(frozen=True)
+class MemorySnapshot:
+    revision: int
+    sources: tuple[tuple[str, str], ...]
+
+    @cached_property
+    def records(self) -> tuple[Entry, ...]:
+        # 在调用方使用快照时才解析，分词、向量化和解析都不延长 Vault 写锁。
+        documents = (parse_document(raw, topic, topic) for topic, raw in self.sources)
+        return tuple(_entries_from(documents, include_inactive=False))
+
+
 class MemoryStore:
     def __init__(self, vault: Path | SyvrioPaths):
         self.paths = vault if isinstance(vault, SyvrioPaths) else vault_paths(vault)
         self.vault = self.paths.vault_dir
         self.root = self.paths.memories_dir
+        self._snapshot: MemorySnapshot | None = None
         self.changes_path = self.vault / "records" / "memory-changes.jsonl"
 
     def ensure(self) -> None:
@@ -110,6 +144,17 @@ class MemoryStore:
             or not all(safe_component(p) for p in path.relative_to(self.root).parts)
         ):
             raise SchemaError("Invalid or redirected memory path.")
+
+    def snapshot(self) -> MemorySnapshot:
+        with vault_transaction(self.paths):
+            sources = []
+            for path in self._files():
+                self._assert_path(path)
+                sources.append((self._topic(path), read_utf8(path)))
+            contents = tuple(sources)
+            if self._snapshot is None or self._snapshot.sources != contents:
+                self._snapshot = MemorySnapshot(next(_revisions), contents)
+            return self._snapshot
 
     def fingerprint(self) -> tuple[tuple[str, str], ...]:
         with vault_transaction(self.paths):
@@ -186,19 +231,8 @@ class MemoryStore:
 
     def entries(self, topic: str | None = None, include_inactive: bool = False) -> list[Entry]:
         with vault_transaction(self.paths):
-            ids = set()
-            result = []
-            for path in [self.topic_path(topic)] if topic is not None else self._files():
-                for record in self.document(path).records:
-                    entry = record.entry
-                    if entry.id in ids:
-                        raise SchemaError(
-                            f"{entry.source_path}:{entry.line}: duplicate memory id across topics"
-                        )
-                    ids.add(entry.id)
-                    if include_inactive or entry.status == STATUS_ACTIVE:
-                        result.append(entry)
-            return result
+            files = [self.topic_path(topic)] if topic is not None else self._files()
+            return list(_entries_from((self.document(path) for path in files), include_inactive))
 
     def find(self, entry_id: str) -> Entry | None:
         return next((e for e in self.entries(include_inactive=True) if e.id == entry_id), None)

@@ -69,11 +69,11 @@ def test_connection_discovery_does_not_change_configuration(tmp_path, monkeypatc
     monkeypatch.delenv("SYVRIO_CONFIG", raising=False)
     monkeypatch.setenv("SYVRIO_RUNTIME", str(tmp_path / "runtime"))
     monkeypatch.setattr(endpoint, "default_config_path", lambda: entry)
-    assert client_paths(None, vault).vault_dir == vault
+    assert client_paths(None).vault_dir == endpoint.default_vault_path()
     assert not entry.exists()
     entry.write_text(f'vault = "{vault.as_posix()}"\n[chat]\nauto_recall = 1\n', encoding="utf-8")
     before = entry.read_bytes()
-    assert client_paths(entry, None).vault_dir == vault
+    assert client_paths(entry).vault_dir == vault
     assert entry.read_bytes() == before and not (tmp_path / "chat.toml").exists()
     (tmp_path / "models.toml").write_text("invalid TOML", encoding="utf-8")
     journal = tmp_path / ".syvrio-config-transaction.json"
@@ -86,10 +86,26 @@ def test_connection_discovery_does_not_change_configuration(tmp_path, monkeypatc
         ),
         encoding="utf-8",
     )
-    assert client_paths(entry, None).vault_dir == changed
+    assert client_paths(entry).vault_dir == changed
     assert journal.exists() and entry.read_bytes() == before
     assert load_config(entry).vault == changed
     assert not journal.exists()
+
+
+def test_server_refuses_a_different_vault_after_acquiring_the_lease(headless_config, monkeypatch):
+    from syvrio.backend import server
+    from syvrio.backend.ownership import BackendLease
+    from syvrio.infra.config import ConfigError
+
+    original = client_paths(headless_config)
+    changed = headless_config.parent / "changed"
+    monkeypatch.setattr(server, "client_paths", lambda _: original)
+    headless_config.write_text(f'vault = "{changed.as_posix()}"', encoding="utf-8")
+    with pytest.raises(ConfigError, match="Vault 或 Runtime"):
+        server.serve_resident(headless_config)
+    assert not changed.exists()
+    with BackendLease(original):
+        assert not (original.state_dir / "backend.json").exists()
 
 
 def test_automatic_first_start_with_missing_default_config(tmp_path, monkeypatch):
@@ -111,7 +127,7 @@ def test_automatic_first_start_with_missing_default_config(tmp_path, monkeypatch
 
 
 def test_foreground_backend_starts_without_the_web_package(headless_config):
-    paths = client_paths(headless_config, None)
+    paths = client_paths(headless_config)
     process = subprocess.Popen(
         [sys.executable, "-m", "syvrio", "backend", "run", "--config", str(headless_config)]
     )
@@ -133,6 +149,76 @@ def test_foreground_backend_starts_without_the_web_package(headless_config):
             process.wait(timeout=10)
 
 
+def test_stopped_deployment_reads_git_and_backup_at_the_same_path(tmp_path, headless_config):
+    import shutil
+
+    from syvrio.backend.maintenance import initialize_configured_vault
+    from syvrio.infra.session import SessionStore
+    from syvrio.memory.store import MemoryStore
+
+    initialize_configured_vault(headless_config, None)
+    paths = client_paths(headless_config)
+    topic = MemoryStore(paths)
+    entry = topic.append("checks", "apricot")
+    document = topic.topic_path("checks")
+    sessions = SessionStore(paths)
+    session = sessions.create()
+    sessions.rename(session, "Original conversation")
+
+    def git(*args):
+        return subprocess.run(
+            ["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid", *args],
+            cwd=paths.vault_dir,
+            capture_output=True,
+            check=True,
+            text=True,
+            encoding="utf-8",
+        ).stdout.strip()
+
+    def check_after_start(expected, previous, title):
+        process = subprocess.Popen(
+            [sys.executable, "-m", "syvrio", "backend", "run", "--config", str(headless_config)]
+        )
+        try:
+            deadline = time.monotonic() + 30
+            while not (endpoint := discover(paths)):
+                assert process.poll() is None and time.monotonic() < deadline
+                time.sleep(0.05)
+            client = ResidentClient.from_endpoint(endpoint)
+            assert [item.id for item in client.recall(expected)] == [entry.id]
+            assert not client.recall(previous)
+            assert client.request("GET", f"/api/sessions/{session.id}")["title"] == title
+            client.call("shutdown")
+            assert process.wait(timeout=15) == 0
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=10)
+
+    git("add", ".")
+    git("commit", "-m", "First snapshot")
+    first = git("rev-parse", "HEAD")
+    document.write_text(
+        document.read_text(encoding="utf-8").replace("apricot", "cobalt"), encoding="utf-8"
+    )
+    sessions.rename(session, "Restored conversation")
+    git("add", ".")
+    git("commit", "-m", "Backup snapshot")
+    backup = shutil.copytree(paths.vault_dir, tmp_path / "backup")
+
+    git("switch", "--detach", first)
+    check_after_start("apricot", "cobalt", "Original conversation")
+
+    document.write_text(
+        document.read_text(encoding="utf-8").replace("apricot", "saffron"), encoding="utf-8"
+    )
+    check_after_start("saffron", "apricot", "Original conversation")
+
+    paths.vault_dir.rename(tmp_path / "previous")
+    shutil.copytree(backup, paths.vault_dir)
+    check_after_start("cobalt", "saffron", "Restored conversation")
+
+
 def test_automatic_process_discovery_cli_mcp_and_vault_ownership(tmp_path, headless_config):
     from fastmcp import Client
 
@@ -143,7 +229,7 @@ def test_automatic_process_discovery_cli_mcp_and_vault_ownership(tmp_path, headl
         assert first.base == second.base and first.view != second.view
         from syvrio.backend.maintenance import verify_local_attachments
 
-        vault = client_paths(config, None).vault_dir
+        vault = client_paths(config).vault_dir
         assert verify_local_attachments(vault) == tuple(first.call("verify_attachments"))
         value = first.memorize(MemoryDraft(text="Local test prefers tea", topic="habits"))
         assert second.read_topic("habits")["entries"][0]["id"] == value.id
@@ -214,7 +300,7 @@ def test_automatic_process_discovery_cli_mcp_and_vault_ownership(tmp_path, headl
                 sys.executable,
                 "-c",
                 "from syvrio.backend.endpoint import client_paths; from syvrio.backend.ownership import BackendLease;"
-                "from pathlib import Path; import sys; p=client_paths(Path(sys.argv[1]),None); BackendLease(p).acquire()",
+                "from pathlib import Path; import sys; p=client_paths(Path(sys.argv[1])); BackendLease(p).acquire()",
                 str(config),
             ],
             env={**os.environ, "SYVRIO_RUNTIME": str(other)},
@@ -645,7 +731,7 @@ def test_shared_fifo_replay_disconnect_and_textual_pilot(tmp_path, monkeypatch):
     cfg = configuration(tmp_path)
     from syvrio.infra.config import load_config
 
-    paths = client_paths(cfg, None)
+    paths = client_paths(cfg)
     service = MemoryService(load_config(cfg), config_path=cfg)
     model = PausingModel()
     owner = WebBackend(service=service)

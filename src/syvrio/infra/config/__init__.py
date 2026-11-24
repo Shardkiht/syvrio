@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
 from ..security.credentials import KEYRING_SERVICE as KEYRING_SERVICE
-from ..security.credentials import stored_key
+from ..security.credentials import environment_key, stored_key
 from ..storage.paths import SyvrioPaths, runtime_path, syvrio_home
 from .files import (
     MEMORY_SECTIONS,
@@ -100,10 +100,7 @@ class LLMConfig:
         return (self.provider or "").strip().lower() not in {"ollama", "local", "lmstudio"}
 
     def api_key(self) -> str | None:
-        env_value = os.environ.get(self.api_key_env)
-        if env_value:
-            return env_value
-        return stored_key(self.api_key_env)
+        return read_api_key(self.api_key_env) or None
 
 
 @dataclass(slots=True)
@@ -183,12 +180,9 @@ class SearchConfig:
     usage_limits: dict[str, UsageLimit] = field(default_factory=lambda: default_usage_limits())
 
 
-def read_api_key(env_name: str) -> str:
-    """读取厂商 API Key，环境变量优先，其次读取已保存的系统凭据。"""
-    value = os.environ.get(env_name, "").strip()
-    if value:
-        return value
-    return (stored_key(env_name) or "").strip()
+def read_api_key(env_name: str, *, proposed: str = "") -> str:
+    """预览新密钥时也沿用环境变量优先级，空白输入保留已有凭据。"""
+    return environment_key(env_name) or proposed.strip() or (stored_key(env_name) or "").strip()
 
 
 @dataclass(slots=True)

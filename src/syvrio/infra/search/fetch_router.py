@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Protocol
 
 from ..config import FetchConfig, SearchConfig
 from ..storage.paths import SyvrioPaths, vault_paths
@@ -19,20 +19,9 @@ from .base import (
     SearchFailure,
     assert_public_fetch_url,
 )
+from .providers.catalog import OPEN_WEBSEARCH, PROVIDERS, supports_fetch
 from .providers.open_websearch import OpenWebSearchProvider
-
-# 需要厂商 API Key 的外部抓取服务；列进 fetch.providers 且 Key 可读才注册。
-_EXTERNAL_FETCH_PROVIDERS: dict[str, tuple[str, str]] = {
-    "tavily": ("tavily.py:TavilyFetchProvider", "TAVILY_API_KEY"),
-    "exa": ("exa.py:ExaFetchProvider", "EXA_API_KEY"),
-    "you": ("you.py:YouFetchProvider", "YDC_API_KEY"),
-    "volcengine": ("volcengine.py:VolcengineFetchProvider", "VOLCENGINE_SEARCH_API_KEY"),
-}
-_OPTIONAL_FETCH_KEY_PROVIDERS = {
-    "anysearch": "ANYSEARCH_API_KEY",
-    "parallel_mcp": "PARALLEL_API_KEY",
-}
-FETCH_PROVIDERS = {"open_websearch", *_EXTERNAL_FETCH_PROVIDERS, *_OPTIONAL_FETCH_KEY_PROVIDERS}
+from .usage import UsageLimiter
 
 
 class FetchProvider(Protocol):
@@ -50,7 +39,7 @@ class FetchRouter:
         registry: dict[str, FetchProvider] | None = None,
         *,
         order: list[str] | None = None,
-        usage_limiter: Any | None = None,
+        usage_limiter: UsageLimiter | None = None,
     ):
         self.registry = dict(registry or {})
         self.order = list(dict.fromkeys(order or list(self.registry)))
@@ -72,9 +61,11 @@ class FetchRouter:
             provider = self.registry.get(name)
             if provider is None or "fetch" not in provider.capabilities:
                 continue
+            reservation = None
             if self.usage_limiter is not None:
                 # 达到厂商上限即跳过该 provider，继续回退下一家。
-                if not self.usage_limiter.acquire(name):
+                reservation = self.usage_limiter.acquire(name)
+                if reservation is None:
                     failures.append(
                         SearchFailure(
                             name,
@@ -86,15 +77,15 @@ class FetchRouter:
             try:
                 result = provider.fetch(FetchQuery(text, max_chars))
             except ProviderError as exc:
-                if self.usage_limiter is not None:
+                if self.usage_limiter is not None and reservation is not None:
                     # 抓取没拿到正文就不算一次有效调用，退回预扣的次数。
-                    self.usage_limiter.release(name)
+                    self.usage_limiter.release(reservation)
                     self.usage_limiter.note_error(name, exc)
                 failures.append(SearchFailure.from_error(exc))
                 continue
             except Exception as exc:
-                if self.usage_limiter is not None:
-                    self.usage_limiter.release(name)
+                if self.usage_limiter is not None and reservation is not None:
+                    self.usage_limiter.release(reservation)
                 failures.append(SearchFailure(name, "unavailable", str(exc)))
                 continue
             if result.final_url and result.final_url != text:
@@ -125,8 +116,9 @@ def build_fetch_registry(
 ) -> dict[str, FetchProvider]:
     registry: dict[str, FetchProvider] = {}
     for name in fetch_config.providers:
-        if name == "open_websearch":
-            # 与搜索共用同一 daemon 配置；抓取能力只在 http transport 下可用。
+        if not supports_fetch(name, search_config.transport):
+            continue
+        if name == OPEN_WEBSEARCH:
             registry[name] = OpenWebSearchProvider(
                 base_url=search_config.base_url,
                 timeout=search_config.timeout,
@@ -134,12 +126,12 @@ def build_fetch_registry(
                 engines=search_config.engines,
                 fetch_timeout=search_config.fetch_timeout,
             )
-        elif name in FETCH_PROVIDERS:
-            env_name = _OPTIONAL_FETCH_KEY_PROVIDERS.get(name)
+        else:
             from ..config import read_api_key
 
-            api_key = read_api_key(env_name or _EXTERNAL_FETCH_PROVIDERS[name][1])
-            if not api_key and env_name is None:
+            spec = PROVIDERS[name]
+            api_key = read_api_key(spec.key_env) if spec.key_env else ""
+            if not api_key and not spec.optional_key:
                 # 未配置 Key 的厂商直接跳过：不参与尝试，也不报错。
                 continue
             registry[name] = _build_external_fetch_provider(
@@ -185,8 +177,6 @@ def build_fetch_router(
     if vault is not None:
         paths = vault if isinstance(vault, SyvrioPaths) else vault_paths(vault)
         paths.validate()
-        from .usage import UsageLimiter
-
         limiter = UsageLimiter(search_config.usage_limits, paths.state_dir / "usage.json")
     return FetchRouter(
         build_fetch_registry(fetch_config, search_config),

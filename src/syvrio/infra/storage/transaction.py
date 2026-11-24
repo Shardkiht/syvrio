@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import os
 from base64 import b64decode, b64encode
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
@@ -16,7 +15,7 @@ from threading import get_ident, local
 from ..errors import SyvrioError
 from .files import atomic_write, safe_component, sync_directory
 from .locking import VaultLock, vault_write_lock
-from .paths import TURN_UNDO_DIR, SyvrioPaths
+from .paths import TRANSACTION_FILENAME, TURN_UNDO_DIR, SyvrioPaths
 
 
 class TransactionError(SyvrioError, ValueError):
@@ -55,8 +54,7 @@ class VaultTransaction:
             "jobs": self.jobs,
             "undo": paths.runtime_dir.resolve() / TURN_UNDO_DIR,
         }
-        identity = hashlib.sha256(os.fsencode(os.path.normcase(str(self.vault)))).hexdigest()
-        self.journal = self.jobs / "vault-transactions" / (identity + ".json")
+        self.journal = self.jobs / TRANSACTION_FILENAME
         self.files: dict[str, dict] = {}
         self._guards = ExitStack()
         self.failed = False
@@ -78,7 +76,7 @@ class VaultTransaction:
             or rel.drive
             or ".." in rel.parts
             or any(not safe_component(p) for p in rel.parts)
-            or (root_name == "jobs" and rel.parts[0].casefold() == "vault-transactions")
+            or (root_name == "jobs" and rel.parts[0].casefold() == TRANSACTION_FILENAME)
             or (root_name == "undo" and (len(rel.parts) != 2 or rel.suffix != ".json"))
         ):
             raise TransactionError("Invalid path in Vault transaction.")

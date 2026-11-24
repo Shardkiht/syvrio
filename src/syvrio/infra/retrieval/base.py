@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Hashable, Sequence
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Protocol
 
@@ -41,12 +41,18 @@ class SearchRecord(Protocol):
     def embedding_text(self) -> str: ...
 
 
+class RecordSnapshot[Record: SearchRecord](Protocol):
+    """一次读取的内容与递增版本号始终对应。"""
+
+    @property
+    def revision(self) -> int: ...
+
+    @property
+    def records(self) -> Sequence[Record]: ...
+
+
 class RecordSource[Record: SearchRecord](Protocol):
-    """检索只读快照，来源自己决定记录范围、修订标识和路径。"""
-
-    def entries(self) -> Sequence[Record]: ...
-
-    def fingerprint(self) -> Hashable: ...
+    def snapshot(self) -> RecordSnapshot[Record]: ...
 
     def topic_path(self, topic: str) -> Path: ...
 
@@ -90,7 +96,9 @@ class SearchHit(BaseModel):
 class Retriever(Protocol):
     """检索抽象：默认 hybrid；关键字与向量实现共用同一个 search 接口。"""
 
-    def search(self, query: str, limit: int = 10) -> list[SearchHit]: ...
+    def search(
+        self, query: str, limit: int = 10, *, snapshot: RecordSnapshot | None = None
+    ) -> list[SearchHit]: ...
 
 
 class Embedder(Protocol):

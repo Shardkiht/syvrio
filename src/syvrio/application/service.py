@@ -5,7 +5,7 @@ from __future__ import annotations
 from threading import RLock
 
 from ..agent.runtime import AgentRuntime
-from ..infra.search.daemon import ensure_search_daemon
+from ..infra.search.daemon import warm_search_daemon
 from ..infra.vault.sync import GitSyncService
 from ..memory.service import MemoryService
 from .conversation import ConversationUseCases
@@ -43,10 +43,7 @@ class ApplicationService:
     # ---------- 生命周期 ----------
 
     def warm_search(self) -> str | None:
-        search = self._service.config.search
-        if not search.enabled or not search.auto_start or search.transport != "http":
-            return None
-        return ensure_search_daemon(search.base_url)
+        return warm_search_daemon(self.config.search, self.config.fetch)
 
     def close(self, distill: bool = True) -> dict:
         return self.conversation.runtime.close(distill=distill)

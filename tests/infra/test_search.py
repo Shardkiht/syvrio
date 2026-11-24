@@ -104,7 +104,7 @@ def test_hybrid_gates_literal_mismatch():
         def __init__(self, hits):
             self.hits = hits
 
-        def search(self, query, limit=10):
+        def search(self, query, limit=10, *, snapshot=None):
             return self.hits[:limit]
 
     query = "投递了多少份申请"
@@ -125,7 +125,7 @@ def test_hybrid_keeps_keyword_hits_for_non_cjk_query():
         def __init__(self, hits):
             self.hits = hits
 
-        def search(self, query, limit=10):
+        def search(self, query, limit=10, *, snapshot=None):
             return self.hits[:limit]
 
     target = SearchHit(text="Uses Neovim as the daily editor", topic="devices")

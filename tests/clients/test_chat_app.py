@@ -1674,7 +1674,7 @@ def test_auto_start_warms_search_in_background(service, monkeypatch):
 
     service.config.search = SearchConfig(enabled=True, auto_start=True)
     service.config.git.auto_sync = False
-    monkeypatch.setattr("syvrio.application.service.ensure_search_daemon", warm)
+    monkeypatch.setattr("syvrio.infra.search.daemon.ensure_daemon", warm)
     owner = WebBackend(service=service)
     owner.startup()
     try:

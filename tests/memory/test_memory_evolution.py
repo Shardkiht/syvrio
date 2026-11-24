@@ -138,7 +138,7 @@ def test_filtered_recall_filters_before_limit(service):
     )
 
     class Ranked:
-        def search(self, query, limit=10):
+        def search(self, query, limit=10, *, snapshot=None):
             return [SearchHit(id=e.id, text=e.text, topic=e.topic) for e in (first, second)][:limit]
 
     service.retriever = Ranked()

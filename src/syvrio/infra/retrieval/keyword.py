@@ -3,14 +3,14 @@ from __future__ import annotations
 import logging
 import math
 import re
-from collections.abc import Hashable, Sequence
+from collections.abc import Sequence
 from functools import lru_cache
 from threading import Lock
 from unicodedata import normalize
 
 from rank_bm25 import BM25Okapi
 
-from .base import RecordSource, SearchHit, SearchRecord
+from .base import RecordSnapshot, RecordSource, SearchHit, SearchRecord
 from .matching import short_field
 
 try:
@@ -119,16 +119,15 @@ class KeywordRetriever[Record: SearchRecord]:
         self._entries: Sequence[Record] = []
         self._bm25: BM25Okapi | None = None
         self._fields: dict[str, list[int]] = {}
-        self._fingerprint: Hashable = object()
+        self._revision = -1
 
-    def _index(self) -> tuple[Sequence[Record], BM25Okapi | None, dict[str, list[int]]]:
+    def _index(
+        self, snapshot: RecordSnapshot[Record]
+    ) -> tuple[Sequence[Record], BM25Okapi | None, dict[str, list[int]]]:
         with self._index_lock:
-            return self._snapshot()
-
-    def _snapshot(self) -> tuple[Sequence[Record], BM25Okapi | None, dict[str, list[int]]]:
-        fingerprint = self.store.fingerprint()
-        if fingerprint != self._fingerprint:
-            entries = self.store.entries()
+            if self._revision == snapshot.revision:
+                return self._entries, self._bm25, self._fields
+            entries = snapshot.records
             fields: dict[str, list[int]] = {}
             for index, entry in enumerate(entries):
                 if field := short_field(entry.text):
@@ -145,20 +144,29 @@ class KeywordRetriever[Record: SearchRecord]:
                     token: math.log1p((len(corpus) - count + 0.5) / (count + 0.5))
                     for token, count in frequencies.items()
                 }
-            self._entries, self._bm25, self._fields = entries, bm25, fields
-            self._fingerprint = fingerprint
-        return self._entries, self._bm25, self._fields
+            if snapshot.revision > self._revision:
+                self._entries, self._bm25, self._fields = entries, bm25, fields
+                self._revision = snapshot.revision
+            return entries, bm25, fields
 
-    def unique_field(self, field: str) -> Record | None:
-        entries, _, fields = self._index()
+    def unique_field(
+        self, field: str, *, snapshot: RecordSnapshot[Record] | None = None
+    ) -> Record | None:
+        entries, _, fields = self._index(
+            snapshot if snapshot is not None else self.store.snapshot()
+        )
         indices = fields.get(_field_key(field), [])
         return entries[indices[0]] if len(indices) == 1 else None
 
-    def search(self, query: str, limit: int = 10) -> list[SearchHit]:
+    def search(
+        self, query: str, limit: int = 10, *, snapshot: RecordSnapshot[Record] | None = None
+    ) -> list[SearchHit]:
         query = query.strip()
         if not query:
             return []
-        entries, bm25, field_indices = self._index()
+        entries, bm25, field_indices = self._index(
+            snapshot if snapshot is not None else self.store.snapshot()
+        )
         if not entries or bm25 is None:
             return []
         query_tokens = list(tokenize(query))

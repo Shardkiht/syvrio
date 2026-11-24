@@ -19,13 +19,13 @@ from ..infra.storage.locking import VaultLock
 from ..infra.storage.paths import SyvrioPaths, runtime_path
 
 
-def client_paths(config: Path | None, vault: Path | None) -> SyvrioPaths:
+def client_paths(config: Path | None) -> SyvrioPaths:
     filename = (config or default_config_path()).expanduser().resolve()
     configured_vault, runtime = ConfigFiles(filename).connection_locations(
         required=config is not None or bool(os.environ.get("SYVRIO_CONFIG"))
     )
     return SyvrioPaths(
-        vault or Path(configured_vault or default_vault_path()), runtime_path(runtime), filename
+        Path(configured_vault or default_vault_path()), runtime_path(runtime), filename
     )
 
 
@@ -75,13 +75,7 @@ def connect(paths) -> tuple[str, str]:
         existing = discover(paths)
         if existing:
             return existing
-        argv = [
-            sys.executable,
-            "-m",
-            "syvrio.backend",
-            "--vault",
-            str(paths.vault_dir),
-        ]
+        argv = [sys.executable, "-m", "syvrio.backend"]
         # 默认配置尚不存在时，子进程也按首次运行启动，由后端负责落盘。
         if (
             paths.config_file.exists()

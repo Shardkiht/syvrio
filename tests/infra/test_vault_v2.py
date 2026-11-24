@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import json
 import os
-import shutil
 from pathlib import Path
 
 import pytest
 
 from syvrio.infra.config import Config, RetrievalConfig
+from syvrio.infra.storage.paths import RuntimeBindingError, SyvrioPaths
 from syvrio.memory.schema import SchemaError, parse_document
 from syvrio.memory.service import MemoryService
 from syvrio.memory.store import MemoryStore
@@ -156,40 +157,77 @@ def test_relative_topics_disambiguate_equal_stems(tmp_path):
         store.entries("notes")
 
 
-def test_runtime_binding_invalidates_derived_data_without_vault_writes(tmp_path, monkeypatch):
-    monkeypatch.delenv("SYVRIO_RUNTIME")
-    runtime = tmp_path / "runtime"
-
+def test_runtime_binding_preserves_paired_state_and_refuses_another_vault(tmp_path):
     from syvrio.backend.maintenance import prepare_vault_runtime
 
-    def app(vault):
-        service = MemoryService(
-            Config(vault=vault, runtime=str(runtime), retrieval=RetrievalConfig(method="keyword"))
-        )
-
-        prepare_vault_runtime(service.paths)
-        return service
-
-    first = app(tmp_path / "first")
-    first.initialize_files()
-    entry = first.note("synthetic personal note")
-    cache = first.paths.index_dir / "vectors.npz"
+    paths = SyvrioPaths(tmp_path / "first", tmp_path / "runtime")
+    marker = paths.state_dir / "vault-binding.json"
+    marker.parent.mkdir(parents=True)
+    binding = json.dumps({"version": 2, "vault": str(paths.vault_dir)}, indent=2).encode()
+    marker.write_bytes(binding)
+    cache = paths.index_dir / "vectors.npz"
     cache.parent.mkdir()
-    cache.write_bytes(b"old")
-    summary = first.paths.cache_dir / "profile" / "profile-summary.json"
-    summary.parent.mkdir(parents=True)
-    summary.write_text("{}", encoding="utf-8")
-    assert not (first.config.vault / ".syvrio").exists()
+    cache.write_bytes(b"synthetic index")
+    prepare_vault_runtime(paths)
+    with pytest.raises(RuntimeBindingError, match="different Vault"):
+        prepare_vault_runtime(SyvrioPaths(tmp_path / "other", paths.runtime_dir))
+    assert marker.read_bytes() == binding and cache.read_bytes() == b"synthetic index"
 
-    second = app(tmp_path / "second")
-    assert second.paths.runtime_dir == first.paths.runtime_dir
-    assert not cache.exists() and not summary.exists()
-    assert first.store.find(entry.id) == entry
-    shutil.rmtree(runtime)
-    reloaded = app(first.config.vault)
-    assert reloaded.store.find(entry.id) == entry
-    assert (reloaded.paths.lock_dir / "vault.lock").is_file()
-    assert (reloaded.paths.state_dir / "vault-binding.json").is_file()
+
+@pytest.mark.parametrize(
+    "contents", [b"{", b"null", b'{"version":1}', b'{"version":2,"vault":"relative"}']
+)
+def test_damaged_runtime_binding_is_preserved(tmp_path, contents):
+    paths = SyvrioPaths(tmp_path / "vault", tmp_path / "runtime")
+    marker = paths.state_dir / "vault-binding.json"
+    marker.parent.mkdir(parents=True)
+    marker.write_bytes(contents)
+    with pytest.raises(RuntimeBindingError, match="Invalid Runtime binding"):
+        paths.bind()
+    assert marker.read_bytes() == contents
+
+
+def test_missing_binding_does_not_claim_session_sidecars(tmp_path):
+    paths = SyvrioPaths(tmp_path / "vault", tmp_path / "runtime")
+    sidecar = paths.runtime_dir / "session-reasoning" / "s" / "a.json"
+    sidecar.parent.mkdir(parents=True)
+    sidecar.write_bytes(b"synthetic")
+    with pytest.raises(RuntimeBindingError, match="Missing Runtime binding"):
+        paths.bind()
+    assert sidecar.read_bytes() == b"synthetic"
+    assert not (paths.state_dir / "vault-binding.json").exists()
+
+
+@pytest.mark.parametrize(
+    "directory", ["vault-transactions", "background-memory/" + "a" * 64 + "/title"]
+)
+def test_runtime_preparation_preserves_outstanding_work_from_other_layout(tmp_path, directory):
+    from syvrio.backend.maintenance import prepare_vault_runtime
+
+    paths = SyvrioPaths(tmp_path / "vault", tmp_path / "runtime")
+    prepare_vault_runtime(paths)
+    job = paths.jobs_dir / directory / ("b" * 64 + ".json")
+    job.parent.mkdir(parents=True)
+    job.write_bytes(b"pending")
+    with pytest.raises(RuntimeBindingError):
+        prepare_vault_runtime(paths)
+    assert job.read_bytes() == b"pending"
+    job.unlink()
+    prepare_vault_runtime(paths)
+
+
+def test_transactions_and_jobs_use_single_vault_directories(tmp_path):
+    from syvrio.infra.storage.transaction import TransactionError, VaultTransaction
+    from syvrio.memory.background.jobs import job_path
+
+    paths = SyvrioPaths(tmp_path / "vault", tmp_path / "runtime")
+    tx = VaultTransaction(paths)
+    assert tx.journal == paths.jobs_dir / "vault-transaction.json"
+    with pytest.raises(TransactionError):
+        tx.write(tx.journal, b"invalid")
+    assert (
+        job_path(paths, "title", "session").parent == paths.jobs_dir / "background-memory" / "title"
+    )
 
 
 @pytest.mark.parametrize("ordinary", [r"C:\data", r"\\server\share\data"])
@@ -203,10 +241,10 @@ def test_windows_runtime_compares_extended_and_ordinary_names(ordinary):
     )
     root = PureWindowsPath(ordinary) / "runtime"
     extended_root = PureWindowsPath(extended) / "runtime"
-    assert _comparison_path(root / "jobs" / "dreaming").is_relative_to(
+    assert _comparison_path(root / "jobs" / "background-memory").is_relative_to(
         _comparison_path(extended_root)
     )
-    assert _comparison_path(extended_root / "jobs" / "dreaming").is_relative_to(
+    assert _comparison_path(extended_root / "jobs" / "background-memory").is_relative_to(
         _comparison_path(root)
     )
     assert not _comparison_path(PureWindowsPath(extended) / "runtime-other").is_relative_to(
@@ -215,11 +253,9 @@ def test_windows_runtime_compares_extended_and_ordinary_names(ordinary):
 
 
 def test_runtime_validation_checks_the_resolved_child(tmp_path, monkeypatch):
-    from syvrio.infra.storage.paths import SyvrioPaths
-
     paths = SyvrioPaths(tmp_path / "vault", tmp_path / "runtime")
     paths.validate()
-    invalid = paths.jobs_dir / "dreaming"
+    invalid = paths.jobs_dir / "background-memory"
     resolve = Path.resolve
 
     def redirected(path, *args, **kwargs):
@@ -232,10 +268,8 @@ def test_runtime_validation_checks_the_resolved_child(tmp_path, monkeypatch):
 
 @pytest.mark.skipif(os.name != "nt", reason="模拟 Windows 解析不存在子目录时返回的扩展盘符路径")
 def test_runtime_accepts_extended_name_for_missing_windows_child(tmp_path, monkeypatch):
-    from syvrio.infra.storage.paths import SyvrioPaths
-
     paths = SyvrioPaths(tmp_path / "vault", tmp_path / "runtime")
-    missing = paths.jobs_dir / "dreaming"
+    missing = paths.jobs_dir / "background-memory"
     resolve = Path.resolve
 
     def extended(path, *args, **kwargs):

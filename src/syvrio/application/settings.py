@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 
@@ -27,7 +26,7 @@ from ..infra.llm.providers import (
     provider_base_url,
     provider_label,
 )
-from ..infra.security.credentials import delete_api_key, save_api_key
+from ..infra.security.credentials import delete_api_key, environment_key, save_api_key
 from ..memory.service import MemoryService
 from .contracts import ModelOption, ProviderOption, SettingsResult
 
@@ -191,7 +190,7 @@ class SettingsUseCases:
         key = api_key.strip()
         if not key:
             return SettingsResult(False, "API key is empty; nothing changed.")
-        if os.environ.get(preset.api_key_env):
+        if environment_key(preset.api_key_env):
             return SettingsResult(
                 False,
                 f"{provider_label(preset.key)} API key is provided by {preset.api_key_env}. "
@@ -256,7 +255,7 @@ class SettingsUseCases:
             return SettingsResult(
                 False, f"{label} is the current provider; switch to another model first."
             )
-        if os.environ.get(preset.api_key_env):
+        if environment_key(preset.api_key_env):
             return SettingsResult(
                 False,
                 f"{label} API key is provided by {preset.api_key_env}; "

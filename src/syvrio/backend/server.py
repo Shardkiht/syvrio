@@ -7,6 +7,8 @@ import secrets
 import socket
 from pathlib import Path
 
+from ..infra.config import ConfigError, load_config
+from ..memory.service import MemoryService
 from .api.channel import APIChannel
 from .api.routes import create_api
 from .endpoint import client_paths, publish
@@ -15,14 +17,17 @@ from .ownership import BackendLease
 LOOPBACK = "127.0.0.1"
 
 
-def serve_resident(config_path: Path | None, vault_path: Path) -> None:
+def serve_resident(config_path: Path | None) -> None:
     import uvicorn
 
-    paths = client_paths(config_path, vault_path)
+    paths = client_paths(config_path)
     lease = BackendLease(paths)
     lease.acquire(timeout=0)
     try:
-        owner = APIChannel(config_path, vault_path)
+        config = load_config(config_path)
+        if config.paths(paths.config_file) != paths:
+            raise ConfigError("Vault 或 Runtime 在启动期间更改，请重新启动后端。")
+        owner = APIChannel(service=MemoryService(config, config_path=paths.config_file))
         owner.startup(ownership=lease)
     except BaseException:
         lease.release()

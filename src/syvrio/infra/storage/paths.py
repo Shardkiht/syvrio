@@ -3,13 +3,20 @@ from __future__ import annotations
 import json
 import os
 import re
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path, PurePath, PureWindowsPath
+
+from ..errors import SyvrioError
+from .files import atomic_write
 
 SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 
 TURN_UNDO_DIR = "turn-undo"
+TRANSACTION_FILENAME = "vault-transaction.json"
+
+
+class RuntimeBindingError(SyvrioError, ValueError):
+    """无法确定 Runtime 属于当前 Vault，或其中仍有不同布局的待处理记录。"""
 
 
 def syvrio_home() -> Path:
@@ -123,7 +130,7 @@ class SyvrioPaths:
             self.log_dir,
             self.cache_dir / "profile",
             self.cache_dir / "search",
-            self.jobs_dir / "dreaming",
+            self.jobs_dir / "background-memory",
         ):
             if directory.is_symlink() or not _comparison_path(directory.resolve()).is_relative_to(
                 runtime_key
@@ -131,38 +138,79 @@ class SyvrioPaths:
                 raise ValueError("Runtime subdirectories cannot redirect outside Runtime")
 
     def bind(self) -> None:
-        """在 Git 和 Vault 锁内调用，只使已知的 Vault 派生文件失效。"""
+        """持有 Runtime 写锁时检查归属，首次启动时记录唯一的 Vault。"""
         self.validate()
         marker = self.state_dir / "vault-binding.json"
-        vault = str(self.vault_dir.resolve())
         if marker.is_symlink():
-            raise ValueError("Runtime binding marker cannot be a symlink")
+            raise RuntimeBindingError("Runtime binding marker cannot be a symlink.")
         try:
-            previous = json.loads(marker.read_text(encoding="utf-8"))
+            saved = json.loads(marker.read_text(encoding="utf-8"))
         except FileNotFoundError:
-            previous = None
-        except ValueError:
-            previous = None
-        if previous == {"version": 2, "vault": vault}:
+            saved = None
+        except ValueError as exc:
+            raise RuntimeBindingError(
+                "Invalid Runtime binding. Restore the matching marker."
+            ) from exc
+        else:
+            if not (
+                isinstance(saved, dict)
+                and saved.keys() == {"version", "vault"}
+                and type(saved["version"]) is int
+                and saved["version"] == 2
+                and isinstance(saved["vault"], str)
+                and Path(saved["vault"]).is_absolute()
+            ):
+                raise RuntimeBindingError("Invalid Runtime binding. Restore the matching marker.")
+            if _comparison_path(Path(saved["vault"])) != _comparison_path(self.vault_dir):
+                raise RuntimeBindingError(
+                    "Runtime belongs to a different Vault. Use its matching Runtime."
+                )
+
+        self._check_job_layout()
+        if saved is not None:
             return
-        for path in (
+        # 首次配置可能已经写入锁、日志和供应商用量，这些内容不由具体 Vault 拥有。
+        files = (
             self.index_dir / "vectors.npz",
             self.cache_dir / "profile" / "profile-summary.json",
             self.state_dir / "fingerprints.json",
             self.state_dir / "reflection.json",
             self.state_dir / "git-sync.json",
+            self.jobs_dir / TRANSACTION_FILENAME,
+        )
+        roots = (
+            self.runtime_dir / TURN_UNDO_DIR,
+            self.runtime_dir / "session-reasoning",
+            self.state_dir / "chat-receipts",
+        )
+        has_jobs = next((self.jobs_dir / "background-memory").glob("*/*.json"), None) is not None
+        if (
+            has_jobs
+            or any(path.exists() for path in files)
+            or any(root.is_dir() and next(root.iterdir(), None) is not None for root in roots)
         ):
-            path.unlink(missing_ok=True)
-        self.state_dir.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(
-            mode="w", encoding="utf-8", dir=self.state_dir, delete=False
-        ) as handle:
-            tmp = Path(handle.name)
-            json.dump({"version": 2, "vault": vault}, handle)
-        try:
-            os.replace(tmp, marker)
-        finally:
-            tmp.unlink(missing_ok=True)
+            raise RuntimeBindingError(
+                "Missing Runtime binding. Restore the marker paired with these files."
+            )
+        atomic_write(
+            marker, json.dumps({"version": 2, "vault": str(self.vault_dir)}).encode("utf-8")
+        )
+
+    def _check_job_layout(self) -> None:
+        # 只在启动时检查遗留工作，不在每次事务中遍历队列。
+        journals = self.jobs_dir / "vault-transactions"
+        if journals.is_symlink() or next(journals.glob("*.json"), None) is not None:
+            raise RuntimeBindingError(
+                "Unfinished Vault transaction in the old layout. Recover it with its original version before startup."
+            )
+        background = self.jobs_dir / "background-memory"
+        for directory in background.glob("?" * 64):
+            if re.fullmatch(r"[0-9a-f]{64}", directory.name) and (
+                directory.is_symlink() or next(directory.glob("*/*.json"), None) is not None
+            ):
+                raise RuntimeBindingError(
+                    "Background jobs use a different layout. Move the matching job directories offline before startup."
+                )
 
 
 def vault_paths(vault: Path) -> SyvrioPaths:

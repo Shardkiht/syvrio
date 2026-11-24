@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from ..infra.config import (
@@ -9,13 +11,12 @@ from ..infra.config import (
     default_config_path,
     default_vault_path,
     load_config,
-    write_config,
-    write_example_config,
 )
+from ..infra.config.files import ConfigFiles
 from ..infra.errors import SyvrioError
 from ..infra.storage import paths as local_paths
-from ..infra.storage.locking import LockTimeout, git_operation_lock, vault_write_lock
-from ..infra.storage.paths import SyvrioPaths
+from ..infra.storage.locking import LockTimeout, vault_write_lock
+from ..infra.storage.paths import SyvrioPaths, runtime_path
 from ..infra.storage.transaction import recover_vault_transaction
 from ..infra.vault.files import initialize_vault as provision_vault
 from ..infra.vault.sync import GitSyncService
@@ -27,8 +28,8 @@ class MaintenanceError(SyvrioError, ValueError):
 
 
 def prepare_vault_runtime(paths: SyvrioPaths) -> None:
-    """调用方持有后端租约；切换绑定时按 Git、Vault 顺序保护派生状态。"""
-    with git_operation_lock(paths), vault_write_lock(paths):
+    """调用方持有后端租约，在写入前核对部署目录并恢复未完成的事务。"""
+    with vault_write_lock(paths):
         paths.bind()
         recover_vault_transaction(paths)
 
@@ -55,28 +56,40 @@ def initialize_vault(
         return initialize_owned_vault(config, config_path, force=force)
 
 
+@contextmanager
+def configured_maintenance(
+    config_path: Path | None, *, initial_vault: Path | None = None
+) -> Iterator[tuple[Config, Path]]:
+    """首次部署可指定目录。已有部署的维护操作始终使用配置中的 Vault。"""
+    path = (config_path or default_config_path()).expanduser().resolve()
+    layout = ConfigFiles(path)
+    requested = initial_vault.expanduser().resolve() if initial_vault is not None else None
+    stored, runtime = layout.connection_locations(required=False)
+    if requested is not None and stored and Path(stored).expanduser().resolve() != requested:
+        raise MaintenanceError("此部署已配置 Vault，请使用当前配置重新运行初始化。")
+    selected = SyvrioPaths(
+        Path(stored or requested or default_vault_path()), runtime_path(runtime), path
+    )
+    with BackendLease(selected):
+        # 获得租约后按最新配置复核目录，防止维护操作写入另一个位置。
+        stored, _ = layout.connection_locations(required=False)
+        if path.exists() or layout.journal.exists():
+            cfg = load_config(path)
+        else:
+            cfg = Config(vault=default_vault_path())
+        if requested is not None and not stored:
+            cfg.vault = requested
+        if cfg.paths(path) != selected:
+            raise MaintenanceError("部署目录已变更，请重新打开配置。")
+        yield cfg, path
+
+
 def initialize_configured_vault(
     config_path: Path | None, vault: Path | None, *, force: bool = False
 ) -> dict:
-    vault = (vault or default_vault_path()).expanduser().resolve()
-    path = (config_path or default_config_path()).expanduser().resolve()
-    from ..infra.config.files import ConfigFiles
-    from .endpoint import client_paths
-
-    layout = ConfigFiles(path)
-    saved = path.exists() or layout.journal.exists()
-    selected = client_paths(path, vault) if saved else Config(vault=vault).paths(path)
-    with BackendLease(selected):
-        cfg = load_config(path) if path.exists() or layout.journal.exists() else Config(vault=vault)
-        changed = cfg.vault.expanduser().resolve() != vault
-        cfg.vault = vault
-        if cfg.paths(path) != selected:
-            raise MaintenanceError("Vault 或 Runtime 已变更，请重新运行初始化。")
+    with configured_maintenance(config_path, initial_vault=vault) as (cfg, path):
         result = initialize_owned_vault(cfg, path, force=force)
-        if not path.exists():
-            write_example_config(path, vault)
-        elif changed:
-            write_config(path, cfg)
+        ConfigFiles(path).initialize_vault(cfg.vault)
     return {**result, "config_path": str(path)}
 
 
@@ -87,12 +100,13 @@ def verify_local_attachments(vault: Path) -> tuple[int, list[str]]:
 
     if not vault.is_dir():
         raise MaintenanceError(f"未找到待核验的 Vault 目录：{vault}")
-    # 核验只读取 Vault。其他 Vault 正在使用同一个 Runtime 时，仍可核验迁移副本。
+    # 离线核验可以读取备份副本。活动目录须交给持有它的后端核验。
     lock = physical_vault_lock(vault)
     try:
         lock.acquire(0)
     except LockTimeout:
-        endpoint = discover(client_paths(None, vault))
+        paths = client_paths(None)
+        endpoint = discover(paths) if paths.vault_dir == vault.resolve() else None
         if endpoint is None:
             raise MaintenanceError(
                 "该 Vault 正被另一个后端使用，请在其配置下核验或先关闭服务。"

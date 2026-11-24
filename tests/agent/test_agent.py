@@ -675,7 +675,7 @@ def test_original_short_field_reaches_model_via_prefetch_and_recall_tool(tmp_pat
     target = "虚构人物甲"
 
     class SemanticNoise:
-        def search(self, query, limit):
+        def search(self, query, limit, *, snapshot=None):
             return [SearchHit(id=age.id, text=age.text, topic=age.topic)]
 
     class Model:
@@ -740,7 +740,7 @@ def test_auto_recall_skips_rewrite_only_for_direct_unique_current_field(
     vector_calls = []
 
     class Vector:
-        def search(self, query, limit):
+        def search(self, query, limit, *, snapshot=None):
             vector_calls.append(query)
             return []
 

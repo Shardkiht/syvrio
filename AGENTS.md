@@ -67,6 +67,7 @@ Web 和 TUI 的聊天上传原件保存在 `Vault/attachments/`。该目录由 V
 - `memories/pending.md` 是唯一活动候选文件。确认只写入最终事实并移除候选。改写后确认同时登记异步 Context 补充任务。用户拒绝的原文进入 `archived/pending/rejected.md`。`related_ids` 为审核提供背景，已有事实的状态需独立操作。
 - `inferences/<kind>/<id>.md` 保存独立推断，状态为 `hypothesis/confirmed/deprecated`。来源必须是真实记忆 ID。用户改写时在同一事务弃用旧文并以新 ID 保存确认后的推断。来源变化保留推断现状。`profile.md` 由 Dream 从当前事实和已确认推断生成。
 - `records/memory-changes.jsonl` 针对正式记忆创建和实际字段变化各写一行。变化事件只含记忆 ID 和创建标志或新值。`records/memory/audit.jsonl` 是独立的操作审计。通过 `vault_transaction(paths)` 一并写入事实、日志及相关任务。嵌套操作复用外层事务，成功提交或失败时整体恢复。
+- 每套部署固定使用一个 Vault 和配对的 Runtime。首次初始化可指定目录，Web、TUI、CLI 与 MCP 的日常操作统一读取部署配置。后台任务和事务日志直接存放在该 Runtime，禁止新增多库切换、按库分区或自动重绑逻辑。支持停机后在相同 Vault 路径切换 Git 版本、替换文件和恢复备份。离线核验可以读取备份副本。
 - 常驻后端按物理 Vault 独占运行。Vault 写入和 Git 快照使用 Runtime 的 `vault.lock`。Git 操作按 `Git → Vault` 顺序取锁，网络推送等待只持有 Git 锁。会话日志的发布顺序为 Vault 锁后取会话锁。只读会话快照使用对应会话锁，跨文件事务持有受影响的会话锁至提交或回滚完毕。使用同一套已解析的 `SyvrioPaths` 构造领域存储与后台作业。
 - `sessions/YYYY/MM/<id>.jsonl` 追加消息、摘要、撤回和沉淀事件。稳定消息 ID 定位原话。保存绝对 UTC 时刻与已知的来源本地日期。尾行恢复以物理行号追加 `recovery` 标记及诊断。会话写入前屏蔽已识别的凭据。
 - 最新回合 `/undo` 为正式记忆可恢复原文件的例外。先核对所有受影响文件和存续引用，再在一个事务内恢复文件并追加撤回事件。其他会话写过同一文件或新增引用时拒绝整次撤回。Runtime 持久化撤回凭据、推理附件与后台进度，应与需要恢复的 Vault 配对备份。

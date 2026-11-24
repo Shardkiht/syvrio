@@ -24,8 +24,9 @@ from ..base import (
     SearchResult,
     truncate_fetch_content,
 )
+from .catalog import OPEN_WEBSEARCH as NAME
+from .catalog import uses_websearch_daemon
 
-NAME = "open_websearch"
 DAEMON_HINT = (
     "未连接到 open-websearch daemon；请先运行 "
     "`npx open-websearch@latest serve`（或 `open-websearch serve`）。"
@@ -491,7 +492,7 @@ class OpenWebSearchProvider:
         fetch_timeout: float = 45.0,
     ):
         self._search_state = threading.local()
-        if transport == "mcp":
+        if not uses_websearch_daemon(transport):
             self.transport: HttpTransport | McpStdioTransport = McpStdioTransport(
                 timeout=timeout, command=mcp_command, args=mcp_args, engines=engines
             )

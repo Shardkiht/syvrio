@@ -217,9 +217,10 @@ def test_fetch_router_falls_back_when_limit_reached(tmp_path):
 def test_release_gives_back_one_pre_charged_call(tmp_path):
     path = tmp_path / "usage.json"
     limiter = UsageLimiter({"tavily": UsageLimit(daily=2)}, path, clock=lambda: 0.0)
-    limiter.record("tavily")
-    limiter.release("tavily")
-    limiter.release("tavily")  # 不会降到负数
+    reservation = limiter.acquire("tavily")
+    assert reservation is not None
+    limiter.release(reservation)
+    limiter.release(reservation)
 
     assert limiter.remaining("tavily") == 2
     data = json.loads(path.read_text(encoding="utf-8"))
@@ -227,17 +228,26 @@ def test_release_gives_back_one_pre_charged_call(tmp_path):
     assert data["tavily"]["daily"]["count"] == data["tavily"]["monthly"]["count"] == 0
 
 
-def test_release_after_window_rollover_does_not_eat_new_window(tmp_path):
-    now = [0.0]
-    limiter = UsageLimiter({}, tmp_path / "usage.json", clock=lambda: now[0])
-    limiter.record("tavily")
+@pytest.mark.parametrize("day,month", [(15, 1), (16, 1), (1, 2)])
+def test_failed_fetch_refunds_only_its_original_windows(tmp_path, day, month):
+    from datetime import datetime
 
-    now[0] = 40 * 24 * 3600.0  # 日/月窗口都已翻页
-    limiter.record("tavily")
-    limiter.release("tavily")
+    now = [datetime(2025, 1, 15, 12).timestamp()]
+    path = tmp_path / "usage.json"
+    limiter = UsageLimiter({}, path, clock=lambda: now[0])
+    other = UsageLimiter({}, path, clock=lambda: now[0])
 
-    assert limiter.status("tavily")["daily"]["used"] == 0
-    assert limiter.status("tavily")["monthly"]["used"] == 0
+    class DelayedFailure(_FetchProvider):
+        def fetch(self, query):
+            now[0] = datetime(2025, month, day, 13).timestamp()
+            assert other.acquire(self.name) is not None
+            raise ProviderError(self.name, ProviderErrorKind.NETWORK, "connection failed")
+
+    provider = DelayedFailure("tavily")
+    with pytest.raises(ProviderError, match="connection failed"):
+        FetchRouter({"tavily": provider}, usage_limiter=limiter).fetch("https://example.com/a")
+    status = other.status("tavily")
+    assert status["daily"]["used"] == status["monthly"]["used"] == 1
 
 
 def test_failed_fetch_does_not_count_as_a_used_call(tmp_path):
@@ -429,7 +439,7 @@ def test_concurrent_instances_cannot_exceed_limit(tmp_path):
     instances = [UsageLimiter(limits, path) for _ in range(4)]
     with ThreadPoolExecutor(max_workers=8) as pool:
         accepted = list(pool.map(lambda i: instances[i % 4].acquire("exa"), range(50)))
-    assert sum(accepted) == 7
+    assert sum(receipt is not None for receipt in accepted) == 7
     assert instances[0].status("exa")["monthly"]["used"] == 7
 
 

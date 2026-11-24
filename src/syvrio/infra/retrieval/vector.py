@@ -5,14 +5,15 @@ import importlib.util
 import os
 import tempfile
 import time
-from collections.abc import Callable, Hashable
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
-from threading import RLock
+from threading import Lock
 
 import numpy as np
 
 from ..observability.diagnostics import record_event
-from .base import Embedder, RecordSource, SearchHit, SearchRecord
+from .base import Embedder, RecordSnapshot, RecordSource, SearchHit, SearchRecord
 
 MIN_SCORE = 0.05
 CACHE_FILENAME = "vectors.npz"
@@ -54,6 +55,13 @@ class LocalEmbedder:
         return next(iter(self._load().query_embed([text]))).tolist()
 
 
+@dataclass(frozen=True, slots=True)
+class _VectorIndex:
+    revision: int
+    entries: list[SearchRecord]
+    matrix: np.ndarray | None
+
+
 class VectorRetriever:
     """numpy 暴力余弦检索；vectors.npz 是派生缓存，删除后下次检索自动重建。"""
 
@@ -70,13 +78,11 @@ class VectorRetriever:
         self.embedder = embedder
         self.batch_size = batch_size
         self.cache_path = cache_dir / CACHE_FILENAME
-        self._entries: list[SearchRecord] = []
-        self._matrix: np.ndarray | None = None
-        self._fingerprint: Hashable = object()
+        self._index = _VectorIndex(-1, [], None)
         self._degraded = False
         self._clock = clock
         self._retry_at = 0.0
-        self._index_lock = RLock()
+        self._index_lock = Lock()
 
     @property
     def degraded(self) -> bool:
@@ -89,14 +95,16 @@ class VectorRetriever:
 
     def sync(self, *, expected_dim: int | None = None) -> None:
         """与记忆条目对齐：复用未变更向量，只为新增/变更条目计算 embedding。"""
+        snapshot = self.store.snapshot()
         with self._index_lock:
-            self._sync(expected_dim=expected_dim)
+            self._sync(snapshot, expected_dim=expected_dim)
 
-    def _sync(self, *, expected_dim: int | None = None) -> None:
+    def _sync(
+        self, snapshot: RecordSnapshot, *, expected_dim: int | None = None
+    ) -> _VectorIndex | None:
         if self._degraded and self._clock() < self._retry_at:
             return
-        fingerprint = self.store.fingerprint()
-        entries = self.store.entries()
+        entries = snapshot.records
         # 同 ID 条目只保留首个：历史数据若存在重复 ID，去重避免矩阵行错位。
         unique: dict[str, SearchRecord] = {}
         for entry in entries:
@@ -136,8 +144,7 @@ class VectorRetriever:
                     self._mark_degraded()
                     return
                 if keep and expected_dim is None and vectors.shape[1] != cached.shape[1]:
-                    self._sync(expected_dim=vectors.shape[1])
-                    return
+                    return self._sync(snapshot, expected_dim=vectors.shape[1])
                 if rows and vectors.shape[1] != rows[0].shape[1]:
                     raise ValueError("embedding 返回维度与已有向量不一致")
                 rows.append(_unit(vectors))
@@ -148,47 +155,54 @@ class VectorRetriever:
             return
 
         kept_ids = {ids[index] for index in keep}
-        self._entries = [entry for entry in entries if entry.id in kept_ids] + fresh
-        self._matrix = matrix
-        self._fingerprint = fingerprint
+        ordered = [entry for entry in entries if entry.id in kept_ids] + fresh
+        index = _VectorIndex(snapshot.revision, ordered, matrix)
         self._degraded = False
-        if fresh or len(keep) != len(ids):
-            self._save_cache(self._entries, matrix)
+        # 迟到的查询可以使用自己的旧矩阵，不能覆盖更新的内存索引或磁盘缓存。
+        if index.revision >= self._index.revision:
+            self._index = index
+            if fresh or len(keep) != len(ids):
+                self._save_cache(ordered, matrix)
+        return index
 
-    def search(self, query: str, limit: int = 10) -> list[SearchHit]:
-        # 本次查询的矩阵和条目 ID 必须来自同一修订版本。
-        with self._index_lock:
-            return self._search(query, limit)
-
-    def _search(self, query: str, limit: int) -> list[SearchHit]:
+    def search(
+        self, query: str, limit: int = 10, *, snapshot: RecordSnapshot | None = None
+    ) -> list[SearchHit]:
         query = query.strip()
         if not query:
             return []
+        if snapshot is None:
+            snapshot = self.store.snapshot()
+        with self._index_lock:
+            return self._search(query, limit, snapshot)
+
+    def _search(self, query: str, limit: int, snapshot: RecordSnapshot) -> list[SearchHit]:
         if self._degraded and self._clock() < self._retry_at:
             return []
-        if self.store.fingerprint() != self._fingerprint or self._degraded:
-            self.sync()
-        if self._degraded or self._matrix is None or not self._entries:
+        index = self._index
+        if snapshot.revision != index.revision or self._degraded:
+            index = self._sync(snapshot)
+        if index is None or index.matrix is None or not index.entries:
             return []
         try:
             vector = np.array(self.embedder.embed_query(query), dtype=np.float32)
             if vector.ndim != 1 or not vector.size or not np.isfinite(vector).all():
                 raise ValueError("查询 embedding 返回无效向量")
-            if vector.size != self._matrix.shape[1]:
-                self.sync(expected_dim=vector.size)
-                if self._degraded or self._matrix is None:
+            if vector.size != index.matrix.shape[1]:
+                index = self._sync(snapshot, expected_dim=vector.size)
+                if index is None or index.matrix is None:
                     return []
             vector = _unit(vector[None, :])[0]
-            scores = self._matrix @ vector
+            scores = index.matrix @ vector
         except Exception:
             self._mark_degraded()
             return []
         hits: list[SearchHit] = []
-        for index in np.argsort(-scores)[:limit]:
-            score = float(scores[index])
+        for row in np.argsort(-scores)[:limit]:
+            score = float(scores[row])
             if score <= MIN_SCORE:
                 continue
-            entry = self._entries[index]
+            entry = index.entries[row]
             hits.append(SearchHit.from_record(entry, self.store.topic_path(entry.topic), score))
         return hits
 
