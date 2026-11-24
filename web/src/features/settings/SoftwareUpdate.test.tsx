@@ -3,8 +3,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { api, ApiError, NetworkError } from '../../api/client';
 import { SoftwareUpdate } from './SoftwareUpdate';
 
+const current: string = import.meta.env.VITE_SYVRIO_VERSION;
+const latest = current.replace(/\d+$/, patch => String(Number(patch) + 1));
 const release = {
-  current: '1.0.0', latest: '1.0.1', available: true, managed: true, state: 'idle' as const, message: '',
+  current, latest, available: true, managed: true, state: 'idle' as const, message: '',
 };
 
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
@@ -48,27 +50,28 @@ describe('software update', () => {
     const check = vi.spyOn(api, 'checkUpdate').mockResolvedValue(release);
     const install = vi.spyOn(api, 'installUpdate').mockRejectedValue(new NetworkError('Disconnected'));
     const changed = vi.fn();
-    render(<SoftwareUpdate version={release.current} onChanged={changed} />);
+    const about = render(<SoftwareUpdate version={release.current} onChanged={changed} />);
     const checkButton = screen.getByRole<HTMLButtonElement>('button', { name: 'Check for updates' });
     await waitFor(() => expect(checkButton.disabled).toBe(false));
     expect(check).not.toHaveBeenCalled();
     fireEvent.click(checkButton);
-    const button = await screen.findByRole('button', { name: 'Install 1.0.1' });
+    const button = await screen.findByRole('button', { name: `Install ${latest}` });
     fireEvent.click(button);
     const dialog = within(screen.getByRole('alertdialog'));
-    expect(dialog.getByText(/from 1\.0\.0 to 1\.0\.1/)).toBeTruthy();
+    expect(dialog.getByText(text => text.includes(`from ${current} to ${latest}`))).toBeTruthy();
     expect(document.activeElement).toBe(dialog.getByRole('button', { name: 'Cancel' }));
     fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
     expect(document.activeElement).toBe(button);
     expect(install).not.toHaveBeenCalled();
     status.mockRejectedValueOnce(new ApiError('Endpoint offline', undefined, 404))
-      .mockResolvedValue({ state: 'completed', message: 'Updated to 1.0.1.' });
+      .mockResolvedValue({ state: 'completed', message: `Updated to ${latest}.` });
     fireEvent.click(button);
     fireEvent.click(screen.getByRole('button', { name: 'Install and restart' }));
     expect(await screen.findByText('Reconnecting to the update service…')).toBeTruthy();
-    expect(await screen.findByText('Updated to 1.0.1.', {}, { timeout: 3500 })).toBeTruthy();
-    expect(install.mock.calls).toEqual([['1.0.1']]);
+    expect(await screen.findByText(`Updated to ${latest}.`, {}, { timeout: 3500 })).toBeTruthy();
+    expect(install.mock.calls).toEqual([[latest]]);
     expect(changed).toHaveBeenCalledTimes(1);
+    about.rerender(<SoftwareUpdate version={latest} onChanged={changed} />);
     expect(screen.getByRole('button', { name: 'Reload updated interface' })).toBeTruthy();
   });
 
@@ -79,9 +82,32 @@ describe('software update', () => {
     await screen.findByText('Installing…');
     about.unmount();
     status.mockResolvedValue({ state: 'completed', message: 'Update installed.' });
-    render(<SoftwareUpdate version={release.current} onChanged={changed} />);
-    expect(await screen.findByRole('button', { name: 'Reload updated interface' })).toBeTruthy();
-    expect(changed).toHaveBeenCalledTimes(1);
+    render(<SoftwareUpdate version={latest} onChanged={changed} />);
+    await waitFor(() => expect(changed).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole('button', { name: 'Reload updated interface' })).toBeTruthy();
+    expect(screen.queryByText('Update installed.')).toBeNull();
+
+    vi.spyOn(api, 'checkUpdate').mockResolvedValue({ ...release, current: latest, available: false, state: 'completed' });
+    fireEvent.click(screen.getByRole('button', { name: 'Check for updates' }));
+    await screen.findByText('You’re up to date.');
+    expect(screen.getByRole('button', { name: 'Reload updated interface' })).toBeTruthy();
+  });
+
+  it('does not replay a past success or ask to reload the current interface', async () => {
+    vi.spyOn(api, 'updateStatus').mockResolvedValue({ state: 'completed', message: 'Update installed.' });
+    const check = vi.spyOn(api, 'checkUpdate');
+    render(<SoftwareUpdate version={current} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Check for updates' }).disabled).toBe(false));
+    expect(screen.queryByText('Update installed.')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Reload updated interface' })).toBeNull();
+    expect(check).not.toHaveBeenCalled();
+  });
+
+  it('does not offer a reload on a separately served interface with no update', async () => {
+    vi.spyOn(api, 'updateStatus').mockResolvedValue({ state: 'idle', message: '' });
+    render(<SoftwareUpdate version={latest} onChanged={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Check for updates' }).disabled).toBe(false));
+    expect(screen.queryByRole('button', { name: 'Reload updated interface' })).toBeNull();
   });
 
   it.each([403, 404])('finishes checking an inaccessible status endpoint (HTTP %i)', async code => {
@@ -106,7 +132,7 @@ describe('software update', () => {
     const button = screen.getByRole<HTMLButtonElement>('button', { name: 'Check for updates' });
     await waitFor(() => expect(button.disabled).toBe(false));
     fireEvent.click(button);
-    expect(await screen.findByText(/1\.0\.1 is available. Update with your package manager/)).toBeTruthy();
+    expect(await screen.findByText(`Syvrio ${latest} is available. Update with your package manager.`)).toBeTruthy();
     expect(screen.queryByRole('button', { name: /install/i })).toBeNull();
   });
 });

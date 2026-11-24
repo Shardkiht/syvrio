@@ -21,7 +21,7 @@ export function SoftwareUpdate({ version, onChanged, checkOnOpen = false }: {
   const [busy, setBusy] = useState<'status' | 'check' | 'install' | null>('status');
   const [running, setRunning] = useState(false);
   const [watch, setWatch] = useState(0);
-  const [canReload, setCanReload] = useState(false);
+  const [completed, setCompleted] = useState(false);
   const [confirm, setConfirm] = useState(false);
   const [message, setMessage] = useState('');
   const [progress, setProgress] = useState<UpdateStatus['progress']>(null);
@@ -37,13 +37,13 @@ export function SoftwareUpdate({ version, onChanged, checkOnOpen = false }: {
   const check = useCallback(async (signal?: AbortSignal) => {
     setBusy('check');
     setRelease(null);
-    setCanReload(false);
     setMessage('');
     setProgress(null);
     try {
       const result = await api.checkUpdate(signal);
       if (signal?.aborted) return;
       setRelease(result);
+      setCompleted(result.state === 'completed');
       if (result.state === 'running') {
         setMessage(result.message);
         setProgress(result.progress);
@@ -90,6 +90,7 @@ export function SoftwareUpdate({ version, onChanged, checkOnOpen = false }: {
       if (controller.signal.aborted) return;
       setBusy(null);
       disconnectedAt = undefined;
+      setCompleted(status.state === 'completed');
       setProgress(status.state === 'running' ? status.progress : null);
       if (status.state === 'running') {
         tracking = true;
@@ -99,9 +100,11 @@ export function SoftwareUpdate({ version, onChanged, checkOnOpen = false }: {
       } else if (checkOnOpen && !tracking) {
         await check(controller.signal);
       } else if (status.state !== 'idle' || tracking) {
-        setMessage(status.message || 'No active update. Check again for the installed version.');
+        // 后端保留上次更新结果，只有本次面板跟进的成功才需要再次提示。
+        if (status.state !== 'completed' || tracking) {
+          setMessage(status.message || 'No active update. Check again for the installed version.');
+        }
         setRelease(null);
-        setCanReload(status.state === 'completed');
         if (tracking || status.state === 'completed') changed.current();
         setRunning(false);
       }
@@ -136,12 +139,14 @@ export function SoftwareUpdate({ version, onChanged, checkOnOpen = false }: {
   };
 
   const active = running || busy === 'install';
+  const installedVersion = release?.current ?? version;
+  const canReload = completed && installedVersion && installedVersion !== import.meta.env.VITE_SYVRIO_VERSION;
   const downloaded = progress?.downloaded;
   const total = progress?.total;
   const measured = downloaded != null && total != null && total > 0;
   return <>
     <div className="software-update">
-      <span>{release?.current ?? version ?? 'unknown'}</span>
+      <span>{installedVersion ?? 'unknown'}</span>
       <button type="button" className="setting-choice" disabled={!!busy || running} onClick={() => void check()}>
         {busy === 'check' ? 'Checking…' : 'Check for updates'}
       </button>
@@ -150,7 +155,7 @@ export function SoftwareUpdate({ version, onChanged, checkOnOpen = false }: {
           Install {release.latest}
         </button>
       )}
-      {canReload && (
+      {canReload && !active && (
         <button type="button" className="setting-choice" onClick={() => window.location.reload()}>
           Reload updated interface
         </button>

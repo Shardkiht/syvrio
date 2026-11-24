@@ -83,7 +83,7 @@ Dream 的画像和推断共用 `memory.toml` 的 `[dream].context_window`，默�
 
 Web 和 TUI 的 `/update` 共用常驻后端的版本检查、安装确认和任务状态接口。两端输入指令都会检查新版，手动打开 Web 设置的 About 时由用户点击检查。安装须另行确认目标版本。后台通过独立的 systemd 用户任务复用 CLI 的 PyPI 更新器，端到端验证需区分开发源码环境与受管理的安装。
 
-更新阶段和下载字节数由 `backend/updates/installer.py` 在实际操作处上报。CLI 将阶段写入标准错误。Web 和 TUI 发起的更新由独立任务把最新进度原子写入 `job.json`，两端通过 `/api/update/status` 读取。任务完成或失败后，状态文件保存最终结果。
+更新阶段和下载字节数由 `backend/updates/installer.py` 在实际操作处上报。CLI 将阶段写入标准错误。Web 和 TUI 发起的更新由独立任务把最新进度原子写入 `job.json`，两端通过 `/api/update/status` 读取。任务完成或失败后，状态文件保存最终结果。Web 以当前页面构建时的包版本与后端运行版本判断是否需要刷新。打开 About 时，只在本次面板跟进的更新完成后显示成功消息。
 
 ## 回归入口
 
