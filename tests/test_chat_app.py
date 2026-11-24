@@ -64,15 +64,18 @@ async def test_attach_multiple_files_from_composer(tmp_path):
         path.write_text("synthetic document", encoding="utf-8")
     async with app.run_test(size=(100, 32)) as pilot:
         await app.workers.wait_for_complete()
+        composer = app.query_one("#input", Input)
         await pilot.press("ctrl+o")
         await pilot.pause()
         app.screen.query_one(TextArea).text = "\n".join(map(str, docs))
         app.screen.query_one("#attach-selected", Button).press()
-        await pilot.pause()
-        app.query_one("#input", Input).value = "Inspect these files"
+        # 附件在线程中暂存，弹窗关闭并把焦点交还输入框后才能发送。
+        async with asyncio.timeout(15):
+            while len(app.screen_stack) != 1 or not composer.has_focus:
+                await pilot.pause()
+        composer.value = "Inspect these files"
         await pilot.press("enter")
-        await app.workers.wait_for_complete()
-        await pilot.pause()
+        await _wait_reply(app, pilot)
         stored = app.sessions.load(app.runtime.current.id)
         assert [item["name"] for item in stored.messages[0]["attachments"]] == [
             p.name for p in docs
