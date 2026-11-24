@@ -6,25 +6,28 @@ import asyncio
 import re
 import secrets
 import subprocess
+import tempfile
 from uuid import UUID
 
 import httpx
 from fastapi import FastAPI, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from pydantic import ValidationError
 from starlette.datastructures import UploadFile
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.formparsers import MultiPartException, MultiPartParser
 from starlette.types import Lifespan
 
-from ...application import software_update
-from ...application.commands import parse_command
-from ...errors import ConversationError
-from ...infra.attachments import IMAGE_TYPES, MAX_BATCH_BYTES, MAX_FILES, AttachmentBatch
-from ...infra.diagnostics import record_event
-from ...infra.documents import DocumentError
-from ...infra.update import UpdateError
+from ...infra.observability.diagnostics import record_event
+from ...infra.session.attachments import IMAGE_TYPES, MAX_BATCH_BYTES, MAX_FILES, AttachmentBatch
+from ...infra.session.errors import ConversationError
+from ...infra.storage.documents import DocumentError
+from ...infra.system.gitops import GitError
+from ..updates import service as software_update
+from ..updates.installer import UpdateError
 from .channel import HISTORY_ITEM_LIMIT, APIChannel, APIError
+from .commands import parse_command
 from .http import error_response, guard_hosts
 from .models import (
     ActionResponse,
@@ -133,6 +136,20 @@ def create_api(
             authenticate(request)
             return {"protocol": 1, "instance": instance_id}
 
+        @app.post("/api/resident/import-documents", include_in_schema=False)
+        async def import_documents(request: Request, apply: bool = False):
+            authenticate(request)
+            # 收齐并校验整个上传再开始写入，断线不会只执行半个上传目录。
+            with tempfile.TemporaryFile() as upload:
+                async for chunk in request.stream():
+                    await asyncio.to_thread(upload.write, chunk)
+                try:
+                    return await asyncio.to_thread(operations.import_documents, upload, apply)
+                except ValidationError as exc:
+                    raise APIError("invalid_import", "Invalid document upload.", 422) from exc
+                except ValueError as exc:
+                    raise APIError("invalid_import", str(exc), 422) from exc
+
         @app.post("/api/resident/{operation}", include_in_schema=False)
         def local_operation(request: Request, operation: str, body: dict):
             authenticate(request)
@@ -154,7 +171,7 @@ def create_api(
                 return operations.dispatch(operation, body)
             except KeyError as exc:
                 raise APIError("not_found", str(exc), 404) from exc
-            except (TypeError, ValueError) as exc:
+            except (TypeError, ValueError, GitError) as exc:
                 raise APIError("invalid_operation", str(exc), 422) from exc
 
     @app.get("/api/health", response_model=HealthResponse, tags=["web"])
@@ -333,6 +350,11 @@ def create_api(
         return await asyncio.to_thread(
             channel(request).history, session_id, limit, archived=archived
         )
+
+    @app.get("/api/sessions/{session_id}/tools/{record_id}", tags=["sessions"])
+    def tool_result(request: Request, session_id: str, record_id: str, archived: bool = False):
+        content = channel(request).tool_result(session_id, record_id, archived=archived)
+        return {"content": content}
 
     @app.get("/api/settings/models", response_model=ModelSearchResponse, tags=["web"])
     async def search_models(q: str = Query("", max_length=512), refresh: bool = False):

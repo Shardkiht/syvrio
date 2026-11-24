@@ -7,11 +7,11 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager, nullcontext
 from typing import TYPE_CHECKING
 
-from ..errors import ConversationError
-from ..infra.attachments import AttachmentBatch
-from ..infra.diagnostics import record_event
+from ..infra.observability.diagnostics import record_event
+from ..infra.session import SESSION_ID_RE
+from ..infra.session.attachments import AttachmentBatch
+from ..infra.session.errors import ConversationError
 from ..memory.turn_undo import TurnUndoError
-from ..session import SESSION_ID_RE
 from .commands import CommandResult, CommandUseCases, parse_command
 from .contracts import TurnResult
 from .turns import ConversationTurn, MessageEdit, TurnEvents, TurnRegistry

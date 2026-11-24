@@ -4,23 +4,36 @@ from __future__ import annotations
 
 import json
 import time
+from base64 import b64encode
+from collections.abc import Iterable
 from contextlib import ExitStack
-from dataclasses import asdict
 from pathlib import Path
 from uuid import uuid4
 
 import httpx
 
-from ..memory.models import Entry, Inference, MemoryDraft, PendingItem, RecallEntry
-from ..memory.service import MemorizeResult
+from ..infra.errors import SyvrioError
+from ..infra.storage.documents import MAX_DOCUMENT_BYTES
+from .client_contracts import Entry, Inference, MemoryDraft, PendingItem, RecallEntry
 from .endpoint import client_paths, connect
+
+
+class ResidentRequestError(SyvrioError, ValueError):
+    """常驻服务返回的可向用户展示的请求错误。"""
 
 
 class ResidentClient:
     def __init__(self, config: Path | None = None, vault: Path | None = None):
-        self.config, self.paths = client_paths(config, vault)
-        self.base, self.token = connect(self.paths)
+        self.base, self.token = connect(client_paths(config, vault))
         self.view = uuid4().hex
+
+    @classmethod
+    def from_endpoint(cls, endpoint: tuple[str, str]) -> ResidentClient:
+        """连接已发现的后端，不启动新的实例。"""
+        client = cls.__new__(cls)
+        client.base, client.token = endpoint
+        client.view = uuid4().hex
+        return client
 
     def _http(self):
         return httpx.Client(
@@ -40,7 +53,7 @@ class ResidentClient:
             response.raise_for_status()
         if detail["code"] == "not_found":
             raise KeyError(detail["message"])
-        raise ValueError(detail["message"])
+        raise ResidentRequestError(detail["message"])
 
     def request(self, method: str, path: str, **kwargs):
         with self._http() as client:
@@ -50,6 +63,25 @@ class ResidentClient:
 
     def call(self, name: str, **kwargs):
         return self.request("POST", f"/api/resident/{name}", json=kwargs)
+
+    def import_files(self, files: Iterable[Path], apply: bool) -> dict:
+        def lines():
+            for file in files:
+                try:
+                    with file.open("rb") as handle:
+                        raw = handle.read(MAX_DOCUMENT_BYTES + 1)
+                    document = {"name": file.name, "content": b64encode(raw).decode("ascii")}
+                except OSError as exc:
+                    document = {"name": file.name, "read_error": exc.strerror or type(exc).__name__}
+                yield json.dumps(document, ensure_ascii=False).encode() + b"\n"
+
+        return self.request(
+            "POST",
+            "/api/resident/import-documents",
+            content=lines(),
+            params={"apply": apply},
+            headers={"Content-Type": "application/x-ndjson"},
+        )
 
     def submit(
         self,
@@ -115,17 +147,6 @@ class ResidentClient:
             self.call("memorize", draft=draft.model_dump(exclude_none=True))
         )
 
-    def import_text(self, text, source, dry_run, *, extractor=None):
-        if extractor is not None:
-            raise ValueError("Document extraction is performed by the resident backend.")
-        data = self.call("import_text", text=text, source=source, dry_run=dry_run)
-        return MemorizeResult(
-            [Entry.model_validate(e) for e in data["admitted"]],
-            [PendingItem.model_validate(e) for e in data["queued"]],
-            data["duplicates"],
-            data["blocked"],
-        )
-
     def recall(self, query: str, limit: int | None = None, **filters):
         return [
             RecallEntry.model_validate(item)
@@ -181,6 +202,3 @@ class ResidentClient:
 
     def status(self):
         return self.call("status")
-
-    def search(self, query):
-        return self.call("search", query=asdict(query))

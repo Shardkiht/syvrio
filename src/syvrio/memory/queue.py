@@ -8,12 +8,12 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from ..errors import SessionDeletionChanged
-from ..infra.files import atomic_write, sync_directory
-from ..infra.locking import vault_write_lock
-from ..infra.paths import SyvrioPaths, vault_paths
-from ..infra.transaction import recover_vault_transaction, vault_transaction
-from ..session.query import SessionQuery
+from ..infra.session.errors import SessionDeletionChanged
+from ..infra.session.query import SessionQuery
+from ..infra.storage.files import atomic_write, sync_directory
+from ..infra.storage.locking import vault_write_lock
+from ..infra.storage.paths import SyvrioPaths, vault_paths
+from ..infra.storage.transaction import recover_vault_transaction, vault_transaction
 from .models import PendingItem
 from .schema import (
     SchemaError,

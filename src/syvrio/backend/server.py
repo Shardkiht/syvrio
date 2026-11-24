@@ -18,7 +18,7 @@ LOOPBACK = "127.0.0.1"
 def serve_resident(config_path: Path | None, vault_path: Path) -> None:
     import uvicorn
 
-    _, paths = client_paths(config_path, vault_path)
+    paths = client_paths(config_path, vault_path)
     lease = BackendLease(paths)
     lease.acquire(timeout=0)
     try:

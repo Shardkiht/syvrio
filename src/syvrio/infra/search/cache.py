@@ -22,7 +22,7 @@ class CachedSearch:
     strategy: str = "auto"
     attempted: list[str] = field(default_factory=list)
     contributors: list[str] = field(default_factory=list)
-    # complete / incomplete / unknown / ""（非 compare 策略）。
+    # complete / incomplete / ""（非 compare 策略）。
     verification: str = ""
     failed: list[SearchFailure] = field(default_factory=list)
 
@@ -53,12 +53,8 @@ class SearchCache:
         self.ttl = ttl
         self.clock = clock
 
-    def get(self, key: str) -> tuple[list[SearchResult], str] | None:
-        record = self.get_record(key)
-        return None if record is None else (record.results, record.provider)
-
     def get_record(self, key: str) -> CachedSearch | None:
-        """返回结果及验证元数据；旧格式或损坏条目不猜测验证状态。"""
+        """返回结果及验证元数据；字段缺失或损坏时重新搜索。"""
         if self.ttl <= 0:
             return None
         entry = self._load().get("entries", {}).get(key)
@@ -73,20 +69,15 @@ class SearchCache:
         except (TypeError, ValueError):
             # 派生缓存字段损坏时按未命中处理，不能让搜索整体失败。
             return None
-        strategy = entry.get("strategy", "auto")
-        if not isinstance(strategy, str):
-            strategy = "auto"
-        verification = entry.get("verification", "")
-        if not isinstance(verification, str) or verification not in (
-            "complete",
-            "incomplete",
-            "unknown",
-            "",
-        ):
-            verification = "unknown" if strategy == "compare" else ""
-        if strategy == "compare" and not verification:
-            # 缺少验证字段的 compare 缓存绝不能被当成已完成。
-            verification = "unknown"
+        strategy = entry.get("strategy")
+        verification = entry.get("verification")
+        if strategy not in ("auto", "strict", "compare"):
+            return None
+        if verification not in (("complete", "incomplete") if strategy == "compare" else ("",)):
+            return None
+        contributors = _string_list(entry.get("contributors"))
+        if verification == "complete" and len(set(contributors)) < 2:
+            return None
         failed: list[SearchFailure] = []
         raw_failed = entry.get("failed", [])
         if isinstance(raw_failed, list):
@@ -104,7 +95,7 @@ class SearchCache:
             provider=str(entry.get("provider", "")),
             strategy=strategy,
             attempted=_string_list(entry.get("attempted")),
-            contributors=_string_list(entry.get("contributors")),
+            contributors=contributors,
             verification=verification,
             failed=failed,
         )

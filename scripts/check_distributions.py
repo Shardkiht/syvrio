@@ -25,11 +25,25 @@ def verify_distributions(directory: Path, version: str) -> None:
     if packages != {wheel, sdist}:
         raise ValueError(f"Expected {wheel} and {sdist}, found {sorted(packages)}")
 
+    package_root = ROOT / "src"
+    installed_files = {
+        path.relative_to(package_root).as_posix()
+        for path in (package_root / "syvrio").rglob("*")
+        if path.is_file() and path.suffix in {".py", ".toml"}
+    }
+    web_sources = {
+        path.relative_to(ROOT).as_posix()
+        for path in (ROOT / "web/src").rglob("*")
+        if path.is_file() and path.suffix in {".ts", ".tsx", ".css"}
+    }
+
     with zipfile.ZipFile(directory / wheel) as archive:
         metadata = archive.read(f"{stem}.dist-info/METADATA")
         if BytesHeaderParser().parsebytes(metadata)["Version"] != version:
             raise ValueError("Wheel metadata version must match the source version")
         names = archive.namelist()
+        if missing := installed_files.difference(names):
+            raise ValueError(f"Wheel is missing package files: {sorted(missing)}")
         if "syvrio/__init__.py" not in names or any(
             name.split("/", 1)[0] in LEGACY_PACKAGES for name in names
         ):
@@ -53,6 +67,11 @@ def verify_distributions(directory: Path, version: str) -> None:
                 raise ValueError("Source package metadata version must match the source version")
         names = archive.getnames()
         source = f"{stem}/src/"
+        expected = {source + name for name in installed_files} | {
+            f"{stem}/{name}" for name in web_sources
+        }
+        if missing := expected.difference(names):
+            raise ValueError(f"Source distribution is missing project files: {sorted(missing)}")
         if source + "syvrio/__init__.py" not in names or any(
             name[len(source) :].split("/", 1)[0] in LEGACY_PACKAGES
             for name in names

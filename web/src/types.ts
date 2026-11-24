@@ -147,6 +147,9 @@ export interface HistoryItem {
   tool_calls: ToolCallInfo[];
   tool_name: string | null;
   tool_ok: boolean | null;
+  tool_call_id?: string | null;
+  tool_content_length?: number | null;
+  tool_content_truncated?: boolean;
   interrupted: boolean;
 }
 

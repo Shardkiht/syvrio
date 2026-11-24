@@ -45,7 +45,7 @@ uv run syvrio web --domain syvrio.local --port 80
 - 只有 `--port 80` 才能省略端口号；Windows 绑定 80 通常无需提权，Linux / WSL 需要 root 或 `CAP_NET_BIND_SERVICE`。
 - 写 hosts 需要管理员 / root 权限。权限不足时命令不会失败，而是打印需要手动添加的那一行；`--no-hosts` 只打印不写文件。
 - 额外域名（Tailscale / 局域网主机名等）用 `SYVRIO_WEB_ALLOWED_HOSTS=host1,host2`；也可只靠环境变量、不写 hosts。
-- 撤销映射可调用 `src/syvrio/app/web/hosts.py` 的 `remove_hosts_mapping()`，或手动删除 hosts 中对应行；备份保留在 hosts 同目录。
+- 撤销映射可调用 `src/syvrio/backend/hosts.py` 的 `remove_hosts_mapping()`，或手动删除 hosts 中对应行；备份保留在 hosts 同目录。
 - 域名必须是纯主机名（如 `syvrio.local`），拒绝 URL、端口、路径、通配和 IP 字面量，避免把任意字符串放进 Host 白名单。
 
 ### 生产构建与 PyPI 打包
@@ -90,6 +90,7 @@ uv run python scripts/build_web.py --wheel dist/*.whl  # 校验实际 wheel 内�
 | GET | `/api/sessions?archived=true`、`/api/sessions/{id}?archived=true` | 人工浏览归档列表和原始会话。列表可用 `limit`、`offset` 翻页，下载归档附件同样需要 `archived=true` |
 | DELETE | `/api/sessions/{id}?permanent=true&confirmed=true` | 仅可永久删除已归档会话，存在相关候选时提交已查看的 `pending_revision` |
 | GET | `/api/sessions/search?q=关键词` | 按连续文本搜索活动会话的标题和对话正文 |
+| GET | `/api/sessions/{id}/tools/{record_id}` | 按历史记录 ID 取完整工具结果。历史列表只携带长结果的预览、总字符数和预览标志。归档结果须传 `archived=true`，撤回的结果无法读取 |
 | GET | `/api/sessions/{id}/messages/{message_id}/context` | 读取命中消息及前后各一条可见对话 |
 | GET | `/api/pending/{item_id}/evidence` | 按候选的已存引用读取原话与关联记忆，包括手动追溯的归档原话 |
 | GET | `/api/sessions/{id}?limit=300` | 最近的结构化历史，思考正文默认折叠。读取活动会话的默认 300 条窗口时可传 `include_version=true`，从响应头 `X-Syvrio-History-Version` 取得下次切换可用的版本 |
@@ -143,7 +144,7 @@ FastAPI 自动提供 `/openapi.json` 与 `/docs`。
 
 ### 单一命令目录
 
-命令名称、用法、说明和子命令定义在 `src/syvrio/application/commands.py`，不依赖 Textual / Rich / HTTP。`src/syvrio/app/command_catalog.py` 变成薄转发，TUI 现有调用点与测试无需改动。Web 通过 `GET /api/commands` 取得同一份目录，用于输入框补全、命令面板和 `/help`；**React 端不维护第二套命令定义**。新增命令只需在共享目录加一行、在 `CommandUseCases` 复用 Application 用例、由两端各自决定展示方式。
+`src/syvrio/backend/api/commands.py` 定义命令名称、用法、说明、子命令和文本拆分规则。TUI 使用这一协议提供补全。Web 通过 `GET /api/commands` 取得同一份目录及能力信息，供输入框、命令面板和 `/help` 使用。`src/syvrio/application/commands.py` 负责校验命令、检查当前状态并调用相应的应用用例。
 
 `WEB_CAPABILITIES` 用能力标记说明每个命令在 Web 的语义：
 
@@ -174,12 +175,12 @@ FastAPI 自动提供 `/openapi.json` 与 `/docs`。
 - `/model`、`/think`、`/context` 打开选项弹窗。选择后在弹窗显示设置结果，模型变更后刷新顶栏。
 - `/inferences` 默认打开 Pending，可切换至 Confirmed 或 Deprecated。搜索在当前分类内生效。审核按钮与键盘操作触发相同的确认流程。`/git` 可通过弹窗请求同步。
 - 推断与 Pending 面板会立即打开，首次读取显示加载状态，再次打开先展示本标签页最近一次取得的列表并后台刷新。读取失败可在面板内重试，加载期间可关闭面板。
-- 模型目录是**进程内缓存**（`llm/client.py` 的 `_MODEL_CACHE`），Web 进程刚启动、或供应商未暴露 `/models` 时可能为空。此时 `/model` 仍列出当前配置模型并明确提示，不会输出空白列表；`/model refresh` 会真正向已配置供应商发起一次有界拉取（单供应商 5 秒超时），拉不到时说明原因而不是谎称「需要本地终端」。缓存为空时仍可用 `/model <当前provider>/<模型ID>` 按 ID 切换，未知供应商仍拒绝。
+- 模型目录缓存在常驻后端的 `infra/llm/client.py` 中。后端刚启动或供应商未提供 `/models` 时，目录可能为空。此时 `/model` 仍列出当前配置模型并明确提示，不会输出空白列表；`/model refresh` 会真正向已配置供应商发起一次有界拉取（单供应商 5 秒超时），拉不到时说明原因而不是谎称「需要本地终端」。缓存为空时仍可用 `/model <当前provider>/<模型ID>` 按 ID 切换，未知供应商仍拒绝。
 - 用顶栏 `Commands`、`Ctrl+Shift+P` 或 `Alt+P` 打开命令面板。输入关键词搜索，用方向键选择，按 Enter 执行。Escape 关闭面板并恢复输入框焦点。快捷键列表位于右上角的 **Settings → Shortcuts**。
 
 ### 设置面板
 
-顶栏 `Settings` 按钮、`Alt+S` 或 `/setup` 打开同一个设置面板（`web/src/components/SettingsPanel.tsx`）。模型目录通过设置接口读取，模型切换通过 `/model` 执行。Web 与 TUI 复用同一套 Application 用例。
+顶栏 `Settings` 按钮、`Alt+S` 或 `/setup` 打开同一个设置面板（`web/src/features/settings/SettingsPanel.tsx`）。模型目录通过设置接口读取，模型切换通过 `/model` 执行。Web 与 TUI 复用同一套 Application 用例。
 
 | 分区 | 数据来源 | 说明 |
 | --- | --- | --- |
@@ -188,7 +189,7 @@ FastAPI 自动提供 `/openapi.json` 与 `/docs`。
 | Thinking | `/think` | 优先读取模型目录为当前模型公布的档位，缺少有效档位或查询失败时采用预设。`auto` 置顶，`default` 表示使用供应商默认设置 |
 | Context | `/context` | 最小和默认值为 50,000 tokens。可选 50K、100K、200K、400K、600K 或输入自定义值。旧配置低于下限时按 50K 读取。更大的值按原值保存，实际请求受当前模型容量限制。 |
 | Providers | `GET /api/settings/providers`、`POST /api/settings/providers/{provider}`、`/model <provider>/<model>` | 在供应商卡片内编辑 Key 或 Base URL、确认移除、查看结果。配置凭据后可在同一卡片手动输入模型 ID。保存的 Key 由服务端保管 |
-| Shortcuts | `web/src/state/shortcuts.ts` | 网页快捷键、浏览器保留键及替代组合键 |
+| Shortcuts | `web/src/shared/shortcuts.ts` | 网页快捷键、浏览器保留键及替代组合键 |
 | About | `/api/health` | 版本、当前 provider/model、是否生成中、单客户端锁与静态资源状态 |
 
 打开面板只读取当前设置；删除供应商仍需二次确认，服务端复用 `SettingsUseCases` 的「当前供应商不可删」等守卫，失败原因以 `provider-error` 原样展示。
@@ -210,7 +211,7 @@ FastAPI 自动提供 `/openapi.json` 与 `/docs`。
 
 ### 快捷键与浏览器冲突
 
-以 TUI 实际绑定为准（`chat_app.py`：`Ctrl+P` 在模型面板管理供应商、`Ctrl+B` 会话栏、`Ctrl+Q` 退出、`Escape` 关闭/取消）。映射集中在 `web/src/state/shortcuts.ts`：
+TUI 快捷键见 `src/syvrio/app/tui/resident.py`（`Ctrl+P` 在模型面板管理供应商、`Ctrl+B` 会话栏、`Ctrl+Q` 退出、`Escape` 关闭/取消）。映射集中在 `web/src/shared/shortcuts.ts`：
 
 | TUI | Web | 说明 |
 | --- | --- | --- |
@@ -409,7 +410,7 @@ port = 8765
 # uv = "/home/<user>/.local/bin/uv"
 ```
 
-更新器只选择 PyPI 上更新的正式版，忽略已撤回的包和历史候选版。新版兼容旧配置中的 `channel = "evo"`。仍在用旧版更新器时，先把旧更新配置改为 `channel = "stable"`，完成旧 Vault 的备份和格式迁移后再升级。服务正常启动以后，停用旧的源码拉取任务，定时任务只运行 `syvrio update`。定时任务的 PATH 须包含 `syvrio`，并可访问对应的用户 systemd 实例；`uv` 须位于 PATH，或在 `config.toml` 中配置绝对路径。未配置且 PATH 里没有 `uv` 时，更新器在下载前就报错，不会走到一半才失败。更新命令应在 Web unit 外运行。
+更新器只选择 PyPI 上更新的正式版，忽略已撤回的包和历史候选版。更新配置可以省略 `channel`，显式配置时只接受 `channel = "stable"`。升级前请核对配置、确认 Vault 使用当前格式，并备份 Vault 和配套 Runtime。服务正常启动以后，停用旧的源码拉取任务，定时任务只运行 `syvrio update`。定时任务的 PATH 须包含 `syvrio`，并可访问对应的用户 systemd 实例；`uv` 须位于 PATH，或在 `config.toml` 中配置绝对路径。未配置且 PATH 里没有 `uv` 时，更新器在下载前就报错，不会走到一半才失败。更新命令应在 Web unit 外运行。
 
 如果 `uv` 只通过开发环境的 `env.sh` 注入 PATH，注意 `wsl.exe -d <发行版> -- bash -s` 这类非登录、非交互 shell 不读 `.bashrc` / `.profile`，此时要么 `bash -lc 'syvrio update'`、要么先 `source <env.sh>`，要么在 `config.toml` 里写死 `uv` 的绝对路径。
 

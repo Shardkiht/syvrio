@@ -6,8 +6,8 @@ import hashlib
 from threading import Lock
 from weakref import WeakKeyDictionary
 
-from ...errors import SessionProtectedError
-from ...session import HistoryRevision
+from ...infra.session import HistoryRevision
+from ...infra.session.errors import SessionProtectedError
 from .channel import APIChannel, APIError
 from .models import (
     CommandResponse,

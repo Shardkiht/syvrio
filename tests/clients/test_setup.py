@@ -1,0 +1,1313 @@
+from __future__ import annotations
+
+import sys
+import tomllib
+import types
+
+import pytest
+
+from syvrio.infra.config import (
+    ChatConfig,
+    Config,
+    ConfigError,
+    EmbeddingConfig,
+    LLMConfig,
+    RetrievalConfig,
+    SearchConfig,
+    load_config,
+    toml_literal,
+    write_config,
+)
+from syvrio.infra.llm.providers import PRESETS, provider_label
+
+pytestmark = pytest.mark.config
+
+
+def test_litellm_model_names():
+    assert (
+        LLMConfig(provider="deepseek", model="deepseek-flash").litellm_model()
+        == "deepseek/deepseek-flash"
+    )
+    assert (
+        LLMConfig(provider="deepseek", model="deepseek-chat").litellm_model()
+        == "deepseek/deepseek-chat"
+    )
+    assert (
+        LLMConfig(provider="siliconflow", model="deepseek-ai/DeepSeek-V3").litellm_model()
+        == "openai/deepseek-ai/DeepSeek-V3"
+    )
+    assert LLMConfig(provider="openai", model="gpt-4o-mini").litellm_model() == "openai/gpt-4o-mini"
+    assert (
+        LLMConfig(
+            provider="custom", model="qwen-max", base_url="http://localhost:8000/v1"
+        ).litellm_model()
+        == "openai/qwen-max"
+    )
+    assert (
+        LLMConfig(provider="openai", model="openai/gpt-4o-mini").litellm_model()
+        == "openai/gpt-4o-mini"
+    )
+
+
+def test_spark_preset_and_configuration_roundtrip(tmp_path):
+    preset = next(item for item in PRESETS if item.key == "spark")
+    assert preset.base_url == "https://maas-api.cn-huabei-1.xf-yun.com/v2"
+    assert preset.api_key_env == "SPARK_API_KEY"
+    llm = LLMConfig(
+        provider=preset.key,
+        base_url=preset.base_url,
+        model="spark-x2.6",
+        api_key_env=preset.api_key_env,
+    )
+    assert llm.litellm_model() == "openai/spark-x2.6"
+    assert provider_label("spark") == "讯飞星火"
+    path = tmp_path / "config.toml"
+    write_config(path, Config(vault=tmp_path / "vault", llm=llm))
+    assert load_config(path).llm == llm
+
+
+@pytest.mark.parametrize("mode", ["", "enabled", "auto", "disabled"])
+def test_spark_chat_parameters_match_maas_contract(monkeypatch, mode):
+    from types import SimpleNamespace
+
+    from syvrio.infra.llm import client
+
+    calls = []
+    monkeypatch.setenv("SPARK_API_KEY", "synthetic-key")
+    fake = SimpleNamespace(completion=lambda **kwargs: calls.append(kwargs) or "response")
+    monkeypatch.setattr(client, "_litellm", lambda: fake)
+    preset = next(item for item in PRESETS if item.key == "spark")
+    config = LLMConfig(
+        provider="spark",
+        model="spark-x2.6",
+        base_url=preset.base_url,
+        api_key_env=preset.api_key_env,
+        reasoning_effort="high",
+        spark_thinking=mode,
+    )
+    tools = [
+        {
+            "type": "function",
+            "function": {"name": "synthetic_tool", "parameters": {"type": "object"}},
+        }
+    ]
+    assert (
+        client.complete(
+            config,
+            [{"role": "user", "content": "合成输入"}],
+            tools=tools,
+            response_format={"type": "json_object"},
+            max_tokens=128,
+        )
+        == "response"
+    )
+    sent = calls[0]
+    assert sent["model"] == "openai/spark-x2.6"
+    assert sent["api_base"] == preset.base_url
+    assert sent["api_key"] == "synthetic-key"
+    assert sent["tools"] == tools and sent["max_completion_tokens"] == 128
+    assert not {"temperature", "reasoning_effort", "response_format", "max_tokens"} & sent.keys()
+    assert sent.get("extra_body") == ({"thinking": {"type": mode}} if mode else None)
+    assert "fallbacks" not in sent
+
+
+def test_spark_streaming_preserves_deltas_and_usage(monkeypatch):
+    from types import SimpleNamespace
+
+    from syvrio.infra.llm import client
+
+    calls = []
+    monkeypatch.setenv("SPARK_API_KEY", "synthetic-key")
+    chunks = [
+        {"choices": [{"delta": {"content": "合成"}}]},
+        {
+            "choices": [{"delta": {"content": "回复"}}],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 2},
+        },
+    ]
+    fake = SimpleNamespace(
+        completion=lambda **kwargs: calls.append(kwargs) or iter(chunks),
+        completion_cost=lambda **kwargs: 0,
+    )
+    monkeypatch.setattr(client, "_litellm", lambda: fake)
+    config = LLMConfig(
+        provider="spark",
+        model="spark-x2.6",
+        api_key_env="SPARK_API_KEY",
+        reasoning_effort="high",
+        spark_thinking="disabled",
+    )
+    deltas = []
+    result = client.LiteLLMChatModel(config).chat(
+        [{"role": "user", "content": "合成输入"}], [], on_delta=deltas.append
+    )
+    assert result.content == "合成回复" and deltas == ["合成", "回复"]
+    assert result.usage.prompt_tokens == 3 and result.usage.completion_tokens == 2
+    assert calls[0]["stream"] is True
+    assert calls[0]["extra_body"] == {"thinking": {"type": "disabled"}}
+    assert not {"temperature", "reasoning_effort", "stream_options"} & calls[0].keys()
+
+
+def test_streaming_tool_arguments_keep_identity_and_explicit_index_order():
+    from syvrio.infra.llm.client import _StreamAccumulator
+
+    parser = _StreamAccumulator(lambda _: None, None)
+    parser.feed(
+        {
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 1,
+                                "id": "second",
+                                "function": {"name": "fetch", "arguments": '{"b":'},
+                            },
+                            {
+                                "index": 0,
+                                "id": "first",
+                                "function": {"name": "search", "arguments": {"a": 1}},
+                            },
+                            {"id": "third", "function": {"name": "search", "arguments": '{"c":3}'}},
+                        ]
+                    }
+                }
+            ]
+        }
+    )
+    parser.feed(
+        {
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [
+                            {"id": "second", "function": {"arguments": "2}"}},
+                        ]
+                    }
+                }
+            ]
+        }
+    )
+    assert [(call.id, call.arguments) for call in parser.finish().tool_calls] == [
+        ("first", {"a": 1}),
+        ("second", {"b": 2}),
+        ("third", {"c": 3}),
+    ]
+
+
+@pytest.mark.parametrize("arguments", ["{", "[]", "null"])
+def test_streaming_rejects_invalid_tool_arguments(arguments):
+    from syvrio.infra.llm.client import ChatModelError, _StreamAccumulator
+
+    parser = _StreamAccumulator(lambda _: None, None)
+    parser.feed(
+        {
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "id": "synthetic",
+                                "function": {"name": "search", "arguments": arguments},
+                            },
+                        ]
+                    }
+                }
+            ]
+        }
+    )
+    with pytest.raises(ChatModelError, match="arguments"):
+        parser.finish()
+
+
+def test_spark_does_not_offer_openai_reasoning_effort():
+    from syvrio.infra.llm.client import supported_params
+
+    assert "reasoning_effort" not in supported_params("openai/spark-x2.6")
+    assert "tools" in supported_params("openai/spark-x2.6")
+
+
+def test_write_config_roundtrip(tmp_path):
+    path = tmp_path / "syvrio.toml"
+    config = Config(
+        vault=tmp_path / "vault",
+        llm=LLMConfig(
+            provider="siliconflow",
+            base_url="https://api.siliconflow.cn/v1",
+            model="deepseek-ai/DeepSeek-V3",
+            api_key_env="SILICONFLOW_API_KEY",
+            reasoning_effort="medium",
+            num_retries=1,
+        ),
+        chat=ChatConfig(
+            context_window=65001,
+            recall_rewrite=False,
+            recall_context_turns=4,
+        ),
+        retrieval=RetrievalConfig(
+            method="vector",
+            embedding=EmbeddingConfig(
+                backend="api",
+                model="BAAI/bge-m3",
+                provider="dashscope",
+                base_url="https://dashscope.example/v1",
+                api_key_env="DASHSCOPE_API_KEY",
+            ),
+        ),
+    )
+
+    write_config(path, config)
+    assert "fallbacks" not in path.read_text(encoding="utf-8")
+    loaded = load_config(path)
+
+    assert loaded.llm.provider == "siliconflow"
+    assert loaded.llm.reasoning_effort == "medium"
+    assert loaded.llm.num_retries == 1
+    assert loaded.chat.context_window == 65001
+    assert loaded.chat.recall_rewrite is False
+    assert loaded.chat.recall_context_turns == 4
+    assert loaded.retrieval.method == "vector"
+    assert loaded.retrieval.embedding.backend == "api"
+    assert loaded.retrieval.embedding.model == "BAAI/bge-m3"
+    assert loaded.retrieval.embedding.api_key_env == "DASHSCOPE_API_KEY"
+    assert loaded.vault == config.vault
+    assert not (tmp_path / "syvrio.toml.tmp").exists()
+
+
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    [
+        (None, 50_000),
+        (-1, 50_000),
+        (0, 50_000),
+        (4000, 50_000),
+        (49_999, 50_000),
+        (50_000, 50_000),
+        (50_001, 50_001),
+        (120_000, 120_000),
+    ],
+)
+def test_load_context_uses_config_only_above_floor(tmp_path, configured, expected):
+    path = tmp_path / "config.toml"
+    if configured is not None:
+        path.with_name("chat.toml").write_text(
+            f"[chat]\ncontext_window = {configured}\n", encoding="utf-8"
+        )
+    assert load_config(path).chat.context_window == expected
+
+
+def test_load_config_reports_invalid_toml(tmp_path):
+    path = tmp_path / "syvrio.toml"
+    path.write_text("[chat\ncontext_window = 1000\n", encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="TOML 语法错误"):
+        load_config(path)
+
+
+def test_load_config_rejects_wrong_types_and_ranges(tmp_path):
+    cases = [
+        ('[chat]\ncontext_window = "big"\n', "必须是整数"),
+        ("[chat]\ncompact_threshold = 1.5\n", "必须在 0 到 1 之间"),
+        ('auto_push = "yes"\n', "必须是布尔值"),
+        ("[search]\nproviders = [1, 2]\n", "必须是字符串"),
+        ("[search]\nmax_requests = 0\n", "必须大于 0"),
+        ("[search]\nmax_requests = -2\n", "必须大于 0"),
+        ("[search]\nmax_requests = 1.5\n", "必须是整数"),
+        ('[search]\nmax_requests = "nine"\n', "必须是整数"),
+        ('[llm]\nspark_thinking = "high"\n', "llm.spark_thinking"),
+    ]
+    for content, message in cases:
+        entry = tmp_path / "config.toml"
+        names = {"[chat]": "chat.toml", "[llm]": "models.toml"}
+        group = entry.with_name(names.get(content.splitlines()[0], entry.name))
+        group.write_text(content, encoding="utf-8")
+        with pytest.raises(ConfigError, match=message):
+            load_config(entry)
+        group.write_text("", encoding="utf-8")
+
+
+def test_write_config_escapes_special_characters(tmp_path):
+    path = tmp_path / "syvrio.toml"
+    vault = tmp_path / 'vault "quoted" \\ path\x7f'
+    write_config(path, Config(vault=vault, llm=LLMConfig(model="model\x7f")))
+
+    loaded = load_config(path)
+    assert loaded.vault == vault
+    assert loaded.llm.model == "model\x7f"
+
+
+def test_toml_literal_roundtrips_unicode_and_controls():
+    value = '中文 "quote" \\ backslash \x7f'
+    assert tomllib.loads(f"value = {toml_literal(value)}")["value"] == value
+
+
+def test_load_config_defaults_to_hybrid_local(tmp_path):
+    loaded = load_config(tmp_path / "config.toml")
+
+    assert loaded.retrieval.method == "hybrid"
+    assert loaded.retrieval.embedding.backend == "local"
+    assert loaded.retrieval.embedding.model == "BAAI/bge-small-zh-v1.5"
+
+
+def test_vault_precedence_config_then_env(tmp_path, monkeypatch):
+    path = tmp_path / "syvrio.toml"
+    configured = tmp_path / "configured"
+    path.write_text(f'vault = "{configured.as_posix()}"\n', encoding="utf-8")
+    monkeypatch.setenv("SYVRIO_VAULT", str(tmp_path / "from-env"))
+
+    # 与测试隔离口径一致：显式配置的 vault 优先，环境变量只补默认值。
+    assert load_config(path).vault == configured
+
+    path.write_text("", encoding="utf-8")
+    assert load_config(path).vault == tmp_path / "from-env"
+
+
+def test_search_auto_start_defaults_match_example(tmp_path):
+    assert SearchConfig().auto_start is True
+    assert SearchConfig().engines == ["bing"]
+    assert SearchConfig().fetch_timeout == 45.0
+    assert load_config(tmp_path / "config.toml").search.auto_start is True
+
+
+def test_local_provider_without_key_reaches_backend(monkeypatch):
+    import pytest
+
+    from syvrio.infra.llm.client import LiteLLMChatModel
+
+    model = LiteLLMChatModel(LLMConfig(provider="ollama", api_key_env="MISSING_LOCAL_KEY"))
+    called = []
+
+    def fake_complete(*args, **kwargs):
+        called.append(True)
+        raise RuntimeError("backend reached")
+
+    monkeypatch.setattr("syvrio.infra.llm.client.complete", fake_complete)
+    with pytest.raises(RuntimeError, match="backend reached"):
+        model.chat([], [])
+    assert called
+
+
+def test_search_config_roundtrip(tmp_path):
+    path = tmp_path / "syvrio.toml"
+    config = Config(
+        vault=tmp_path / "vault",
+        search=SearchConfig(
+            enabled=False,
+            providers=["open_websearch"],
+            base_url="http://127.0.0.1:3210",
+            timeout=4.0,
+            max_results=2,
+            cache_ttl=0,
+            transport="mcp",
+            auto_start=True,
+            engines=["baidu", "sogou"],
+            fetch_timeout=15.0,
+            fallback_engines=["duckduckgo", "startpage"],
+            max_engines=2,
+            max_search_engines=5,
+            timeout_budget=18.0,
+            max_requests=7,
+        ),
+    )
+
+    write_config(path, config)
+    loaded = load_config(path)
+
+    assert loaded.search.enabled is False
+    assert loaded.search.providers == ["open_websearch"]
+    assert loaded.search.base_url == "http://127.0.0.1:3210"
+    assert loaded.search.timeout == 4.0
+    assert loaded.search.max_results == 2
+    assert loaded.search.cache_ttl == 0
+    assert loaded.search.transport == "mcp"
+    assert loaded.search.auto_start is True
+    assert loaded.search.engines == ["baidu", "sogou"]
+    assert loaded.search.fetch_timeout == 15.0
+    assert loaded.search.fallback_engines == ["duckduckgo", "startpage"]
+    assert loaded.search.max_engines == 2
+    assert loaded.search.max_search_engines == 5
+    assert loaded.search.timeout_budget == 18.0
+    assert loaded.search.max_requests == 7
+
+
+def test_resolve_config_path_env_wins_over_cwd(tmp_path, monkeypatch):
+    from syvrio.infra.config import resolve_config_path
+
+    (tmp_path / "syvrio.toml").write_text("vault = 'local'\n", encoding="utf-8")
+    env_path = tmp_path / "isolated.toml"
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SYVRIO_CONFIG", str(env_path))
+
+    assert resolve_config_path(None) == env_path
+
+
+def test_env_key_takes_precedence_over_keyring(monkeypatch):
+    fake = types.ModuleType("keyring")
+    fake.get_password = lambda service, name: "from-keyring"
+    monkeypatch.setitem(sys.modules, "keyring", fake)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "from-env")
+
+    assert LLMConfig(api_key_env="DEEPSEEK_API_KEY").api_key() == "from-env"
+
+    monkeypatch.delenv("DEEPSEEK_API_KEY")
+    assert LLMConfig(api_key_env="DEEPSEEK_API_KEY").api_key() == "from-keyring"
+
+
+def test_provider_presets_cover_domestic_providers():
+    keys = {preset.key for preset in PRESETS}
+    assert {"deepseek", "siliconflow", "dashscope", "custom"} <= keys
+
+
+def test_litellm_metadata_exposes_context_and_reasoning():
+    from syvrio.infra.llm import model_metadata, supported_params
+
+    info = model_metadata("openai/gpt-4o-mini")
+    assert info.get("max_input_tokens", 0) > 0
+    assert "reasoning_effort" in supported_params("openai/gpt-4o-mini")
+
+
+def test_openai_compatible_model_does_not_claim_openai_params():
+    from syvrio.infra.llm import supported_params
+
+    # 硅基流动等自定义端点用 openai/ 前缀；未知 id 不能套用通用 OpenAI 参数表。
+    assert supported_params("openai/deepseek-ai/DeepSeek-V4.1-Flash") == ()
+
+
+def test_provider_model_list_cache(monkeypatch):
+    from syvrio.infra.llm import client
+
+    config = LLMConfig()
+    calls = []
+    monkeypatch.setattr(LLMConfig, "api_key", lambda self: "test-key")
+    monkeypatch.setattr(
+        client,
+        "_fetch_provider_models_uncached",
+        lambda cfg, timeout, api_key: calls.append(1) or {"model-a": None},
+    )
+    client.clear_model_cache()
+    try:
+        assert client.fetch_provider_models(config) == ["model-a"]
+        assert client.fetch_provider_models(config) == ["model-a"]
+        assert len(calls) == 1
+
+        assert client.fetch_provider_models(config, refresh=True) == ["model-a"]
+        assert len(calls) == 2
+
+        monkeypatch.setattr(LLMConfig, "api_key", lambda self: "different-workspace-key")
+        assert client.cached_provider_models(config) is None
+        assert client.fetch_provider_models(config) == ["model-a"]
+        assert len(calls) == 3
+    finally:
+        client.clear_model_cache()
+
+
+def test_cached_provider_models_reads_cache_only(monkeypatch):
+    from syvrio.infra.llm import client
+
+    config = LLMConfig()
+    calls = []
+    monkeypatch.setattr(LLMConfig, "api_key", lambda self: "test-key")
+    monkeypatch.setattr(
+        client,
+        "_fetch_provider_models_uncached",
+        lambda cfg, timeout, api_key: calls.append(1) or {"model-a": None},
+    )
+    client.clear_model_cache()
+    try:
+        assert client.cached_provider_models(config) is None
+        assert client.fetch_provider_models(config) == ["model-a"]
+        assert client.cached_provider_models(config) == ["model-a"]
+        assert len(calls) == 1
+    finally:
+        client.clear_model_cache()
+
+
+@pytest.mark.parametrize("before_first", [True, False])
+def test_cancellable_transport_closes_without_waiting_for_tokens(monkeypatch, before_first):
+    import asyncio
+    from threading import Event
+    from types import SimpleNamespace
+
+    from syvrio.infra.llm import client
+
+    cancel = Event()
+    closed = []
+
+    async def chunks():
+        try:
+            yield {"choices": [{"delta": {"content": "partial"}}]}
+            cancel.set()
+            await asyncio.sleep(60)
+        finally:
+            closed.append("stream")
+
+    async def completion(**kwargs):
+        if before_first:
+            try:
+                cancel.set()
+                await asyncio.sleep(60)
+            finally:
+                closed.append("request")
+        return chunks()
+
+    fake = SimpleNamespace(acompletion=completion, completion_cost=lambda **kw: 0)
+    monkeypatch.setattr(client, "_litellm", lambda: fake)
+    monkeypatch.setenv("SPARK_API_KEY", "synthetic-key")
+    config = LLMConfig(provider="spark", model="spark-x2.6", api_key_env="SPARK_API_KEY")
+    deltas = []
+    with pytest.raises(client.GenerationCancelled):
+        client.LiteLLMChatModel(config).chat([], [], on_delta=deltas.append, cancel=cancel)
+    assert closed == (["request"] if before_first else ["stream"])
+    assert deltas == ([] if before_first else ["partial"])
+
+
+def test_cancellable_transport_normal_completion_and_tool_fragments(monkeypatch):
+    from threading import Event
+    from types import SimpleNamespace
+
+    from syvrio.infra.llm import client
+
+    closed = []
+    sent = []
+
+    async def chunks():
+        try:
+            yield {
+                "choices": [
+                    {
+                        "delta": {
+                            "content": "hello",
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "one",
+                                    "function": {"name": "search", "arguments": '{"query":'},
+                                }
+                            ],
+                        }
+                    }
+                ]
+            }
+            yield {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [{"index": 0, "function": {"arguments": '"example"}'}}]
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": 4, "completion_tokens": 3},
+            }
+        finally:
+            closed.append(True)
+
+    async def completion(**kwargs):
+        sent.append(kwargs)
+        return chunks()
+
+    monkeypatch.setattr(
+        client,
+        "_litellm",
+        lambda: SimpleNamespace(acompletion=completion, completion_cost=lambda **kw: 0),
+    )
+    monkeypatch.setenv("SPARK_API_KEY", "synthetic-key")
+    config = LLMConfig(provider="spark", model="spark-x2.6", api_key_env="SPARK_API_KEY")
+    model = client.LiteLLMChatModel(config)
+    for _ in range(2):
+        deltas = []
+        reply = model.chat([], [], on_delta=deltas.append, cancel=Event())
+        assert reply.content == "hello" and deltas == ["hello"]
+        assert reply.tool_calls[0].arguments == {"query": "example"}
+        assert reply.usage.prompt_tokens == 4
+    assert closed == [True, True]
+    assert all(call["stream"] for call in sent)
+    assert all("stream_options" not in call for call in sent)
+
+
+def test_cancellable_stream_with_installed_litellm_mock_transport(monkeypatch):
+    from threading import Event
+
+    from syvrio.infra.llm import client
+
+    litellm = client._litellm()
+    original = litellm.acompletion
+
+    async def local_completion(**kwargs):
+        return await original(**kwargs, mock_response="Synthetic response")
+
+    monkeypatch.setattr(litellm, "acompletion", local_completion)
+    monkeypatch.setenv("OPENAI_API_KEY", "synthetic-key")
+    model = client.LiteLLMChatModel(
+        LLMConfig(provider="openai", model="gpt-4o-mini", api_key_env="OPENAI_API_KEY")
+    )
+    for _ in range(2):
+        deltas = []
+        reply = model.chat(
+            [{"role": "user", "content": "Synthetic input"}],
+            [],
+            on_delta=deltas.append,
+            cancel=Event(),
+        )
+        assert reply.content == "Synthetic response"
+        assert "".join(deltas) == reply.content
+
+
+@pytest.mark.parametrize("outcome", ["done", "cancel", "error", "timeout", "shared"])
+def test_stream_respects_litellm_transport_ownership(monkeypatch, outcome):
+    import asyncio
+    from threading import Event
+    from types import SimpleNamespace
+
+    import openai
+    from litellm.llms.openai.common_utils import BaseOpenAILLM
+
+    from syvrio.infra.llm import client
+
+    token = Event()
+    events = []
+
+    class Transport:
+        async def aclose(self):
+            events.append("transport closed")
+
+    transport = Transport()
+
+    class OwnedClient:
+        def __init__(self, **kwargs):
+            assert kwargs["http_client"] is transport
+
+    async def completion(**kwargs):
+        if outcome == "shared":
+            assert "client" not in kwargs
+        else:
+            assert isinstance(kwargs["client"], OwnedClient)
+        if outcome == "cancel":
+            token.set()
+            await asyncio.Future()
+        if outcome == "error":
+            raise RuntimeError("synthetic provider failure")
+        if outcome == "timeout":
+            raise TimeoutError("synthetic timeout")
+        return EmptyStream()
+
+    class EmptyStream:
+        async def __aiter__(self):
+            for chunk in ():
+                yield chunk
+
+        async def aclose(self):
+            events.append("stream closed")
+
+    monkeypatch.setattr(BaseOpenAILLM, "get_async_http_client", lambda: transport)
+    monkeypatch.setattr(openai, "AsyncOpenAI", OwnedClient)
+    fake = SimpleNamespace(
+        acompletion=completion, aclient_session=transport if outcome == "shared" else None
+    )
+    monkeypatch.setattr(client, "_litellm", lambda: fake)
+    monkeypatch.setenv("SYVRIO_TEST_STREAM_KEY", "synthetic")
+    model = client.LiteLLMChatModel(
+        LLMConfig(provider="openai", model="gpt-4o-mini", api_key_env="SYVRIO_TEST_STREAM_KEY")
+    )
+
+    def run():
+        return model.chat(
+            [{"role": "user", "content": "synthetic"}], [], on_delta=lambda _: None, cancel=token
+        )
+
+    if outcome == "cancel":
+        with pytest.raises(client.GenerationCancelled):
+            run()
+    elif outcome in {"error", "timeout"}:
+        with pytest.raises(RuntimeError if outcome == "error" else TimeoutError, match="synthetic"):
+            run()
+    else:
+        run()
+
+    expected = ["stream closed"] if outcome in {"done", "shared"} else []
+    if outcome != "shared":
+        expected.append("transport closed")
+    assert events == expected
+
+
+@pytest.mark.parametrize("scenario", ["done", "retry", "error", "timeout", "cancel"])
+def test_single_model_stream_releases_real_aiohttp_session(monkeypatch, scenario):
+    import json
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from threading import Event, Thread
+
+    from litellm import InternalServerError, Timeout
+    from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler
+
+    from syvrio.infra.llm import client
+
+    hits = []
+    sessions = []
+    token = Event()
+    release = Event()
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *_):
+            pass
+
+        def do_POST(self):
+            payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            hits.append(payload["model"])
+            if scenario == "cancel":
+                token.set()
+            if scenario in {"timeout", "cancel"}:
+                release.wait(timeout=3)
+                return
+            if scenario == "error" or (scenario == "retry" and len(hits) == 1):
+                self.send_error(500)
+                return
+            chunk = {
+                "id": "synthetic",
+                "object": "chat.completion.chunk",
+                "created": 1,
+                "model": payload["model"],
+                "choices": [{"index": 0, "delta": {"content": "ok"}, "finish_reason": None}],
+            }
+            body = f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n".encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    factory = AsyncHTTPHandler.create_aiohttp_transport
+
+    def track(*args, **kwargs):
+        transport = factory(*args, **kwargs)
+        sessions.append(transport)
+        return transport
+
+    monkeypatch.setattr(AsyncHTTPHandler, "create_aiohttp_transport", track)
+    monkeypatch.setattr(AsyncHTTPHandler, "should_use_aiohttp_transport", lambda: True)
+    monkeypatch.setenv("SYVRIO_TEST_STREAM_KEY", "synthetic")
+    with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+        server_thread = Thread(target=server.serve_forever, daemon=True)
+        server_thread.start()
+        model = client.LiteLLMChatModel(
+            LLMConfig(
+                provider="custom",
+                model="gpt-4o",
+                base_url=f"http://127.0.0.1:{server.server_port}/v1",
+                api_key_env="SYVRIO_TEST_STREAM_KEY",
+                num_retries=int(scenario == "retry"),
+                timeout=0.2 if scenario == "timeout" else 5,
+            )
+        )
+        try:
+
+            def run():
+                return model.chat(
+                    [{"role": "user", "content": "synthetic"}],
+                    [],
+                    on_delta=lambda _: None,
+                    cancel=token,
+                )
+
+            if scenario == "cancel":
+                with pytest.raises(client.GenerationCancelled):
+                    run()
+            elif scenario in {"error", "timeout"}:
+                with pytest.raises(InternalServerError if scenario == "error" else Timeout):
+                    run()
+            else:
+                assert run().content == "ok"
+        finally:
+            release.set()
+            server.shutdown()
+            server_thread.join()
+
+    expected = ["gpt-4o"] * (2 if scenario == "retry" else 1)
+    assert hits == expected
+    assert sessions and all(transport.client.closed for transport in sessions)
+
+
+class _FakeChoice:
+    def __init__(self, label, value=None):
+        self.title = label
+        self.value = label if value is None else value
+
+
+class _FakeQuestion:
+    def __init__(self, kind, message, choices=None, **kwargs):
+        self.kind = kind
+        self.message = message
+        self.choices = choices or []
+
+
+class _FakeQuestionary:
+    """questionary 构造器会初始化控制台，测试里整体替换为哑对象。"""
+
+    def Choice(self, label=None, value=None, title=None, **kwargs):
+        return _FakeChoice(title if label is None else label, value)
+
+    def select(self, message, choices=None, **kwargs):
+        return _FakeQuestion("select", message, choices, **kwargs)
+
+    def password(self, message, **kwargs):
+        return _FakeQuestion("password", message, **kwargs)
+
+    def confirm(self, message, default=True, **kwargs):
+        return _FakeQuestion("confirm", message, **kwargs)
+
+    def text(self, message, **kwargs):
+        return _FakeQuestion("text", message, **kwargs)
+
+
+def _script_answers(monkeypatch, answers: list):
+    """把 providers.ask/questionary 换成按脚本出队的假交互。"""
+    import sys
+
+    from syvrio.app import setup as providers_module
+
+    queue = list(answers)
+
+    def fake_ask(_question):
+        assert queue, "交互脚本耗尽：问题数量与预期不符"
+        answer = queue.pop(0)
+        if isinstance(answer, BaseException):
+            raise answer
+        return answer
+
+    monkeypatch.setattr(providers_module, "ask", fake_ask)
+    monkeypatch.setitem(sys.modules, "questionary", _FakeQuestionary())
+
+
+def _install_fake_keyring(monkeypatch, store: dict):
+    import sys
+    import types
+
+    fake = types.ModuleType("keyring")
+    fake.get_password = lambda service, name: store.get(name)
+    fake.set_password = lambda service, name, value: store.__setitem__(name, value)
+    fake.delete_password = lambda service, name: store.pop(name, None)
+    monkeypatch.setitem(sys.modules, "keyring", fake)
+
+
+def test_run_setup_routes_to_search_wizard(tmp_path, monkeypatch):
+    config_path = tmp_path / "syvrio.toml"
+    config_path.write_text("[search]\nproviders = ['open_websearch']\n", encoding="utf-8")
+    _script_answers(monkeypatch, ["search", "providers", "open_websearch", "back", "done"])
+    from syvrio.app.setup import run_setup
+
+    result = run_setup(config_path, None)
+    assert result["mode"] == "search"
+    assert result["search_providers"] == ["open_websearch"]
+    # 未做任何启停时，重写出的配置保持原样。
+    import tomllib
+
+    data = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert data["search"]["providers"] == ["open_websearch"]
+
+
+@pytest.mark.parametrize(
+    ("provider", "model", "env_name"),
+    [
+        ("dashscope", "deepseek-v4.1-flash-1017", "DASHSCOPE_API_KEY"),
+        ("qianwen", "qwen3.8-max", "QIANWEN_API_KEY"),
+        ("spark", "spark-x2.6", "SPARK_API_KEY"),
+    ],
+)
+def test_llm_setup_discovers_models_using_the_entered_workspace_and_key(
+    tmp_path, monkeypatch, provider, model, env_name
+):
+    import syvrio.infra.llm
+    from syvrio.app import setup as providers
+
+    preset = next(item for item in PRESETS if item.key == provider)
+    endpoint = "https://workspace.example.invalid/compatible-mode/v1"
+    selected = "auto" if provider == "spark" else "max"
+    _script_answers(
+        monkeypatch,
+        ["llm", preset, endpoint, "synthetic-key", model, selected, 32000, False, False],
+    )
+    keys = {}
+    _install_fake_keyring(monkeypatch, keys)
+    monkeypatch.setattr(syvrio.infra.llm, "model_metadata", lambda _: {})
+    calls = []
+
+    def fetch(source, timeout, api_key):
+        assert source.provider == provider and source.base_url == endpoint
+        assert api_key == "synthetic-key" and not keys
+        calls.append(source.provider)
+        return {model: (selected,)}
+
+    monkeypatch.setattr("syvrio.infra.llm.client._fetch_provider_models_uncached", fetch)
+    choose = providers._choose_reasoning
+
+    def check_options(values, current):
+        assert values == ((selected,) if provider == "spark" else ("", selected))
+        return choose(values, current)
+
+    monkeypatch.setattr(providers, "_choose_reasoning", check_options)
+    path = tmp_path / "config.toml"
+    result = providers.run_setup(path, tmp_path / "vault")
+    assert result["model"] == model
+    saved = load_config(path).llm
+    assert saved.provider_urls[provider] == endpoint
+    assert (saved.spark_thinking if provider == "spark" else saved.reasoning_effort) == selected
+    assert result["thinking_selection"] == selected
+    assert calls == [provider]
+    assert keys == {env_name: "synthetic-key"}
+    assert "synthetic-key" not in path.read_text(encoding="utf-8")
+
+
+def test_search_setup_saves_key_and_enables_search_and_fetch(tmp_path, monkeypatch):
+    import tomllib
+
+    from syvrio.app import setup as providers_module
+
+    config_path = tmp_path / "syvrio.toml"
+    config_path.write_text("[search]\n", encoding="utf-8")
+    store: dict = {}
+    _install_fake_keyring(monkeypatch, store)
+    _script_answers(
+        monkeypatch,
+        [
+            "search",
+            "providers",
+            "tavily",
+            "sk-tavily-placeholder",  # password 输入
+            "search",  # 启用 Search
+            "fetch",  # 启用 Fetch（上限已设置，不再询问）
+            "back",
+            "done",
+        ],
+    )
+    result = providers_module.run_setup(config_path, None)
+
+    # save/read 走同一个假 keyring：保存后立即可读，env 变量未设置。
+    assert store == {"TAVILY_API_KEY": "sk-tavily-placeholder"}
+    assert result["search_providers"] == ["open_websearch", "tavily"]
+    assert result["fetch_providers"] == ["open_websearch", "tavily"]
+    data = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    # TOML 只写非敏感配置，不落 Key。
+    assert "sk-tavily-placeholder" not in config_path.read_text(encoding="utf-8")
+    assert data["search"]["providers"] == ["open_websearch", "tavily"]
+    assert data["fetch"]["providers"] == ["open_websearch", "tavily"]
+
+
+def test_search_setup_enables_optional_provider_anonymously(tmp_path, monkeypatch):
+    from syvrio.app import setup as providers_module
+
+    config_path = tmp_path / "syvrio.toml"
+    config_path.write_text("[search]\n", encoding="utf-8")
+    _install_fake_keyring(monkeypatch, {})
+    monkeypatch.delenv("ANYSEARCH_API_KEY", raising=False)
+    _script_answers(
+        monkeypatch,
+        ["search", "providers", "anysearch", "", "search", "back", "done"],
+    )
+
+    result = providers_module.run_setup(config_path, None)
+
+    assert result["search_providers"] == ["open_websearch", "anysearch"]
+    assert any("匿名模式" in message for message in result["messages"])
+    data = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert data["search"]["providers"] == ["open_websearch", "anysearch"]
+    assert "anysearch" not in data["search"].get("usage_limits", {})
+    limit = load_config(config_path).search.usage_limits["anysearch"]
+    assert (limit.daily, limit.monthly) == (20, 0)
+
+
+def test_search_setup_configures_searxng_without_key(tmp_path, monkeypatch):
+    import tomllib
+
+    from syvrio.app import setup as providers_module
+
+    config_path = tmp_path / "syvrio.toml"
+    config_path.write_text("[search]\n", encoding="utf-8")
+    _install_fake_keyring(monkeypatch, {})
+    _script_answers(
+        monkeypatch,
+        [
+            "search",
+            "providers",
+            "searxng",
+            "http://127.0.0.1:9999/",
+            "search",
+            "back",
+            "done",
+        ],
+    )
+
+    result = providers_module.run_setup(config_path, None)
+
+    assert result["search_providers"] == ["open_websearch", "searxng"]
+    data = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert data["search"]["searxng_base_url"] == "http://127.0.0.1:9999"
+    assert "searxng" not in data["search"].get("usage_limits", {})
+    limit = load_config(config_path).search.usage_limits["searxng"]
+    assert (limit.daily, limit.monthly) == (0, 0)
+    assert any("SearXNG 实例地址" in message for message in result["messages"])
+
+
+def test_search_setup_clears_optional_key_back_to_anonymous(tmp_path, monkeypatch):
+    from syvrio.app import setup as providers_module
+
+    config_path = tmp_path / "syvrio.toml"
+    config_path.write_text("[search]\n", encoding="utf-8")
+    store = {"ANYSEARCH_API_KEY": "sk-placeholder"}
+    _install_fake_keyring(monkeypatch, store)
+    monkeypatch.delenv("ANYSEARCH_API_KEY", raising=False)
+    _script_answers(
+        monkeypatch,
+        ["search", "providers", "anysearch", "", "clear_key", "back", "done"],
+    )
+
+    providers_module.run_setup(config_path, None)
+
+    assert store == {}
+
+
+def test_search_setup_refuses_enable_without_key(tmp_path, monkeypatch):
+    from syvrio.app import setup as providers_module
+
+    config_path = tmp_path / "syvrio.toml"
+    config_path.write_text("[search]\n", encoding="utf-8")
+    _install_fake_keyring(monkeypatch, {})
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    _script_answers(
+        monkeypatch,
+        ["search", "providers", "tavily", "", "search", "back", "done"],
+    )
+
+    result = providers_module.run_setup(config_path, None)
+
+    assert result["search_providers"] == ["open_websearch"]
+    assert any("未检测到有效 Key" in message for message in result["messages"])
+
+
+def test_search_setup_updates_existing_key(tmp_path, monkeypatch):
+    from syvrio.app import setup as providers_module
+
+    config_path = tmp_path / "syvrio.toml"
+    config_path.write_text("[search]\n", encoding="utf-8")
+    store = {"TAVILY_API_KEY": "old"}
+    _install_fake_keyring(monkeypatch, store)
+    _script_answers(
+        monkeypatch,
+        ["search", "providers", "tavily", "new", "back", "done"],
+    )
+    providers_module.run_setup(config_path, None)
+    assert store == {"TAVILY_API_KEY": "new"}
+
+
+def test_search_setup_adjusts_provider_order(tmp_path, monkeypatch):
+    import tomllib
+
+    from syvrio.app import setup as providers_module
+
+    config_path = tmp_path / "syvrio.toml"
+    config_path.write_text("[search]\nproviders = ['open_websearch', 'tavily']\n", encoding="utf-8")
+    _script_answers(
+        monkeypatch,
+        [
+            "search",
+            "search_order",
+            "tavily",
+            -1,  # 上移
+            None,  # 完成
+            "done",
+        ],
+    )
+
+    result = providers_module.run_setup(config_path, None)
+    assert result["search_providers"] == ["tavily", "open_websearch"]
+    data = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert data["search"]["providers"] == ["tavily", "open_websearch"]
+
+
+def test_search_setup_search_and_fetch_independent(tmp_path, monkeypatch):
+    from syvrio.app import setup as providers_module
+
+    config_path = tmp_path / "syvrio.toml"
+    config_path.write_text("[search]\n", encoding="utf-8")
+    _install_fake_keyring(monkeypatch, {"EXA_API_KEY": "k"})
+    _script_answers(
+        monkeypatch,
+        [
+            "search",
+            "providers",
+            "exa",
+            "",  # 不更新 Key
+            "search",  # 只启用 Search
+            "back",
+            "fetch_order",  # Fetch 保持默认 open_websearch
+            None,
+            "done",
+        ],
+    )
+
+    result = providers_module.run_setup(config_path, None)
+    assert result["search_providers"] == ["open_websearch", "exa"]
+    assert result["fetch_providers"] == ["open_websearch"]
+
+
+def test_llm_setup_can_enter_a_model_manually_when_api_discovery_is_unavailable(
+    tmp_path, monkeypatch
+):
+    from syvrio.app import setup as providers_module
+
+    config_path = tmp_path / "syvrio.toml"
+    config_path.write_text("[search]\n", encoding="utf-8")
+    _script_answers(
+        monkeypatch,
+        [
+            "llm",
+            next(p for p in providers_module.PRESETS if p.key == "custom"),
+            "https://api.example.com/v1",
+            "MY_KEY_ENV",
+            "",  # API Key 留空，发现不可用，进入独立的手动输入
+            "my-model",
+            50000,  # context（reasoning 因 custom 无参数而跳过）
+            False,  # 不初始化记忆库
+        ],
+    )
+    monkeypatch.setattr("syvrio.infra.llm.client.supported_params", lambda _: ())
+    monkeypatch.setattr("syvrio.infra.llm.model_metadata", lambda _: {})
+
+    result = providers_module.run_setup(config_path, None)
+
+    assert result["provider"] == "custom"
+    assert result["base_url"] == "https://api.example.com/v1"
+    assert result["model"] == "my-model"
+    assert result["key_saved"] is False
+
+
+def test_search_setup_can_edit_daily_and_monthly_limits(tmp_path, monkeypatch):
+    """启用官方厂商时询问每日上限；留空回退默认 20。"""
+    import tomllib
+
+    from syvrio.app import setup as providers_module
+
+    config_path = tmp_path / "syvrio.toml"
+    config_path.write_text("[search]\n", encoding="utf-8")
+    _install_fake_keyring(monkeypatch, {"TAVILY_API_KEY": "k"})
+    _script_answers(
+        monkeypatch,
+        [
+            "search",
+            "providers",
+            "tavily",
+            "",  # 不更新 Key
+            "search",
+            "back",
+            "usage",
+            "tavily",
+            "daily",
+            "7",
+            "tavily",
+            "monthly",
+            "900",
+            None,
+            "done",
+        ],
+    )
+
+    result = providers_module.run_setup(config_path, None)
+
+    assert result["search_providers"] == ["open_websearch", "tavily"]
+    data = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert data["search"]["usage_limits"]["tavily"] == {
+        "daily": 7,
+        "monthly": 900,
+    }
+
+
+def test_search_setup_uses_exa_monthly_default(tmp_path, monkeypatch):
+    from syvrio.app import setup as providers_module
+
+    config_path = tmp_path / "syvrio.toml"
+    config_path.write_text("[search]\n", encoding="utf-8")
+    _install_fake_keyring(monkeypatch, {"EXA_API_KEY": "k"})
+    _script_answers(
+        monkeypatch,
+        [
+            "search",
+            "providers",
+            "exa",
+            "",
+            "search",
+            "back",
+            "done",
+        ],
+    )
+
+    providers_module.run_setup(config_path, None)
+    import tomllib
+
+    data = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert "exa" not in data["search"].get("usage_limits", {})
+    limit = load_config(config_path).search.usage_limits["exa"]
+    assert (limit.daily, limit.monthly) == (0, 1000)
+
+
+def test_baidu_menu_only_offers_search(monkeypatch, tmp_path):
+    import questionary
+
+    from syvrio.app import setup as module
+    from syvrio.infra.config import Config
+
+    menus = []
+
+    def select(title, choices):
+        menus.append([choice.value for choice in choices])
+        return "baidu_search" if len(menus) == 1 else "back"
+
+    monkeypatch.setattr(module, "_select", select)
+    monkeypatch.setenv("BAIDU_SEARCH_API_KEY", "synthetic-key")
+    monkeypatch.setattr(
+        questionary, "password", lambda *a, **kw: type("Answer", (), {"ask": lambda self: ""})()
+    )
+    monkeypatch.setattr(module, "ask", lambda _: "")
+    module._configure_search_provider(
+        module.SetupSession(Config(vault=tmp_path), tmp_path / "config.toml"), []
+    )
+    assert "search" in menus[1] and "fetch" not in menus[1]
+
+
+def test_usage_menu_zero_reset_and_resume(tmp_path, monkeypatch, capsys):
+    from syvrio.app import setup as module
+    from syvrio.infra.config import Config, load_config
+    from syvrio.infra.search.usage import UsageLimiter
+
+    config = Config(vault=tmp_path / "vault")
+    limiter = UsageLimiter(config.search.usage_limits, config.paths().state_dir / "usage.json")
+    limiter.record("exa")
+    limiter.pause("exa", "NO_MORE_CREDITS")
+    path = tmp_path / "config.toml"
+    _script_answers(
+        monkeypatch,
+        [
+            "usage",
+            "exa",
+            "monthly",
+            "0",
+            "exa",
+            "resume",
+            "tavily",
+            "daily",
+            "7",
+            "tavily",
+            "defaults",
+            None,
+            "done",
+        ],
+    )
+    module.run_search_setup(module.SetupSession(config, path))
+    loaded = load_config(path)
+    assert loaded.search.usage_limits["exa"].monthly == 0
+    assert (
+        loaded.search.usage_limits["tavily"].daily,
+        loaded.search.usage_limits["tavily"].monthly,
+    ) == (0, 800)
+    state = UsageLimiter(
+        loaded.search.usage_limits, config.paths().state_dir / "usage.json"
+    ).status("exa")
+    assert not state["paused"] and state["monthly"]["used"] == 1
+    output = capsys.readouterr().out
+    assert "NO_MORE_CREDITS" in output and "不限" in output

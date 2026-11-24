@@ -4,9 +4,9 @@ import hashlib
 import re
 from pathlib import Path
 
-from ..infra.files import safe_component
-from ..infra.paths import SyvrioPaths, vault_paths
-from ..infra.transaction import vault_transaction
+from ..infra.storage.files import safe_component
+from ..infra.storage.paths import SyvrioPaths, vault_paths
+from ..infra.storage.transaction import vault_transaction
 from .models import Entry, Inference
 from .schema import (
     SchemaError,

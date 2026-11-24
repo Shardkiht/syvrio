@@ -1,4 +1,4 @@
-"""Syvrio 浏览器网关、静态资源与嵌入式网页应用。"""
+"""Syvrio 浏览器网关、静态资源。"""
 
 from __future__ import annotations
 

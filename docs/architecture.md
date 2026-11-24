@@ -1,23 +1,28 @@
 # Syvrio 统一后端架构
 
-适用分支为 `refactor/unified-backend-memory`，更新于 2026-11-21。
+适用于 `main`。
 
 ## 分层与运行入口
 
 Web、TUI、CLI 和 MCP 共用一个持有 Vault 的常驻后端。首个客户端通过 `backend/endpoint.py` 发现或启动后端，后续客户端复用同一进程。`syvrio backend run` 和自动启动都进入 `backend/server.py`，由它打开本地监听并装配共享 API。Web 网关提供页面资源、转发 API 请求和事件流。终端和 MCP 直接连接后端。多个客户端可以同时打开同一会话。
 
+连接时只从入口配置取 Vault 和 Runtime 的位置。后端负责加载分组配置和恢复未完成的配置事务。CLI 的 `syvrio import` 读取用户选定的本机文件，经认证通道上传内容。后端校验整个上传后执行解析、分块、预览或写入，并逐文件返回失败情况。MCP 写入、复核、召回与搜索也通过该通道。离线初始化与附件核验由本机后端维护入口持有 Vault 租约执行。目标 Vault 已在运行时，由该常驻后端核验附件。
+
 | 位置 | 职责 |
 | --- | --- |
 | `web/`、`app/web/` | React 页面、静态资源、浏览器 Host/Origin 校验、API 与事件流转发 |
-| `app/cli.py`、`app/resident_tui.py`、`app/server.py` | Typer 命令、Textual 界面、FastMCP 工具注册 |
+| `app/cli.py`、`app/tui/resident.py`、`app/server.py` | Typer 命令、Textual 界面、FastMCP 工具注册 |
 | `backend/` | 后端发现、进程独占权、服务装配和资源生命周期 |
 | `backend/api/` | 客户端共享的 HTTP 路由、请求与响应类型、SSE 编码、本机管理接口鉴权 |
 | `application/` | 协调会话、命令、设置和记忆用例，管理视图绑定与每个会话的调度 |
-| `agent/` | 执行一轮模型与工具调用，管理上下文、流式输出及回合记录 |
-| `background_memory/` | 执行会话标题、沉淀、待审上下文补充和 Dream，提交前复查来源和写入条件 |
-| `memory/`、`session/` | 正式记忆、待审核项、推断、会话及其来源和撤销记录 |
-| `retrieval/`、`llm/` | BM25、向量与 RRF；LiteLLM 协议、模型发现、流式聚合和摘要 |
-| `infra/` | 路径、配置、锁、Git、诊断、搜索抓取、PyPI 更新及系统服务切换 |
+| `agent/` | 模型循环、上下文预算、会话摘要、召回与工具调用 |
+| `memory/`、`memory/background/` | 记忆裁决与来源核验，后台执行沉淀、Context 补全和 Dream |
+| `infra/session/`、`infra/vault/` | 会话事件、历史、上传附件，Vault 归档、Git 策略和同步 |
+| `infra/retrieval/` | 关键词、向量索引及结果融合，只从调用者提供的只读来源取数据 |
+| `infra/llm/`、`infra/search/` | 模型协议与 token 估算，搜索与抓取路由。搜索供应商适配集中于 `providers/` |
+| `infra/config/` | 加载 `defaults/` 内的四份默认 TOML，合并指定字段的本地覆盖 |
+| `infra/storage/`、`infra/security/`、`infra/system/`、`infra/observability/` | 文件、路径、锁与事务，凭据保护，系统命令，诊断与耗时记录 |
+| `backend/updates/` | 获取与验证发行包、切换服务、上报更新进度 |
 
 ## 会话调度
 
@@ -39,7 +44,7 @@ Web、TUI、CLI 和 MCP 共用一个持有 Vault 的常驻后端。首个客户�
 | `Runtime/indexes/`、`cache/` | 向量索引、搜索缓存、画像摘要 |
 | `Runtime/state/`、`jobs/`、`logs/` | Vault 绑定、配额、反思状态、后台任务和本地诊断 |
 
-Vault 与 Runtime 相互独立，Runtime 在 Git 工作树之外。绝对时间持久化为 UTC ISO 8601，界面按本地 24 小时制显示。事件日期、有效期的日历精度独立于写入时间。字段清单与迁移步骤见[存储、迁移与时间规范](vault-v2.md)。
+Vault 与 Runtime 相互独立，Runtime 在 Git 工作树之外。绝对时间持久化为 UTC ISO 8601，界面按本地 24 小时制显示。事件日期、有效期的日历精度独立于写入时间。字段清单、目录布局和备份步骤见 [Vault 格式、备份与时间规范](vault-v2.md)。
 
 ## 锁与资源生命周期
 
@@ -49,10 +54,10 @@ Vault 与 Runtime 相互独立，Runtime 在 Git 工作树之外。绝对时间�
 - API Key 由环境变量或系统凭据提供，模型发现缓存按供应商、端点和凭据隔离。思考回传仅在同一受支持模型路由与协议范围内发生，Runtime 推理附件不进入 Vault Git 或沉淀输入。
 - Web 默认为 loopback。Host/Origin 检查阻止跨站请求，远程访问的认证与网络边界见 [Web 指南](web.md)。
 
-## 构建、更新与分支同步
+## 构建、更新与发布
 
-- Debian 13 执行 Ruff、Python 测试、前端构建和测试、分发包内容检查。Vite 资源须注入 sdist 和 wheel。Evo 的 PyPI 版本使用 `rcN` 预发布。
+- Debian 13 执行 Ruff、Python 测试、前端构建和测试、分发包内容检查。Vite 资源须注入 sdist 和 wheel。发布工作流从 `main` 校验正式版本号 `X.Y.Z`。
 - `syvrio update` 从 PyPI 按频道筛选 wheel，验证摘要，准备版本目录并请求用户 systemd 切换。停止旧服务前完成隔离安装和旧实例健康检查；切换、启动或新版健康检查失败时按实际链接目标恢复旧实例，并复查旧版健康。发布和部署各自验收。
-- Foundation 与 Evo 共享会话传输、锁、时间、模型适配和构建契约。稳定线保留独立记忆实现；Evo 的时间演化、推断审查和反思按明确边界晋级。合并前验证测试、存储兼容性、隐私和回退路径。
+- 日常维护统一在 `main` 进行。发布 PyPI 需单独触发发布工作流。
 
 [索引](README.md) · [产品需求与路线图](product.md) · [Web 指南](web.md)

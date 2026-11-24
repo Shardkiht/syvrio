@@ -7,10 +7,10 @@ import secrets
 from datetime import UTC, datetime
 from pathlib import Path
 
-from ..infra.files import safe_component
-from ..infra.paths import SyvrioPaths, vault_paths
-from ..infra.transaction import VaultTransaction, vault_transaction
-from ..time import parse_timestamp, serialize_timestamp, utc_now
+from ..infra.storage.files import safe_component
+from ..infra.storage.paths import SyvrioPaths, vault_paths
+from ..infra.storage.transaction import VaultTransaction, vault_transaction
+from ..infra.time import parse_timestamp, serialize_timestamp, utc_now
 from .models import Entry, MemoryContext, TopicInfo
 from .schema import (
     STATUSES,

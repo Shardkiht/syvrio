@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ..time import format_local_timestamp
+from ..infra.time import format_local_timestamp
 from .ui import console, styled_table
 
 

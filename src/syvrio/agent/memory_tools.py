@@ -8,10 +8,10 @@ from collections.abc import Callable
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..infra.config import DEFAULTS
+from ..infra.session.model import Session
 from ..memory.extractor import grounded_context
 from ..memory.models import MemoryContext, MemoryDraft, TimeRange
 from ..memory.service import MemoryService, pending_view
-from ..session.model import Session
 from .evidence import RecallContext, emotion_sources
 from .registry import ToolOutcome, ToolRegistry, ToolSpec
 

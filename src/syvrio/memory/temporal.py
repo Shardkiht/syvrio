@@ -4,7 +4,7 @@ import calendar
 from datetime import date, timedelta
 from pathlib import Path
 
-from ..time import timestamp_calendar_date
+from ..infra.time import timestamp_calendar_date
 from .models import Entry, MemoryContext
 from .store import MemoryStore
 

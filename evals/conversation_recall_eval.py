@@ -18,10 +18,10 @@ from unittest.mock import patch
 from syvrio.agent.runtime import AgentRuntime
 from syvrio.agent.tools import build_tools
 from syvrio.infra.config import Config, EmbeddingConfig, LLMConfig, RetrievalConfig, SearchConfig
-from syvrio.llm import AssistantTurn
+from syvrio.infra.llm import AssistantTurn
+from syvrio.infra.session import SessionStore
 from syvrio.memory.schema import Core, render_record
 from syvrio.memory.service import MemoryService
-from syvrio.session import SessionStore
 
 if __package__:
     from .retrieval_fixture import MODEL, evidence_ids, guard_vector, tool_search

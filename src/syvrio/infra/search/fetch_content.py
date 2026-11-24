@@ -61,7 +61,13 @@ def extract_text(value: object) -> str:
 
 
 def extracted_result(
-    provider: str, query: FetchQuery, *, url: object, title: object, content: str
+    provider: str,
+    query: FetchQuery,
+    *,
+    url: object,
+    title: object,
+    content: str,
+    excerpts_only: bool = False,
 ) -> FetchResult:
     if not content:
         raise ProviderError(provider, ProviderErrorKind.BAD_RESPONSE, "响应没有网页正文")
@@ -73,5 +79,6 @@ def extracted_result(
         final_url=final_url,
         title=extract_text(title) or final_url,
         content=content,
-        truncated=truncated,
+        truncated=truncated or excerpts_only,
+        content_kind="excerpts" if excerpts_only else "page",
     )

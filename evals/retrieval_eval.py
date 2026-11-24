@@ -12,9 +12,9 @@ import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from syvrio.agent.session import SessionStore
 from syvrio.agent.tools import build_tools
 from syvrio.infra.config import Config, EmbeddingConfig, RetrievalConfig
+from syvrio.infra.session import SessionStore
 from syvrio.memory.service import MemoryService
 
 if __package__:

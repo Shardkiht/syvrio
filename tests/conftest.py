@@ -147,9 +147,9 @@ def resident_backend(service):
 
     import uvicorn
 
-    from syvrio.app.web.backend import WebBackend
-    from syvrio.app.web.server import create_app
+    from syvrio.backend.api.channel import APIChannel as WebBackend
     from syvrio.backend.client import ResidentClient
+    from tests.support.resident_api import create_app
 
     service.config.search.auto_start = False
     service.config.git.auto_sync = False
@@ -165,7 +165,6 @@ def resident_backend(service):
 
         class Client(ResidentClient):
             def __init__(self):
-                self.config, self.paths = service.config, service.paths
                 self.base, self.token, self.view = base, token, uuid4().hex
 
         thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True)
@@ -184,3 +183,26 @@ def resident_backend(service):
 
 def extractor(*candidates: Candidate) -> StaticExtractor:
     return StaticExtractor(ExtractionResult(memories=list(candidates)))
+
+
+@pytest.fixture
+def layout_app():
+    from syvrio.app.tui.resident import ResidentChatApp
+
+    # 布局、焦点及快捷键用例只需一个空白视图；任何业务请求都必须在集成夹具中显式验证。
+    class LayoutClient:
+        def request(self, method, path):
+            routes = {
+                ("GET", "/api/health"): {"provider": "local", "model": "test"},
+                ("GET", "/api/sessions"): {"items": []},
+                ("GET", "/api/chat/queue"): {
+                    "session_id": None,
+                    "revision": 0,
+                    "waiting": [],
+                    "active": None,
+                },
+                ("POST", "/api/view/disconnect"): {},
+            }
+            return routes[method, path]
+
+    return ResidentChatApp(LayoutClient())

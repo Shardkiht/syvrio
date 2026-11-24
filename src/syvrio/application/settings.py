@@ -7,29 +7,27 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 
 from ..infra.config import (
-    CONTEXT_WINDOW_PRESETS,
     MIN_CONTEXT_WINDOW,
-    SPARK_THINKING_MODES,
     LLMConfig,
+    context_window_options,
+    write_config,
 )
-from ..infra.providers import (
+from ..infra.formatting import format_tokens
+from ..infra.llm import (
+    cached_provider_models,
+    fetch_provider_models,
+    model_metadata,
+    reasoning_values,
+    supported_params,
+)
+from ..infra.llm.providers import (
     PRESETS,
-    delete_api_key,
     has_api_key,
     normalize_provider_url,
     provider_base_url,
     provider_label,
-    save_api_key,
-    write_config,
 )
-from ..infra.tokens import format_tokens
-from ..llm import (
-    cached_provider_models,
-    fetch_provider_models,
-    model_metadata,
-    provider_reasoning_levels,
-    supported_params,
-)
+from ..infra.security.credentials import delete_api_key, save_api_key
 from ..memory.service import MemoryService
 from .contracts import ModelOption, ProviderOption, SettingsResult
 
@@ -155,35 +153,16 @@ class SettingsUseCases:
         return bool(self.reasoning_options())
 
     def reasoning_options(self) -> list[tuple[str, str]]:
-        return [
-            (value, value or "default") for value in self._reasoning_values(self.service.config.llm)
-        ]
-
-    @staticmethod
-    def _reasoning_values(llm: LLMConfig) -> tuple[str, ...]:
-        levels = provider_reasoning_levels(llm)
-        if llm.is_spark:
-            if levels is not None and all(value in SPARK_THINKING_MODES for value in levels):
-                return tuple(value for value in SPARK_THINKING_MODES if value in levels)
-            return SPARK_THINKING_MODES
-        if levels is not None:
-            # 选择空项时省略请求参数，恢复供应商的默认设置。
-            return ("", *(level for level in levels if level != "default")) if levels else ()
-        if "reasoning_effort" in supported_params(llm.litellm_model()):
-            return ("", "low", "medium", "high")
-        return ()
+        return [(value, value or "default") for value in reasoning_values(self.service.config.llm)]
 
     def reasoning_selection(self) -> tuple[str, str]:
         llm = self.service.config.llm
         if llm.is_spark:
-            return "Thinking mode", llm.spark_thinking or "enabled"
+            return "Thinking mode", llm.spark_thinking
         return "Reasoning effort", llm.reasoning_effort or ""
 
     def context_options(self) -> list[int]:
-        max_input = self._max_input()
-        return [size for size in CONTEXT_WINDOW_PRESETS if not max_input or size <= max_input] or [
-            MIN_CONTEXT_WINDOW
-        ]
+        return context_window_options(self._max_input())
 
     @property
     def context_window(self) -> int:
@@ -308,11 +287,12 @@ class SettingsUseCases:
                 f"{provider} has no API key yet; run syvrio setup in a terminal to configure it.",
             )
 
-        if (
-            not new_llm.is_spark
-            and new_llm.reasoning_effort
-            and new_llm.reasoning_effort not in self._reasoning_values(new_llm)
-        ):
+        if new_llm.is_spark:
+            if new_llm.spark_thinking:
+                modes = reasoning_values(new_llm)
+                if new_llm.spark_thinking not in modes:
+                    new_llm.spark_thinking = modes[0] if modes else ""
+        elif new_llm.reasoning_effort and new_llm.reasoning_effort not in reasoning_values(new_llm):
             new_llm.reasoning_effort = None
         context_window = self.service.config.chat.context_window
 
@@ -328,7 +308,7 @@ class SettingsUseCases:
 
     def apply_reasoning(self, value: str) -> SettingsResult:
         llm = self.service.config.llm
-        choices = self._reasoning_values(llm)
+        choices = reasoning_values(llm)
         if value not in choices:
             allowed = ", ".join(option or "default" for option in choices)
             return SettingsResult(False, f"Allowed thinking options: {allowed or '(none)'}.")

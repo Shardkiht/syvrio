@@ -82,6 +82,11 @@ export const api = {
     jsonRequest<{ results: ChatSearchHit[] }>('/api/sessions/search?' + new URLSearchParams({ q }), { signal, cache: 'no-store' }),
   searchContext: (hit: ChatSearchHit, signal: AbortSignal) =>
     jsonRequest<SearchContext>(messagePath(hit.session_id, hit.message_id) + '/context', { signal, cache: 'no-store' }),
+  toolResult: (sessionId: string, recordId: string, archived: boolean, signal: AbortSignal) =>
+    jsonRequest<{ content: string }>(
+      `/api/sessions/${encodeURIComponent(sessionId)}/tools/${encodeURIComponent(recordId)}${archived ? '?archived=true' : ''}`,
+      { signal, cache: 'no-store' },
+    ),
   pendingEvidence: (id: string, signal: AbortSignal) =>
     jsonRequest<PendingEvidence>(`/api/pending/${encodeURIComponent(id)}/evidence`, { signal, cache: 'no-store' }),
   searchModels: (query: string, refresh: boolean, signal: AbortSignal) => {

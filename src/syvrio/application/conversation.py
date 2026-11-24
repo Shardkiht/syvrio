@@ -5,17 +5,18 @@ from __future__ import annotations
 from threading import Event, RLock
 from typing import Callable
 
-from ..agent.context import CompactionPhase
+from ..agent.context import CompactionPhase, ContextManager
 from ..agent.insertion import InsertionRequest, TurnInsertion
 from ..agent.runtime import AgentRuntime, TurnSettings
-from ..errors import ConversationError, SessionProtectedError
-from ..infra.attachments import AttachmentBatch
-from ..infra.diagnostics import record_event
-from ..infra.secrets import redact_secrets
-from ..llm import ChatModelError, GenerationCancelled
+from ..infra.llm import ChatModelError, GenerationCancelled
+from ..infra.observability.diagnostics import record_event
+from ..infra.security.secrets import redact_secrets
+from ..infra.session import Session, SessionStore
+from ..infra.session.attachments import AttachmentBatch
+from ..infra.session.errors import ConversationError, SessionProtectedError
+from ..memory.background.titles import rename_session
 from ..memory.models import PendingItem
 from ..memory.turn_undo import TurnUndoError
-from ..session import Session, SessionStore
 from .contracts import (
     ContextLimits,
     QueuedItem,
@@ -183,9 +184,6 @@ class ConversationUseCases:
 
     def end_navigation(self) -> None:
         self._navigation_busy = False
-
-    def set_navigation_busy(self, value: bool) -> None:  # 兼容测试与旧调用
-        self._navigation_busy = value
 
     # ---------- 提交路由 ----------
 
@@ -589,7 +587,7 @@ class ConversationUseCases:
         if self.runtime.has_session and session_id == self.runtime.current.id:
             self.runtime.rename(title)
         else:
-            self.sessions.rename(self.sessions.load(session_id), title)
+            rename_session(self.sessions, self.sessions.load(session_id), title)
 
     def archive_guard(self, session_id: str) -> tuple[bool, str | None]:
         if (
@@ -694,15 +692,23 @@ class ConversationUseCases:
         return self.runtime.context_usage()
 
     def estimate_usage(self, session: Session) -> int:
-        return self.runtime.estimate_usage(session)
+        context, active_message_id = self._session_context(session.id)
+        return self.runtime.estimate_usage(session, context, active_message_id=active_message_id)
+
+    def _session_context(self, session_id: str | None) -> tuple[ContextManager, str | None]:
+        """在当前回合结束前沿用该回合的预算和模型协议。"""
+        with self._lock:
+            if self._turn_settings and session_id and self.ask_in_flight == session_id:
+                active_input = (
+                    self._ask_user_message_id
+                    if self._cancel and not self._cancel.is_set()
+                    else None
+                )
+                return self._turn_settings.context, active_input
+        return self.runtime.turn_settings().context, None
 
     def context_limits(self, session_id: str | None) -> ContextLimits:
-        """在当前回合结束前沿用该回合的预算。"""
-        with self._lock:
-            active = (
-                self._turn_settings if session_id and self.ask_in_flight == session_id else None
-            )
-        context = (active or self.runtime.turn_settings()).context
+        context, _ = self._session_context(session_id)
         return ContextLimits(
             context.config.context_window, context.config.compact_threshold, context.trigger_tokens
         )

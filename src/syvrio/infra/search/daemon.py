@@ -17,7 +17,7 @@ from .base import (
     ProviderError,
     ProviderErrorKind,
 )
-from .open_websearch import NAME, npx_command
+from .providers.open_websearch import NAME, npx_command
 
 START_TIMEOUT = 20.0
 HEALTH_TIMEOUT = 1.5

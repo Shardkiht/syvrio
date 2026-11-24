@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ..infra.jobs import job_path, read_job
-from ..infra.locking import vault_write_lock
-from ..infra.paths import SyvrioPaths
+from ..infra.storage.locking import vault_write_lock
+from ..infra.storage.paths import SyvrioPaths
+from .background.jobs import job_path, read_job
 
 
 @dataclass(frozen=True)

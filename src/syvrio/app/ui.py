@@ -15,9 +15,8 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 from rich.table import Table
 from rich.theme import Theme
 
-from ..infra.diagnostics import record_event
-from ..infra.layout import widths
-from ..infra.update import ProgressCallback, UpdateProgress
+from ..backend.client_contracts import ProgressCallback, UpdateProgress
+from ..infra.observability.diagnostics import record_event
 
 # 主题色：石板蓝（与个人主页 slate-blue 同族）；警告用暖琥珀，区别于灰色与错误红。
 ACCENT = "#8FAECB"
@@ -40,7 +39,10 @@ console = Console(
 
 def layout_widths(cols: int | None = None) -> tuple[int, int, int]:
     # 统一以 Rich 实际渲染宽度为准，避免终端检测不一致导致内容偏右。
-    return widths(cols or console.width)
+    cols = cols or console.width
+    width = max(40, min(cols - 4, round(cols * 0.9)))
+    left = 2
+    return left, width, max(0, cols - left - width)
 
 
 def padded(renderable, cols: int | None = None):

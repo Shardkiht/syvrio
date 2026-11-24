@@ -6,9 +6,9 @@ from collections.abc import Callable
 from threading import RLock
 from typing import Protocol
 
-from ..errors import ConversationError
-from ..infra.attachments import AttachmentBatch
-from ..session import Session, SessionSnapshot
+from ..infra.session import Session, SessionSnapshot
+from ..infra.session.attachments import AttachmentBatch
+from ..infra.session.errors import ConversationError
 from .conversation import ConversationUseCases
 from .turns import ConversationTurn
 

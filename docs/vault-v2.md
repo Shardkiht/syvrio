@@ -1,6 +1,6 @@
 # Vault 格式、备份与时间规范
 
-此页描述统一后端开发分支的实际存储格式。文末保留历史工具适用的数据版本与校验方法。
+常驻后端按本文格式读写 Vault 与 Runtime。
 
 ## 记录格式
 
@@ -53,9 +53,8 @@ Context 支持 `event_time`、`valid_from`、`valid_to`、`location` 和情绪�
 | `attachments/<session-id>/<message-id>/<attachment-id>.<ext>` | 已绑定到消息的上传原件 |
 | `SOUL.md` | 可选的个性化提示词 |
 
-会话标题沿用 `type: title` 事件。模型生成的标题带有 `source: llm` 和生成依据的 `answer_id`，撤回对应回答后失效。旧版手动标题依然有效。Runtime 中尚未完成的标题任务只保存会话和消息引用。
+会话标题沿用 `type: title` 事件。模型生成的标题带有 `source: llm` 和生成依据的 `answer_id`，撤回对应回答后失效。用户手动设置的标题保存在同类事件中。Runtime 中尚未完成的标题任务只保存会话和消息引用。
 
-升级旧库前备份 Vault 和配套 Runtime。首次打开时，旧 `archive/sessions/` 按原相对路径移入 `archived/sessions/`，`archived/pending.md` 移入 `archived/pending/rejected.md`。旧 `archive/` 中自行保存的其他文件保留在 `archived/other/`。遇到目标文件重名会停止迁移，保留两份原件。
 
 确认候选时写入正式记忆，并从活动文件移除。改写后确认会保存最终正文、清空与旧表述关联的 Context，并同时登记后台补充任务。拒绝会把原文移到归档。`related_ids` 提供审核上下文，仅审核候选本身不会改变这些已有事实。批准重试以候选的稳定 ID 找回已写入的结果。
 
@@ -110,26 +109,3 @@ Web 与 TUI 可以一起上传多份文档或图片。每份原件在会话中�
 | 推断 Extensions | `created_at`、`updated_at` | 本条推断创建及最近修订的 UTC 时刻 |
 | 审计记录 | `at` | 业务操作的 UTC 时刻 |
 | Git 同步状态 | `last_commit_at`、`last_push_at`、`last_sync_at`、`retry_after` | 提交、推送、同步与重试的 UTC 时刻 |
-
-## 迁移既有 Vault
-
-迁移到本文格式需要单独的数据迁移。当前分支面向新格式 Vault。现存生产数据先完整备份并留在原部署上，原始附件单独核验。以下工具用于重现、验证较早版本的迁移结果。
-
-历史脚本 `scripts/migrate_vault_v2.py` 将旧 v1 Vault 复制到**历史 v2 格式**的独立 Vault 和 Runtime。它保留旧来源标记与历史格式元数据。对备份副本先预览，再写入全新的目标路径，最后核验哈希。
-
-```sh
-python scripts/migrate_vault_v2.py --source /path/to/restore --destination /path/to/historical-v2 --dry-run
-python scripts/migrate_vault_v2.py --source /path/to/restore --destination /path/to/historical-v2 --apply
-python scripts/migrate_vault_v2.py --source /path/to/restore --destination /path/to/historical-v2 --verify
-```
-
-## 迁移时间戳（UTC）
-
-`scripts/migrate_timestamps_to_utc.py` 使用历史 Markdown 解析器和该格式的字段清单，作用于历史 Vault 或明确指定的会话目录。裸时间需要提供来源时区，夏令时歧义、缺失时区或非法时间会中止整批。操作前停掉所有写入者，在独立备份副本上预览。
-
-```sh
-python scripts/migrate_timestamps_to_utc.py --vault /path/to/historical-v2 --runtime /path/to/runtime --source-timezone Asia/Shanghai --dry-run
-python scripts/migrate_timestamps_to_utc.py --vault /path/to/historical-v2 --runtime /path/to/runtime --source-timezone Asia/Shanghai --apply --backup-dir /path/to/new-backup
-```
-
-`--backup-dir` 应指向数据根以外的新目录。`--sessions` 可单独指定会话树。不同数据来源的时区可用 `--timezone-for` 按范围覆盖。恢复时使用备份中的原始相对路径，把旧版程序与对应格式的数据成对恢复。

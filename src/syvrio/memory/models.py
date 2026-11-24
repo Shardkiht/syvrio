@@ -9,20 +9,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from ..time import parse_timestamp, serialize_timestamp, utc_timestamp
-
-_SHORT_FIELD = re.compile(
-    r"(?P<label>[\u3400-\u4dbf\u4e00-\u9fffA-Za-z][\u3400-\u4dbf\u4e00-\u9fffA-Za-z0-9 _-]{1,17})"
-    r"\s*[:：]\s*(?P<value>[^\n\r。！？]{1,64})。?"
-)
-
-
-def short_field(text: str) -> tuple[str, str] | None:
-    """根据明确边界识别独立字段，避免猜测含义。"""
-    match = _SHORT_FIELD.fullmatch(text.strip())
-    if match and (value := match["value"].strip()):
-        return match["label"].strip(), value
-    return None
+from ..infra.time import parse_timestamp, serialize_timestamp, utc_timestamp
 
 
 class MemoryEmotion(BaseModel):

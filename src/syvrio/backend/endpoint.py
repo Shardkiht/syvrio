@@ -13,21 +13,20 @@ from pathlib import Path
 
 import httpx
 
-from ..infra.config import default_config_path, load_config
-from ..infra.config_files import ConfigFiles
-from ..infra.locking import VaultLock
+from ..infra.config import default_config_path, default_vault_path
+from ..infra.config.files import ConfigFiles
+from ..infra.storage.locking import VaultLock
+from ..infra.storage.paths import SyvrioPaths, runtime_path
 
 
-def client_paths(config: Path | None, vault: Path | None):
+def client_paths(config: Path | None, vault: Path | None) -> SyvrioPaths:
     filename = (config or default_config_path()).expanduser().resolve()
-    settings = load_config(config)
-    if config is None and not os.environ.get("SYVRIO_CONFIG") and not filename.exists():
-        layout = ConfigFiles(filename)
-        with layout.lock:
-            filename.touch(exist_ok=True)
-    if vault is not None:
-        settings.vault = vault.expanduser().resolve()
-    return settings, settings.paths(filename)
+    configured_vault, runtime = ConfigFiles(filename).connection_locations(
+        required=config is not None or bool(os.environ.get("SYVRIO_CONFIG"))
+    )
+    return SyvrioPaths(
+        vault or Path(configured_vault or default_vault_path()), runtime_path(runtime), filename
+    )
 
 
 def publish(paths, port: int, token: str) -> Path:
@@ -80,11 +79,17 @@ def connect(paths) -> tuple[str, str]:
             sys.executable,
             "-m",
             "syvrio.backend",
-            "--config",
-            str(paths.config_file),
             "--vault",
             str(paths.vault_dir),
         ]
+        # 默认配置尚不存在时，子进程也按首次运行启动，由后端负责落盘。
+        if (
+            paths.config_file.exists()
+            or paths.config_file != default_config_path().expanduser().resolve()
+            or os.environ.get("SYVRIO_CONFIG")
+            or ConfigFiles(paths.config_file).journal.exists()
+        ):
+            argv.extend(["--config", str(paths.config_file)])
         flags = (
             subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
             if os.name == "nt"

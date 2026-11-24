@@ -7,9 +7,9 @@ import json
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from ..infra.transaction import vault_transaction
+from ..infra.session.model import Session
+from ..infra.storage.transaction import vault_transaction
 from ..memory.service import MemoryService, pending_view
-from ..session.model import Session
 
 
 def emotion_sources(session: Session, message_id: str) -> list[str]:

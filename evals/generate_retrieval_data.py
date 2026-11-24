@@ -8,10 +8,10 @@
 ``--real-vault`` 的聚合分布对照，不把真实条目喂给模型。
 
     # 小探针：只生成少量，检查格式与分布
-    uv run python evals/generate_retrieval_data.py --probe --real-vault ~/.syvrio/vault-v2
+    uv run python evals/generate_retrieval_data.py --probe --real-vault ~/.syvrio/vault
 
     # 全量：740 条语料 + 50 题
-    uv run python evals/generate_retrieval_data.py --corpus 740 --cases 50 --real-vault ~/.syvrio/vault-v2
+    uv run python evals/generate_retrieval_data.py --corpus 740 --cases 50 --real-vault ~/.syvrio/vault
 """
 
 from __future__ import annotations
@@ -91,7 +91,7 @@ def llm_config():
 
 
 def _chat(cfg, prompt: str, max_tokens: int = 4000) -> str:
-    from syvrio.llm import complete
+    from syvrio.infra.llm import complete
 
     resp = complete(cfg, [{"role": "user", "content": prompt}], max_tokens=max_tokens)
     return resp.choices[0].message.content or ""

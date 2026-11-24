@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -14,9 +13,9 @@ import typer
 import uvicorn
 from fastapi import FastAPI
 
-from ...backend.endpoint import client_paths
-from ...infra.config import ConfigError, WebShareConfig, write_config
-from .hosts import normalize_domain
+from ...backend.client import ResidentClient
+from ...backend.client_contracts import WebShareConfig
+from ...infra.errors import SyvrioError
 from .server import DEFAULT_HOST, run_server
 
 
@@ -28,27 +27,17 @@ def start_share(
     config: Path | None,
     vault: Path | None,
 ) -> None:
-    settings, paths = client_paths(config, None)
-    try:
-        hostname = normalize_domain(domain or settings.web_share.domain)
-    except ValueError as exc:
-        raise ConfigError(
-            "请用 --domain 指定 ngrok 分配的完整主机名，例如 demo.ngrok-free.dev。"
-        ) from exc
-    account = settings.web_share.github_user_id if github_id is None else github_id
-    if not re.fullmatch(r"[1-9][0-9]{0,19}", account):
-        raise ConfigError("请用 --github-id 指定唯一允许登录的 GitHub 数字账号 ID。")
+    client = ResidentClient(config, vault)
+    share = WebShareConfig(**client.call("web_share", domain=domain, github_id=github_id))
+    hostname, account = share.domain, share.github_user_id
     if not shutil.which("ngrok"):
-        raise ConfigError(
+        raise SyvrioError(
             "未找到 ngrok。请安装 ngrok v3，将其加入 PATH 并按 ngrok 指引配置 authtoken。"
         )
-    share = WebShareConfig(domain=hostname, github_user_id=account)
     typer.echo(f"HTTPS: https://{hostname}/   GitHub ID: {account}   Web: {DEFAULT_HOST}:{port}")
     if not yes:
         typer.confirm("保存此设置并通过 ngrok 开放这个 Web 网关？", default=False, abort=True)
-    if settings.web_share != share:
-        settings.web_share = share
-        write_config(paths.config_file, settings)
+    client.call("web_share", domain=hostname, github_id=account, save=True)
     run_server(
         DEFAULT_HOST, port, config_path=config, vault_path=vault, domains=[hostname], share=share
     )
@@ -84,7 +73,7 @@ def run_shared_gateway(gateway: FastAPI, port: int, share: WebShareConfig) -> No
         )
         server.run()
         if server.failure:
-            raise ConfigError(server.failure)
+            raise SyvrioError(server.failure)
 
 
 class _SharedServer(uvicorn.Server):

@@ -7,8 +7,8 @@ from threading import Lock
 
 from fastapi import FastAPI, Request
 
-from ...infra.locking import LockTimeout, VaultLock
-from ...infra.paths import syvrio_home
+from ...infra.storage.locking import LockTimeout, VaultLock
+from ...infra.storage.paths import syvrio_home
 from .channel import APIError
 from .http import STATE_MODIFYING, error_response
 

@@ -1,0 +1,554 @@
+from __future__ import annotations
+
+import json
+import os
+import queue
+import shutil
+import subprocess
+import threading
+import time
+from email.utils import parsedate_to_datetime
+from typing import Any, Callable
+
+import httpx
+
+from .... import __version__
+from ...time import utc_now
+from ..base import (
+    FetchQuery,
+    FetchResult,
+    ProviderError,
+    ProviderErrorKind,
+    SearchFailure,
+    SearchQuery,
+    SearchResult,
+    truncate_fetch_content,
+)
+
+NAME = "open_websearch"
+DAEMON_HINT = (
+    "未连接到 open-websearch daemon；请先运行 "
+    "`npx open-websearch@latest serve`（或 `open-websearch serve`）。"
+)
+MAX_DAEMON_LIMIT = 50
+# 抓取服务的 HTTP 接口允许 1,000 至 200,000 个字符，省略参数时默认 30,000 个。
+DAEMON_MAX_FETCH_CHARS = 200_000
+DAEMON_MIN_FETCH_CHARS = 1000
+SEARCH_ENGINES = (
+    "bing",
+    "baidu",
+    "sogou",
+    "duckduckgo",
+    "brave",
+    "startpage",
+    "csdn",
+    "juejin",
+    "linuxdo",
+    "hackernews",
+    "exa",
+)
+ClientFactory = Callable[[], httpx.Client]
+
+
+def npx_command(
+    command: str = "npx",
+    args: tuple[str, ...] = ("-y", "open-websearch@latest"),
+) -> list[str]:
+    """解析 npx 路径；Windows 下 .cmd/.bat 通过 cmd /c 启动。"""
+    resolved = shutil.which(command) or shutil.which(f"{command}.cmd")
+    if not resolved:
+        raise ProviderError(NAME, ProviderErrorKind.NETWORK, "未找到 npx；请先安装 Node.js")
+    if os.name == "nt" and resolved.lower().endswith((".cmd", ".bat")):
+        return [os.environ.get("COMSPEC", "cmd.exe"), "/c", resolved, *args]
+    return [resolved, *args]
+
+
+def _text(value: Any) -> str:
+    return "" if value is None else str(value).strip()
+
+
+def _retry_after_seconds(value: str | None) -> float:
+    if not value:
+        return 0.0
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        try:
+            moment = parsedate_to_datetime(value)
+            if moment.tzinfo is None:
+                return 0.0
+            return max(0.0, (moment - utc_now()).total_seconds())
+        except (TypeError, ValueError, OverflowError):
+            return 0.0
+
+
+def _error_kind(code: str) -> ProviderErrorKind:
+    lowered = code.lower()
+    if "rate" in lowered or "limit" in lowered:
+        return ProviderErrorKind.RATE_LIMIT
+    if "browser" in lowered or "engine" in lowered:
+        return ProviderErrorKind.UNAVAILABLE
+    return ProviderErrorKind.BAD_RESPONSE
+
+
+def _response_error(response: httpx.Response) -> str:
+    """失败响应的可读原因：优先 daemon 的 error 信封，其次纯文本正文。"""
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = None
+    if isinstance(payload, dict):
+        error = payload.get("error")
+        if isinstance(error, dict):
+            message = _text(error.get("message")) or _text(error.get("code"))
+        else:
+            message = _text(error)
+        hint = _text(payload.get("hint"))
+        detail = " · ".join(part for part in (message, hint) if part)
+        if detail:
+            return detail
+    # 非信封正文（代理错误页等）压成一行，避免把整页 HTML 塞进错误消息。
+    return " ".join(response.text.split())[:300]
+
+
+def _partial_failure(item: dict) -> SearchFailure:
+    """把 daemon partialFailures 里的一条失败转成结构化 SearchFailure。"""
+    code = _text(item.get("code"))
+    detail = _text(item.get("message"))
+    engine = _text(item.get("engine")) or "unknown"
+    lowered = code.lower()
+    if "429" in lowered or "rate" in lowered:
+        kind = ProviderErrorKind.RATE_LIMIT
+    elif "timeout" in lowered or "timedout" in lowered:
+        kind = ProviderErrorKind.TIMEOUT
+    else:
+        kind = ProviderErrorKind.NETWORK
+    return SearchFailure(engine, kind.value, detail or code)
+
+
+def _map_result(item: Any) -> SearchResult | None:
+    """只在这里映射 open-websearch 字段；上层不依赖其原始 schema。"""
+    if not isinstance(item, dict):
+        return None
+    url = _text(item.get("url"))
+    if not url:
+        return None
+    published = item.get("published") or item.get("published_at") or item.get("date")
+    # 逐条保留 daemon 标注的真实来源引擎；混合引擎请求不能全标成槽位引擎。
+    engine = _text(item.get("engine")) or _text(item.get("source"))
+    return SearchResult(
+        title=_text(item.get("title")) or url,
+        url=url,
+        snippet=_text(item.get("description")) or _text(item.get("snippet")),
+        published=_text(published) or None,
+        provider=NAME,
+        engine=engine,
+    )
+
+
+class HttpTransport:
+    """默认传输：调用本地 open-websearch daemon 的 POST /search。"""
+
+    def __init__(
+        self,
+        base_url: str,
+        timeout: float = 10.0,
+        client_factory: ClientFactory | None = None,
+        engines: list[str] | tuple[str, ...] | None = None,
+        fetch_timeout: float = 45.0,
+    ):
+        self.base_url = base_url.rstrip("/")
+        self.timeout = timeout
+        self.engines = list(engines or [])
+        self.fetch_timeout = max(float(fetch_timeout), self.timeout)
+        self._client_factory = client_factory or (
+            # localhost 不走系统代理；否则开了代理时可能连不上本地 daemon。
+            lambda: httpx.Client(timeout=timeout, trust_env=False)
+        )
+
+    def search(
+        self,
+        query: str,
+        limit: int,
+        engines: list[str] | tuple[str, ...] | None = None,
+        timeout: float | None = None,
+    ) -> tuple[list[dict], list[dict]]:
+        body = {"query": query, "limit": max(1, min(limit, MAX_DAEMON_LIMIT))}
+        selected = list(engines) if engines else self.engines
+        if selected:
+            # 不传时用 daemon 的 DEFAULT_SEARCH_ENGINE（默认 bing）。
+            body["engines"] = selected
+        return self._parse(self._post("/search", body, timeout=timeout))
+
+    def fetch(self, url: str, max_chars: int | None) -> dict:
+        limit = DAEMON_MAX_FETCH_CHARS
+        if max_chars is not None and max_chars > 0:
+            limit = min(limit, max(DAEMON_MIN_FETCH_CHARS, max_chars))
+        body = {
+            "url": url,
+            "maxChars": limit,
+            "readability": True,
+            "renderMode": "request",
+        }
+        # 抓正文比搜索慢，给它单独的请求超时，避免 10s 默认值过早中断。
+        response = self._post("/fetch-web", body, timeout=self.fetch_timeout)
+        return self._parse_data(response)
+
+    def _post(self, path: str, body: dict, timeout: float | None = None) -> httpx.Response:
+        kwargs = {"json": body}
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+        try:
+            with self._client_factory() as client:
+                response = client.post(f"{self.base_url}{path}", **kwargs)
+                if response.status_code == 429:
+                    delay = _retry_after_seconds(response.headers.get("Retry-After"))
+                    if delay:
+                        time.sleep(min(delay, 5.0))
+                    response = client.post(f"{self.base_url}{path}", **kwargs)
+        except httpx.TimeoutException as exc:
+            raise ProviderError(NAME, ProviderErrorKind.TIMEOUT, str(exc)) from exc
+        except httpx.RequestError as exc:
+            raise ProviderError(NAME, ProviderErrorKind.NETWORK, f"{exc}；{DAEMON_HINT}") from exc
+        except httpx.HTTPError as exc:
+            raise ProviderError(NAME, ProviderErrorKind.NETWORK, str(exc)) from exc
+
+        if response.status_code >= 400:
+            # daemon 的失败原因只在正文里（fetch_failed / browser_unavailable / invalid_request），
+            # 丢掉它会让 LLM 只看到 "HTTP 502" 这种无法据以修正的文案。
+            body = _response_error(response)
+            detail = f"HTTP {response.status_code}" + (f"：{body}" if body else "（无错误正文）")
+            if response.status_code == 429:
+                raise ProviderError(
+                    NAME, ProviderErrorKind.RATE_LIMIT, f"open-websearch 仍在限流（{detail}）"
+                )
+            kind = (
+                ProviderErrorKind.UNAVAILABLE
+                if response.status_code >= 500
+                else ProviderErrorKind.BAD_RESPONSE
+            )
+            raise ProviderError(NAME, kind, f"open-websearch {detail}")
+        return response
+
+    def _parse_data(self, response: httpx.Response) -> dict:
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise ProviderError(
+                NAME, ProviderErrorKind.BAD_RESPONSE, "open-websearch 返回的不是 JSON"
+            ) from exc
+        if not isinstance(payload, dict):
+            raise ProviderError(NAME, ProviderErrorKind.BAD_RESPONSE, "open-websearch 返回结构异常")
+        if payload.get("status") != "ok":
+            error = payload.get("error")
+            code = _text(error.get("code")) if isinstance(error, dict) else ""
+            detail = _text(error.get("message")) if isinstance(error, dict) else code
+            raise ProviderError(NAME, _error_kind(code), detail or "open-websearch 调用失败")
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            raise ProviderError(
+                NAME, ProviderErrorKind.BAD_RESPONSE, "open-websearch 响应缺少 data"
+            )
+        return data
+
+    def _parse(self, response: httpx.Response) -> tuple[list[dict], list[dict]]:
+        data = self._parse_data(response)
+        results = data.get("results")
+        if not isinstance(results, list):
+            raise ProviderError(
+                NAME, ProviderErrorKind.BAD_RESPONSE, "open-websearch 响应缺少 data.results"
+            )
+        failures = data.get("partialFailures")
+        partial = (
+            [item for item in failures if isinstance(item, dict)]
+            if isinstance(failures, list)
+            else []
+        )
+        if not results and partial:
+            details = "; ".join(
+                f"{item.get('engine', 'unknown')}: {item.get('code', '')} {item.get('message', '')}"
+                for item in partial
+            )
+            kind = (
+                ProviderErrorKind.TIMEOUT
+                if "TIMEOUT" in details.upper() or "TIMEDOUT" in details.upper()
+                else ProviderErrorKind.NETWORK
+            )
+            raise ProviderError(NAME, kind, details or "All search engines failed")
+        # 有部分结果时失败不能静默吞掉：交给上层转成结构化诊断。
+        return [item for item in results if isinstance(item, dict)], partial
+
+
+class McpStdioTransport:
+    """可选传输：通过 stdio MCP 调用 open-websearch 的 search 工具。
+
+    每次搜索启动一次进程，避免在安静优先的 CLI 里维护后台子进程；
+    日常使用仍推荐先启动 HTTP daemon。
+    """
+
+    def __init__(
+        self,
+        timeout: float = 10.0,
+        command: str = "npx",
+        args: tuple[str, ...] = ("-y", "open-websearch@latest"),
+        engines: list[str] | tuple[str, ...] | None = None,
+    ):
+        self.timeout = timeout
+        self.command = command
+        self.args = args
+        self.engines = list(engines or [])
+
+    def search(
+        self,
+        query: str,
+        limit: int,
+        engines: list[str] | tuple[str, ...] | None = None,
+        timeout: float | None = None,
+    ) -> tuple[list[dict], list[dict]]:
+        command = self._command_line()
+        env = os.environ.copy()
+        env["MODE"] = "stdio"
+        env.setdefault("OPEN_WEBSEARCH_QUIET_STARTUP", "true")
+        arguments = {"query": query, "limit": max(1, min(limit, MAX_DAEMON_LIMIT))}
+        selected = list(engines) if engines else self.engines
+        if selected:
+            arguments["engines"] = selected
+        try:
+            process = subprocess.Popen(
+                command,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                bufsize=1,
+                env=env,
+            )
+        except FileNotFoundError as exc:
+            raise ProviderError(
+                NAME,
+                ProviderErrorKind.NETWORK,
+                f"未找到 npx；请先安装 Node.js，或改用 HTTP daemon。{exc}",
+            ) from exc
+        except OSError as exc:
+            raise ProviderError(NAME, ProviderErrorKind.NETWORK, str(exc)) from exc
+
+        messages: queue.Queue[str | None] = queue.Queue()
+        threading.Thread(target=self._read_stdout, args=(process, messages), daemon=True).start()
+        try:
+            # router 下发的单次超时受剩余预算约束；MCP 传输同样遵守。
+            effective_timeout = min(self.timeout, timeout) if timeout else self.timeout
+            deadline = time.monotonic() + effective_timeout
+            self._request(
+                process,
+                messages,
+                1,
+                "initialize",
+                {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "syvrio", "version": __version__},
+                },
+                deadline,
+            )
+            self._notify(process, "notifications/initialized", {})
+            response = self._request(
+                process,
+                messages,
+                2,
+                "tools/call",
+                {
+                    "name": "search",
+                    "arguments": arguments,
+                },
+                deadline,
+            )
+            return self._parse_result(response), []
+        except TimeoutError as exc:
+            raise ProviderError(
+                NAME, ProviderErrorKind.TIMEOUT, f"open-websearch MCP 超时（{self.timeout:.0f}s）"
+            ) from exc
+        except ProviderError:
+            raise
+        except (json.JSONDecodeError, KeyError, IndexError, TypeError) as exc:
+            raise ProviderError(
+                NAME, ProviderErrorKind.BAD_RESPONSE, f"无法解析 open-websearch MCP 响应：{exc}"
+            ) from exc
+        finally:
+            self._stop(process)
+
+    def _command_line(self) -> list[str]:
+        return npx_command(self.command, self.args)
+
+    @staticmethod
+    def _read_stdout(process: subprocess.Popen, messages: queue.Queue) -> None:
+        if process.stdout is None:
+            messages.put(None)
+            return
+        try:
+            for line in process.stdout:
+                messages.put(line)
+        finally:
+            messages.put(None)
+
+    @staticmethod
+    def _send(process: subprocess.Popen, message: dict) -> None:
+        if process.stdin is None:
+            raise ProviderError(NAME, ProviderErrorKind.BAD_RESPONSE, "MCP stdin 不可用")
+        process.stdin.write(json.dumps(message, ensure_ascii=False) + "\n")
+        process.stdin.flush()
+
+    def _notify(self, process: subprocess.Popen, method: str, params: dict) -> None:
+        self._send(process, {"jsonrpc": "2.0", "method": method, "params": params})
+
+    def _request(
+        self,
+        process: subprocess.Popen,
+        messages: queue.Queue,
+        request_id: int,
+        method: str,
+        params: dict,
+        deadline: float,
+    ) -> dict:
+        self._send(
+            process,
+            {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params},
+        )
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError
+            try:
+                line = messages.get(timeout=remaining)
+            except queue.Empty as exc:
+                raise TimeoutError from exc
+            if line is None:
+                raise ProviderError(
+                    NAME, ProviderErrorKind.UNAVAILABLE, "open-websearch MCP 进程已退出"
+                )
+            try:
+                message = json.loads(line)
+            except json.JSONDecodeError:
+                # 启动横幅等非协议输出不应影响 JSON-RPC 消息。
+                continue
+            if message.get("id") != request_id:
+                continue
+            if "error" in message:
+                error = message.get("error") or {}
+                detail = _text(error.get("message")) if isinstance(error, dict) else str(error)
+                raise ProviderError(NAME, ProviderErrorKind.BAD_RESPONSE, detail or "MCP 调用失败")
+            return message
+
+    @staticmethod
+    def _parse_result(message: dict) -> list[dict]:
+        result = message.get("result")
+        if not isinstance(result, dict):
+            raise ProviderError(NAME, ProviderErrorKind.BAD_RESPONSE, "MCP 响应缺少 result")
+        structured = result.get("structuredContent")
+        payload = structured if isinstance(structured, dict) else None
+        if payload is None:
+            content = result.get("content")
+            if not isinstance(content, list) or not content:
+                raise ProviderError(NAME, ProviderErrorKind.BAD_RESPONSE, "MCP 响应缺少 content")
+            text = _text(content[0].get("text")) if isinstance(content[0], dict) else ""
+            payload = json.loads(text)
+        results = payload.get("results") if isinstance(payload, dict) else None
+        if not isinstance(results, list):
+            raise ProviderError(NAME, ProviderErrorKind.BAD_RESPONSE, "MCP 响应缺少 results")
+        return [item for item in results if isinstance(item, dict)]
+
+    @staticmethod
+    def _stop(process: subprocess.Popen) -> None:
+        try:
+            if process.stdin is not None:
+                process.stdin.close()
+        except OSError:
+            pass
+        try:
+            process.terminate()
+            process.wait(timeout=2)
+        except (OSError, subprocess.TimeoutExpired):
+            try:
+                process.kill()
+            except OSError:
+                pass
+
+
+class OpenWebSearchProvider:
+    name = NAME
+    capabilities = {"search"}
+
+    def __init__(
+        self,
+        base_url: str,
+        timeout: float = 10.0,
+        transport: str = "http",
+        client_factory: ClientFactory | None = None,
+        mcp_command: str = "npx",
+        mcp_args: tuple[str, ...] = ("-y", "open-websearch@latest"),
+        engines: list[str] | tuple[str, ...] | None = None,
+        fetch_timeout: float = 45.0,
+    ):
+        self._search_state = threading.local()
+        if transport == "mcp":
+            self.transport: HttpTransport | McpStdioTransport = McpStdioTransport(
+                timeout=timeout, command=mcp_command, args=mcp_args, engines=engines
+            )
+            # MCP 传输暂未接 fetchWebContent，只暴露搜索能力。
+            self.capabilities = {"search", "engines"}
+        else:
+            self.transport = HttpTransport(
+                base_url,
+                timeout=timeout,
+                client_factory=client_factory,
+                engines=engines,
+                fetch_timeout=fetch_timeout,
+            )
+            # engines 能力声明此 provider 支持按请求指定上游搜索引擎（可回退）。
+            self.capabilities = {"search", "fetch", "engines"}
+
+    @property
+    def last_partial_failures(self) -> list[SearchFailure]:
+        return getattr(self._search_state, "partial_failures", [])
+
+    def search(self, query: SearchQuery) -> list[SearchResult]:
+        # 最近一次成功请求里 daemon 报告的部分引擎失败；router 读取后转成
+        # 结构化诊断，避免有部分结果时静默吞掉上游故障。
+        self._search_state.partial_failures = []
+        try:
+            raw, partial = self.transport.search(
+                query.query, query.limit, query.engines or None, query.timeout
+            )
+        except ProviderError:
+            raise
+        except Exception as exc:
+            raise ProviderError(NAME, ProviderErrorKind.NETWORK, str(exc)) from exc
+        self._search_state.partial_failures = [_partial_failure(item) for item in partial]
+        results = (_map_result(item) for item in raw)
+        return [result for result in results if result is not None]
+
+    def fetch(self, query: FetchQuery) -> FetchResult:
+        if "fetch" not in self.capabilities:
+            raise ProviderError(
+                NAME, ProviderErrorKind.UNAVAILABLE, "当前 transport 不支持网页抓取，请改用 http"
+            )
+        try:
+            data = self.transport.fetch(query.url, query.max_chars)
+        except ProviderError:
+            raise
+        except Exception as exc:
+            raise ProviderError(NAME, ProviderErrorKind.NETWORK, str(exc)) from exc
+        content = _text(data.get("content"))
+        if not content:
+            raise ProviderError(NAME, ProviderErrorKind.BAD_RESPONSE, "open-websearch 未返回正文")
+        content, preview_truncated = truncate_fetch_content(content, query.max_chars)
+        final_url = _text(data.get("finalUrl")) or query.url
+        return FetchResult(
+            url=query.url,
+            final_url=final_url,
+            title=_text(data.get("title")) or final_url,
+            content=content,
+            truncated=preview_truncated or bool(data.get("truncated")),
+            site_name=_text(data.get("siteName")),
+        )

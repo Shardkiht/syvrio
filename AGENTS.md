@@ -8,7 +8,7 @@ README 必须与当前代码架构保持一致；目录结构、依赖方向、C
 
 ## 命名规范
 
-正式品牌、Python 包、CLI、MCP Server、Keyring 服务名与缓存/日志前缀统一为 `syvrio`；不保留旧品牌别名或兼容入口。默认配置文件为 `~/.syvrio/config.toml`，保留既有平台路径读取兼容；Vault 与 Runtime 默认分别位于 `~/.syvrio/vault` 与 `~/.syvrio/runtime`。环境变量使用 `SYVRIO_` 前缀。PyPI 发布必须由用户明确操作。
+正式品牌、Python 包、CLI、MCP Server、Keyring 服务名与缓存/日志前缀统一为 `syvrio`；不保留旧品牌别名或兼容入口。默认配置文件为 `~/.syvrio/config.toml`，可通过 `SYVRIO_CONFIG` 指定配置入口；Vault 与 Runtime 默认分别位于 `~/.syvrio/vault` 与 `~/.syvrio/runtime`。环境变量使用 `SYVRIO_` 前缀。PyPI 发布必须由用户明确操作。
 
 ## 快速命令
 
@@ -33,21 +33,21 @@ Python 3.12+、uv、hatchling、Typer、FastMCP、LiteLLM、Pydantic v2、pytest
 
 Web 和 TUI 的聊天上传原件保存在 `Vault/attachments/`。该目录由 Vault 根目录的 `.gitignore` 排除，迁移和备份时应按文件复制；会话中的附件清单使用稳定 ID 与校验值。
 
-## 分层
+## 目录组织与职责边界
 
-- `app/` 与仓库根的 `web/` 提供 CLI、TUI、MCP、Web 展示与输入适配。客户端业务操作通过统一后端接口调用。
-- `backend/` 管理常驻进程、唯一实例、本地访问凭据、客户端发现和请求路由。`application/` 编排会话 FIFO、安全插入、撤回、审核和设置等用例。
-- `agent/` 管理模型循环、上下文与工具调用。Agent 发起正式记忆变更或创建候选前通过 Recall 核验当前证据，将结果提供给模型判断。
-- `session/` 提供会话事件投影、可靠写入、会话列表和原始消息查询。可信来源由调用方关联到具体用户消息。
-- `background_memory/` 负责会话沉淀、改写后补 Context 和 Dream。后台作业保存检查点，通过 MemoryService 的正式入口更新知识。Profile 先整体发布，随后创建新的待审推断。
-- `memory/` 拥有领域模型、MemoryService、Markdown 解析和存储、候选、推断、审计及变化追踪。`retrieval/` 使用事实的只读数据执行关键词或向量检索。
-- `llm/` 适配模型服务。`infra/` 提供配置、文件、持久事务、运行锁、Git、任务状态、上传原件和搜索等共享能力。搜索供应商各自负责自己的字段映射。
+- 按职责组织源码、测试和 Web。先为文件选择已有的归属，再考虑新增目录。一个目录开始混放几个不同功能时，按功能建立子目录；同一职责只有少数文件时直接放在一起。新增功能前先检查现有目录，避免在包根逐个平铺模块。
+- `infra/` 放基础服务与可复用组件。配置加载及内置默认值放在 `infra/config/`，模型接入与 token 估算在 `infra/llm/`，搜索、抓取及供应商在 `infra/search/`。会话存储、检索与 Vault 归档同步分别归 `infra/session/`、`infra/retrieval/`、`infra/vault/`。文件事务、凭据、系统命令和诊断按职责分别归入子目录。
+- `app/` 和仓库根的 `web/` 负责输入、展示与发请求。会话历史、记忆、候选、附件、设置、任务进度等业务数据的**读和写**都走后端公开接口。客户端只在本机读取用户主动选中的上传文件、页面资源和界面偏好，显示缓存只保存后端已返回的数据。
+- `backend/` 负责统一接口、后端发现、独占运行和服务生命周期。`application/` 编排排队、安全插入、撤回、审核和设置。首次初始化、离线核验等本机操作也由后端维护入口执行。客户端只收集参数并呈现结果。
+- `agent/` 管理模型循环、上下文和工具调用。正式记忆变更前通过 Recall 核验来源。`memory/` 管理记忆裁决、候选、推断、审计和来源链；`memory/background/` 负责沉淀、Context 补全和 Dream。业务规则归到负责它们的模块，基础服务通过明确的输入或只读接口工作。
+- `tests/` 按被测职责分组，共用夹具放在最近的公共层。Web 按聊天、会话侧栏、设置、命令等功能组织，组件专用样式与测试随功能放置。跨功能使用的界面组件与工具放在共享目录。移动模块时同步更新实际入口、测试导入、打包资源及文档链接。
+- 项目自有的文件格式与接口只维护当前版本。格式变更时同步更新运行时、客户端、用例、示例和工程文档。仓库只维护现行格式的工具与测试。
 
-跨模块使用相对导入。事务、锁和文件层只处理持久化机制。记忆裁决与来源核验放在业务服务或 Agent。
+跨模块使用相对导入。事务、锁和文件层只处理持久化机制。记忆裁决与来源核验由业务服务或 Agent 完成。
 
 ## TUI 与 Web 会话指令
 
-- 两端从 `application/commands.py` 的同一份目录读取斜杠指令。新增、修改或移除指令时，两端同步更新，保持名称、子命令、参数和操作语义一致。
+- 两端共用 `backend/api/commands.py` 的斜杠指令名称和补全，`application/commands.py` 负责校验和执行。新增、修改或移除指令时，两端同步更新，保持名称、子命令、参数和操作语义一致。
 - 只有一端因平台能力限制确实无法完成该操作时，才可在该端停用对应指令或子命令，并在共享目录中注明原因。弹窗、按钮或快捷键的差异由各端适配，指令仍然保留。
 - 指令涉及业务操作时，两端调用同一后端接口，经同一 `application/` 用例完成校验、调度、执行和状态读写。客户端只适配输入、确认交互和结果展示，业务逻辑只在后端实现一次。
 
@@ -71,7 +71,7 @@ Web 和 TUI 的聊天上传原件保存在 `Vault/attachments/`。该目录由 V
 - `sessions/YYYY/MM/<id>.jsonl` 追加消息、摘要、撤回和沉淀事件。稳定消息 ID 定位原话。保存绝对 UTC 时刻与已知的来源本地日期。尾行恢复以物理行号追加 `recovery` 标记及诊断。会话写入前屏蔽已识别的凭据。
 - 最新回合 `/undo` 为正式记忆可恢复原文件的例外。先核对所有受影响文件和存续引用，再在一个事务内恢复文件并追加撤回事件。其他会话写过同一文件或新增引用时拒绝整次撤回。Runtime 持久化撤回凭据、推理附件与后台进度，应与需要恢复的 Vault 配对备份。
 - Vault 归档按内容类型分子目录。会话默认归档，原文移入 `Vault/archived/sessions/YYYY/MM/<id>.jsonl`。整个 `Vault/archived/` 排除在检索、后台任务和自动 Git 处理之外。确认后可释放只读视图并归档，目标会话有写入、排队消息或后台任务时拦截。永久删除已归档会话需手动确认，有正式记忆来源引用就拒绝。相关活动候选须在确认界面列出并随会话移除。消息的上传副本随会话删除。`Vault/attachments/` 由 Vault Git 忽略，迁移时另行复制并核对校验值。
-- `SOUL.md` 是可选人设。敏感凭据、真实配置与用户数据只能留在本地。历史离线工具处理各自的旧格式。生产 Vault 升级到当前格式需专门设计和验证迁移流程。
+- `SOUL.md` 是可选人设。敏感凭据、真实配置与用户数据只能留在本地。
 
 ## 测试
 
@@ -125,10 +125,10 @@ CI 的测试、构建、CLI 检查与发布作业统一在 Debian 13 容器中�
 
 ## 异常处理
 
-- 用户可达路径上的**故意失败**一律抛继承 `syvrio.errors.SyvrioError` 的异常（保留原基类多重继承，旧的 `except ValueError` 等不受影响）；边界层先 `except SyvrioError` 翻译成用户可读文案，再用裸 `except Exception` 兜底并记录事件，**不得手写枚举异常类型元组**（漏一个类型就冒裸 traceback）。
-- 异常消息按"阶段 + 可操作的解法"写，不按 errno 裸文写（参考 `UpdateError(stage, detail)` 与 `infra/update.py::_uv`）。
+- 用户可达路径上的**故意失败**一律抛继承 `syvrio.infra.errors.SyvrioError` 的异常（保留原基类多重继承，旧的 `except ValueError` 等不受影响）；边界层先 `except SyvrioError` 翻译成用户可读文案，再用裸 `except Exception` 兜底并记录事件，**不得手写枚举异常类型元组**（漏一个类型就冒裸 traceback）。
+- 异常消息按"阶段 + 可操作的解法"写，不按 errno 裸文写（参考 `UpdateError(stage, detail)` 与 `backend/updates/installer.py::_uv`）。
 - 用 `typer.Exit`/`click.Abort` 表示流程退出，不表示失败：`main()` 对它们直接放行不记录；`ui.fail(message, exc=exc)` 会在抛出退出码**之前**把原始异常记成 `cli.failed`（带 `command` 字段），调用侧拿到原始异常时必须传 `exc=`，否则诊断日志只剩退出码。
-- 降级路径（keyring 不可用、tiktoken 编码表下载失败等）静默退回默认行为时必须 `diagnostics.record_once` 记录一次，并写注释说明降级语义；`record_once` 的事件名必须加入 `_EVENTS` 白名单（`tests/test_diagnostics.py` 的静态对齐测试会拦截脱钩）。
+- 降级路径（keyring 不可用、tiktoken 编码表下载失败等）静默退回默认行为时必须 `diagnostics.record_once` 记录一次，并写注释说明降级语义；`record_once` 的事件名必须加入 `_EVENTS` 白名单（`tests/infra/test_diagnostics.py` 的静态对齐测试会拦截脱钩）。
 - `except BaseException` 只许用于"释放资源后重抛"的模式；裸 `except: pass` 只允许在探针/TOCTOU/尽力清理场景，且必须有注释。
 - 共享 HTTP 边界使用 `APIError(code, message, status)`，由 `backend/api/routes.py` 的处理器返回 `{"error": {"code": ..., "message": ...}}`。Web 网关沿用相同错误格式。不得把 traceback 或记忆内容带进 HTTP 响应。
 - 诊断事件名采用 `域.动作` 形式，失败类以 `.failed`/`.unreadable` 等后缀结尾。
@@ -142,12 +142,12 @@ README 面向用户，必须始终与 `src/syvrio` 的当前架构一致。以�
 - 新增或删除 CLI 子命令：更新“命令行”示例。
 - 两端会话指令或其适用范围变化时，同步更新“会话内命令”表。
 - 新增或删除 MCP 工具：同步 `app/server.py` 与 README 工具列表。
-- 配置的默认值只在 `src/syvrio/defaults/` 的四份 TOML 维护，本地配置只保存覆盖。配置字段或默认值变化：同步 `config.example.toml`、README 配置示例与 `infra/config.py`。
+- 配置的默认值只在 `src/syvrio/infra/config/defaults/` 的四份 TOML 维护，本地配置只保存覆盖。配置字段或默认值变化：同步 `config.example.toml`、README 配置示例与 `infra/config/`。
 - 存储格式或写入规则变化：更新 README 的“写入规则”和“结构”章节。
 - README 不写会快速过期的固定数字（如测试数量），只写稳定的覆盖范围。
 - 功能待办以 GitHub Issues 为准（创建时写清现状/方案/验收标准，完成时带验收记录关闭）；README Roadmap 只留条目级摘要并指向 Issues。
 - README 呈现约束：不加装饰性 emoji；代码块里**不做依赖跨行字符对齐的 ASCII 排版**（GitHub 等宽字体无 CJK 字形，中文回退渲染必然错位），只保留框内自洽的元素。
-- 约定本身变化时更新本文件。
+- 开发中一旦用户明确了长期适用的项目约定，在同一轮修改中主动更新本文件并核对相关文档。单次任务的临时要求只作用于该任务。
 
 ## 脱敏
 
@@ -158,8 +158,8 @@ README 面向用户，必须始终与 `src/syvrio` 的当前架构一致。以�
 
 ## 时间
 
-- 持久化绝对时间用 `syvrio.time` 生成、解析和序列化为 UTC ISO 8601（`+00:00`）。运行时拒绝无时区值，禁止直接调用 `datetime.now()`、`datetime.utcnow()` 或在业务模块自行解析时间戳。纯日期、本地计划和持续时间保持原有语义。
-- 展示层使用时间工具转换为本地 24 小时制。历史时间只由一次性迁移脚本处理。新增时间字段同步更新 `docs/vault-v2.md` 中的时间字段清单。
+- 持久化绝对时间用 `syvrio.infra.time` 生成、解析和序列化为 UTC ISO 8601（`+00:00`）。运行时拒绝无时区值，禁止直接调用 `datetime.now()`、`datetime.utcnow()` 或在业务模块自行解析时间戳。纯日期、本地计划和持续时间保持原有语义。
+- 展示层使用时间工具转换为本地 24 小时制。新增时间字段同步更新 `docs/vault-v2.md` 中的时间字段清单。
 
 ## 提交
 
@@ -172,5 +172,5 @@ README 面向用户，必须始终与 `src/syvrio` 的当前架构一致。以�
 ## 边界
 
 - 项目是本地优先：不引入遥测、云同步或额外外部服务，除非明确要求。
-- 不通过修改用户 vault 里的历史内容来“修数据”；需要迁移时写一次性脚本并先说明影响。
+- 修改用户 Vault 的既有数据前，需核实目标目录、影响范围和用户授权。
 - 不删除或覆盖用户未提交的改动。

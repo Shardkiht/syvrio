@@ -6,9 +6,9 @@ from typing import Protocol
 
 from pydantic import ValidationError
 
-from ..errors import SyvrioError
 from ..infra.config import LLMConfig
-from ..llm.client import complete
+from ..infra.errors import SyvrioError
+from ..infra.llm.client import complete
 from .models import Candidate, ExtractionResult, MemoryContext, MemoryEmotion
 
 

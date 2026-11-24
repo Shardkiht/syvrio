@@ -6,10 +6,11 @@ from dataclasses import replace
 
 from ... import __version__
 from ...application.turns import ConversationTurn
-from ...errors import ConversationError, SessionDeletionChanged, SessionProtectedError, SyvrioError
-from ...infra.attachments import AttachmentBatch
-from ...infra.diagnostics import record_event
-from ...session import SESSION_ID_RE, Session
+from ...infra.errors import SyvrioError
+from ...infra.observability.diagnostics import record_event
+from ...infra.session import SESSION_ID_RE, Session
+from ...infra.session.attachments import AttachmentBatch
+from ...infra.session.errors import ConversationError, SessionDeletionChanged, SessionProtectedError
 from ..channel import ResidentChannel
 from ..ownership import BackendLease
 from .models import (
@@ -106,7 +107,7 @@ class APIChannel(ResidentChannel):
                 session = replace(current, records=list(current.records))
             else:
                 try:
-                    session = self._sessions.load(session_id, include_reasoning=False)
+                    session = self._sessions.read_snapshot(session_id).session
                 except KeyError as exc:
                     raise APIError("not_found", "Session not found.", 404) from exc
             used = self._conversation.estimate_usage(session)
@@ -212,21 +213,30 @@ class APIChannel(ResidentChannel):
     def history(
         self, session_id: str, limit: int = HISTORY_ITEM_LIMIT, *, archived: bool = False
     ) -> HistoryResponse:
+        session = self._read_history_session(session_id, archived)
+        return self.project_history(
+            session, current=self._conversation.current_id == session.id, limit=limit
+        )
+
+    def tool_result(self, session_id: str, record_id: str, *, archived: bool = False) -> str:
+        session = self._read_history_session(session_id, archived)
+        for record in session.active_records():
+            if record.get("type") == "tool" and record.get("id") == record_id:
+                return str(record.get("content") or "")
+        raise APIError("not_found", "This tool result is no longer available.", 404)
+
+    def _read_history_session(self, session_id: str, archived: bool) -> Session:
         self._validate_session_id(session_id)
         try:
             with self._service.write_lock:
                 if archived:
-                    session = self._sessions.load(session_id, archived=True)
-                else:
-                    session = self._sessions.read_snapshot(session_id).session
+                    return self._sessions.load(session_id, archived=True)
+                return self._sessions.read_snapshot(session_id).session
         except KeyError as exc:
             raise APIError("session_not_found", "Session not found.", 404) from exc
         except (ValueError, OSError) as exc:
             record_event("web.history_unreadable", exc)
             raise APIError("session_unreadable", "Session history could not be read.", 500) from exc
-        return self.project_history(
-            session, current=self._conversation.current_id == session.id, limit=limit
-        )
 
     @staticmethod
     def project_history(
@@ -277,10 +287,16 @@ class APIChannel(ResidentChannel):
                     )
                 )
             elif role == "tool":
+                content = str(record.get("content") or "")
+                # 无稳定 ID 的旧记录无法单独取回全文，直接随历史返回。
+                truncated = bool(base["id"]) and len(content) > TOOL_CONTENT_LIMIT
                 items.append(
                     HistoryItem(
                         role="tool",
-                        content=str(record.get("content") or "")[:TOOL_CONTENT_LIMIT],
+                        content=content[:TOOL_CONTENT_LIMIT] if truncated else content,
+                        tool_content_length=len(content),
+                        tool_content_truncated=truncated,
+                        tool_call_id=record.get("tool_call_id"),
                         tool_name=str(record.get("name") or ""),
                         tool_ok=bool(record.get("ok")),
                         **base,

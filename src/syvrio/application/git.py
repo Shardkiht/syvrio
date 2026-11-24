@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ..infra.gitsync import SyncResult
+from ..infra.vault.sync import SyncResult
 from ..memory.service import MemoryService
 
 

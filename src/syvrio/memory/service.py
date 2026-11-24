@@ -9,7 +9,6 @@ from itertools import zip_longest
 from pathlib import Path
 from uuid import uuid4
 
-from ..infra.archive_layout import migrate_archive
 from ..infra.config import (
     Config,
     LLMConfig,
@@ -17,16 +16,9 @@ from ..infra.config import (
     default_config_path,
     load_config,
 )
-from ..infra.files import atomic_write
-from ..infra.gitops import GitError, GitRepo
-from ..infra.gitsync import GitSyncService
-from ..infra.jobs import enqueue_context_fill
-from ..infra.locking import git_operation_lock, vault_write_lock
-from ..infra.tokens import truncate_to_tokens
-from ..infra.transaction import recover_vault_transaction, vault_transaction
-from ..llm import LiteLLMEmbedder
-from ..llm.commit_summary import summarize_diff
-from ..retrieval import (
+from ..infra.llm import LiteLLMEmbedder
+from ..infra.llm.tokens import truncate_to_tokens
+from ..infra.retrieval import (
     Embedder,
     HybridRetriever,
     KeywordRetriever,
@@ -34,10 +26,18 @@ from ..retrieval import (
     Retriever,
     VectorRetriever,
 )
-from ..session.query import SessionQuery
-from ..time import utc_timestamp
+from ..infra.security.secrets import contains_secret
+from ..infra.session.query import SessionQuery
+from ..infra.storage.files import atomic_write
+from ..infra.storage.locking import git_operation_lock, vault_write_lock
+from ..infra.storage.transaction import recover_vault_transaction, vault_transaction
+from ..infra.system.gitops import GitError
+from ..infra.time import utc_timestamp
+from ..infra.vault.commit_summary import summarize_diff
+from ..infra.vault.git import VaultGitRepo
+from ..infra.vault.sync import GitSyncService
 from .audit import AuditLog
-from .detect import contains_secret
+from .background.jobs import enqueue_context_fill
 from .extractor import ImportExtractor, LLMExtractor
 from .inference import InferenceStore, source_fingerprint
 from .models import (
@@ -171,7 +171,7 @@ def build_retriever(config: Config, store: MemoryStore) -> tuple[Retriever, str]
     embedder = _build_embedder(config.retrieval)
     if embedder is None:
         return keyword, f"{method}-fallback-keyword"
-    vector = VectorRetriever(store, embedder)
+    vector = VectorRetriever(store, embedder, cache_dir=store.paths.index_dir)
     if method == "vector":
         return vector, "vector"
     return HybridRetriever(keyword, vector), "hybrid"
@@ -214,13 +214,13 @@ class MemoryService:
             self.paths.sessions_dir.glob("*.jsonl")
         ):
             raise ValueError(
-                "Legacy Vault layout. Use a new development Vault or migrate your data separately."
+                "Unsupported Vault layout. Expected separate Vault and Runtime directories and sessions/YYYY/MM/."
             )
         self.store = MemoryStore(self.paths)
         self.session_query = SessionQuery(self.paths)
         self.queue = PendingQueue(self.paths)
         self.inferences = InferenceStore(self.paths)
-        self.repo = GitRepo(self.paths.vault_dir)
+        self.repo = VaultGitRepo(self.paths.vault_dir)
         self.audit = AuditLog(self.paths)
         self.extractor = extractor or LLMExtractor(config.llm)
         if retriever is not None:
@@ -238,7 +238,6 @@ class MemoryService:
         with self._git_lock, self.write_lock:
             self.paths.bind()
             recover_vault_transaction(self.paths)
-            migrate_archive(self.paths.vault_dir)
             self.queue.recover_session_deletion()
             if (self.paths.vault_dir / ".git").exists() and self.repo.is_repo:
                 _ensure_vault_gitignore(self.paths.vault_dir)
@@ -909,7 +908,7 @@ class MemoryService:
                         result["push_error"] = str(exc)
             return result
         # LLM 摘要与 Push 都不占 Vault 写锁；Git 锁仍持有，其他 Git 操作不会改 Index。
-        summary = summarize_diff(diff, self.config.llm, stat)
+        summary = summarize_diff(diff, self.config.llm, stat, self.config.chat.context_window)
         lines = summary.splitlines()
         subject = lines[0] if lines else "memory: 更新记忆库"
         if not subject.startswith("memory:"):

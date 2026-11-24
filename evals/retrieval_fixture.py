@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from importlib.metadata import version
 from unittest.mock import patch
 
-from syvrio.infra.tokens import estimate_tokens
+from syvrio.infra.llm.tokens import estimate_tokens
 from syvrio.memory.schema import Core, render_record
 from syvrio.memory.service import MemoryService
 
@@ -23,7 +23,7 @@ MODEL = "BAAI/bge-small-zh-v1.5"
 
 
 def run_metadata(method: str) -> dict:
-    from syvrio.infra.tokens import _encoding
+    from syvrio.infra.llm.tokens import _encoding
 
     packages = {"fastembed", "onnxruntime", "numpy"} if method == "hybrid" else set()
     encoding = _encoding()

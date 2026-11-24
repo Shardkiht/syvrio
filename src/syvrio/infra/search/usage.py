@@ -45,7 +45,15 @@ class UsageLimiter:
         except (OSError, ValueError):
             return
         if isinstance(data, dict):
-            self._counts = {name: value for name, value in data.items() if isinstance(value, dict)}
+            self._counts = {
+                provider: {
+                    field: value[field]
+                    for field in ("daily", "monthly", "paused")
+                    if isinstance(value.get(field), dict)
+                }
+                for provider, value in data.items()
+                if isinstance(value, dict)
+            }
 
     def _save(self) -> None:
         if self._path is None:
@@ -57,15 +65,6 @@ class UsageLimiter:
 
     def _entry(self, provider: str) -> dict:
         entry = self._counts.setdefault(provider, {})
-        # 根据窗口结构识别旧记录中唯一已知的周期。
-        old_window = entry.get("window", "")
-        if isinstance(old_window, str) and isinstance(entry.get("count"), int):
-            period = (
-                "daily" if len(old_window) == 10 else "monthly" if len(old_window) == 7 else None
-            )
-            if period and period not in entry:
-                entry[period] = {"window": old_window, "count": entry["count"]}
-                entry["legacy_unknown_period"] = "monthly" if period == "daily" else "daily"
         for period in ("daily", "monthly"):
             key = window_key(period, self._clock())
             counter = entry.get(period)
@@ -84,10 +83,7 @@ class UsageLimiter:
             self._load()
             entry = self._entry(provider)
             limit = self._limits.get(provider)
-            result = {
-                "paused": dict(entry.get("paused") or {}),
-                "legacy_unknown_period": entry.get("legacy_unknown_period"),
-            }
+            result = {"paused": dict(entry.get("paused") or {})}
             for period in ("daily", "monthly"):
                 maximum = getattr(limit, period, 0)
                 count = entry[period]["count"]
@@ -133,10 +129,6 @@ class UsageLimiter:
             entry = self._entry(provider)
             for period in ("daily", "monthly"):
                 entry[period]["count"] += 1
-            # 保留旧结构，供仍读取旧版记录的调用方使用。
-            limit = self._limits.get(provider)
-            if getattr(limit, "period", None) in ("daily", "monthly"):
-                entry.update(entry[limit.period])
             self._save()
 
     def release(self, provider: str) -> None:
@@ -152,9 +144,6 @@ class UsageLimiter:
                 counter = entry[period]
                 if counter["count"] > 0:
                     counter["count"] -= 1
-            limit = self._limits.get(provider)
-            if getattr(limit, "period", None) in ("daily", "monthly"):
-                entry.update(entry[limit.period])
             self._save()
 
     def pause(self, provider: str, reason: str, resume_at: float | None = None) -> None:

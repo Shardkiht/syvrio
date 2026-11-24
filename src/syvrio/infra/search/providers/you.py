@@ -1,0 +1,138 @@
+"""You.com Web Search API 适配器。
+
+鉴权是 X-API-Key 头（不是 Bearer）；端点固定 ydc-index.io，与
+api.you.com 的 Answer/Research 入口不是同一服务，不得混用。
+响应为 results.web[]（新闻等类型不在最小实现内）。
+"""
+
+from __future__ import annotations
+
+from typing import Any, Callable
+
+import httpx
+
+from ..base import (
+    FetchQuery,
+    FetchResult,
+    ProviderError,
+    ProviderErrorKind,
+    SearchQuery,
+    SearchResult,
+    join_search_snippets,
+    truncate_fetch_content,
+)
+from ..http_client import JsonApiClient
+
+NAME = "you"
+DEFAULT_BASE_URL = "https://ydc-index.io"
+
+
+class YouSearchProvider:
+    name = NAME
+    capabilities = {"search"}
+
+    def __init__(
+        self,
+        api_key: str,
+        timeout: float = 10.0,
+        base_url: str = DEFAULT_BASE_URL,
+        client_factory: Callable[[], httpx.Client] | None = None,
+    ):
+        self._client = JsonApiClient(NAME, base_url, timeout, client_factory)
+        self._client.error_mapper = _api_error
+        self._api_key = api_key
+
+    def search(self, query: SearchQuery) -> list[SearchResult]:
+        body = {"query": query.query, "count": max(1, min(query.limit, 100))}
+        headers = {"X-API-Key": self._api_key}
+        response = self._client.post_json(
+            "/v1/search",
+            body,
+            headers,
+            timeout=self._client.effective_timeout(query.timeout),
+        )
+        payload = self._client.parse_json(response)
+        results = payload.get("results")
+        web = results.get("web") if isinstance(results, dict) else None
+        if web is None:
+            return []
+        if not isinstance(web, list):
+            raise ProviderError(NAME, ProviderErrorKind.BAD_RESPONSE, "results.web 类型异常")
+        mapped = [_map_result(item) for item in web]
+        return [item for item in mapped if item is not None]
+
+
+def _map_result(item: Any) -> SearchResult | None:
+    if not isinstance(item, dict):
+        return None
+    url = str(item.get("url") or "").strip()
+    if not url:
+        return None
+    # 官方文档只确认 web 结果的 title/url/description/snippets；日期字段
+    # 未经真实响应核实（page_age 是新闻类的可选线索），不猜字段、保持未知。
+    return SearchResult(
+        title=str(item.get("title") or "").strip() or url,
+        url=url,
+        snippet=join_search_snippets(item.get("description"), item.get("snippets")),
+        published=None,
+        provider=NAME,
+    )
+
+
+class YouFetchProvider:
+    """You.com Contents（ydc-index.io /v1/contents）：单 URL 抓正文。
+
+    请求体按官方 Contents API 用 urls + formats=["markdown"]；不启用
+    livecrawl。官方响应为顶层数组，每项包含 markdown/title/url。
+    https://you.com/docs/api-reference/contents
+    """
+
+    name = NAME
+    capabilities = {"fetch"}
+
+    def __init__(
+        self,
+        api_key: str,
+        timeout: float = 10.0,
+        base_url: str = DEFAULT_BASE_URL,
+        client_factory: Callable[[], httpx.Client] | None = None,
+    ):
+        self._client = JsonApiClient(NAME, base_url, timeout, client_factory)
+        self._client.error_mapper = _api_error
+        self._api_key = api_key
+
+    def fetch(self, query: FetchQuery) -> FetchResult:
+        body = {"urls": [query.url], "formats": ["markdown"]}
+        headers = {"X-API-Key": self._api_key}
+        response = self._client.post_json("/v1/contents", body, headers)
+        try:
+            items = response.json()
+        except ValueError as exc:
+            raise ProviderError(NAME, ProviderErrorKind.BAD_RESPONSE, "响应不是合法 JSON") from exc
+        if not isinstance(items, list) or not items:
+            raise ProviderError(NAME, ProviderErrorKind.BAD_RESPONSE, "contents 结果为空")
+        item = items[0] if isinstance(items[0], dict) else {}
+        content = str(item.get("markdown") or "").strip()
+        if not content:
+            raise ProviderError(NAME, ProviderErrorKind.BAD_RESPONSE, "未返回正文")
+        url = str(item.get("url") or "").strip() or query.url
+        text, truncated = truncate_fetch_content(content, query.max_chars)
+        return FetchResult(
+            url=query.url,
+            final_url=url,
+            title=str(item.get("title") or "").strip() or url,
+            content=text,
+            truncated=truncated,
+        )
+
+
+def _api_error(status: int, payload: dict) -> ProviderError | None:
+    if status == 402 and payload.get("detail") == "Insufficient credits":
+        return ProviderError(
+            NAME,
+            ProviderErrorKind.QUOTA,
+            "Insufficient credits",
+            code="402",
+            pause_reason="insufficient_credits",
+        )
+    return None

@@ -11,8 +11,8 @@ from markdown_it import MarkdownIt
 from markdown_it.tree import SyntaxTreeNode
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from ..errors import SyvrioError
-from ..time import parse_timestamp
+from ..infra.errors import SyvrioError
+from ..infra.time import parse_timestamp
 from .models import Entry, FieldNode, MemoryContext
 
 _MARKDOWN = MarkdownIt("commonmark")

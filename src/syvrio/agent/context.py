@@ -4,11 +4,13 @@ import json
 from dataclasses import dataclass, field
 from typing import Callable, Literal
 
-from ..infra.config import ChatConfig
-from ..infra.diagnostics import record_event
-from ..infra.tokens import estimate_messages_tokens, estimate_tokens, truncate_to_tokens
-from ..llm import ChatModelError, LLMSummarizer, Summarizer
-from ..session import Session, SessionStore, new_message_id, transcript
+from ..infra.config import ChatConfig, LLMConfig
+from ..infra.llm import ChatModelError
+from ..infra.llm.client import chat_history
+from ..infra.llm.tokens import estimate_messages_tokens, estimate_tokens, truncate_to_tokens
+from ..infra.observability.diagnostics import record_event
+from ..infra.session import Session, SessionStore, new_message_id, transcript
+from .summarizer import LLMSummarizer, Summarizer
 
 SUMMARY_MAX_CHARS = 1200
 SUMMARY_TEMPLATE = (
@@ -131,8 +133,11 @@ class ContextManager:
         summarizer: Summarizer,
         sessions: SessionStore,
         request_distillation: Callable[[str, str], None] | None = None,
+        *,
+        model_config: LLMConfig | None = None,
     ):
         self.config = config
+        self.model_config = model_config
         self.summarizer = summarizer
         self.sessions = sessions
         self.request_distillation = request_distillation
@@ -146,10 +151,15 @@ class ContextManager:
     def trigger_tokens(self) -> int:
         return int(self.input_budget * self.config.compact_threshold)
 
+    def _request_tokens(self, messages: list[dict], *, next_turn: bool = False) -> int:
+        # 空闲估算和 /compact 预期用户会开始下一轮，只计算已保存的消息。
+        if next_turn:
+            messages = [*messages, {"role": "user", "content": ""}]
+        outgoing, _ = chat_history(self.model_config, messages)
+        return estimate_messages_tokens(outgoing[:-1] if next_turn else outgoing)
+
     def fits_input(self, messages: list[dict], schemas: list[dict]) -> bool:
-        return (
-            estimate_messages_tokens(messages) + estimate_tool_tokens(schemas) <= self.input_budget
-        )
+        return self._request_tokens(messages) + estimate_tool_tokens(schemas) <= self.input_budget
 
     def check_input_budget(self, used: int, tool_tokens: int) -> None:
         if used > self.input_budget:
@@ -159,14 +169,28 @@ class ContextManager:
                 "Increase the context window or shorten the message or attachments."
             )
 
-    def estimate_usage(self, session: Session, system_prompt: str, tool_tokens: int = 0) -> int:
-        """只读估算当前会话的下一轮上下文占用，不触发压缩或摘要。"""
+    def estimate_usage(
+        self,
+        session: Session,
+        system_prompt: str,
+        tool_tokens: int = 0,
+        *,
+        active_message_id: str | None = None,
+    ) -> int:
+        """估算已落盘消息；正在继续工具链时保留本轮可重放的思考。"""
         messages = [{"role": "system", "content": system_prompt}]
         if summary := session.summary_text():
             messages.append({"role": "system", "content": SUMMARY_TEMPLATE.format(summary)})
-        return tool_tokens + estimate_messages_tokens(
-            messages + records_to_messages(session.records_after_summary())
+        history = session.records_after_summary()
+        messages.extend(records_to_messages(history))
+        # 调度器可能刚开始新回合，也可能还在收尾。核对原话已落盘，且最后仍是工具调用或结果。
+        continuing_tools = bool(
+            active_message_id
+            and history
+            and (history[-1].get("type") == "tool" or history[-1].get("tool_calls"))
+            and session.last_user_message_id() == active_message_id
         )
+        return tool_tokens + self._request_tokens(messages, next_turn=not continuing_tools)
 
     def prepare(
         self,
@@ -182,9 +206,10 @@ class ContextManager:
         additional_inputs: list[dict] | None = None,
     ) -> ContextPlan:
         if active_plan is not None:
-            used = tool_tokens + estimate_messages_tokens(active_plan.messages)
+            used = tool_tokens + self._request_tokens(active_plan.messages)
             if used < self.trigger_tokens:
                 self.check_input_budget(used, tool_tokens)
+                active_plan.estimated_tokens = used
                 return active_plan
 
         history = session.records_after_summary()
@@ -202,7 +227,14 @@ class ContextManager:
         base_tokens += estimate_messages_tokens(references)
         # 运行中的请求到达这里时，已超过会话阈值。
         history_messages = records_to_messages(history) if active_plan is None else []
-        history_tokens = estimate_messages_tokens(history_messages)
+        # 仅重放本轮思考的模型需要看到当前输入，才能判断哪些历史属于上一轮。
+        history_tokens = (
+            tool_tokens
+            + self._request_tokens(
+                system + history_messages + references + current, next_turn=not current
+            )
+            - base_tokens
+        )
         summary_tokens = (
             estimate_messages_tokens(
                 [{"role": "system", "content": SUMMARY_TEMPLATE.format(summary_text)}]
@@ -238,7 +270,7 @@ class ContextManager:
             self.input_budget - base_tokens - history_tokens,
         )
         messages = system + summary + history_messages + references + current
-        used = tool_tokens + estimate_messages_tokens(messages)
+        used = tool_tokens + self._request_tokens(messages, next_turn=not current)
         self.check_input_budget(used, tool_tokens)
         return ContextPlan(
             messages=messages,

@@ -7,8 +7,8 @@ from typing import Callable
 
 from ..agent.context import CompactionPhase
 from ..agent.runtime import AgentReply, ThinkingUpdate
+from ..infra.session import Session
 from ..memory.models import Inference, PendingItem
-from ..session import Session
 
 
 @dataclass(frozen=True)
@@ -121,9 +121,19 @@ class ProfileSnapshot:
     available: bool = True
 
 
+@dataclass(frozen=True)
+class ImportDocument:
+    name: str
+    content: bytes = b""
+    read_error: str = ""
+
+
 @dataclass
 class ImportResult:
     files: int = 0
+    failed_files: int = 0
+    failed_chunks: int = 0
+    file_chunks: list[tuple[str, int]] = field(default_factory=list)
     chunks: int = 0
     saved: int = 0
     queued: int = 0

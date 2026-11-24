@@ -13,8 +13,8 @@ from tempfile import TemporaryDirectory
 
 from syvrio.agent.tools import build_tools
 from syvrio.infra.config import Config, EmbeddingConfig, RetrievalConfig
+from syvrio.infra.session import SessionStore
 from syvrio.memory.service import MemoryService
-from syvrio.session import SessionStore
 
 if __package__:
     from .retrieval_fixture import MODEL, guard_vector, run_metadata, seed, tool_search

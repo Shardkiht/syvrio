@@ -3519,7 +3519,6 @@ dependencies = [
     { name = "textual" },
     { name = "tiktoken" },
     { name = "typer" },
-    { name = "tzdata" },
     { name = "uvicorn" },
 ]
 
@@ -3565,7 +3564,6 @@ requires-dist = [
     { name = "textual", specifier = ">=8.2.8" },
     { name = "tiktoken", specifier = ">=0.8" },
     { name = "typer", specifier = ">=0.15" },
-    { name = "tzdata", specifier = ">=2024.1" },
     { name = "uvicorn", specifier = ">=0.30" },
 ]
 provides-extras = ["local-embed", "documents"]

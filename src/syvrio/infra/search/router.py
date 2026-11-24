@@ -9,10 +9,9 @@ from pathlib import Path
 from typing import Any
 
 from ..config import SearchConfig, read_api_key
-from ..paths import SyvrioPaths, vault_paths
+from ..storage.paths import SyvrioPaths, vault_paths
 from .attempts import SearchAttempt, SearchRun
 from .base import (
-    FetchResult,
     SearchFailure,
     SearchOutcome,
     SearchProvider,
@@ -22,8 +21,7 @@ from .base import (
     normalize_url,
 )
 from .cache import SearchCache
-from .fetch_router import FetchRouter
-from .open_websearch import OpenWebSearchProvider
+from .providers.open_websearch import OpenWebSearchProvider
 from .quality import (
     QueryAnalysis,
     ScoreBreakdown,
@@ -70,7 +68,7 @@ _OPTIONAL_KEY_PROVIDERS = {
 
 def _build_optional_provider(name: str, api_key: str, config: SearchConfig) -> SearchProvider:
     if name == "anysearch":
-        from .anysearch import AnySearchProvider
+        from .providers.anysearch import AnySearchProvider
 
         return AnySearchProvider(
             api_key,
@@ -79,7 +77,7 @@ def _build_optional_provider(name: str, api_key: str, config: SearchConfig) -> S
             language=config.anysearch_language,
         )
     if name == "parallel_mcp":
-        from .parallel_mcp import ParallelMcpProvider
+        from .providers.parallel_mcp import ParallelMcpProvider
 
         return ParallelMcpProvider(api_key, timeout=max(15.0, config.timeout))
     raise ValueError(f"未知的可选搜索 provider: {name}")
@@ -88,23 +86,23 @@ def _build_optional_provider(name: str, api_key: str, config: SearchConfig) -> S
 def _build_external_provider(name: str, api_key: str, timeout: float) -> SearchProvider:
     # 延迟导入：未配置 Key 时不必加载这些模块。
     if name == "baidu_search":
-        from .baidu import BaiduSearchProvider
+        from .providers.baidu import BaiduSearchProvider
 
         return BaiduSearchProvider(api_key, timeout=timeout)
     if name == "tavily":
-        from .tavily import TavilySearchProvider
+        from .providers.tavily import TavilySearchProvider
 
         return TavilySearchProvider(api_key, timeout=timeout)
     if name == "exa":
-        from .exa import ExaSearchProvider
+        from .providers.exa import ExaSearchProvider
 
         return ExaSearchProvider(api_key, timeout=timeout)
     if name == "you":
-        from .you import YouSearchProvider
+        from .providers.you import YouSearchProvider
 
         return YouSearchProvider(api_key, timeout=timeout)
     if name == "volcengine":
-        from .volcengine import VolcengineSearchProvider
+        from .providers.volcengine import VolcengineSearchProvider
 
         return VolcengineSearchProvider(api_key, timeout=timeout)
     raise ValueError(f"未知的外部搜索 provider: {name}")
@@ -239,7 +237,7 @@ def build_registry(config: SearchConfig) -> dict[str, SearchProvider]:
                 name, read_api_key(_OPTIONAL_KEY_PROVIDERS[name]), config
             )
         elif name == "searxng":
-            from .searxng import SearxngProvider
+            from .providers.searxng import SearxngProvider
 
             registry[name] = SearxngProvider(
                 config.searxng_base_url, timeout=config.searxng_timeout
@@ -307,51 +305,56 @@ class SearchRouter:
         # 单次 search() 的跨 Provider 请求次数上限：默认 9 恰好容纳
         # 单 Provider 的最坏情况（3 个引擎槽位 × 原始查询 + 2 个变体）。
         self.max_requests = max(1, max_requests)
-        # 抓取调度委托独立 FetchRouter，按需惰性构建。
-        self._fetch_router: FetchRouter | None = None
         # 厂商调用上限（Search/Fetch 共池）；None 表示未启用额度限制。
         self.usage_limiter = usage_limiter
-
-    @property
-    def supports_fetch(self) -> bool:
-        return any("fetch" in provider.capabilities for provider in self.registry.values())
 
     def search(self, query: SearchQuery) -> SearchOutcome:
         text = query.query.strip()
         if not text:
             raise ValueError("搜索关键词为空")
         limit = max(1, min(query.limit or self.max_results, 15))
-        engine = (query.engine or "auto").strip()
         strategy = (query.strategy or "auto").strip().lower()
         if strategy not in SEARCH_STRATEGIES:
             raise ValueError(f"unsupported search strategy: {strategy}")
         requested = normalize_search_providers(query.providers, limit=MAX_SELECTED_PROVIDERS)
-        preferred = (query.preferred_provider or "auto").strip().lower()
-        selection_failures: list[SearchFailure] = []
-        if engine != "auto":
-            # 历史兼容：显式 SearchQuery.engine 直接指定单一 provider。
-            names = [engine]
-            strategy = "auto"
-        else:
-            enabled = [name for name in self.order if name in self.registry]
-            if strategy == "strict" and not requested:
-                raise ValueError("strict strategy requires at least one provider")
-            if not requested and preferred not in ("", "auto"):
-                requested = (preferred,)
-            valid = [name for name in requested if name in enabled]
-            for name in requested:
-                if name not in enabled:
-                    selection_failures.append(
-                        SearchFailure(name, "unavailable", "未启用或未注册的搜索 provider")
-                    )
-            if strategy == "strict":
-                # strict 只信任用户/LLM 明确列出且实际启用的来源。
-                names = valid
-            else:
-                # auto/compare 在显式列表之后补齐配置中的剩余来源，保留可靠回退。
-                names = valid + [name for name in enabled if name not in valid]
+        enabled = [name for name in self.order if name in self.registry]
+        if strategy == "strict" and not requested:
+            raise ValueError("strict strategy requires at least one provider")
+        selection_failures = [
+            SearchFailure(name, "unavailable", "未启用或未注册的搜索 provider")
+            for name in requested
+            if name not in enabled
+        ]
+        names = [name for name in requested if name in enabled]
+        if strategy != "strict":
+            names.extend(name for name in enabled if name not in requested)
+        if strategy == "strict" and not names:
+            return SearchOutcome(
+                failed=selection_failures,
+                hint="strict 指定的 Provider 均未启用或未注册。",
+                strategy=strategy,
+            )
+        if query.engines:
+            unsupported = {
+                name
+                for name in names
+                if name in self.registry and "engines" not in self.registry[name].capabilities
+            }
+            eligible = [name for name in names if name not in unsupported]
+            selection_failures.extend(
+                SearchFailure(name, "unsupported_engine", "该搜索服务不支持指定上游引擎")
+                for name in names
+                if name in unsupported and (name in requested or not eligible)
+            )
+            if not eligible:
+                return SearchOutcome(
+                    failed=selection_failures,
+                    hint="没有可指定上游引擎的搜索服务。请省略 search_engine 或启用支持该选择的服务。",
+                    strategy=strategy,
+                    verification="incomplete" if strategy == "compare" else "",
+                )
+            names = eligible
         # 缓存必须区分实际使用的上游引擎，否则改配置后会命中旧引擎的结果。
-        # v7：context、策略、首选/显式 Provider 与实际尝试顺序都进键。
         engines = tuple(query.engines) or self.engines
         analysis = analyze_query(text, query.context_terms)
         # 向上游多拉候选（展示条数的 3 倍，10~30），重排后仍只输出 limit；
@@ -360,7 +363,6 @@ class SearchRouter:
         cache_key = self._cache_key(
             text,
             limit,
-            engine,
             query.lang,
             query.freshness,
             names,
@@ -369,12 +371,6 @@ class SearchRouter:
             strategy,
             requested,
         )
-        if strategy == "strict" and not names:
-            return SearchOutcome(
-                failed=selection_failures,
-                hint="strict 指定的 Provider 均未启用或未注册。",
-                strategy=strategy,
-            )
         if self.cache is not None:
             cached = self.cache.get_record(cache_key)
             if cached is not None:
@@ -393,7 +389,7 @@ class SearchRouter:
                     hint=hint,
                     failed=_dedupe_failures([*selection_failures, *cached.failed]),
                     attempted=cached.attempted,
-                    strategy=cached.strategy or strategy,
+                    strategy=cached.strategy,
                     verification=cached.verification,
                 )
 
@@ -421,7 +417,6 @@ class SearchRouter:
                             SearchQuery(
                                 phrase,
                                 limit=fetch_limit,
-                                engine=engine,
                                 lang=query.lang,
                                 freshness=query.freshness,
                                 engines=slot,
@@ -440,7 +435,7 @@ class SearchRouter:
             for attempt, raw in responses:
                 results = normalize_results(raw)
                 for result in results:
-                    if not result.engine and attempt.query.engines:
+                    if not result.engine and len(attempt.query.engines) == 1:
                         result.engine = attempt.query.engines[0]
                 if not results:
                     continue
@@ -480,12 +475,10 @@ class SearchRouter:
     ) -> str:
         """compare 必须如实说明是否真正完成多源检索，不把单源结果说成交叉验证。"""
         if verification == "complete":
-            count = len(dict.fromkeys(contributors)) or 2
+            count = len(dict.fromkeys(contributors))
             return (
                 f"交叉验证：已合并 {count} 家 Provider 的结果；同一页面被多家返回不构成独立证据。"
             )
-        if verification == "unknown":
-            return "交叉验证状态未知（旧缓存缺少验证信息）。"
         count = len(dict.fromkeys(contributors))
         kinds = sorted({item.kind for item in failures})
         suffix = f"（失败类型：{', '.join(kinds)}）" if kinds else ""
@@ -697,19 +690,10 @@ class SearchRouter:
             slots = [()]
         return tuple(slots)
 
-    def fetch(self, url: str, max_chars: int | None = None) -> FetchResult:
-        """抓取搜索结果正文；兼容入口，实际调度委托独立 FetchRouter。"""
-        if self._fetch_router is None:
-            self._fetch_router = FetchRouter(
-                self.registry, order=self.order, usage_limiter=self.usage_limiter
-            )
-        return self._fetch_router.fetch(url, max_chars)
-
     def _cache_key(
         self,
         text: str,
         limit: int,
-        engine: str,
         lang: str | None,
         freshness: str | None,
         names: list[str],
@@ -724,10 +708,9 @@ class SearchRouter:
         context_sig = "\x1e".join(term.strip() for term in query.context_terms if term.strip())
         raw = "\x1f".join(
             [
-                "search-v7",
+                "search-v9",
                 text,
                 str(limit),
-                engine,
                 lang or "",
                 freshness or "",
                 strategy,

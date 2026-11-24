@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Sized
 from pathlib import Path
 
-from ..infra.documents import SUPPORTED_SUFFIXES, DocumentError, read_document
+from ..infra.storage.documents import DocumentError, read_document
 from ..memory.extractor import split_chunks
 from ..memory.service import MemoryService
 from .contracts import (
     ImportChunkProgress,
+    ImportDocument,
     ImportResult,
     InferenceReview,
     PendingSnapshot,
@@ -108,50 +109,53 @@ class MemoryUseCases:
 
     # 导入
 
-    def import_path(
+    def import_documents(
         self,
-        path: Path,
+        documents: Iterable[ImportDocument],
         apply: bool,
         on_progress: Callable[[ImportChunkProgress], None] | None = None,
         extractor=None,
+        *,
+        total_files: int | None = None,
     ) -> ImportResult:
-        files = (
-            sorted(
-                file
-                for file in path.iterdir()
-                if file.is_file() and file.suffix.lower() in SUPPORTED_SUFFIXES
-            )
-            if path.is_dir()
-            else [path]
-        )
-        if not files:
-            raise ValueError("No supported files in this directory (non-recursive).")
+        if total_files is None:
+            if not isinstance(documents, Sized):
+                raise ValueError("Provide a file count for streamed documents.")
+            total_files = len(documents)
+        if not total_files:
+            raise ValueError("没有找到支持导入的文件；目录只扫描当前层。")
         total = ImportResult(apply=apply)
-        for file_index, file in enumerate(files, 1):
+        for file_index, document in enumerate(documents, 1):
+            file = document.name
             try:
-                chunks = split_chunks(read_document(file))
+                if document.read_error:
+                    raise DocumentError(document.read_error)
+                chunks = split_chunks(read_document(Path(file), content=document.content))
             except DocumentError as exc:
-                total.errors.append(f"{file.name}: {exc}")
-                self._emit(on_progress, file, 0, 0, file_index, len(files), apply, error=str(exc))
+                total.errors.append(f"{file}: {exc}")
+                total.failed_files += 1
+                self._emit(on_progress, file, 0, 0, file_index, total_files, apply, error=str(exc))
                 continue
+            total.file_chunks.append((file, len(chunks)))
             total.files += 1
             for index, chunk in enumerate(chunks, 1):
                 try:
                     result = self.service.import_text(
                         chunk,
-                        source=f"import:{file.name}#chunk:{index}",
+                        source=f"import:{file}#chunk:{index}",
                         dry_run=not apply,
                         extractor=extractor,
                     )
                 except Exception as exc:  # 单块失败保留已完成写入
-                    total.errors.append(f"{file.name}#chunk:{index}: {exc}")
+                    total.failed_chunks += 1
+                    total.errors.append(f"{file}#chunk:{index}: {exc}")
                     self._emit(
                         on_progress,
                         file,
                         index,
                         len(chunks),
                         file_index,
-                        len(files),
+                        total_files,
                         apply,
                         error=(
                             "Check the format, parser dependencies and model settings; "
@@ -170,7 +174,7 @@ class MemoryUseCases:
                     index,
                     len(chunks),
                     file_index,
-                    len(files),
+                    total_files,
                     apply,
                     saved=len(result.admitted),
                     queued=len(result.queued),
@@ -184,7 +188,7 @@ class MemoryUseCases:
     @staticmethod
     def _emit(
         callback: Callable[[ImportChunkProgress], None] | None,
-        file: Path,
+        file: str,
         chunk: int,
         total_chunks: int,
         file_index: int,
@@ -195,7 +199,7 @@ class MemoryUseCases:
         if callback is not None:
             callback(
                 ImportChunkProgress(
-                    file=file.name,
+                    file=file,
                     chunk=chunk,
                     total_chunks=total_chunks,
                     file_index=file_index,

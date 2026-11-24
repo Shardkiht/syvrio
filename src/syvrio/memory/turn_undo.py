@@ -11,9 +11,9 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path, PurePosixPath
 
-from ..errors import SyvrioError
-from ..infra.paths import TURN_UNDO_DIR, SyvrioPaths
-from ..infra.transaction import vault_transaction
+from ..infra.errors import SyvrioError
+from ..infra.storage.paths import TURN_UNDO_DIR, SyvrioPaths
+from ..infra.storage.transaction import vault_transaction
 from .schema import parse_document
 
 _active: ContextVar[TurnFileJournal | None] = ContextVar("turn_file_journal", default=None)
@@ -102,11 +102,6 @@ class TurnFileJournal:
                 or not isinstance(data["references"], dict)
             ):
                 raise ValueError
-            files = data["files"]
-            if "archived/pending.md" in files:
-                if "archived/pending/rejected.md" in files:
-                    raise ValueError
-                files["archived/pending/rejected.md"] = files.pop("archived/pending.md")
             return data
         except (KeyError, TypeError, ValueError) as exc:
             raise TurnUndoError("The undo journal could not be read.") from exc

@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from ..config import FetchConfig, SearchConfig
-from ..paths import SyvrioPaths, vault_paths
+from ..storage.paths import SyvrioPaths, vault_paths
 from .base import (
     FetchQuery,
     FetchResult,
@@ -19,7 +19,7 @@ from .base import (
     SearchFailure,
     assert_public_fetch_url,
 )
-from .open_websearch import OpenWebSearchProvider
+from .providers.open_websearch import OpenWebSearchProvider
 
 # 需要厂商 API Key 的外部抓取服务；列进 fetch.providers 且 Key 可读才注册。
 _EXTERNAL_FETCH_PROVIDERS: dict[str, tuple[str, str]] = {
@@ -67,6 +67,7 @@ class FetchRouter:
             raise ValueError("抓取地址为空")
         assert_public_fetch_url(text)
         failures: list[SearchFailure] = []
+        best_partial: FetchResult | None = None
         for name in self.order:
             provider = self.registry.get(name)
             if provider is None or "fetch" not in provider.capabilities:
@@ -99,7 +100,19 @@ class FetchRouter:
             if result.final_url and result.final_url != text:
                 # 外部服务未必披露跳转链；拒绝已知的非公网最终地址。
                 assert_public_fetch_url(result.final_url, "重定向后的抓取地址")
-            return result
+            if result.content_kind == "page" and (
+                not result.truncated
+                or (max_chars is not None and 0 < max_chars <= len(result.content))
+            ):
+                return result
+            # 服务仅返回部分内容时继续抓取；若最终都不完整，优先保留正文，其次比较长度。
+            if best_partial is None or (result.content_kind == "page", len(result.content)) > (
+                best_partial.content_kind == "page",
+                len(best_partial.content),
+            ):
+                best_partial = result
+        if best_partial is not None:
+            return best_partial
         if failures:
             detail = "；".join(f"{item.provider}: {item.detail}" for item in failures)
             # 这里失败的是抓取而不是搜索；provider 标明 fetch，避免上层误判。
@@ -137,27 +150,27 @@ def build_fetch_registry(
 
 def _build_external_fetch_provider(name: str, api_key: str, timeout: float) -> FetchProvider:
     if name == "anysearch":
-        from .anysearch import AnySearchFetchProvider
+        from .providers.anysearch import AnySearchFetchProvider
 
         return AnySearchFetchProvider(api_key, timeout=timeout)
     if name == "parallel_mcp":
-        from .parallel_mcp import ParallelMcpFetchProvider
+        from .providers.parallel_mcp import ParallelMcpFetchProvider
 
         return ParallelMcpFetchProvider(api_key, timeout=timeout)
     if name == "tavily":
-        from .tavily import TavilyFetchProvider
+        from .providers.tavily import TavilyFetchProvider
 
         return TavilyFetchProvider(api_key, timeout=timeout)
     if name == "exa":
-        from .exa import ExaFetchProvider
+        from .providers.exa import ExaFetchProvider
 
         return ExaFetchProvider(api_key, timeout=timeout)
     if name == "you":
-        from .you import YouFetchProvider
+        from .providers.you import YouFetchProvider
 
         return YouFetchProvider(api_key, timeout=timeout)
     if name == "volcengine":
-        from .volcengine import VolcengineFetchProvider
+        from .providers.volcengine import VolcengineFetchProvider
 
         return VolcengineFetchProvider(api_key, timeout=timeout)
     raise ValueError(f"未知的外部抓取 provider: {name}")

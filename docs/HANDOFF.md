@@ -2,6 +2,8 @@
 
 ## 运行开发分支
 
+业务读写统一经后端。查会话、召回记忆、查看候选和更改设置时，先看 `backend/api/` 与 `application/`；离线初始化、诊断启动和附件核验在 `backend/`。会话、检索、配置、模型适配与搜索的实现见 `infra/` 对应子目录，后台记忆任务在 `memory/background/`。依赖边界测试在 `tests/application/test_application_architecture.py`。Web 组件与对应的交互测试同放在 `web/src/features/` 下。
+
 Web 顶层窗口由 `useDialogNavigation` 管理，命令面板先展示，再按当前会话读取数据。关闭面板或打开另一窗口后，旧请求不能重新打开窗口。归档详情取消永久删除后恢复原条目和按钮焦点。会话标题在共享存储入口校验，顶栏与 `/rename` 都会保留超长输入供修改。
 
 网页的草稿、会话附件和聊天 Markdown 共用图片查看器。已保存图片取自附件接口的 `preview=true` 分支；归档预览同时带 `archived=true`。`message_saved` 事件携带附件清单，便于在模型回复期间显示缩略图。尺寸和交互规范见 `docs/web.md`。
@@ -20,13 +22,17 @@ corepack pnpm install --frozen-lockfile
 corepack pnpm dev
 ```
 
-开发网页固定在 `http://127.0.0.1:7987/`，通过本机 8746 端口的 Web 网关访问 API。开发与生产分别使用独立的 Vault、Runtime、配置和端口。上传的原件由对应会话拥有，保存于 Vault 的 `attachments/`，该目录由 Vault 自己的 Git 设置忽略。迁移上传原件需单独复制，部署和历史格式迁移分开进行。
+开发网页固定在 `http://127.0.0.1:7987/`，通过本机 8746 端口的 Web 网关访问 API。开发与生产分别使用独立的 Vault、Runtime、配置和端口。上传的原件由对应会话拥有，保存于 Vault 的 `attachments/`，该目录由 Vault 自己的 Git 设置忽略。备份或搬机时，复制整个 Vault 以保留上传原件。
 
-本地配置按入口、模型、聊天和记忆分组。所有客户端加载内置 TOML 后按字段应用本地覆盖；旧单文件首次加载时迁移。配置格式、示例和缺失文件行为见 [README](../README.md#配置)。
+本地配置按入口、模型、聊天和记忆分组。所有客户端加载内置 TOML 后按字段应用本地覆盖。配置格式、示例和缺失文件行为见 [README](../README.md#配置)。
 
 共享入口 `syvrio web share` 随 wheel 分发，复用同一个本机 Web 网关。ngrok v3 使用 GitHub 登录后的账号数字 ID 校验，设置保存在入口 TOML 的 `[web_share]`，ngrok 自己管理令牌。普通 Web 启动不会创建隧道。
 
 ## 客户端行为
+
+终端发送与导航按界面版本串行处理。导航先完成时，将等待发送的原文和附件恢复到原会话；原会话已有其他草稿时通过 Ctrl+R 单独重试。后端历史响应通过 `tool_content_truncated` 标记工具预览，Web 和 TUI 在展开时按记录 ID 读取完整结果。重新打开归档工具结果时使用相同的归档标志，已撤销的记录无法查阅。
+
+Dream 状态包含暂停原因、当前能否手动运行及操作提示。状态面板读取该回执；修改时间窗、请求预算或调度策略时也应检查手动操作是否仍适用。
 
 应用层的 `ConversationDirectory` 管理客户端到会话的绑定，`ConversationUseCases` 保存活动回合和队列，`ConversationScheduler` 统一处理提交、取消、撤销、编辑重发和启动下一条。排查两端顺序不一致时，先比对会话 ID、回合 ID 和等待队列。
 
@@ -34,16 +40,20 @@ corepack pnpm dev
 
 - 模型、当前供应商的 Base URL、思考档位和上下文窗口可在生成中修改。Web 与终端共用设置，每个会话在回合开始时固定一份。工具续请求沿用原设置，排队消息和其他会话的新回合在实际开始时取最新设置。
 - Linux 无钥匙串后端时，共享凭据层用 `systemd-creds --user` 按账号加密保存。已有钥匙串锁定时会提示保存失败。Web、终端和 CLI 通过同一凭据层读写。
-- 上下文默认和下限为 50,000 tokens。旧配置低于下限时按 50,000 读取，高于下限时保留原值。对话和后台任务按模型输入能力取实际预算。预算计入历史、当轮输入、图片、工具定义及工具返回。网页抓取默认返回供应商提供的完整正文，`max_chars` 仅用于显式预览。工具原始返回完整写入会话；回合内的续请求和收尾使用同一会话压缩阈值，压缩发生在整批工具完成后。压缩摘要也按当轮预算分段。模型无法完成摘要时，已生成的部分与本地节选一起保存，原始消息仍可从会话历史读取。
+- 上下文默认和下限为 50,000 tokens。旧配置低于下限时按 50,000 读取，高于下限时保留原值。对话和后台任务按模型输入能力取实际预算。预算计入当前模型实际重放的历史、当轮输入、图片、工具定义及工具返回。附件 read_file 默认返回全文，可指定 offset 和 length。后台沉淀按自己的模型窗口估算完整请求，证据超限时先提炼候选，再分批核对重复和冲突。网页抓取默认返回供应商提供的完整正文，`max_chars` 仅用于显式预览。工具原始返回完整写入会话；回合内的续请求和收尾使用同一会话压缩阈值，压缩发生在整批工具完成后。压缩摘要也按当轮预算分段。模型无法完成摘要时，已生成的部分与本地节选一起保存，原始消息仍可从会话历史读取。
 - 首次完整问答会触发后台短标题任务。侧栏在标题生成后自动刷新。打开旧会话仅供阅读，用户继续聊天时才为未命名会话补标题。
 - 普通发送在后台的会话队列中等待，当前回合结束后发送下一条。生成中，Web 输入框的发送按钮原位变为停止按钮。有草稿时可选排队，纯文本还可用 Ctrl+Enter 请求在安全边界插入。执行中的工具先完成。重新连接时按回合事件的位置续读。
 - 在同一网页或终端里切换、新建会话时，原回合和队列留在原会话。Web 点击会话后立即高亮目标并显示其草稿，已有本标签页缓存时先显示正文。切换请求携带已知历史版本，后台从同一快照返回版本和按需更新的正文。首次打开时显示加载状态，归档阅读和独立刷新仍使用历史接口。发送等目标绑定确认，旧回合的回执和事件仍归原会话。切换响应丢失时，网页从后台查询本标签页当前绑定的会话，恢复后再开放发送。网页按会话保留本标签页里尚未发送的文字和附件。
 - Web 编辑重发时在一个请求里提交原消息 ID、替代正文和附件。新回合启动并保存附件后，在同一事务中撤回原回合、恢复其工具写入并保存替代消息。原回复若还在生成，会先停止并保存已收到的部分。启动或保存失败时，原问答、附件和记忆仍可读取，网页按会话保留可修改的草稿。撤销会检查最后一回合、被修改文件的版本和其他会话增加的引用。
 - Web 和 TUI 的 `/import` 打开本机的多文件选择器。Web 的圆形加号共用同一个选择器，文档和图片先加入草稿，发送后再由模型结合用户要求阅读或提炼记忆。聊天命令由共享命令目录提供。独立的 `syvrio import` 可以在终端批量整理已有资料。模型列表上方可按名称搜索厂商目录，右侧图标可手动刷新。设置弹窗固定为 560 × 480 像素，屏幕空间不足时缩小。切换页签时外框和顶部导航保持原位，长内容在页签内滚动。窄屏导航分为两行。
-- 思考档位优先采用厂商提供的能力，缺失时使用模型预设。auto 优先列出。会话记录的思考附件可在 Runtime 中保存，单个附件损坏不会阻止会话正文加载。
+- 设置向导和聊天通过 `llm.client.reasoning_values` 获取档位与顺序。向导用本次输入的凭据读取同一份模型目录，优先采用厂商声明，缺失时使用协议预设。auto 优先列出。会话记录的思考附件可在 Runtime 中保存，单个附件损坏不会阻止会话正文加载。
 - 模型结束时只返回思考内容、没有最终正文，客户端会显示失败原因，已收到的思考仍可在会话里查看。中间回合只返回工具调用时，继续执行工具并等待最终回答。
 - 回复失败时，会话保存本回合已经收到的内容和脱敏错误，刷新后可查看。刷新恰逢回合结束会从磁盘读取历史。会话默认归档。只读视图可立即释放；目标会话的写入、队列和后台任务会阻止归档。会话原文按年月保存在 `archived/sessions/`，拒绝的候选保存在 `archived/pending/rejected.md`。整个 `archived/` 目录排除在检索与后台处理之外。
 - 终端编辑待审记忆或推断后通过常驻后端保存。编辑推断后选中新建的已确认记录，保留原记录及其来源。`/profile` 展示完整的已发布画像，重新生成使用 `/dream`。
+
+搜索适配器保留厂商实际返回的全部摘要。指定引擎时由路由选择支持该引擎操作的服务，多引擎结果只记录可确定的来源。抓取结果通过 `content_kind` 和 `truncated` 区分正文、摘录与截断。排查全文抓取时应同时检查后备服务是否被尝试。
+
+Vault 的手动提交从 Git 层读取完整的活动文件差异。`infra/vault/commit_summary.py` 按当前模型窗口保留文件统计、分配各文件的节选空间。自动 Git 同步使用本地提交说明。
 
 ## 记忆写入与审核
 
@@ -59,7 +69,7 @@ Web 顶栏的 Pending 和 `/pending` 共用右侧审核面板。待审与推断�
 
 常驻后台负责编排会话沉淀、Dream 以及待审改写后的上下文补充。沉淀游标与相应写入一同提交。Dream 生成画像和有正式来源的新推断；人工编辑推断保留旧正文。原始会话、正式事实、推断与待审候选的格式和路径见 [Vault 规范](vault-v2.md)。
 
-Dream 的画像和推断共用 `memory.toml` 的 `[dream].context_window`，默认 200,000 tokens。后台按每次请求的实际内容估算输入，计入画像草稿或已有推断并预留输出。只有超过有效窗口才拆分，从已提交的证据位置继续。旧版仅记录批号的未完成阶段会从该阶段开头重新处理。
+Dream 的画像和推断共用 `memory.toml` 的 `[dream].context_window`，默认 200,000 tokens。后台按每次请求的实际内容估算输入，计入画像草稿或已有推断并预留输出。只有超过有效窗口才拆分，从已提交的证据位置继续。
 
 每个 Dream 请求在规划时固定模型和窗口，成功后同时提交结果和证据游标。切换模型从下个请求生效，保留当前阶段、画像草稿和游标，按新窗口划分剩余证据。用于画像的正式事实或已确认推断发生变化时才按新证据重算。
 
@@ -67,14 +77,14 @@ Dream 的画像和推断共用 `memory.toml` 的 `[dream].context_window`，默�
 
 Web 和 TUI 的 `/update` 共用常驻后端的版本检查、安装确认和任务状态接口。两端输入指令都会检查新版，手动打开 Web 设置的 About 时由用户点击检查。安装须另行确认目标版本。后台通过独立的 systemd 用户任务复用 CLI 的 PyPI 更新器，端到端验证需区分开发源码环境与受管理的安装。
 
-更新阶段和下载字节数由 `infra/update.py` 在实际操作处上报。CLI 将阶段写入标准错误。Web 和 TUI 发起的更新由独立任务把最新进度原子写入 `job.json`，两端通过 `/api/update/status` 读取。任务完成或失败后，状态文件保存最终结果。
+更新阶段和下载字节数由 `backend/updates/installer.py` 在实际操作处上报。CLI 将阶段写入标准错误。Web 和 TUI 发起的更新由独立任务把最新进度原子写入 `job.json`，两端通过 `/api/update/status` 读取。任务完成或失败后，状态文件保存最终结果。
 
 ## 回归入口
 
 ```sh
-uv run pytest tests/test_application_conversation.py tests/test_resident_clients.py tests/test_web_api.py tests/test_agent.py
-uv run pytest tests/test_background_memory.py tests/test_reflection.py
-uv run pytest tests/test_store.py tests/test_queue.py tests/test_service.py
+uv run pytest tests/application/test_application_conversation.py tests/backend/test_resident_clients.py tests/backend/test_web_api.py tests/agent/test_agent.py
+uv run pytest tests/memory/test_background_memory.py tests/memory/test_reflection.py
+uv run pytest tests/memory/test_store.py tests/memory/test_queue.py tests/memory/test_service.py
 uv run python -m evals.memory_eval
 uv run python -m evals.recall_gold_eval
 uv run python -m evals.conversation_recall_eval --method hybrid

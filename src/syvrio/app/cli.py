@@ -11,25 +11,14 @@ import click
 import typer
 
 from .. import __version__
+from ..backend import maintenance
 from ..backend.client import ResidentClient
-from ..backend.ownership import BackendLease
-from ..errors import SyvrioError
-from ..infra.config import (
-    Config,
-    default_config_path,
-    default_vault_path,
-    load_config,
-    write_example_config,
-)
-from ..infra.diagnostics import record_event, start_diagnostics, stop_diagnostics
-from ..infra.documents import SUPPORTED_SUFFIXES, DocumentError, read_document
-from ..infra.gitops import GitError
-from ..memory.extractor import ExtractorError, split_chunks
-from ..memory.models import MemoryContext, MemoryDraft
-from ..memory.service import MemoryService
-from ..session import SESSION_ID_RE, SessionStore
+from ..backend.client_contracts import SESSION_ID_RE, SUPPORTED_SUFFIXES, MemoryContext, MemoryDraft
+from ..backend.diagnostics import start_diagnostics
+from ..infra.errors import SyvrioError
+from ..infra.observability.diagnostics import record_event, stop_diagnostics
 from .session_ui import print_sessions
-from .tui import run_chat
+from .tui.launcher import run_chat
 from .ui import console, fail, padded, print_hits, styled_table
 
 app = typer.Typer(
@@ -79,10 +68,13 @@ def _service(config: Path | None, vault: Path | None) -> ResidentClient:
 
 @app.command("verify-attachments")
 def verify_attachments(
-    vault: Annotated[Path, typer.Option("--vault", exists=True, file_okay=False)],
+    vault: Annotated[Path, typer.Option("--vault")],
 ) -> None:
-    """核对附件迁移结果。检查会话清单、文件大小和 SHA-256。"""
-    checked, errors = SessionStore(vault.resolve()).verify_attachments()
+    """按会话清单核验附件的文件大小和 SHA-256。"""
+    try:
+        checked, errors = maintenance.verify_local_attachments(vault)
+    except maintenance.MaintenanceError as exc:
+        fail(str(exc), exc=exc)
     for detail in errors:
         typer.echo(detail, err=True)
     typer.echo(f"Verified {checked} attachment(s), {len(errors)} error(s).")
@@ -93,36 +85,12 @@ def verify_attachments(
 @app.command()
 def update() -> None:
     """从 PyPI 更新受管理的 Syvrio Web 服务。"""
-    from ..backend.update_worker import prepare_restart
-    from ..infra.paths import syvrio_home
-    from ..infra.update import config_options
-    from ..infra.update import update as apply_update
     from .ui import show_update_progress
 
-    root = syvrio_home() / "update"
-    config_path = root / "config.toml"
-    try:
-        options = config_options(root)
-    except FileNotFoundError:
-        fail(f"更新配置缺失（{config_path}），请先按 Web 文档配置受管理的服务。")
-    except (OSError, ValueError) as exc:
-        record_event("update.failed", exc)
-        typer.echo(f"更新失败：{exc}", err=True)
-        raise typer.Exit(code=1) from exc
-    # 只有上方读取配置时才能报告缺少配置。更新过程中出现 FileNotFoundError
-    # 表示找不到可执行文件（现为 uv，旧版为服务程序），应按实际原因报告。
     try:
         with show_update_progress() as display:
-            result = apply_update(
-                root, *options, prepare_restart=prepare_restart, on_progress=display
-            )
-    except SyvrioError as exc:
-        # 分阶段报告的失败（缺少 uv、虚拟环境损坏或切换失败等）已经包含处理办法。
-        record_event("update.failed", exc)
-        typer.echo(f"更新失败：{exc}", err=True)
-        raise typer.Exit(code=1) from exc
+            result = maintenance.update_managed(on_progress=display)
     except Exception as exc:
-        # 对更新器未按阶段处理的异常，使用 update.failed 将完整调用栈记入诊断日志。
         record_event("update.failed", exc)
         typer.echo(f"更新失败：{exc}", err=True)
         raise typer.Exit(code=1) from exc
@@ -136,24 +104,12 @@ def init(
     force: bool = typer.Option(False, "--force", help="目标目录非空且不是记忆库时仍然继续"),
 ) -> None:
     """初始化记忆库与 Git 仓库。"""
-    vault = (vault if vault is not None else default_vault_path()).expanduser().resolve()
-    if vault.exists() and any(vault.iterdir()) and not (vault / ".git").exists() and not force:
-        fail(f"{vault} 非空且不是 Syvrio 记忆库；确认无误后加 --force。")
-    config_path = config.expanduser() if config else default_config_path()
-    cfg = load_config(config_path) if config_path.exists() else Config(vault=vault)
-    vault_changed = cfg.vault.expanduser().resolve() != vault
-    cfg.vault = vault
-    with BackendLease(cfg.paths(config_path)):
-        result = MemoryService(cfg, config_path=config_path).init_vault()
-    if not config_path.exists():
-        write_example_config(config_path, vault)
-    elif vault_changed:
-        # 已有配置也要跟随 --vault，否则下条命令仍写回旧库。
-        from ..infra.providers import write_config
-
-        write_config(config_path, cfg)
+    try:
+        result = maintenance.initialize_configured_vault(config, vault, force=force)
+    except maintenance.MaintenanceError as exc:
+        fail(str(exc), exc=exc)
     console.print(f"记忆库已就绪：{result['vault']}")
-    console.print(f"配置文件：{config_path}")
+    console.print(f"配置文件：{result['config_path']}")
     if result["commit"]:
         console.print(f"初始提交：{result['commit']}")
 
@@ -164,14 +120,10 @@ def setup(
     vault: Path | None = VAULT_OPTION,
 ) -> None:
     """交互式配置模型、搜索与网页抓取 API。"""
-    from ..infra.providers import run_setup
+    from .setup import run_setup
 
     try:
-        from ..backend.endpoint import client_paths
-
-        _, paths = client_paths(config, vault)
-        with BackendLease(paths):
-            result = run_setup(config, vault)
+        result = run_setup(config, vault)
     except KeyboardInterrupt:
         fail("已取消。")
         return
@@ -186,7 +138,7 @@ def setup(
         f"供应商：{result['base_url']} · 模型：{result['model']} · provider：{result['provider']}"
     )
     console.print(
-        f"上下文：{result['context_window']} · 思考强度：{result['reasoning_effort'] or '默认'}"
+        f"上下文：{result['context_window']} · 思考档位：{result['thinking_selection'] or '默认'}"
     )
     if result["key_saved"]:
         console.print(f"[bold]API Key 已保存到系统凭据[/]（环境变量 {result['api_key_env']} 优先）")
@@ -288,61 +240,35 @@ def import_memories(
     vault: Path | None = VAULT_OPTION,
 ) -> None:
     """导入文本或文档：AI 整理成条目，程序裁决写入；默认 dry-run（仍调用模型）。"""
-    files = (
-        sorted(
-            file
-            for file in path.iterdir()
-            if file.is_file() and file.suffix.lower() in SUPPORTED_SUFFIXES
+    try:
+        files = (
+            sorted(
+                file
+                for file in path.iterdir()
+                if file.is_file() and file.suffix.lower() in SUPPORTED_SUFFIXES
+            )
+            if path.is_dir()
+            else [path]
         )
-        if path.is_dir()
-        else [path]
-    )
-    if not files:
-        fail("没有找到支持导入的文件；目录只扫描当前层。")
-        return
-    service = _service(config, vault)
-    totals = {"admitted": 0, "queued": 0, "duplicates": 0, "blocked": 0}
-    failed_chunks = 0
-    total_chunks = 0
-    failed_files = 0
-    for file in files:
-        try:
-            chunks = split_chunks(read_document(file))
-        except DocumentError as exc:
-            failed_files += 1
-            console.print(f"文件解析失败：{file.name}：{exc}", markup=False)
-            continue
-        file_failed = 0
-        for chunk_index, chunk in enumerate(chunks, 1):
-            total_chunks += 1
-            try:
-                result = service.import_text(
-                    chunk, source=f"import:{file.name}#chunk:{chunk_index}", dry_run=not apply
-                )
-            except ExtractorError as exc:
-                file_failed += 1
-                console.print(f"[#b8b8b8]块抽取失败：{exc}[/]")
-                continue
-            totals["admitted"] += len(result.admitted)
-            totals["queued"] += len(result.queued)
-            totals["duplicates"] += len(result.duplicates)
-            totals["blocked"] += len(result.blocked)
-        failed_chunks += file_failed
-        note = f"，失败 {file_failed} 块" if file_failed else ""
-        console.print(f"{file.name}：{len(chunks)} 块{note}", markup=False)
-    if not total_chunks or failed_chunks == total_chunks:
+        result = _service(config, vault).import_files(files, apply)
+    except (OSError, ValueError) as exc:
+        fail(str(exc), exc=exc)
+    for file, chunks in result["file_chunks"]:
+        console.print(f"{file}：{chunks} 块", markup=False)
+    for message in result["errors"]:
+        console.print(message, markup=False)
+    if not result["chunks"]:
         fail("所有块抽取失败，未写入任何内容。")
-        return
     mode = "已写入" if apply else "计划写入（dry-run，确认无误后加 --apply 落盘）"
     console.print(
-        f"[bold]{mode}[/]：直写 {totals['admitted']} · 待确认 {totals['queued']} · "
-        f"重复 {totals['duplicates']} · 拦截 {totals['blocked']}"
+        f"[bold]{mode}[/]：直写 {result['saved']} · 待确认 {result['queued']} · "
+        f"重复 {result['duplicates']} · 拦截 {result['blocked']}"
     )
-    if apply and totals["queued"]:
+    if apply and result["queued"]:
         console.print("运行 syvrio pending 查看待确认条目。")
-    if failed_files or failed_chunks:
+    if result["errors"]:
         console.print(
-            f"部分导入失败：{failed_files} 个文件、{failed_chunks} 个文本块；已处理部分不会回滚。"
+            f"部分导入失败：{result['failed_files']} 个文件、{result['failed_chunks']} 个文本块；已处理部分不会回滚。"
         )
         raise typer.Exit(code=1)
 
@@ -596,7 +522,7 @@ def commit(
     service = _service(config, vault)
     try:
         result = service.commit(push=push)
-    except GitError as exc:
+    except ValueError as exc:
         fail(str(exc), exc=exc)
         return
     if not result["committed"]:
@@ -638,7 +564,7 @@ def serve(
     service = _service(config, vault)
     from .server import build_server
 
-    build_server(service=service).run()
+    build_server(client=service).run()
 
 
 @app.command("backend")
@@ -650,7 +576,7 @@ def backend_command(
     """查看、启动或关闭此 Vault 的常驻后端。"""
     from ..backend.endpoint import client_paths, connect, discover
 
-    _, paths = client_paths(config, vault)
+    paths = client_paths(config, vault)
     if action == "run":
         from ..backend.server import serve_resident
 
@@ -703,7 +629,7 @@ def web(
     vault: Path | None = VAULT_OPTION,
 ) -> None:
     """启动私有 Web 客户端，或为本机/远程实例配置本地域名映射。"""
-    from .web.hosts import ensure_hosts_mapping, normalize_domain, remove_hosts_mapping
+    from ..backend.hosts import ensure_hosts_mapping, normalize_domain, remove_hosts_mapping
     from .web.server import run_server
 
     if action == "share":

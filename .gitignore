@@ -24,6 +24,8 @@ demo_vault/
 *.pem
 *.key
 sessions/
+!web/src/features/sessions/
 vault/
+!src/syvrio/infra/vault/
 web/node_modules/
 src/syvrio/app/web/static/

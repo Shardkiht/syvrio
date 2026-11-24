@@ -3,9 +3,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from ..infra.paths import SyvrioPaths, vault_paths
-from ..infra.transaction import vault_transaction
-from ..time import utc_timestamp
+from ..infra.storage.paths import SyvrioPaths, vault_paths
+from ..infra.storage.transaction import vault_transaction
+from ..infra.time import utc_timestamp
 
 
 class AuditLog:

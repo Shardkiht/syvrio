@@ -12,7 +12,7 @@ from typing import Callable
 from unicodedata import normalize
 
 from ..infra.config import DEFAULTS, LLMConfig
-from ..llm.client import complete
+from ..infra.llm.client import complete
 from ..memory.models import RecallEntry
 
 MEMORY_CUE_RE = re.compile(

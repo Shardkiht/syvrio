@@ -10,14 +10,14 @@ from ..application.channels import ConversationDirectory
 from ..application.commands import CommandUseCases
 from ..application.conversation import ConversationUseCases
 from ..application.service import ApplicationService
-from ..background_memory import BackgroundMemory
-from ..errors import ConversationError
-from ..infra.diagnostics import record_event
-from ..infra.locking import LockTimeout
-from ..infra.transaction import recover_vault_transaction
-from ..llm import LiteLLMChatModel
+from ..infra.llm import LiteLLMChatModel
+from ..infra.observability.diagnostics import record_event
+from ..infra.session import SessionStore
+from ..infra.session.errors import ConversationError
+from ..infra.storage.locking import LockTimeout
+from ..infra.storage.transaction import recover_vault_transaction
+from ..memory.background import BackgroundMemory
 from ..memory.service import MemoryService, get_service
-from ..session import SessionStore
 from .ownership import BackendLease
 from .scheduler import GitScheduler
 

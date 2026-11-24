@@ -8,29 +8,26 @@ from datetime import date
 from itertools import groupby, islice
 from threading import Event
 
-from ..infra.attachments import AttachmentBatch
 from ..infra.config import ChatConfig, Config, load_config
-from ..infra.documents import document_paths
-from ..infra.latency import TurnLatency, elapsed_ms, track_turn
-from ..infra.transaction import vault_transaction
-from ..llm import (
+from ..infra.llm import (
     AssistantTurn,
     ChatModel,
     ChatModelError,
     GenerationCancelled,
     LiteLLMChatModel,
-    LLMSummarizer,
-    OpenAISummarizer,
-    Summarizer,
     ToolCall,
     Usage,
 )
-from ..llm.client import effective_context_window
-from ..memory.detect import redact_secrets
+from ..infra.llm.client import chat_history, effective_context_window
+from ..infra.observability.latency import TurnLatency, elapsed_ms, track_turn
+from ..infra.security.secrets import redact_secrets
+from ..infra.session import Session, SessionStore, new_message_id
+from ..infra.session.attachments import AttachmentBatch
+from ..infra.storage.transaction import vault_transaction
+from ..memory.background.titles import rename_session
 from ..memory.extractor import LLMExtractor
 from ..memory.service import MemoryService, load_persona
 from ..memory.turn_undo import TurnFileJournal, TurnUndoError
-from ..session import Session, SessionStore, new_message_id
 from .context import (
     CompactionPhase,
     ContextManager,
@@ -39,6 +36,7 @@ from .context import (
     record_to_message,
 )
 from .evidence import RecallContext
+from .file_tools import document_paths
 from .insertion import TurnInsertion
 from .prompts import build_system_prompt
 from .recall import (
@@ -47,6 +45,7 @@ from .recall import (
     memory_references,
     should_auto_recall,
 )
+from .summarizer import LLMSummarizer, Summarizer
 from .tools import (
     PARALLEL_NETWORK_LIMIT,
     PARALLEL_TOOLS,
@@ -143,12 +142,13 @@ class AgentRuntime:
         )
         self.on_distillation: Callable[[str, str | None], None] | None = None
         self.on_title_needed: Callable[[str], None] | None = None
-        self.summarizer = summarizer or OpenAISummarizer(service.config.llm)
+        self.summarizer = summarizer or LLMSummarizer(service.config.llm)
         self.context = ContextManager(
             self.config,
             self.summarizer,
             sessions,
             request_distillation=self._request_distillation,
+            model_config=model.config if isinstance(model, LiteLLMChatModel) else None,
         )
         self.session: Session | None = None
         self.last_plan = None
@@ -225,6 +225,7 @@ class AgentRuntime:
             context_turns=config.chat.recall_context_turns,
             rewrite_timeout=config.chat.rewrite_timeout,
         )
+        self.context.model_config = config.llm
         self.context.config = config.chat
         self.context.summarizer = self.summarizer
 
@@ -411,7 +412,7 @@ class AgentRuntime:
                 active_plan=active_plan,
                 additional_inputs=additional_inputs,
             )
-            if prepared is not active_plan:
+            if prepared is not active_plan or attachments:
                 self.last_plan = prepared
                 if attachments:
                     # 保留用户原文，避免缓存图片字节。
@@ -602,7 +603,7 @@ class AgentRuntime:
             try:
                 self.on_title_needed(session.id)
             except Exception as exc:
-                from ..infra.diagnostics import record_event
+                from ..infra.observability.diagnostics import record_event
 
                 record_event("session.title_failed", exc)
         return AgentReply(
@@ -646,7 +647,7 @@ class AgentRuntime:
             try:
                 self.on_distillation(session_id, through)
             except Exception as exc:
-                from ..infra.diagnostics import record_event
+                from ..infra.observability.diagnostics import record_event
 
                 record_event("catchup.failed", exc)
 
@@ -693,9 +694,18 @@ class AgentRuntime:
             return 0
         return self.estimate_usage(self.session)
 
-    def estimate_usage(self, session: Session) -> int:
-        return self.context.estimate_usage(
-            session, self._system_prompt(), self._ordinary_tool_tokens(session)
+    def estimate_usage(
+        self,
+        session: Session,
+        context: ContextManager | None = None,
+        *,
+        active_message_id: str | None = None,
+    ) -> int:
+        return (context or self.context).estimate_usage(
+            session,
+            self._system_prompt(),
+            self._ordinary_tool_tokens(session),
+            active_message_id=active_message_id,
         )
 
     def _ordinary_tool_tokens(self, session: Session) -> int:
@@ -713,7 +723,7 @@ class AgentRuntime:
         return asdict(config.search), asdict(config.fetch)
 
     def rename(self, title: str) -> None:
-        self.sessions.rename(self.current, title)
+        rename_session(self.sessions, self.current, title)
 
     def undo(
         self,
@@ -896,15 +906,8 @@ class AgentRuntime:
         on_thinking: Callable[[ThinkingUpdate], None] | None = None,
     ) -> AssistantTurn:
         native_adapter = isinstance(model, LiteLLMChatModel)
-        if not native_adapter and any("reasoning_source" in message for message in messages):
-            messages = [
-                {
-                    key: value
-                    for key, value in message.items()
-                    if key not in {"reasoning_source", "reasoning_content"}
-                }
-                for message in messages
-            ]
+        if not native_adapter:
+            messages, _ = chat_history(None, messages)
         if on_delta is not None or on_thinking is not None:
             # 流式不做循环级重试：中断重发会让界面收到重复 delta。
             parts: list[str] = []

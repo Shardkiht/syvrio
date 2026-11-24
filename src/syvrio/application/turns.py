@@ -18,10 +18,10 @@ from uuid import uuid4
 from pydantic import BaseModel
 
 from ..agent.runtime import ThinkingUpdate
-from ..errors import ConversationError
-from ..infra.attachments import AttachmentBatch
-from ..infra.diagnostics import record_event
-from ..infra.files import atomic_write
+from ..infra.observability.diagnostics import record_event
+from ..infra.session.attachments import AttachmentBatch
+from ..infra.session.errors import ConversationError
+from ..infra.storage.files import atomic_write
 from .contracts import TurnCallbacks, TurnResult, UndoOutcome
 
 _TURN_IDS = count(1)

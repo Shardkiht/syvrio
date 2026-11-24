@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field, StrictBool
 
 from ...application.contracts import ModelOption
 from ...application.turns import TurnEvent
-from ...infra.update import UpdateProgress
+from ..updates.installer import UpdateProgress
 
 
 class ErrorDetail(BaseModel):
@@ -171,6 +171,9 @@ class HistoryItem(BaseModel):
     reasoning: ReasoningBlock | None = None
     tool_calls: list[ToolCallInfo] = Field(default_factory=list)
     tool_name: str | None = None
+    tool_call_id: str | None = None
+    tool_content_length: int | None = None
+    tool_content_truncated: bool = False
     tool_ok: bool | None = None
     interrupted: bool = False
 

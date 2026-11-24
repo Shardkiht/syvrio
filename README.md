@@ -56,7 +56,7 @@ Syvrio 只维护 `main` 正式版，安装和更新共用 PyPI 的 `syvrio` 包�
 
 ## 配置
 
-默认入口是 `~/.syvrio/config.toml`，也可以通过 `--config` 或 `SYVRIO_CONFIG` 指定。四份内置 TOML 提供完整默认值，本地只需写要覆盖的字段。[查看内置配置](src/syvrio/defaults/)
+默认入口是 `~/.syvrio/config.toml`，也可以通过 `--config` 或 `SYVRIO_CONFIG` 指定。四份内置 TOML 提供完整默认值，本地只需写要覆盖的字段。[查看内置配置](src/syvrio/infra/config/defaults/)
 
 | 同目录文件 | 设置范围 |
 |---|---|
@@ -78,7 +78,7 @@ Dream 使用 `memory.toml` 中独立的 `[dream].context_window`，默认 200,00
 
 Dream 运行中切换模型会从下一批生效。任务失败后换模型再执行 `/dream run`，会从上次成功保存的位置继续；正式事实或已确认推断发生变化时，会按新资料重新生成画像。
 
-旧单文件在首次加载时迁移到同目录，保留有效设置，清理失效字段。删除某个覆盖项或可选分组文件，下次加载恢复相应默认值。显式指定的入口丢失时启动报错；包内默认文件缺失时需要修复安装。
+设置位于其他目录时，用 `SYVRIO_CONFIG` 指定该入口，或将分组文件放到 `~/.syvrio/` 并将入口命名为 `config.toml`。删除某个覆盖项或可选分组文件，下次加载恢复相应默认值。显式指定的入口丢失时启动报错；包内默认文件缺失时需要修复安装。
 
 ## 聊天与附件
 
@@ -91,7 +91,7 @@ Dream 运行中切换模型会从下一批生效。任务失败后换模型再�
 - **发送与撤回。** 网页发送消息后，发送按钮原位变为停止按钮。模型回复时按 Enter，消息进入等待队列，当前回复完成后自动发送。Ctrl+Enter 请求在当前回合的安全边界插入；工具调用期间不能插入。`/undo` 打断最新回合，恢复可撤销的文件操作，并把上一条发送内容放回输入框。网页可悬停在最新用户消息上撤回或编辑后重新发送。编辑稿保存成功才会替换原回合。如果提交失败，原问答、附件和工具写入的记忆都会保留，刷新后可以继续编辑或重试。后续修改或其他会话的来源引用会阻止整次撤销。
 - **文档与图片。** 网页点输入框内的圆形 **+**；TUI 按 **Ctrl+O** 选择本机文件。每条消息最多 8 个文件，单个 20 MiB、合计 40 MiB。模型可以阅读文档，支持视觉输入的模型可以分析 PNG、JPEG、WebP 和 GIF。`/import` 与圆形 **+** 打开同一个本地文件选择器。所选文件先加入草稿，只有点击发送或按 Enter 后才交给模型，再由模型按你的要求阅读、总结或记忆。
 - **会话与模型。** 用 `/sessions` 浏览和管理会话。首次完整问答后，模型在后台用对话所用语言概括出一个短标题。可以在 Web 顶栏直接编辑标题，也可以用 `/rename` 改名。标题最多 80 个字符，超长时会提示修改。回复生成期间可用 `/model` 搜索和选择模型、`/think` 选思考档位、`/context` 调整上下文窗口。每个回合开始时固定设置，工具调用后的续答沿用当回合设置。已排队的消息在实际开始时使用最新设置。思考和工具详情可以展开。输入 `/` 可查看可用命令。
-- **上下文压缩。** 发送消息、工具返回后的续答和手动 `/compact` 使用同一条触发线。工具返回原样写入会话，低于触发线时完整交给模型。预计输入达到可用输入预算的 80%（默认值）时，上次摘要之后已完成的对话和工具结果一并汇入摘要。可用输入预算会预留模型输出空间。原始消息保存在会话 JSONL，后台按原始用户消息逐条沉淀，成功后才记录进度。切换、退出和后端重启能接续未完成的任务。
+- **上下文压缩。** 发送消息、工具返回后的续答和手动 `/compact` 使用同一条触发线。文件阅读默认返回全文，可按偏移和长度选读。工具返回原样写入会话，低于触发线时完整交给模型。历史思考只计入当前模型实际会重放的部分。预计输入达到可用输入预算的 80%（默认值）时，上次摘要之后已完成的对话和工具结果一并汇入摘要。可用输入预算会预留模型输出空间。原始消息保存在会话 JSONL，后台按原始用户消息逐条沉淀，召回证据过多时分批核对，成功后才记录进度。切换、退出和后端重启能接续未完成的任务。
 
 ## 记忆、审核与画像
 
@@ -155,7 +155,7 @@ MCP 提供检索、主题阅读、记录、更正、状态变化、弃用和待�
 
 ## 配置与 Git
 
-`syvrio setup` 可配置模型、API Base URL 和 Vault；可用 `SYVRIO_CONFIG`、`SYVRIO_VAULT`、`SYVRIO_RUNTIME` 分别指定配置文件、Vault 和 Runtime。支持本地向量、模型 API 向量和关键词检索。`SOUL.md` 可保存用户编写的助手人设。已有远端的 Vault 可以用 `/git` 查看状态及同步；附件备份仍独立于 Git。
+`syvrio setup` 可配置模型、API Base URL 和 Vault。向导和聊天中的 `/think` 共用当前模型的思考档位，优先显示厂商声明的选项，缺失时使用协议预设。可用 `SYVRIO_CONFIG`、`SYVRIO_VAULT`、`SYVRIO_RUNTIME` 分别指定配置文件、Vault 和 Runtime。支持本地向量、模型 API 向量和关键词检索。`SOUL.md` 可保存用户编写的助手人设。已有远端的 Vault 可以用 `/git` 查看状态及同步；附件备份仍独立于 Git。手动生成提交摘要时，模型能看到完整文件统计。差异超出模型窗口时，按文件节选，保留靠后的小文件。
 
 千问 AI 平台的按量付费入口在 **Settings → Providers → 千问 AI 平台**。选择 **Add key** 保存凭据，再到 **Model** 刷新并选择模型。也可在千问卡片选择 **Use model ID**，输入平台提供的模型 ID，例如 `glm-5.3`。终端可用 `syvrio setup` 或通过 `QIANWEN_API_KEY` 提供密钥。千问和百炼分别保存凭据。[千问平台 API 说明](https://platform.qianwenai.com/docs/api-reference/preparation/api-key)
 
@@ -175,7 +175,7 @@ npx -y open-websearch@latest serve
 AnySearch 和 Parallel MCP 都支持 Search 和 Fetch，可分别加入 `[search].providers` 或 `[fetch].providers`。两类操作共用同一个 Key，未配置 Key 时使用匿名模式：
 
 - `anysearch`：调用 AnySearch REST 搜索（`https://api.anysearch.com/v1/search`）。未配置 Key 时不发送 `Authorization`；配置 `ANYSEARCH_API_KEY` 后自动改用 Bearer Token。`zone` 与 `language` 取 `[search]` 的 `anysearch_zone` / `anysearch_language`，默认 `cn` / `zh-CN`。查询原文不会被改写。
-- `parallel_mcp`：Search 继续通过现有的独立 Search MCP（`https://search.parallel.ai/mcp`）调用 `web_search`；该端点由官方保留用于兼容。匿名和认证模式使用相同的接口；配置 `PARALLEL_API_KEY` 后只增加 Bearer 认证。优先读取 `structuredContent.results`，也兼容 `content[].text` 中的 JSON；重复 URL 会合并，过长摘录会截断，无法验证的发布时间保留为空。
+- `parallel_mcp`：Search 继续通过现有的独立 Search MCP（`https://search.parallel.ai/mcp`）调用 `web_search`；该端点由官方保留用于兼容。匿名和认证模式使用相同的接口；配置 `PARALLEL_API_KEY` 后只增加 Bearer 认证。优先读取 `structuredContent.results`，也兼容 `content[].text` 中的 JSON；重复 URL 会合并，排序和会话会使用上游提供的全部摘录，无法验证的发布时间保留为空。
 
 示例（默认顺序不变，只有显式加入才会启用）：
 
@@ -190,9 +190,9 @@ providers = ["anysearch", "parallel_mcp", "open_websearch"]
 Search 参与现有的质量门控、回退、请求预算、缓存和 `UsageLimiter`；`anysearch` 与 `parallel_mcp` 默认各有每日 20 次本地保护上限，可用 `[search.usage_limits.<provider>]` 调整，0 表示不限制。该数字只是本机请求保护，不代表服务商免费额度或账单上限；配置 Key 后可能产生服务商侧费用。认证失败（401/403）会明确报告并回退下一 Provider，不会自动去掉 Key 重试匿名模式。同一厂商的 Search 与 Fetch 共用计数，官方额度耗尽会暂停该厂商并按 Fetch 顺序回退。
 
 - **AnySearch Fetch**：向 [Extract API](https://www.anysearch.com/docs/api-endpoints/v1-extract) 发送 `POST https://api.anysearch.com/v1/extract`，请求体只包含 `url`；从 `data.content` 提取正文并清理 HTML。
-- **Parallel Fetch**：通过 [Parallel MCP 2.0](https://docs.parallel.ai/integrations/mcp/quickstart) 的 `https://mcp.parallel.ai/mcp` 调用 `web_fetch`，传单个 URL 并请求 Markdown 正文，正文缺失时使用有效摘录。
+- **Parallel Fetch**：通过 [Parallel MCP 2.0](https://docs.parallel.ai/integrations/mcp/quickstart) 的 `https://mcp.parallel.ai/mcp` 调用 `web_fetch`，传单个 URL 并请求 Markdown 正文，仅收到摘录时，抓取路由会继续尝试其他服务。
 
-两家仅在上游返回实际跳转地址时使用该地址；否则保留请求 URL，不另发请求探测跳转。Fetch 校验输入和上游提供的最终地址，默认把服务返回的正文完整交给会话；需要预览时可以指定 `max_chars`。open-websearch 2.2 的 HTTP 接口每次最多提供 20 万字符，上游报告的截断会传给模型。OpenWebSearch（HTTP）、Tavily、Exa、You.com 和火山引擎继续支持 Fetch；百度千帆和 SearXNG 仅支持 Search。
+两家仅在上游返回实际跳转地址时使用该地址；否则保留请求 URL，不另发请求探测跳转。Fetch 校验输入和上游提供的最终地址，默认把服务返回的正文完整交给会话；需要预览时可以指定 `max_chars`。若所有服务都只能提供部分内容，返回结果会标记 `truncated=true`，并用 `content_kind` 区分网页正文（`page`）和摘录（`excerpts`）。open-websearch 2.2 的 HTTP 接口每次最多提供 20 万字符，上游报告的截断会传给模型。OpenWebSearch（HTTP）、Tavily、Exa、You.com 和火山引擎继续支持 Fetch；百度千帆和 SearXNG 仅支持 Search。
 
 匿名接口在当前中国大陆网络曾由用户用无代理 curl 验证可用，但这只代表当时网络环境；不同运营商、时间和地区仍需实际验证，代码不依赖 VPN 或额外代理。`syvrio setup` 可在不填写 Key 的情况下启用任一匿名 Provider。
 
@@ -236,10 +236,10 @@ Bing 对部分中文专有名词会按单字切词（例如「智谱」只按「
 LLM 可以在 `search` 调用里用 `providers` 指定多个已启用来源的优先顺序，并用 `strategy` 选择调度方式（Agent Function Calling 与 MCP 参数一致）：
 
 - `auto`（默认）：按 `providers` 顺序逐家搜索，结果通过质量门控即停；失败、超时、本地额度耗尽或质量不足时继续下一家。列表耗尽后允许按用户配置的剩余 provider 顺序回退。
-- `compare`：用于最新新闻、重要事实等需要交叉验证的场景。预算允许时至少尝试两家不同 provider，不因第一家达标而立即停止；结果仍统一去重排序，同一页面被多家返回只算一条候选，不构成独立证据。若受额度、超时或可用性限制无法完成两家，`hint` 会明确写“交叉验证未完成”及失败类型，不会伪称已验证。缓存会同时保存验证状态、实际尝试顺序、贡献来源和失败诊断；命中缓存仍恢复同一提示，缺少验证字段的旧缓存标记为未知而不会默认视为完成。所有超时或请求次数预算截断的结果都不写入缓存，下次搜索会重新请求。
+- `compare`：用于最新新闻、重要事实等需要交叉验证的场景。预算允许时至少尝试两家不同 provider，不因第一家达标而立即停止；结果仍统一去重排序，同一页面被多家返回只算一条候选，不构成独立证据。若受额度、超时或可用性限制无法完成两家，`hint` 会明确写“交叉验证未完成”及失败类型，不会伪称已验证。缓存会同时保存验证状态、实际尝试顺序、贡献来源和失败诊断；命中缓存仍恢复同一提示，缺少验证字段时会重新搜索。所有超时或请求次数预算截断的结果都不写入缓存，下次搜索会重新请求。
 - `strict`：只调用 `providers` 明确列出的来源，不扩展到配置中的其他 provider；`providers` 为空时拒绝执行，全部不可用时如实返回失败。
 
-`providers` 为空或省略时使用用户配置顺序；重复项会去重，最多 8 个，只接受实际启用且注册成功的名称，无效名称会安全忽略并在 `failed` 中给出诊断。Router 统一生成最终顺序，LLM 不能指定 API Key、认证头或服务地址，也不能绕过启用状态、`UsageLimiter`、`max_requests` 或 `timeout_budget`。返回结果新增 `attempted`（实际尝试顺序）与 `strategy` 字段；每条结果仍带自己的 `provider` 和上游 `engine`。缓存键会区分 `providers` 顺序、`strategy` 和实际尝试序列。旧的单一 `preferred_provider` 参数仅为兼容保留；`search_engine` 仍然只表示上游引擎，和 provider 是两层概念，二者不要混用。搜索结果带 `engine` 字段标明实际来源引擎（同一请求混合多引擎时逐条保留真实来源）。低相关候选会原样返回并附提示，不伪装成已核实的相关结果。
+`providers` 为空或省略时使用用户配置顺序；重复项会去重，最多 8 个，只接受实际启用且注册成功的名称，无效名称会安全忽略并在 `failed` 中给出诊断。Router 统一生成最终顺序，LLM 不能指定 API Key、认证头或服务地址，也不能绕过启用状态、`UsageLimiter`、`max_requests` 或 `timeout_budget`。返回结果新增 `attempted`（实际尝试顺序）与 `strategy` 字段；每条结果仍带自己的 `provider` 和上游 `engine`。缓存键会区分 `providers` 顺序、`strategy` 和实际尝试序列。`search_engine` 仍然只表示上游引擎，和 provider 是两层概念，二者不要混用。显式指定引擎时只调用支持该选择的服务。搜索结果的 `engine` 保留服务返回的来源；服务未标注时，仅在请求明确指定单一引擎时补全，多引擎请求留空。低相关候选会原样返回并附提示，不伪装成已核实的相关结果。
 
 返回结构：
 
@@ -290,7 +290,7 @@ daily = 0
 monthly = 800
 ```
 
-旧 `period`/`max_calls` 配置继续读取，显式旧上限优先于默认值；下次保存写为双周期格式。旧计数保留其已知周期，另一周期的历史用量无法推算，界面会注明未知，之后从实际观察到的请求开始累计。Tavily Credits、Exa 美元 Credits、You.com 余额与请求次数不等价，可能在本地次数用完前已耗尽余额，也可能在达到本地上限前就产生费用。
+每个厂商的用量状态分别保存 `daily`、`monthly` 的日历窗口和次数，厂商暂停信息保存在 `paused`。Tavily Credits、Exa 美元 Credits、You.com 余额与请求次数不等价，可能在本地次数用完前已耗尽余额，也可能在达到本地上限前就产生费用。
 
 `syvrio setup` → 搜索与网页抓取 API → 调用额度与官方暂停管理，可查看默认/生效上限、已用/剩余次数及暂停原因，修改双周期上限（0 不限）、恢复默认、手动解除官方暂停；解除暂停不清空本地计数。首次启用不再统一限制每天 20 次。
 
@@ -304,5 +304,7 @@ uv sync --frozen
 uv run ruff check src tests scripts evals
 uv run pytest
 ```
+
+客户端通过后端请求业务数据。配置与默认值、模型接入、搜索抓取、检索、会话和 Vault 存储各自在 `src/syvrio/infra/` 下提供基础服务。Python 测试按职责放在 `tests/`，Web 界面与组件测试按功能放在 `web/src/features/`。
 
 自动化测试使用临时 Vault 和测试凭据。可选的本地向量检索通过 `uv sync --extra local-embed` 安装；模型不可用时仍可使用关键词检索。检索质量的语料、指标和局限见[评测说明](evals/README.md)。项目结构与接口边界见[架构说明](docs/architecture.md)。

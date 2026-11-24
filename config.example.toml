@@ -2,12 +2,17 @@
 # 用 --config 或 SYVRIO_CONFIG 指定此文件。同目录还可按用途提供配置：
 # models.toml 的 [llm]、chat.toml 的 [chat]，以及 memory.toml 的
 # [retrieval]、[retrieval.embedding]、[recall]、[distillation] 和 [dream]。
-# 完整的内置配置见 src/syvrio/defaults/。
+# 完整的内置配置见 src/syvrio/infra/config/defaults/。
 #
 # vault = "~/my-syvrio-vault"
 # runtime = "~/my-syvrio-runtime"
 # [git]
 # auto_sync = false
+#
+# 同一厂商的搜索和网页抓取共用额度。每日、每月可单独覆盖，0 表示该周期不限。
+# [search.usage_limits.tavily]
+# daily = 5
+# monthly = 100
 #
 # 可选的 ngrok 分享配置，使用 GitHub 身份验证，仅用于 syvrio web share。
 # [web_share]

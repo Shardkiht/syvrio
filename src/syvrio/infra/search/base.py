@@ -9,10 +9,12 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from enum import Enum
-from typing import Protocol
+from typing import Literal, Protocol
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from ...errors import SyvrioError
+from pydantic import ConfigDict, with_config
+
+from ..errors import SyvrioError
 
 # 常见 TUN 代理的合成 DNS 段，仅用于域名解析结果，不放行直接 IP 目标。
 DEFAULT_FAKE_IPV4 = "198.18.0.0/15"
@@ -205,11 +207,11 @@ class ProviderError(SyvrioError, Exception):
         return {"provider": self.provider, "kind": self.kind.value, "detail": self.detail}
 
 
+@with_config(ConfigDict(extra="forbid"))
 @dataclass(slots=True)
 class SearchQuery:
     query: str
     limit: int = 5
-    engine: str = "auto"
     lang: str | None = None
     freshness: str | None = None
     # 指定上游搜索引擎（bing/baidu/sogou...）；空表示用 provider 的默认配置。
@@ -219,9 +221,6 @@ class SearchQuery:
     context_terms: tuple[str, ...] = ()
     # 单次请求超时上限（秒）；由 router 按剩余预算下发，None 表示用 provider 默认。
     timeout: float | None = None
-    # LLM 建议优先尝试的 SearchProvider；只是排序提示，失败或质量不足仍回退。
-    # 空值 / "auto" 表示使用配置顺序。保留用于旧调用兼容。
-    preferred_provider: str = ""
     # LLM 推荐的有序 Provider 列表；空表示使用配置顺序。
     providers: tuple[str, ...] = ()
     # auto：逐家尝试并允许回退；compare：尽量完成至少两家交叉验证；
@@ -241,6 +240,16 @@ class SearchResult:
     engine: str = ""
 
 
+def join_search_snippets(description: object, excerpts: object) -> str:
+    """保留摘要与补充片段的顺序，合并重复文字。"""
+    parts = [description]
+    if isinstance(excerpts, list):
+        parts.extend(excerpts)
+    return "\n\n".join(
+        dict.fromkeys(part.strip() for part in parts if isinstance(part, str) and part.strip())
+    )
+
+
 @dataclass(slots=True)
 class FetchQuery:
     url: str
@@ -255,6 +264,7 @@ class FetchResult:
     content: str
     truncated: bool = False
     site_name: str = ""
+    content_kind: Literal["page", "excerpts"] = "page"
 
 
 def truncate_fetch_content(content: str, max_chars: int | None) -> tuple[str, bool]:
@@ -356,7 +366,7 @@ class SearchOutcome:
     # 实际尝试过的 Provider 顺序与策略，便于 TUI/调试区分回退与交叉验证。
     attempted: list[str] = field(default_factory=list)
     strategy: str = "auto"
-    # compare 的验证状态：complete / incomplete / unknown；其他策略为空。
+    # compare 的验证状态：complete / incomplete；其他策略为空。
     verification: str = ""
 
     def to_payload(self) -> dict:

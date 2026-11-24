@@ -12,7 +12,7 @@ from .base import (
     normalize_search_providers,
 )
 from .fetch_router import FetchProvider, FetchRouter, build_fetch_router
-from .open_websearch import SEARCH_ENGINES, OpenWebSearchProvider
+from .providers.open_websearch import SEARCH_ENGINES, OpenWebSearchProvider
 from .router import SearchRouter, build_search_router
 
 __all__ = [
