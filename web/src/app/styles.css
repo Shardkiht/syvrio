@@ -586,8 +586,6 @@ textarea, input, select { touch-action: manipulation; }
   display: block;
   width: 100%;
   height: auto;
-  filter: drop-shadow(0 2px .5px rgba(91, 107, 132, .55))
-          drop-shadow(0 5px 4px rgba(6, 12, 24, .36));
 }
 
 .turn { max-width: var(--content); margin: 0 auto 26px; }
