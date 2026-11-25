@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from pathlib import Path
 
 from textual.app import ComposeResult
@@ -23,7 +24,17 @@ class AttachmentScreen(ModalScreen[tuple[Path, ...] | None]):
     def _select_files(paths: list[Path]) -> tuple[Path, ...]:
         if not paths or any(not item.is_file() for item in paths):
             raise ValueError("Choose one or more readable local files.")
-        return tuple(paths)
+        unique: list[Path] = []
+        seen: set[bytes] = set()
+        for path in dict.fromkeys(paths):
+            with path.open("rb") as source:
+                if path.stat().st_size > 20 * 1024 * 1024:
+                    raise ValueError("Attach files of at most 20 MiB each.")
+                digest = hashlib.file_digest(source, "sha256").digest()
+            if digest not in seen:
+                unique.append(path)
+                seen.add(digest)
+        return tuple(unique)
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         event.stop()

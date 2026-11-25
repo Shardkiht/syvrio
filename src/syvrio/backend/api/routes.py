@@ -26,7 +26,7 @@ from starlette.types import Lifespan, Receive, Scope, Send
 
 from ...application.command_catalog import parse_command
 from ...infra.observability.diagnostics import record_event
-from ...infra.session.attachments import IMAGE_TYPES, MAX_BATCH_BYTES, MAX_FILES, AttachmentBatch
+from ...infra.session.attachments import IMAGE_TYPES, MAX_BATCH_BYTES, AttachmentBatch
 from ...infra.session.errors import ConversationError
 from ...infra.storage.documents import DocumentError
 from ...infra.system.gitops import GitError
@@ -524,7 +524,7 @@ def create_api(
             form = await MultiPartParser(
                 request.headers,
                 limited_body(),
-                max_files=MAX_FILES,
+                # 解析器限制原始表单数量，消息的八份名额在内容去重后核算。
                 max_fields=3,
             ).parse()
         except MultiPartException as exc:

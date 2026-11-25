@@ -470,7 +470,9 @@ def test_permanent_delete_removes_only_this_sessions_uploaded_copies(tmp_path, m
     archived = store.load(first.id, archived=True)
     assert archived.path.read_bytes() == original
     assert store.verify_attachments() == (2, [])
-    archived_file = next((store.attachments_dir / first.id).glob("*/*.txt"))
+    originals = list((store.attachments_dir / ".objects").rglob("original"))
+    assert len(originals) == 1
+    archived_file = next((store.attachments_dir / first.id).glob("*/*.ref"))
     saved = archived_file.read_bytes()
     archived_file.unlink()
     count, errors = store.verify_attachments()
@@ -501,6 +503,9 @@ def test_permanent_delete_removes_only_this_sessions_uploaded_copies(tmp_path, m
     assert not first.path.exists()
     assert not (store.attachments_dir / first.id).exists()
     assert store.verify_attachments() == (1, [])
+    assert originals[0].read_bytes() == source.read_bytes()
+    assert store.delete(second.id)
+    assert not originals[0].exists()
     assert source.read_bytes() == b"same document in two sessions"
 
 

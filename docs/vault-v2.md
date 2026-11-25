@@ -50,7 +50,8 @@ Context 支持 `event_time`、`valid_from`、`valid_to`、`location` 和情绪�
 | `records/memory/audit.jsonl` | 操作审计 |
 | `sessions/YYYY/MM/<id>.jsonl` | 会话事件、标题、稳定消息 ID、附件清单、压缩与沉淀进度。生成失败记录 `turn_failed` 保存对应用户消息 ID、时间和脱敏原因，随回合撤销。 |
 | `archived/sessions/YYYY/MM/<id>.jsonl` | 每个归档会话一份原文，用原 ID 查看、还原或永久删除。整个 `archived/` 排除在检索、来源回查、后台任务输入和自动 Git 同步之外。 |
-| `attachments/<session-id>/<message-id>/<attachment-id>.<ext>` | 已绑定到消息的上传原件 |
+| `attachments/<session-id>/<message-id>/<sha256>.ref` | 已绑定到消息的附件引用 |
+| `attachments/.objects/<哈希前两位>/<sha256>/` | 一份共享原件 `original` 和每条引用消息的空标记 |
 | `SOUL.md` | 可选的个性化提示词 |
 
 会话标题沿用 `type: title` 事件。模型生成的标题带有 `source: llm` 和生成依据的 `answer_id`，撤回对应回答后失效。用户手动设置的标题保存在同类事件中。Runtime 中尚未完成的标题任务只保存会话和消息引用。
@@ -95,7 +96,7 @@ Context 支持 `event_time`、`valid_from`、`valid_to`、`location` 和情绪�
 
 ## 附件和备份
 
-Web 与 TUI 可以一起上传多份文档或图片。每份原件在会话中有稳定 ID、显示名、字节数、媒体类型和 SHA-256。恢复原件时按这些标识核对。手动核验包含活动与归档会话，以及已撤回消息的上传原件。Vault 根的 `.gitignore` 排除 `/attachments/` 与 `/archived/`，仅克隆 Git 仓库无法还原上传原件。
+Web 与 TUI 可以一起上传多份文档或图片。每份原件在会话中有稳定 ID、显示名、字节数、媒体类型和 SHA-256。选择文件只更新客户端草稿。发送时按字节内容去重，同一消息保留首个文件名，其他消息可用各自的文件名引用同一原件。后端启动时将旧版按消息存放的原件收拢到共享目录，保留历史消息 ID。删除最后一个引用会话时释放原件。恢复原件时按这些标识核对。手动核验包含活动与归档会话，以及已撤回消息的上传原件。Vault 根的 `.gitignore` 排除 `/attachments/` 与 `/archived/`，仅克隆 Git 仓库无法还原上传原件。
 
 迁机或完整备份时先停掉常驻后端及其他写入者，复制整个 Vault，包括 `attachments/`。如果上次运行异常退出，先用原先配对的 Vault 和 Runtime 重开并完成恢复，再制作快照。需要保留历史思考面板、撤回能力或未完成任务时同时复制匹配的 Runtime，并妥善保护其中的本地凭据和原文件快照。若迁机后 Vault 的绝对路径发生变化，确认目标是同一套停机备份后，在目标副本的 `state/vault-binding.json` 中将 `vault` 更新为新目录的物理绝对路径，保留其余字段。旧的工具撤回凭据记录了原绝对路径，跨路径搬迁后仅新回合可生成可用的工具撤回凭据。助手消息的 `reasoning_local` 标记关联 Runtime 附件。推理附件缺失时，仍可读取会话回复。
 

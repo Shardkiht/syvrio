@@ -28,7 +28,7 @@ corepack pnpm install --frozen-lockfile
 corepack pnpm dev
 ```
 
-开发网页固定在 `http://127.0.0.1:7987/`，通过本机 8746 端口的 Web 网关访问 API。开发与生产分别使用独立的 Vault、Runtime、配置和端口。上传的原件由对应会话拥有，保存于 Vault 的 `attachments/`，该目录由 Vault 自己的 Git 设置忽略。备份或搬机时，复制整个 Vault 以保留上传原件。
+开发网页固定在 `http://127.0.0.1:7987/`，通过本机 8746 端口的 Web 网关访问 API。开发与生产分别使用独立的 Vault、Runtime、配置和端口。上传原件按 SHA-256 在会话间共享，消息保存各自的文件名和引用，最后一个会话引用删除后释放原件。数据保存于 Vault 的 `attachments/`，该目录由 Vault 自己的 Git 设置忽略。备份或搬机时，复制整个 Vault 以保留上传原件。
 
 本地配置按入口、模型、聊天和记忆分组。所有客户端加载内置 TOML 后按字段应用本地覆盖。配置格式、示例和缺失文件行为见 [README](../README.md#配置)。
 

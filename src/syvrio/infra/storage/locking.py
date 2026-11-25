@@ -178,6 +178,17 @@ def session_file_lock(paths: SyvrioPaths, session_id: str) -> VaultLock:
         return lock
 
 
+def attachment_store_lock(root: Path, digest: str) -> VaultLock:
+    """协调附件原件的创建与最后一个引用的释放。"""
+    # 固定数量的锁分片；相同内容始终串行，无关附件可以并行发布或删除。
+    directory = root / ".locks"
+    directory.mkdir(exist_ok=True)
+    path = directory / (digest[:2] + ".lock")
+    if path.resolve() != path:
+        raise ValueError("Redirected attachment lock.")
+    return _shared(path)
+
+
 def git_operation_lock(vault: Path | SyvrioPaths) -> VaultLock:
     """保护 Stage/Commit/Push 等 Git 操作之间的互斥。"""
     return _shared(_lock_path(vault, "git.lock"))

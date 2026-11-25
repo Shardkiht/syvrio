@@ -307,6 +307,9 @@ textarea, input, select { touch-action: manipulation; }
 /* 会话记录与输入框共用一列，从空视图进入对话时仅调整位置，保持组件挂载。
     */
 .thread {
+  --composer-radius: 20px;
+  --chat-inset-start: clamp(16px, 4vw, 32px);
+  --chat-inset-end: var(--chat-inset-start);
   flex: 1;
   min-height: 0;
   container-type: size;
@@ -503,14 +506,22 @@ textarea, input, select { touch-action: manipulation; }
 }
 
 .messages {
+  --message-bottom-gap: 28px;
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 20px clamp(16px, 4vw, 32px) 28px;
+  padding-block: 20px var(--message-bottom-gap);
+  padding-inline: var(--chat-inset-start) var(--chat-inset-end);
   scroll-behavior: smooth;
   /* 将连续滚动限制在对话记录内，避免页面回弹。 */
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
+}
+
+/* 对话紧邻输入卡片时，滚动区域伸入圆角下方；末尾留出等量空间以完整显示最后一条消息。 */
+.main:not(.is-empty) .messages:has(+ .jump-to-bottom + .composer > .composer-lane:first-child) {
+  margin-bottom: calc(0px - var(--composer-radius));
+  padding-bottom: calc(var(--message-bottom-gap) + var(--composer-radius));
 }
 
 .jump-to-bottom { position: relative; flex: 0 0 0; z-index: 1; }
@@ -859,28 +870,33 @@ button.fold-summary:hover {
 /* 输入框 */
 
 .composer {
+  pointer-events: none;
   flex: 0 0 auto;
   position: relative;
-  padding: 8px clamp(16px, 4vw, 32px) max(14px, env(safe-area-inset-bottom));
-  background: var(--bg);
+  padding-bottom: max(14px, env(safe-area-inset-bottom));
+  padding-inline: var(--chat-inset-start) calc(var(--chat-inset-end) + var(--message-scrollbar-width, 0px));
 }
 
-.composer-hero { padding-top: 0; }
-
-.progress {
+.progress, .attachment-list {
   max-width: var(--content);
   margin: 0 auto 6px;
+}
+
+.progress {
   color: var(--muted);
   font-size: 13.5px;
+}
+
+.progress > span, .attachment-preview {
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--panel);
 }
 
 .progress > span {
   display: inline-block;
   max-width: 100%;
   padding: 2px 10px;
-  border: 1px solid var(--border-strong);
-  border-radius: 999px;
-  background: var(--panel);
   line-height: 1.4;
   overflow-wrap: anywhere;
 }
@@ -908,6 +924,8 @@ button.fold-summary:hover {
   color: inherit;
 }
 
+.composer > :not(.composer-lane), .composer-card, .command-suggestions { pointer-events: auto; }
+
 .composer-lane {
   position: relative;
   max-width: var(--content);
@@ -917,7 +935,7 @@ button.fold-summary:hover {
 .composer-card {
   padding: 6px;
   border: 1px solid var(--border);
-  border-radius: 20px;
+  border-radius: var(--composer-radius);
   background: var(--panel);
   box-shadow: var(--shadow-md);
   transition: border-color .15s ease, box-shadow .15s ease;
@@ -931,8 +949,7 @@ button.fold-summary:hover {
 .composer textarea {
   display: block;
   width: 100%;
-  /* 默认显示三行，行高为 1.5em，另有 16 像素内边距。 */
-  min-height: calc(4.5em + 16px);
+  min-height: calc(3em + 16px);
   max-height: 200px;
   padding: 10px 12px 6px;
   border: 0;
@@ -1889,12 +1906,14 @@ button.fold-summary:hover {
   .sessions-toggle { display: inline-flex; }
   /* 对没有悬停的触屏设备，删除入口须保持可见。 */
   .session-delete { opacity: 1; width: 32px; height: 32px; font-size: 18px; }
-  .messages { padding: 8px 14px 20px; }
-  .main.is-empty .thread { padding-bottom: 3cqh; }
-  .composer {
-    padding: 8px max(12px, env(safe-area-inset-right))
-      max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
+  .thread {
+    --composer-radius: 18px;
+    --chat-inset-start: max(14px, env(safe-area-inset-left));
+    --chat-inset-end: max(14px, env(safe-area-inset-right));
   }
+  .messages { --message-bottom-gap: 20px; padding-top: 8px; }
+  .main.is-empty .thread { padding-bottom: 3cqh; }
+  .composer { padding-bottom: max(12px, env(safe-area-inset-bottom)); }
   /* 输入框使用 16 像素字号，防止 iOS Safari 聚焦时放大页面。 */
   .composer textarea, .palette-input, .provider-form input, .settings-content input {
     font-size: 16px;
@@ -1903,7 +1922,6 @@ button.fold-summary:hover {
     height: calc(1.5em + 16px);
     min-height: calc(1.5em + 16px);
   }
-  .composer-card { border-radius: 18px; }
   .composer-actions { --composer-control-size: 34px; }
   .composer-chips { gap: 6px; margin-top: 12px; }
   .composer-chips button { padding: 6px 11px; font-size: 16px; }
@@ -2007,6 +2025,10 @@ button.fold-summary:hover {
 
 @media (min-width: 768px) {
   body { font-size: 1rem; }
+  .thread {
+    --content: 810px;
+    --chat-inset-start: 24px;
+  }
   .new-chat, .new-chat-hint, .sidebar-section, .session-title, .sidebar .empty { font-size: inherit; }
   .model-info { font-size: 16px; font-weight: 500; }
   .model-info::after { content: none; }
@@ -2090,11 +2112,10 @@ button.fold-summary:hover {
 .attachment-list {
   display: flex;
   flex-wrap: wrap;
-  gap: 2px 12px;
+  align-items: center;
+  gap: 6px;
   max-height: min(9rem, 24dvh);
-  margin: 0 8px;
-  padding: 2px 0 5px;
-  border-bottom: 1px solid var(--border);
+  padding: 0;
   list-style: none;
   overflow-y: auto;
   overscroll-behavior-y: contain;
@@ -2105,9 +2126,12 @@ button.fold-summary:hover {
   gap: 6px;
   min-width: 0;
   max-width: min(100%, 16rem);
+  padding: 2px 3px 2px 10px;
   color: var(--text);
   font-size: 13px;
 }
+.attachment-preview:has(.draft-image) { padding-inline-start: 2px; }
+.attachment-preview .draft-image { border-radius: 50%; }
 .attachment-preview > svg { flex: none; color: var(--muted); }
 .attachment-name { display: flex; min-width: 0; white-space: nowrap; }
 .attachment-stem { overflow: hidden; text-overflow: ellipsis; }
@@ -2119,7 +2143,7 @@ button.fold-summary:hover {
   height: 28px;
   padding: 0;
   border: 0;
-  border-radius: 4px;
+  border-radius: 50%;
   background: transparent;
   color: var(--muted);
   font-size: 19px;

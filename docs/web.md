@@ -362,7 +362,7 @@ CLI 语法按 Tailscale 1.104.5 的 `tailscale serve --help` 核对：`serve <ta
 
 ## 使用边界
 
-Web 面向单用户私有部署。附件在用户设备上选择，手工发送后由常驻后端保存到 Vault 的 `attachments/` 目录；该目录由 Vault 的 Git 忽略。通过复制整个 Vault 可以一并迁移附件。
+Web 面向单用户私有部署。附件可用文件选择器添加，也可在输入框粘贴剪贴板中的图片或文件。相同内容在草稿中仅列出一次；选择或粘贴只更新本机草稿。手工发送后由常驻后端保存到 Vault 的 `attachments/` 目录；该目录由 Vault 的 Git 忽略。通过复制整个 Vault 可以一并迁移附件。
 
 ## 测试
 

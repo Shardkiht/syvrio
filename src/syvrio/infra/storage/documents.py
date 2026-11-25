@@ -33,9 +33,10 @@ class DocumentError(SyvrioError, ValueError):
     """文件无法转换为可导入的文本。"""
 
 
-def read_document(path: Path, *, content: bytes | None = None) -> str:
+def read_document(path: Path, *, content: bytes | None = None, filename: str | None = None) -> str:
     """读取用户指定文件；复杂格式交给本地 MarkItDown，不启用插件或云端转换。"""
-    suffix = path.suffix.lower()
+    # 共享原件没有扩展名，只有这种情况才由消息中的原文件名提供格式。
+    suffix = path.suffix.lower() or Path(filename or "").suffix.lower()
     if suffix not in SUPPORTED_SUFFIXES:
         raise DocumentError(
             f"不支持的文件格式：{suffix or '无扩展名'}。请导出为 TXT、Markdown 或常见文档格式。"
@@ -68,13 +69,13 @@ def read_document(path: Path, *, content: bytes | None = None) -> str:
                     "文档解析依赖未安装：开发环境运行 uv sync --extra documents；工具安装使用 uv tool install 'syvrio[documents]'（新包发布后）。"
                 ) from exc
             converter = MarkItDown(enable_plugins=False)
-            if content is None:
+            if content is None and path.suffix.lower() == suffix:
                 text = converter.convert(str(path)).text_content
             else:
                 # 上传文件名仅提供扩展名；转换器永远只打开这次上传的本地副本。
                 with TemporaryDirectory() as folder:
                     copy = Path(folder) / ("document" + suffix)
-                    copy.write_bytes(content)
+                    copy.write_bytes(path.read_bytes() if content is None else content)
                     text = converter.convert(str(copy)).text_content
     except DocumentError:
         raise
