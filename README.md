@@ -149,9 +149,9 @@ MCP 提供检索、主题阅读、记录、更正、状态变化、弃用和待�
 | 正式事实、待审核候选 | `memories/<主题>.md`、`memories/pending.md` |
 | 被拒绝的候选、推断、完整画像 | `archived/pending/rejected.md`、`inferences/<类别>/<ID>.md`、`profile.md` |
 | 会话、正式记忆变更记录 | `sessions/YYYY/MM/<ID>.jsonl`、`records/memory-changes.jsonl` |
-| 每段会话的上传原件 | `attachments/`，由 Vault 的 Git 忽略规则排除 |
+| 按内容共享的上传原件 | `attachments/`，由 Vault 的 Git 忽略规则排除 |
 
-点击侧栏的归档按钮并确认后，会话移到 `archived/sessions/YYYY/MM/<id>.jsonl`。从侧栏底部打开 Archive 可阅读、还原或手动确认永久删除。整个 `archived/` 目录排除在检索、后台任务和 Vault Git 自动同步之外。手动附件核验同时检查活动和归档会话。迁移时复制完整 Vault，以保留归档和 `attachments/` 中的附件。永久删除会话会列出关联候选；确认后连同候选和该会话的附件副本一起删除。有正式记忆引用该会话时会拒绝删除。运行时的索引、锁和后台任务放在独立的 Runtime 目录。常驻后端取得 Vault 租约后恢复事务和待删除附件。Vault 模块初始化 README 和 SOUL 文件，所有会话共用后端的 Vault Git 服务进行提交、推送和定时同步。具体格式见 [Vault 文档](docs/vault-v2.md)。
+点击侧栏的归档按钮并确认后，会话移到 `archived/sessions/YYYY/MM/<id>.jsonl`。从侧栏底部打开 Archive 可阅读、还原或手动确认永久删除。整个 `archived/` 目录排除在检索、后台任务和 Vault Git 自动同步之外。手动附件核验同时检查活动和归档会话。迁移时复制完整 Vault，以保留归档和 `attachments/` 中的附件。永久删除会话会列出关联候选；确认后移除候选和附件引用，最后一个引用移除时删除原件。重复上传相同内容只保存一份，各条消息可使用不同的文件名。有正式记忆引用该会话时会拒绝删除。运行时的索引、锁和后台任务放在独立的 Runtime 目录。常驻后端取得 Vault 租约后恢复事务和待删除附件。Vault 模块初始化 README 和 SOUL 文件，所有会话共用后端的 Vault Git 服务进行提交、推送和定时同步。具体格式见 [Vault 文档](docs/vault-v2.md)。
 
 也可使用 `syvrio sessions --archived` 查看归档，使用 `--archive ID`、`--restore ID` 或 `--delete-permanently ID` 操作指定会话。
 

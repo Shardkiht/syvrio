@@ -267,7 +267,11 @@ def test_mixed_attachments_reach_model_and_survive_move(client, backend, tmp_pat
     response = client.post(
         "/api/chat/attachments",
         data={"message": f'Analyze these files "{secret_path}"'},
-        files=[("files", ("notes.txt", b"synthetic document")), ("files", ("picture.png", data))],
+        files=[
+            ("files", ("notes.txt", b"synthetic document")),
+            ("files", ("renamed.txt", b"synthetic document")),
+            ("files", ("picture.png", data)),
+        ],
     )
     events = [
         json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")
@@ -301,7 +305,9 @@ def test_mixed_attachments_reach_model_and_survive_move(client, backend, tmp_pat
 
     snapshot_paths = []
     original_send = AttachmentDownload.__call__
-    live = backend._service.paths.attachments_dir / sid / record["id"] / (file_id + ".png")
+    from syvrio.infra.session.attachment_objects import original_path
+
+    live = original_path(backend._service.paths.attachments_dir, file_id)
 
     async def send_after_removal(response, scope, receive, send):
         snapshot_paths.append(response.path)
@@ -367,8 +373,8 @@ def test_mixed_attachments_reach_model_and_survive_move(client, backend, tmp_pat
     result = CliRunner().invoke(cli, command)
     assert result.exit_code == 0 and "Verified 2 attachment(s)" in result.output
     assert not moved.runtime_dir.exists()
-    path = moved.vault_dir / "attachments" / sid / record["id"] / (file_id + ".png")
-    live_file = paths.attachments_dir / sid / record["id"] / path.name
+    path = original_path(moved.attachments_dir, file_id)
+    live_file = live
     live_file.write_bytes(b"x" * len(data))
     assert client.get(url + "?preview=true").status_code == 404
     live_file.unlink()
@@ -2373,7 +2379,8 @@ def test_edit_waits_for_the_user_record_before_returning_a_receipt(
     assert transcript.read_bytes() == original
     assert backend._conversation.current.user_texts() == ["original"]
     assert client.get(download).content == b"original file"
-    assert len(list(backend._service.paths.attachments_dir.rglob("*.txt"))) == 1
+    assert len(list(backend._service.paths.attachments_dir.rglob("original"))) == 1
+    assert not list((backend._service.paths.attachments_dir / ".incoming").iterdir())
     response = client.post(path, data=fields, files=files)
     assert response.status_code == 202, response.text
     assert response.json()["message_id"]

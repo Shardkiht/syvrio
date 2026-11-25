@@ -5,6 +5,7 @@ import type { CommandInfo, CompactionPhase, ContextUsage } from '../../types';
 import { ContextMeter, type MeterReading } from './ContextMeter';
 import { CommandSuggestions } from '../commands/CommandUI';
 import { SurfacePresence } from '../../shared/SurfacePresence';
+import { attachmentTypes, clipboardFiles, uniqueDraftFiles } from './draftAttachments';
 import { DraftAttachmentIcon } from './AttachmentImage';
 import { PlusIcon, SendIcon, StopIcon } from '../../shared/Icons';
 
@@ -64,6 +65,8 @@ export function Composer({
 }) {
   const [value, setValue] = useState(() => drafts?.get(sessionId)?.text ?? '');
   const [files, setFiles] = useState<File[]>(() => drafts?.get(sessionId)?.files ?? []);
+  const currentFiles = useRef(files);
+  useLayoutEffect(() => { currentFiles.current = files; }, [files]);
   const previousId = useRef(sessionId);
   useLayoutEffect(() => {
     if (!drafts) return;
@@ -73,6 +76,9 @@ export function Composer({
     if (value || files.length) drafts.set(sessionId, { text: value, files });
     else drafts.delete(sessionId);
   }, [drafts, files, sessionId, value]);
+  const comparingFiles = useRef(false);
+  const pendingSelections = useRef<File[][]>([]);
+  const [checkingFiles, setCheckingFiles] = useState(false);
   const [fileError, setFileError] = useState('');
   const localPicker = useRef<HTMLInputElement>(null);
   const picker = pickerRef ?? localPicker;
@@ -85,7 +91,7 @@ export function Composer({
   const ref = useRef<HTMLTextAreaElement>(null);
   const lastFocusSignal = useRef(focusSignal);
 
-  // rows={3} 让文本框具有三行固有高度，此处仅在内容更多时增高。
+  // 从当前布局的默认高度开始测量，内容放不下时再增高。
   // overflow-y 也由同一测量值控制，空闲输入框无需显示滚动条。
   // 在 border-box 下直接取 scrollHeight 作高度会漏算边距，留下 1 至 2 像素溢出，
   // 导致滚动条轨道一直可见。
@@ -142,8 +148,36 @@ export function Composer({
     ref.current?.setSelectionRange(suggestion.insert.length, suggestion.insert.length);
   };
 
+  const addFiles = async (selection: File[]) => {
+    if (deferredSend.current || !selection.length) return;
+    pendingSelections.current.push(selection);
+    if (comparingFiles.current) return;
+    comparingFiles.current = true;
+    let draft = currentFiles.current;
+    try {
+      for (let next = pendingSelections.current.shift(); next; next = pendingSelections.current.shift()) {
+        try {
+          const result = uniqueDraftFiles([...draft, ...next]);
+          if (Array.isArray(result)) draft = result;
+          else {
+            setCheckingFiles(true);
+            draft = await result;
+          }
+          currentFiles.current = draft;
+          setFiles(draft);
+          setFileError('');
+        } catch (error) {
+          setFileError(error instanceof Error ? error.message : 'Could not read the selected files.');
+        }
+      }
+    } finally {
+      comparingFiles.current = false;
+      setCheckingFiles(false);
+    }
+  };
+
   const submit = () => {
-    if (deferredSend.current) return;
+    if (deferredSend.current || comparingFiles.current) return;
     const text = value.trim() || (files.length ? 'Analyze the attached files.' : '');
     if (!text) return;
     if (isCommandLine(text)) {
@@ -183,7 +217,7 @@ export function Composer({
   };
 
   const insert = async () => {
-    if (checkingSelection) return;
+    if (checkingSelection || comparingFiles.current) return;
     if (files.length) {
       setFileError('Press Enter to send these attachments with the next message.');
       return;
@@ -266,7 +300,13 @@ export function Composer({
   const commandDraft = isCommandLine(value);
 
   return (
-    <div className={`composer${hero ? ' composer-hero' : ''}`}>
+    <div className="composer" onPaste={event => {
+      const selection = clipboardFiles(event.clipboardData);
+      if (selection.length) {
+        event.preventDefault();
+        void addFiles(selection);
+      }
+    }}>
       {busy && (
         <div className="progress" data-testid="progress">
           <span>{progress || 'Working...'}</span>
@@ -286,49 +326,46 @@ export function Composer({
           </ol>
         </section>
       )}
+      {files.length > 0 && (
+        <ul className="attachment-list" aria-label="Attachments">
+          {files.map((file, index) => {
+            const extension = file.name.match(/^.+(\.[a-z0-9]{1,10})$/i)?.[1] ?? '';
+            const stem = file.name.slice(0, file.name.length - extension.length);
+            return (
+              <li className="attachment-preview" key={index}>
+                <DraftAttachmentIcon file={file} />
+                <span className="attachment-name" title={file.name}>
+                  <bdi className="attachment-stem">{stem}</bdi>{extension}
+                </span>
+                <button type="button" className="attachment-remove" disabled={waitingToSend || checkingFiles}
+                  aria-label={`Remove ${file.name}`}
+                  onClick={() => setFiles(current => current.filter((_, position) => position !== index))}>
+                  <span aria-hidden="true">×</span>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {fileError && <div className="progress" role="alert"><span>{fileError}</span></div>}
       <div className="composer-lane">
         <SurfacePresence>
           {showSuggestions && suggestions.length > 0 && <CommandSuggestions
             suggestions={suggestions} index={index} onPick={applyCompletion} />}
         </SurfacePresence>
         <div className="composer-card">
-          <input ref={picker} type="file" multiple hidden disabled={waitingToSend} aria-label="Select attachments"
-            accept=".md,.markdown,.txt,.text,.log,.json,.jsonl,.ndjson,.csv,.tsv,.yaml,.yml,.xml,.pdf,.docx,.xlsx,.xls,.pptx,.html,.htm,.epub,.msg,.ipynb,.png,.jpg,.jpeg,.webp,.gif"
+          <input ref={picker} type="file" multiple hidden disabled={waitingToSend || checkingFiles} aria-label="Select attachments"
+            accept={attachmentTypes}
             onChange={event => {
-              const next = [...files, ...Array.from(event.target.files ?? [])];
+              const selection = Array.from(event.target.files ?? []);
               event.target.value = '';
-              if (next.length > 8 || next.some(file => !file.size || file.size > 20 * 1024 * 1024)
-                || next.reduce((sum, file) => sum + file.size, 0) > 40 * 1024 * 1024) {
-                setFileError('Choose up to 8 non-empty files, 20 MiB each and 40 MiB total.');
-              } else { setFiles(next); setFileError(''); }
+              void addFiles(selection);
             }} />
-          {files.length > 0 && (
-            <ul className="attachment-list" aria-label="Attachments">
-              {files.map((file, index) => {
-                const extension = file.name.match(/^.+(\.[a-z0-9]{1,10})$/i)?.[1] ?? '';
-                const stem = file.name.slice(0, file.name.length - extension.length);
-                return (
-                  <li className="attachment-preview" key={index}>
-                    <DraftAttachmentIcon file={file} />
-                    <span className="attachment-name" title={file.name}>
-                      <bdi className="attachment-stem">{stem}</bdi>{extension}
-                    </span>
-                    <button type="button" className="attachment-remove" disabled={waitingToSend}
-                      aria-label={`Remove ${file.name}`}
-                      onClick={() => setFiles(current => current.filter((_, position) => position !== index))}>
-                      <span aria-hidden="true">×</span>
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-          {fileError && <div role="alert">{fileError}</div>}
           <textarea
             ref={ref}
             value={value}
             readOnly={waitingToSend}
-            rows={3}
+            rows={2}
             aria-label="Message"
             data-testid="composer-input"
             placeholder="Message Syvrio"
@@ -343,28 +380,28 @@ export function Composer({
           {commandHint && <div className="confirm-message" role="status">{commandHint}</div>}
           <div className="composer-bar">
             <button type="button" className="icon-button composer-attach"
-              disabled={waitingToSend} aria-label="Attach files" title="Attach files" onClick={openFiles ?? (() => picker.current?.click())}>
+              disabled={waitingToSend || checkingFiles} aria-label="Attach files" title="Attach files" onClick={openFiles ?? (() => picker.current?.click())}>
               <PlusIcon size={18} />
             </button>
             <div className="composer-actions">
               {busy && commandDraft && (
-                <button type="button" className="composer-secondary" disabled={checkingSelection && !canOpenDuringSelection(value)} onClick={submit}>Run</button>
+                <button type="button" className="composer-secondary" disabled={checkingFiles || (checkingSelection && !canOpenDuringSelection(value))} onClick={submit}>Run</button>
               )}
               {busy && hasDraft && !commandDraft && (
                 <>
                   {onInsert && !files.length && (
                     <button type="button" className="composer-secondary" onClick={() => void insert()}
                       title="Insert at the next safe boundary (Ctrl+Enter)"
-                      disabled={checkingSelection || inserting !== null}>{inserting ? 'Waiting…' : 'Insert'}</button>
+                      disabled={checkingFiles || checkingSelection || inserting !== null}>{inserting ? 'Waiting…' : 'Insert'}</button>
                   )}
                   <button type="button" className="composer-secondary" onClick={submit}
-                    disabled={checkingSelection || inserting === value.trim()} aria-label="Queue message"
+                    disabled={checkingFiles || checkingSelection || inserting === value.trim()} aria-label="Queue message"
                     title="Send after the current reply (Enter)">Queue</button>
                 </>
               )}
               <ContextMeter reading={meterReading} usage={contextUsage} newChat={newChat} compaction={compaction} />
               <button type="button" className={busy ? 'stop' : 'send'} onClick={busy ? onStop : submit}
-                disabled={waitingToSend || (checkingSelection && !canOpenDuringSelection(value) && (!onSendAfterSelection || busy || commandDraft)) || (!busy && !hasDraft)}
+                disabled={waitingToSend || (!busy && checkingFiles) || (checkingSelection && !canOpenDuringSelection(value) && (!onSendAfterSelection || busy || commandDraft)) || (!busy && !hasDraft)}
                 aria-label={busy ? 'Stop' : 'Send'} title={busy ? 'Stop generating' : 'Send'}>
                 {busy ? <StopIcon size={18} /> : <SendIcon />}
               </button>

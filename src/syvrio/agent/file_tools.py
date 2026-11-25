@@ -47,7 +47,7 @@ def file_handlers(
         if name not in allowed:
             raise ValueError("只能访问本条用户消息中明确提供的文件路径。")
         if name not in cache:
-            cache[name] = redact_secrets(read_document(allowed[name]))
+            cache[name] = redact_secrets(read_document(allowed[name], filename=name))
         return name, cache[name]
 
     def outcome(payload: dict, label: str) -> dict:

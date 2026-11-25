@@ -290,14 +290,19 @@ describe('message list scrolling', () => {
 
       // 输入框变大后，消息数据虽未变，可用视口已经缩小。
       Object.defineProperty(list, 'clientHeight', { value: 310 });
+      Object.defineProperty(list, 'offsetWidth', { value: 720 });
+      Object.defineProperty(list, 'clientWidth', { configurable: true, value: 705 });
       resize();
+      expect(list.parentElement?.style.getPropertyValue('--message-scrollbar-width')).toBe('15px');
       expect(scrollTo).toHaveBeenLastCalledWith({ top: 2400, behavior: 'instant' });
 
       list.scrollTop = 1000;
       fireEvent.scroll(list);
       scrollTo.mockClear();
       Object.defineProperty(list, 'scrollHeight', { value: 3000 });
+      Object.defineProperty(list, 'clientWidth', { value: 720 });
       resize();
+      expect(list.parentElement?.style.getPropertyValue('--message-scrollbar-width')).toBe('0px');
       expect(scrollTo).not.toHaveBeenCalled();
 
       rerender(<MessageList messages={messages} sessionId="s-2" onToggle={() => {}} />);

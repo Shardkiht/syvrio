@@ -326,11 +326,22 @@ export function MessageList({
     const element = ref.current;
     const content = contentRef.current;
     if (!element || !content || typeof ResizeObserver === 'undefined') return;
-    // 消息渲染后，图片加载完成或输入框大小变化仍可能改变布局。
-    const observer = new ResizeObserver(() => followLatest(element));
+    const thread = element.parentElement;
+    // 正文滚动条占用的宽度也要从输入框扣除，浮动滚动条的占宽为零。
+    const syncScrollbarWidth = () => {
+      thread?.style.setProperty('--message-scrollbar-width', `${element.offsetWidth - element.clientWidth}px`);
+    };
+    syncScrollbarWidth();
+    const observer = new ResizeObserver(() => {
+      syncScrollbarWidth();
+      followLatest(element);
+    });
     observer.observe(element);
     observer.observe(content);
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      thread?.style.removeProperty('--message-scrollbar-width');
+    };
   }, [followLatest]);
 
   return (

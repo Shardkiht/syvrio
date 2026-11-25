@@ -850,8 +850,10 @@ def test_shared_fifo_replay_disconnect_and_textual_pilot(tmp_path, monkeypatch):
                 assert isinstance(ui.screen, AttachmentScreen)
                 files = [tmp_path / "local-one.txt", tmp_path / "local-two.txt"]
                 for path in files:
-                    path.write_text("synthetic content", encoding="utf-8")
-                ui.screen.query_one(TextArea).text = "\n".join(map(str, files))
+                    path.write_text(path.stem, encoding="utf-8")
+                renamed = tmp_path / "renamed.txt"
+                renamed.write_bytes(files[0].read_bytes())
+                ui.screen.query_one(TextArea).text = "\n".join(map(str, [*files, renamed]))
                 await pilot.pause()
                 assert await pilot.click("#attach-selected")
                 for _ in range(60):

@@ -23,6 +23,7 @@ from ..storage.locking import session_file_lock, vault_write_lock
 from ..storage.paths import TURN_UNDO_DIR, SyvrioPaths, vault_paths
 from ..storage.transaction import vault_transaction
 from ..time import serialize_timestamp, timestamp_calendar_date, utc_now
+from .attachment_objects import release_message, upgrade_originals
 from .errors import ConversationError
 from .model import Session, new_message_id, now_iso, validate_record
 from .query import SessionQuery
@@ -72,8 +73,12 @@ def _sidecar_directory(path: Path) -> Path:
     return path
 
 
-def _finish_sidecar_deletion(folder: Path) -> None:
+def _finish_sidecar_deletion(folder: Path, *, attachments: bool) -> None:
     try:
+        if attachments:
+            for message in folder.iterdir():
+                if message.is_dir():
+                    release_message(folder.parent.parent, message, folder.name)
         shutil.rmtree(folder)
     except OSError as exc:
         # Windows 上查看器可能仍打开着文件，重启后会再次尝试恢复。
@@ -81,7 +86,7 @@ def _finish_sidecar_deletion(folder: Path) -> None:
 
 
 @contextmanager
-def _stage_sidecars(root: Path, session_id: str) -> Iterator[None]:
+def _stage_sidecars(root: Path, session_id: str, *, attachments: bool) -> Iterator[None]:
     source = _sidecar_directory(root / session_id)
     if not source.exists():
         yield
@@ -96,7 +101,7 @@ def _stage_sidecars(root: Path, session_id: str) -> Iterator[None]:
     except BaseException:
         staged.rename(source)
         raise
-    _finish_sidecar_deletion(staged)
+    _finish_sidecar_deletion(staged, attachments=attachments)
 
 
 def _redact_record(value: Any) -> Any:
@@ -226,7 +231,8 @@ class SessionStore(SessionQuery):
                             raise ValueError("Cannot restore over an existing session directory.")
                         staged.rename(original)
                     else:
-                        _finish_sidecar_deletion(staged)
+                        _finish_sidecar_deletion(staged, attachments=root == self.attachments_dir)
+            upgrade_originals(self.attachments_dir)
 
     def append(self, session: Session, record: dict) -> dict:
         raw_reasoning = record.get("reasoning")
@@ -362,7 +368,9 @@ class SessionStore(SessionQuery):
                 return False
             with ExitStack() as sidecars:
                 for root in self._sidecar_roots:
-                    sidecars.enter_context(_stage_sidecars(root, session_id))
+                    sidecars.enter_context(
+                        _stage_sidecars(root, session_id, attachments=root == self.attachments_dir)
+                    )
                 # 事务提交后才清理暂存的附件；中断时先恢复事务，再按会话是否存在恢复附件。
                 with vault_transaction(self.paths) as tx:
                     if before_delete is not None:

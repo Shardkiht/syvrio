@@ -69,7 +69,7 @@ it('preserves unfinished input while the destination of a switch is unconfirmed'
   expect(props.onSend).toHaveBeenCalledWith('still drafting');
 });
 
-it('previews draft images locally and releases their URLs when removed or sent', () => {
+it('previews draft images locally and releases their URLs when removed or sent', async () => {
   const create = vi.fn((file: File) => 'blob:' + file.name);
   const revoke = vi.fn();
   class PreviewURL extends URL {
@@ -84,8 +84,8 @@ it('previews draft images locally and releases their URLs when removed or sent',
     const gif = new File(['b'], 'two.gif');
     const note = new File(['c'], 'notes.txt');
     fireEvent.change(screen.getByLabelText('Select attachments'), { target: { files: [png, gif, note] } });
+    const thumb = await screen.findByRole('button', { name: 'Preview one.png' });
     expect(create).toHaveBeenCalledTimes(2);
-    const thumb = screen.getByRole('button', { name: 'Preview one.png' });
     fireEvent.click(thumb);
     const dialog = screen.getByRole('dialog', { name: 'Preview one.png' });
     expect(dialog.querySelector('img')?.getAttribute('src')).toBe('blob:one.png');
@@ -102,7 +102,29 @@ it('previews draft images locally and releases their URLs when removed or sent',
   }
 });
 
-it('uses the plus button to pick and send multiple attachments', () => {
+it('pastes files and clipboard images into the draft and leaves plain text to the browser', async () => {
+  const onSend = vi.fn();
+  render(<Composer busy={false} progress="" onSend={onSend} onStop={() => {}} />);
+  const input = screen.getByRole('textbox', { name: 'Message' });
+  expect(fireEvent.paste(input, { clipboardData: { files: [], items: [{ kind: 'string' }] } })).toBe(true);
+  const note = new File(['first'], 'report.txt');
+  expect(fireEvent.paste(input, { clipboardData: { files: [note], items: [] } })).toBe(false);
+  const renamed = new File(['first'], 'renamed.md');
+  const changed = new File(['other'], 'report.txt');
+  const image = new File(['image bytes'], 'screenshot', { type: 'image/png' });
+  for (const file of [renamed, changed, image]) {
+    fireEvent.paste(input, { clipboardData: { files: [], items: [{ kind: 'file', getAsFile: () => file }] } });
+  }
+  await screen.findByTitle('screenshot.png');
+  expect(screen.getAllByRole('listitem')).toHaveLength(3);
+  expect(screen.queryByTitle('renamed.md')).toBeNull();
+  expect(onSend).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+  const [, files] = onSend.mock.calls[0];
+  expect(files.map((file: File) => file.name)).toEqual(['report.txt', 'report.txt', 'screenshot.png']);
+});
+
+it('uses the plus button to pick and send multiple attachments', async () => {
   const onSend = vi.fn();
   render(<Composer busy={false} progress="" onSend={onSend} onStop={() => {}} />);
   const picker = screen.getByLabelText('Select attachments') as HTMLInputElement;
@@ -112,7 +134,11 @@ it('uses the plus button to pick and send multiple attachments', () => {
   expect(picker.multiple).toBe(true);
   const files = [new File(['a'], 'one.txt'), new File(['b'], 'two.md')];
   const extra = new File(['c'], 'meeting-notes-with-a-long-name.pdf');
-  fireEvent.change(picker, { target: { files: [...files, extra] } });
+  fireEvent.change(picker, { target: { files: [...files, new File(['a'], 'renamed.txt'), extra] } });
+  const attachments = await screen.findByRole('list', { name: 'Attachments' });
+  const card = screen.getByRole('textbox', { name: 'Message' }).closest('.composer-card')!;
+  expect(card.contains(attachments)).toBe(false);
+  expect(attachments.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   fireEvent.click(screen.getByTitle(extra.name));
   expect(screen.getAllByRole('listitem')).toHaveLength(3);
   fireEvent.click(screen.getByRole('button', { name: `Remove ${extra.name}` }));
@@ -136,10 +162,10 @@ function measure(
 }
 
 describe('Composer sizing', () => {
-  it('starts as a three-line box without a scrollbar', () => {
+  it('starts as a two-line box without a scrollbar', () => {
     renderComposer();
     const input = screen.getByTestId('composer-input') as HTMLTextAreaElement;
-    expect(input.getAttribute('rows')).toBe('3');
+    expect(input.getAttribute('rows')).toBe('2');
     expect(input.style.overflowY).toBe('hidden');
     expect(input.style.height).toBe('');
   });
@@ -162,7 +188,7 @@ describe('Composer sizing', () => {
     expect(input.style.overflowY).toBe('auto');
   });
 
-  it('returns to the three-line box after sending', () => {
+  it('returns to the two-line box after sending', () => {
     renderComposer();
     const input = screen.getByTestId('composer-input') as HTMLTextAreaElement;
     measure(input, { scroll: 110, offset: 87, client: 85 });

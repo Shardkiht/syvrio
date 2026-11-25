@@ -15,6 +15,7 @@ from uuid import uuid4
 from PIL import Image
 
 from ..storage.documents import SUPPORTED_SUFFIXES, DocumentError
+from .attachment_objects import original_path, publish, release_message
 
 MAX_FILES = 8
 MAX_FILE_BYTES = 20 * 1024 * 1024
@@ -35,15 +36,21 @@ class Attachment:
     def filename(self) -> str:
         return self.id + Path(self.name).suffix.lower()
 
-    def verify(
-        self, folder: Path, copy_to: Callable[[bytes], object] | None = None
-    ) -> os.stat_result:
+    def path(self, root: Path, folder: Path) -> Path:
         if (
-            not re.fullmatch(r"[a-f0-9]{32}", self.id)
-            or PureWindowsPath(self.name).name != self.name
-        ):
+            self.id != self.sha256 and not re.fullmatch(r"[a-f0-9]{32}", self.id)
+        ) or PureWindowsPath(self.name).name != self.name:
             raise DocumentError("Invalid attachment metadata.")
-        path = folder / self.filename
+        shared = original_path(root, self.sha256)
+        marker = folder / (self.sha256 + ".ref")
+        if marker.resolve() == marker and marker.is_file():
+            return shared
+        return folder / self.filename
+
+    def verify(
+        self, root: Path, folder: Path, copy_to: Callable[[bytes], object] | None = None
+    ) -> os.stat_result:
+        path = self.path(root, folder)
         unavailable = "Attachment is missing or changed. Restore the matching attachment archive."
         if path.resolve() != path or not path.is_file():
             raise DocumentError(unavailable)
@@ -100,6 +107,7 @@ class AttachmentBatch:
         folder.mkdir()
         paths: list[Path] = []
         files: list[Attachment] = []
+        seen: set[str] = set()
         total = 0
         try:
             for name, stream in streams:
@@ -113,8 +121,6 @@ class AttachmentBatch:
                     and suffix not in IMAGE_TYPES
                 ):
                     raise DocumentError("Unsupported attachment name or format.")
-                if len(files) >= MAX_FILES:
-                    raise DocumentError(f"Attach at most {MAX_FILES} files per message.")
                 identifier = uuid4().hex
                 path = folder / (identifier + suffix)
                 size = 0
@@ -123,8 +129,7 @@ class AttachmentBatch:
                     paths.append(path)
                     while chunk := stream.read(256 * 1024):
                         size += len(chunk)
-                        total += len(chunk)
-                        if size > MAX_FILE_BYTES or total > MAX_BATCH_BYTES:
+                        if size > MAX_FILE_BYTES:
                             raise DocumentError(
                                 "Attachment limit is 20 MiB per file and 40 MiB per message."
                             )
@@ -145,7 +150,19 @@ class AttachmentBatch:
                     except (ValueError, OSError, Image.DecompressionBombError) as exc:
                         raise DocumentError("Invalid or oversized image attachment.") from exc
                     media = "image/" + IMAGE_TYPES[suffix]
-                files.append(Attachment(identifier, name, size, media, digest.hexdigest()))
+                checksum = digest.hexdigest()
+                if checksum in seen:
+                    path.unlink()
+                    continue
+                total += size
+                if len(files) >= MAX_FILES or total > MAX_BATCH_BYTES:
+                    raise DocumentError("Attach at most 8 files and 40 MiB per message.")
+                item = Attachment(checksum, name, size, media, checksum)
+                final = folder / item.filename
+                path.rename(final)
+                paths.append(final)
+                files.append(item)
+                seen.add(checksum)
             if not files:
                 raise DocumentError("Select at least one attachment.")
         except BaseException:
@@ -156,14 +173,27 @@ class AttachmentBatch:
         return cls(root, folder, tuple(files))
 
     def bind(self, session_id: str, message_id: str) -> None:
+        if not _ID.fullmatch(session_id) or not _ID.fullmatch(message_id):
+            raise DocumentError("Invalid attachment identifier.")
+        # 并发提交可首次创建同一个会话目录；创建后再解析，避免 Windows 解析中途遇到新目录。
+        (_directory(self.root) / session_id).mkdir(exist_ok=True)
         dest = _directory(self.root, session_id, message_id)
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        os.rename(self.folder, dest)
+        dest.mkdir()
+        try:
+            for item in self.files:
+                publish(self.root, self.folder / item.filename, dest, item.sha256)
+            self.folder.rmdir()
+        except BaseException:
+            release_message(self.root, dest, session_id)
+            dest.rmdir()
+            raise
         self.folder = dest
 
     def discard(self) -> None:
         if self.folder.resolve() != self.folder or not self.folder.is_relative_to(self.root):
             raise DocumentError("Invalid attachment directory.")
+        if self.folder.parent.name != ".incoming":
+            release_message(self.root, self.folder, self.folder.parent.name)
         for item in self.files:
             (self.folder / item.filename).unlink(missing_ok=True)
         self.folder.rmdir()
@@ -171,7 +201,7 @@ class AttachmentBatch:
     def documents(self) -> dict[str, Path]:
         # 用位置区分显示名称相同的两个上传文件。
         return {
-            f"{index}. {item.name}": self.folder / item.filename
+            f"{index}. {item.name}": item.path(self.root, self.folder)
             for index, item in enumerate(self.files, 1)
             if not item.media_type.startswith("image/")
         }
@@ -186,7 +216,7 @@ class AttachmentBatch:
     ) -> tuple[Attachment, os.stat_result]:
         folder = _directory(root, session_id, message_id)
         item = Attachment(**record)
-        return item, item.verify(folder, destination)
+        return item, item.verify(root, folder, destination)
 
     @classmethod
     def restore(
@@ -195,7 +225,7 @@ class AttachmentBatch:
         folder = _directory(root, session_id, message_id)
         files = tuple(Attachment(**record) for record in records)
         for item in files:
-            item.verify(folder)
+            item.verify(root, folder)
         return cls(root, folder, files)
 
     def model_content(self, text: str) -> str | list[dict]:
@@ -205,7 +235,9 @@ class AttachmentBatch:
         parts = [{"type": "text", "text": text}]
         for item in self.files:
             if item.media_type.startswith("image/"):
-                data = base64.b64encode((self.folder / item.filename).read_bytes()).decode("ascii")
+                data = base64.b64encode(item.path(self.root, self.folder).read_bytes()).decode(
+                    "ascii"
+                )
                 parts.extend(
                     [
                         {"type": "text", "text": item.name},
