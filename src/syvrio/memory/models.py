@@ -4,7 +4,6 @@ import calendar
 import re
 import secrets
 from datetime import date, datetime
-from pathlib import PurePosixPath
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -32,14 +31,6 @@ class MemoryContext(BaseModel):
     valid_to: str | None = None
     location: str | None = None
     emotion: MemoryEmotion | None = None
-
-    def markdown_fields(self) -> list[tuple[str, str]]:
-        values = self.model_dump(exclude_none=True)
-        fields = [(key, values[name]) for key, name in _CONTEXT_KEYS.items() if name in values]
-        fields.extend(
-            (f"emotion.{phase}", text) for phase, text in values.get("emotion", {}).items()
-        )
-        return fields
 
     @property
     def emotion_texts(self) -> tuple[str, ...]:
@@ -87,8 +78,6 @@ class MemoryContext(BaseModel):
         return self
 
 
-_CONTEXT_KEYS = {key: key for key in ("event_time", "valid_from", "valid_to", "location")}
-_EMOTION_KEYS = {f"emotion.{phase}": phase for phase in MemoryEmotion.model_fields}
 MemoryStatus = Literal["active", "deprecated"]
 
 
@@ -147,7 +136,9 @@ class MemoryUpdate(BaseModel):
 
     @model_validator(mode="after")
     def has_change(self) -> MemoryUpdate:
-        if self.status is None and not (self.context and self.context.markdown_fields()):
+        if self.status is None and not (
+            self.context and self.context.model_dump(exclude_none=True)
+        ):
             raise ValueError("A memory update needs context or status.")
         return self
 
@@ -265,13 +256,6 @@ class PendingItem(MemoryDraft):
         return self
 
 
-class FieldNode(BaseModel):
-    key: str
-    value: str | None = None
-    children: tuple[FieldNode, ...] = ()
-    raw_markdown: str
-
-
 class Entry(BaseModel):
     id: str
     topic: str
@@ -281,14 +265,9 @@ class Entry(BaseModel):
     supersedes: str | None = None
     metadata: dict[str, str] = Field(default_factory=dict)
 
-    raw_markdown: str = ""
-    source_path: str = ""
-    line: int = 0
-    end_line: int = 0
-    confidence: float | None = None
-    context_fields: tuple[FieldNode, ...] = ()
-    extension_fields: tuple[FieldNode, ...] = ()
-    topic_title: str = Field(default="", exclude=True)
+    revision: int = 0
+    context: MemoryContext | None = None
+    topic_title: str = ""
 
     @property
     def source_session_id(self) -> str | None:
@@ -298,38 +277,9 @@ class Entry(BaseModel):
     def source_message_id(self) -> str | None:
         return self.metadata.get("message_id")
 
-    @property
-    def context(self) -> MemoryContext | None:
-        if self.context_fields:
-            values: dict[str, str] = {}
-            emotions: dict[str, str] = {}
-            for node in self.context_fields:
-                if node.value is None:
-                    continue
-                if name := _CONTEXT_KEYS.get(node.key):
-                    values.setdefault(name, node.value)
-                elif phase := _EMOTION_KEYS.get(node.key):
-                    emotions.setdefault(phase, node.value)
-            # 手写的 v2 记录可能省略配套字段。只投影已识别的标量值，
-            # 避免推测类型或来源。
-            for key in ("event_time", "valid_from", "valid_to"):
-                try:
-                    MemoryContext.validate_date(values.get(key))
-                except ValueError:
-                    values.pop(key, None)
-            if not values and not emotions:
-                return None
-            emotion = MemoryEmotion.model_validate(emotions) if emotions else None
-            return MemoryContext.model_construct(**values, emotion=emotion)
-        raw = self.metadata.get("context")
-        return MemoryContext.model_validate_json(raw) if raw else None
-
     def as_recall(self) -> RecallEntry:
-        topic = self.topic
-        if topic.startswith("memories/") and topic.endswith(".md"):
-            topic = PurePosixPath(topic.removeprefix("memories/")).with_suffix("").as_posix()
         return RecallEntry(
-            id=self.id, status=self.status, topic=topic, text=self.text, context=self.context
+            id=self.id, status=self.status, topic=self.topic, text=self.text, context=self.context
         )
 
     def as_memory(self) -> MemoryEntry:

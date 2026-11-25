@@ -5,12 +5,8 @@ import { CommandDialog, moveOption } from './CommandUI';
 import { ArrowUpIcon, FileIcon, SearchIcon } from '../../shared/Icons';
 import './topics.css';
 
-function logicalPath(topic: string) {
-  return topic.replace(/^memories\//, '').replace(/\.md$/, '');
-}
-
 function topicLabels(topic: string, title?: string) {
-  const path = logicalPath(topic);
+  const path = topic;
   const slash = path.lastIndexOf('/');
   return {
     path,
@@ -105,7 +101,7 @@ export function TopicBrowser({ initialTopics, initialDocument, readTopics, readT
     matches++;
   }
   const selectedRow = selected === null ? undefined
-    : topics?.find((row) => logicalPath(row.topic) === logicalPath(selected));
+    : topics?.find((row) => row.topic === selected);
   const closeButton = <button type="button" className="icon-button topics-close" aria-label="Close topics"
     title="Close topics" onClick={onClose}>×</button>;
 
@@ -170,7 +166,7 @@ export function TopicBrowser({ initialTopics, initialDocument, readTopics, readT
           {closeButton}
         </div>
         <TopicReader key={selected} topic={selected} title={selectedRow?.title} readTopic={readTopic}
-          initial={initialDocument && logicalPath(selected) === logicalPath(initialDocument.topic)
+          initial={initialDocument && selected === initialDocument.topic
             ? initialDocument : undefined} />
       </div>}
     </CommandDialog>

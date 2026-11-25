@@ -5,7 +5,6 @@ from __future__ import annotations
 import secrets
 from dataclasses import dataclass, field
 from datetime import date
-from pathlib import Path
 from typing import Any
 
 from ..llm.tokens import estimate_tokens
@@ -70,9 +69,7 @@ def validate_record(record: Any) -> None:
 class Session:
     id: str
     started_at: str
-    path: Path
     records: list[dict] = field(default_factory=list)
-    damaged_tail_line: int | None = None
 
     def active_records(self, *, include_failures: bool = False) -> list[dict]:
         """按 undo 事件投影有效会话；撤销同时令其后的摘要失效。"""

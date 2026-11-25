@@ -31,11 +31,12 @@ from syvrio.infra.search import (
 )
 from syvrio.infra.search import daemon as daemon_module
 from syvrio.infra.search.base import assert_public_fetch_url
-from syvrio.infra.search.cache import CACHE_VERSION, SearchCache
+from syvrio.infra.search.cache import SearchCache
 from syvrio.infra.search.daemon import ensure_daemon
 from syvrio.infra.search.providers.open_websearch import OpenWebSearchProvider
 from syvrio.infra.search.router import normalize_url
 from syvrio.infra.session import SessionStore
+from syvrio.infra.storage.paths import vault_paths
 from syvrio.memory.service import MemoryService
 
 pytestmark = pytest.mark.search
@@ -842,7 +843,7 @@ def test_parallel_deadline_does_not_wait_for_an_unresponsive_provider(tmp_path):
             finally:
                 finished.set()
 
-    cache = SearchCache(tmp_path / "cache.json", ttl=60)
+    cache = SearchCache(vault_paths(tmp_path / "vault"), ttl=60)
     router = SearchRouter({"fake": Provider()}, cache=cache, timeout_budget=0.5)
     try:
         outcome = router.search(SearchQuery("tibo"))
@@ -856,7 +857,7 @@ def test_parallel_deadline_does_not_wait_for_an_unresponsive_provider(tmp_path):
 
 def test_cache_avoids_second_provider_call(tmp_path):
     provider = FakeProvider([SearchResult("ok", "https://example.com", "")])
-    cache = SearchCache(tmp_path / "cache.json", ttl=60)
+    cache = SearchCache(vault_paths(tmp_path / "vault"), ttl=60)
     router = SearchRouter({"fake": provider}, order=["fake"], cache=cache)
 
     first = router.search(SearchQuery("q"))
@@ -871,7 +872,7 @@ def test_budget_exhausted_results_are_not_cached(tmp_path):
     """预算耗尽的截断结果不进缓存：同一搜索下次要能重新发起请求。"""
     weak = FakeProvider([SearchResult("Unrelated", "https://example.com/w", "")])
     never = FakeProvider([SearchResult("Tibo roadmap", "https://example.com/s", "details")])
-    cache = SearchCache(tmp_path / "cache.json", ttl=60)
+    cache = SearchCache(vault_paths(tmp_path / "vault"), ttl=60)
     router = SearchRouter(
         {"weak": weak, "never": never},
         order=["weak", "never"],
@@ -895,7 +896,7 @@ def test_budget_exhausted_core_hits_are_not_cached(tmp_path):
         [SearchResult("Tibo update", "https://example.com/a", "notes about tibo")]
     )
     second = FakeProvider([])
-    cache = SearchCache(tmp_path / "cache.json", ttl=60)
+    cache = SearchCache(vault_paths(tmp_path / "vault"), ttl=60)
     router = SearchRouter(
         {"fake": provider, "second": second},
         order=["fake", "second"],
@@ -935,7 +936,7 @@ def test_global_timeout_truncated_results_are_not_cached(tmp_path, monkeypatch):
     router = SearchRouter(
         {"slow": provider},
         order=["slow"],
-        cache=SearchCache(tmp_path / "cache.json", ttl=60),
+        cache=SearchCache(vault_paths(tmp_path / "vault"), ttl=60),
         engines=["bing"],
         fallback_engines=("baidu",),
         max_engines=2,
@@ -978,7 +979,7 @@ def test_high_quality_result_returned_after_timeout_is_not_cached(tmp_path, monk
     router = SearchRouter(
         {"slow": provider},
         order=["slow"],
-        cache=SearchCache(tmp_path / "cache.json", ttl=60),
+        cache=SearchCache(vault_paths(tmp_path / "vault"), ttl=60),
         timeout_budget=10.0,
     )
 
@@ -1029,7 +1030,7 @@ def test_provider_timeout_after_partial_candidates_is_not_cached(tmp_path, monke
     router = SearchRouter(
         {"weak": weak, "slow": slow},
         order=["weak", "slow"],
-        cache=SearchCache(tmp_path / "cache.json", ttl=60),
+        cache=SearchCache(vault_paths(tmp_path / "vault"), ttl=60),
         timeout_budget=10.0,
     )
 
@@ -1052,7 +1053,7 @@ def test_normal_quality_early_stop_is_cached(tmp_path):
     router = SearchRouter(
         {"fake": provider},
         order=["fake"],
-        cache=SearchCache(tmp_path / "cache.json", ttl=60),
+        cache=SearchCache(vault_paths(tmp_path / "vault"), ttl=60),
         timeout_budget=10.0,
     )
 
@@ -1091,7 +1092,7 @@ def test_compare_timeout_keeps_actual_verification_and_skips_cache(tmp_path, mon
     router = SearchRouter(
         {"first": first, "second": second},
         order=["first", "second"],
-        cache=SearchCache(tmp_path / "cache.json", ttl=60),
+        cache=SearchCache(vault_paths(tmp_path / "vault"), ttl=60),
         timeout_budget=10.0,
     )
 
@@ -1107,7 +1108,7 @@ def test_compare_timeout_keeps_actual_verification_and_skips_cache(tmp_path, mon
 def test_cache_expires(tmp_path):
     now = [0.0]
     provider = FakeProvider([SearchResult("ok", "https://example.com", "")])
-    cache = SearchCache(tmp_path / "cache.json", ttl=10, clock=lambda: now[0])
+    cache = SearchCache(vault_paths(tmp_path / "vault"), ttl=10, clock=lambda: now[0])
     router = SearchRouter({"fake": provider}, order=["fake"], cache=cache)
 
     router.search(SearchQuery("q"))
@@ -1119,7 +1120,7 @@ def test_cache_expires(tmp_path):
 
 def test_cache_key_separates_search_engines(tmp_path):
     provider = EngineProvider([SearchResult("q", "https://example.com", "")])
-    cache = SearchCache(tmp_path / "cache.json", ttl=60)
+    cache = SearchCache(vault_paths(tmp_path / "vault"), ttl=60)
     router = SearchRouter({"fake": provider}, order=["fake"], cache=cache, engines=["bing"])
 
     router.search(SearchQuery("q"))
@@ -1179,19 +1180,17 @@ def test_ensure_daemon_health_uses_spawn_port_when_url_has_no_port(monkeypatch):
 def test_corrupted_cache_entry_is_treated_as_miss(tmp_path):
     import json
 
-    path = tmp_path / "cache.json"
-    path.write_text(
-        json.dumps(
-            {
-                "version": CACHE_VERSION,
-                "entries": {
-                    "bad-expiry": {"expires": "not-a-number", "results": []},
-                    "bad-result": {"expires": 9999999999, "results": [{"unexpected": 1}]},
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
+    path = vault_paths(tmp_path / "vault")
+    from syvrio.infra.storage.database import transaction
+
+    with transaction(path) as db:
+        db.executemany(
+            "INSERT INTO search_cache VALUES(?,?,?)",
+            [
+                ("bad-expiry", 0, "[]"),
+                ("bad-result", 9999999999, json.dumps({"results": [{"unexpected": 1}]})),
+            ],
+        )
     cache = SearchCache(path, ttl=60)
 
     assert cache.get_record("bad-expiry") is None
@@ -1204,31 +1203,14 @@ def test_corrupted_cache_entry_is_treated_as_miss(tmp_path):
 def test_old_cache_without_verification_metadata_is_invalidated(tmp_path):
     import json
 
-    path = tmp_path / "cache.json"
-    path.write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "entries": {
-                    "old": {
-                        "expires": 9999999999,
-                        "provider": "fake",
-                        "results": [
-                            {
-                                "title": "old",
-                                "url": "https://example.com/old",
-                                "snippet": "",
-                                "published": None,
-                                "provider": "fake",
-                                "engine": "",
-                            }
-                        ],
-                    }
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
+    path = vault_paths(tmp_path / "vault")
+    from syvrio.infra.storage.database import transaction
+
+    with transaction(path) as db:
+        db.execute(
+            "INSERT INTO search_cache VALUES(?,?,?)",
+            ("old", 9999999999, json.dumps({"provider": "fake", "results": []})),
+        )
     cache = SearchCache(path, ttl=60)
     assert cache.get_record("old") is None
 
@@ -1849,7 +1831,7 @@ def test_results_ranked_title_before_snippet():
 def test_freshness_query_success_cache_is_short(tmp_path):
     now = [1000.0]
     provider = FakeProvider([SearchResult("ok", "https://example.com", "")])
-    cache = SearchCache(tmp_path / "cache.json", ttl=86400, clock=lambda: now[0])
+    cache = SearchCache(vault_paths(tmp_path / "vault"), ttl=86400, clock=lambda: now[0])
     router = SearchRouter({"fake": provider}, order=["fake"], cache=cache)
     # 普通查询：成功结果走完整 TTL，700 秒后仍命中缓存。
     router.search(SearchQuery("ok 查询"))
@@ -1876,7 +1858,7 @@ def test_cache_key_distinguishes_context_strategy_and_fallback(tmp_path):
             json=envelope([raw_result(f"{body['query']} hit", "https://example.com/x")]),
         )
 
-    cache = SearchCache(tmp_path / "cache.json", ttl=3600)
+    cache = SearchCache(vault_paths(tmp_path / "vault"), ttl=3600)
     router = SearchRouter({"open_websearch": mock_provider(handler)}, engines=["bing"], cache=cache)
     # context 参与键且保留顺序：换序即视为新查询，重新消歧。
     router.search(SearchQuery("tibo", context_terms=("Codex", "OpenAI")))
@@ -1913,7 +1895,7 @@ def test_cached_results_match_first_request_order(tmp_path):
             ),
         )
 
-    cache = SearchCache(tmp_path / "cache.json", ttl=3600)
+    cache = SearchCache(vault_paths(tmp_path / "vault"), ttl=3600)
     router = SearchRouter({"open_websearch": mock_provider(handler)}, engines=["bing"], cache=cache)
     first = router.search(SearchQuery("tibo codex"))
     second = router.search(SearchQuery("tibo codex"))
@@ -1939,7 +1921,7 @@ def test_explicit_engine_failure_is_not_cached_as_empty(tmp_path):
     router = SearchRouter(
         {"open_websearch": provider},
         order=["open_websearch"],
-        cache=SearchCache(tmp_path / "cache.json", ttl=300),
+        cache=SearchCache(vault_paths(tmp_path / "vault"), ttl=300),
     )
     for _ in range(2):
         result = router.search(SearchQuery("synthetic", engines=("bing",)))
@@ -1953,7 +1935,7 @@ def test_legacy_empty_search_cache_is_not_reused(tmp_path):
     import hashlib
 
     provider = FakeProvider([SearchResult("ok", "https://example.com", "")])
-    cache = SearchCache(tmp_path / "cache.json", ttl=60)
+    cache = SearchCache(vault_paths(tmp_path / "vault"), ttl=60)
     legacy_key = hashlib.sha256(
         "\x1f".join(["q", "5", "auto", "", "", "fake"]).encode()
     ).hexdigest()
@@ -1968,7 +1950,7 @@ def test_empty_results_use_short_ttl(tmp_path):
     # 真空结果短 TTL 缓存：5 分钟内不重复打上游，过期后重新搜索能拿到新结果。
     now = [1000.0]
     provider = FakeProvider([])
-    cache = SearchCache(tmp_path / "cache.json", ttl=3600, clock=lambda: now[0])
+    cache = SearchCache(vault_paths(tmp_path / "vault"), ttl=3600, clock=lambda: now[0])
     router = SearchRouter({"fake": provider}, order=["fake"], cache=cache)
     first = router.search(SearchQuery("q"))
     assert not first.results and not first.cached

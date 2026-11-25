@@ -14,6 +14,7 @@ from ..infra.security.secrets import redact_secrets
 from ..infra.session import Session, SessionStore
 from ..infra.session.attachments import AttachmentBatch
 from ..infra.session.errors import ConversationError, SessionProtectedError
+from ..infra.storage.database import transaction
 from ..memory.background.titles import rename_session
 from ..memory.models import PendingItem
 from ..memory.turn_undo import TurnUndoError
@@ -573,7 +574,7 @@ class ConversationUseCases:
     def switch(self, session_id: str | None) -> SwitchResult:
         stats: dict = {}
         if session_id is None:
-            with self.runtime.service.write_lock:
+            with transaction(self.runtime.service.paths):
                 stats = self.runtime.close(distill=False)
                 self.runtime.start()
             return SwitchResult(None, None, stats)
@@ -607,7 +608,7 @@ class ConversationUseCases:
         self.set_archived(session_id, True)
 
     def set_archived(self, session_id: str, archived: bool) -> None:
-        with self._lock, self.runtime.service.write_lock:
+        with self._lock, transaction(self.runtime.service.paths):
             allowed, reason = self.archive_guard(session_id)
             if not allowed:
                 raise SessionProtectedError(reason)
@@ -641,7 +642,7 @@ class ConversationUseCases:
     def deletion_preview(
         self, session_id: str, *, archived: bool = False
     ) -> tuple[list[PendingItem], str]:
-        with self.runtime.service.write_lock:
+        with transaction(self.runtime.service.paths):
             if not self.sessions.exists(session_id, archived=archived):
                 raise KeyError(session_id)
             allowed, reason = self._source_guard(session_id)
@@ -652,7 +653,7 @@ class ConversationUseCases:
     def delete_session(
         self, session_id: str, pending_revision: str = "", *, confirmed: bool
     ) -> bool:
-        with self.runtime.service.write_lock:
+        with transaction(self.runtime.service.paths):
             if not self.sessions.exists(session_id, archived=True):
                 if self.sessions.exists(session_id):
                     raise ConversationError(

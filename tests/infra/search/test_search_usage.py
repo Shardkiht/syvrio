@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-
 import pytest
 
 from syvrio.infra.config import FetchConfig, SearchConfig, UsageLimit
@@ -17,6 +15,7 @@ from syvrio.infra.search.base import (
 from syvrio.infra.search.fetch_router import FetchRouter, build_fetch_router
 from syvrio.infra.search.router import SearchRouter
 from syvrio.infra.search.usage import UsageLimiter
+from syvrio.infra.storage.paths import vault_paths
 
 pytestmark = pytest.mark.search
 
@@ -84,21 +83,33 @@ def test_monthly_window_counts_and_resets():
     assert limiter.allows("exa")
 
 
+def _persisted_usage(paths):
+    from syvrio.infra.storage.database import transaction
+
+    result = {}
+    with transaction(paths, write=False) as db:
+        for provider, period, window, count in db.execute("SELECT * FROM usage"):
+            result.setdefault(provider, {})[period] = {"window": window, "count": count}
+        for provider, reason, resume_at in db.execute("SELECT * FROM quota_pauses"):
+            result[provider]["paused"] = {"reason": reason, "resume_at": resume_at}
+    return result
+
+
 def test_counts_persist_across_instances(tmp_path):
-    path = tmp_path / "usage.json"
+    path = vault_paths(tmp_path / "vault")
     limits = {"tavily": UsageLimit(daily=3)}
     first = UsageLimiter(limits, path, clock=lambda: 0.0)
     first.record("tavily")
 
     second = UsageLimiter(limits, path, clock=lambda: 0.0)
     assert second.remaining("tavily") == 2
-    data = json.loads(path.read_text(encoding="utf-8"))
+    data = _persisted_usage(path)
     assert set(data["tavily"]) == {"daily", "monthly"}
     assert data["tavily"]["daily"]["count"] == data["tavily"]["monthly"]["count"] == 1
 
 
 def test_reload_sees_other_instance_writes(tmp_path):
-    path = tmp_path / "usage.json"
+    path = vault_paths(tmp_path / "vault")
     limits = {"volcengine": UsageLimit(daily=2)}
     searcher = UsageLimiter(limits, path, clock=lambda: 0.0)
     fetcher = UsageLimiter(limits, path, clock=lambda: 0.0)
@@ -108,9 +119,8 @@ def test_reload_sees_other_instance_writes(tmp_path):
     assert fetcher.remaining("volcengine") == 1
 
 
-def test_corrupted_usage_file_restarts_empty(tmp_path):
-    path = tmp_path / "usage.json"
-    path.write_text("not json", encoding="utf-8")
+def test_empty_database_starts_with_full_budget(tmp_path):
+    path = vault_paths(tmp_path / "vault")
     limiter = UsageLimiter({"tavily": UsageLimit(daily=1)}, path, clock=lambda: 0.0)
     assert limiter.remaining("tavily") == 1
 
@@ -122,7 +132,7 @@ def _limited_router(tmp_path, pre_used: int = 0):
     )
     limiter = UsageLimiter(
         {"limited": UsageLimit(daily=1)},
-        tmp_path / "usage.json",
+        vault_paths(tmp_path / "vault"),
         clock=lambda: 0.0,
     )
     for _ in range(pre_used):
@@ -154,7 +164,7 @@ def test_search_counts_failed_requests(tmp_path):
     fallback = _SearchProvider("fallback", [SearchResult("Tibo", "https://example.com/s", "d")])
     limiter = UsageLimiter(
         {"limited": UsageLimit(daily=1)},
-        tmp_path / "usage.json",
+        vault_paths(tmp_path / "vault"),
         clock=lambda: 0.0,
     )
     router = SearchRouter(
@@ -175,7 +185,7 @@ def test_fetch_and_search_share_provider_pool(tmp_path):
     fetch_provider = _FetchProvider("tavily")
     limiter = UsageLimiter(
         {"tavily": UsageLimit(daily=1)},
-        tmp_path / "usage.json",
+        vault_paths(tmp_path / "vault"),
         clock=lambda: 0.0,
     )
     search_router = SearchRouter({"tavily": search_provider}, usage_limiter=limiter)
@@ -198,7 +208,7 @@ def test_fetch_router_falls_back_when_limit_reached(tmp_path):
     fallback = _FetchProvider("fallback")
     limiter = UsageLimiter(
         {"limited": UsageLimit(daily=1)},
-        tmp_path / "usage.json",
+        vault_paths(tmp_path / "vault"),
         clock=lambda: 0.0,
     )
     limiter.record("limited")  # 预记账：额度已用尽
@@ -215,7 +225,7 @@ def test_fetch_router_falls_back_when_limit_reached(tmp_path):
 
 
 def test_release_gives_back_one_pre_charged_call(tmp_path):
-    path = tmp_path / "usage.json"
+    path = vault_paths(tmp_path / "vault")
     limiter = UsageLimiter({"tavily": UsageLimit(daily=2)}, path, clock=lambda: 0.0)
     reservation = limiter.acquire("tavily")
     assert reservation is not None
@@ -223,7 +233,7 @@ def test_release_gives_back_one_pre_charged_call(tmp_path):
     limiter.release(reservation)
 
     assert limiter.remaining("tavily") == 2
-    data = json.loads(path.read_text(encoding="utf-8"))
+    data = _persisted_usage(path)
     assert set(data["tavily"]) == {"daily", "monthly"}
     assert data["tavily"]["daily"]["count"] == data["tavily"]["monthly"]["count"] == 0
 
@@ -233,7 +243,7 @@ def test_failed_fetch_refunds_only_its_original_windows(tmp_path, day, month):
     from datetime import datetime
 
     now = [datetime(2025, 1, 15, 12).timestamp()]
-    path = tmp_path / "usage.json"
+    path = vault_paths(tmp_path / "vault")
     limiter = UsageLimiter({}, path, clock=lambda: now[0])
     other = UsageLimiter({}, path, clock=lambda: now[0])
 
@@ -257,7 +267,7 @@ def test_failed_fetch_does_not_count_as_a_used_call(tmp_path):
     fallback = _FetchProvider("fallback")
     limiter = UsageLimiter(
         {"limited": UsageLimit(daily=1)},
-        tmp_path / "usage.json",
+        vault_paths(tmp_path / "vault"),
         clock=lambda: 0.0,
     )
     router = FetchRouter(
@@ -278,7 +288,7 @@ def test_successful_fetch_still_counts(tmp_path):
     provider = _FetchProvider("tavily")
     limiter = UsageLimiter(
         {"tavily": UsageLimit(daily=2)},
-        tmp_path / "usage.json",
+        vault_paths(tmp_path / "vault"),
         clock=lambda: 0.0,
     )
     router = FetchRouter({"tavily": provider}, order=["tavily"], usage_limiter=limiter)
@@ -396,7 +406,7 @@ def test_dual_windows_and_restart(tmp_path):
     from datetime import datetime
 
     now = [datetime(2025, 1, 15, 12).timestamp()]
-    path = tmp_path / "usage.json"
+    path = vault_paths(tmp_path / "vault")
     limits = {"exa": UsageLimit(daily=1, monthly=2)}
     limiter = UsageLimiter(limits, path, clock=lambda: now[0])
     assert limiter.acquire("exa") and not limiter.acquire("exa")
@@ -412,7 +422,7 @@ def test_dual_windows_and_restart(tmp_path):
 def test_persisted_state_contains_only_both_windows_and_optional_pause(tmp_path):
     from datetime import datetime
 
-    path = tmp_path / "usage.json"
+    path = vault_paths(tmp_path / "vault")
     clock = datetime(2025, 1, 15, 12).timestamp
     limiter = UsageLimiter({"exa": UsageLimit(daily=10, monthly=20)}, path, clock=clock)
     assert limiter.acquire("exa")
@@ -422,19 +432,19 @@ def test_persisted_state_contains_only_both_windows_and_optional_pause(tmp_path)
         "monthly": {"window": "2025-01", "count": 1},
         "paused": {"reason": "balance", "resume_at": None},
     }
-    assert json.loads(path.read_text(encoding="utf-8")) == {"exa": expected}
+    assert _persisted_usage(path) == {"exa": expected}
     restarted = UsageLimiter({}, path, clock=clock)
     assert not restarted.allows("exa")
     restarted.resume("exa")
     del expected["paused"]
-    assert json.loads(path.read_text(encoding="utf-8")) == {"exa": expected}
+    assert _persisted_usage(path) == {"exa": expected}
     assert set(restarted.status("exa")) == {"daily", "monthly", "paused"}
 
 
 def test_concurrent_instances_cannot_exceed_limit(tmp_path):
     from concurrent.futures import ThreadPoolExecutor
 
-    path = tmp_path / "usage.json"
+    path = vault_paths(tmp_path / "vault")
     limits = {"exa": UsageLimit(daily=7, monthly=10)}
     instances = [UsageLimiter(limits, path) for _ in range(4)]
     with ThreadPoolExecutor(max_workers=8) as pool:
@@ -445,7 +455,7 @@ def test_concurrent_instances_cannot_exceed_limit(tmp_path):
 
 def test_pause_restart_expiry_and_manual_resume(tmp_path):
     now = [1000.0]
-    path = tmp_path / "usage.json"
+    path = vault_paths(tmp_path / "vault")
     limiter = UsageLimiter({}, path, clock=lambda: now[0])
     limiter.pause("exa", "balance")
     restarted = UsageLimiter({}, path, clock=lambda: now[0])
@@ -505,9 +515,11 @@ def test_search_cache_does_not_charge_or_dispatch(tmp_path):
     provider = _SearchProvider(
         "exa", [SearchResult("Synthetic entity", "https://example.com/a", "")]
     )
-    limiter = UsageLimiter({"exa": UsageLimit(daily=1, monthly=2)}, tmp_path / "usage.json")
+    limiter = UsageLimiter({"exa": UsageLimit(daily=1, monthly=2)}, vault_paths(tmp_path / "vault"))
     router = SearchRouter(
-        {"exa": provider}, cache=SearchCache(tmp_path / "cache.json", 60), usage_limiter=limiter
+        {"exa": provider},
+        cache=SearchCache(vault_paths(tmp_path / "vault"), 60),
+        usage_limiter=limiter,
     )
     assert router.search(SearchQuery("Synthetic entity")).results
     limiter.pause("exa", "balance")
@@ -518,7 +530,7 @@ def test_search_cache_does_not_charge_or_dispatch(tmp_path):
 def test_fetch_official_pause_blocks_future_search(tmp_path):
     error = ProviderError("exa", "quota", "NO_MORE_CREDITS", pause_reason="NO_MORE_CREDITS")
     fetch = _FetchProvider("exa", error=error)
-    path = tmp_path / "usage.json"
+    path = vault_paths(tmp_path / "vault")
     router = FetchRouter({"exa": fetch}, usage_limiter=UsageLimiter({}, path))
     with pytest.raises(ProviderError):
         router.fetch("https://example.com/a")

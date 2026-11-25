@@ -2,18 +2,15 @@
 
 from __future__ import annotations
 
-import json
-import os
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
 from threading import RLock
 from typing import Callable
 
-USAGE_FILENAME = "usage.json"
-_LOCKS: dict[str, RLock] = {}
-_LOCKS_GUARD = RLock()
+from ..storage.database import transaction
+from ..storage.paths import SyvrioPaths
 
 
 def window_key(period: str, now: float) -> str:
@@ -31,46 +28,47 @@ class UsageReservation:
 
 class UsageLimiter:
     def __init__(
-        self, limits: dict, path: Path | None = None, clock: Callable[[], float] = time.time
+        self, limits: dict, paths: SyvrioPaths | None = None, clock: Callable[[], float] = time.time
     ):
         self._limits = limits
-        self._path = path
+        self.paths = paths
         self._clock = clock
         self._counts: dict[str, dict] = {}
-        with _LOCKS_GUARD:
-            self._lock = (
-                _LOCKS.setdefault(os.path.normcase(str(path.resolve())), RLock())
-                if path
-                else RLock()
-            )
-        with self._lock:
-            self._load()
+        self._mutex = RLock()
 
-    def _load(self) -> None:
-        if self._path is None:
-            return
-        try:
-            data = json.loads(self._path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return
-        if isinstance(data, dict):
-            self._counts = {
-                provider: {
-                    field: value[field]
-                    for field in ("daily", "monthly", "paused")
-                    if isinstance(value.get(field), dict)
-                }
-                for provider, value in data.items()
-                if isinstance(value, dict)
-            }
-
-    def _save(self) -> None:
-        if self._path is None:
-            return
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self._path.with_name(self._path.name + ".tmp")
-        tmp.write_text(json.dumps(self._counts, ensure_ascii=False), encoding="utf-8")
-        os.replace(tmp, self._path)
+    @contextmanager
+    def _operation(self, provider):
+        with self._mutex:
+            if self.paths is None:
+                yield
+                return
+            with transaction(self.paths) as db:
+                entry = {}
+                for period, window, count in db.execute(
+                    "SELECT period,window,units FROM usage WHERE provider=?", (provider,)
+                ):
+                    entry[period] = {"window": window, "count": count}
+                pause = db.execute(
+                    "SELECT reason,resume_at FROM quota_pauses WHERE provider=?", (provider,)
+                ).fetchone()
+                if pause:
+                    entry["paused"] = {"reason": pause[0], "resume_at": pause[1]}
+                self._counts[provider] = entry
+                yield
+                for period in ("daily", "monthly"):
+                    counter = entry.get(period)
+                    if counter:
+                        db.execute(
+                            "INSERT OR REPLACE INTO usage VALUES(?,?,?,?)",
+                            (provider, period, counter["window"], counter["count"]),
+                        )
+                if paused := entry.get("paused"):
+                    db.execute(
+                        "INSERT OR REPLACE INTO quota_pauses VALUES(?,?,?)",
+                        (provider, paused["reason"], paused.get("resume_at")),
+                    )
+                else:
+                    db.execute("DELETE FROM quota_pauses WHERE provider=?", (provider,))
 
     def _entry(self, provider: str) -> dict:
         now = self._clock()
@@ -89,8 +87,7 @@ class UsageLimiter:
         return entry
 
     def status(self, provider: str) -> dict:
-        with self._lock:
-            self._load()
+        with self._operation(provider):
             entry = self._entry(provider)
             return self._status(provider, entry)
 
@@ -132,8 +129,7 @@ class UsageLimiter:
 
     def acquire(self, provider: str) -> UsageReservation | None:
         """在同一日历时刻检查并预扣额度，记录各自所属的计数周期。"""
-        with self._lock:
-            self._load()
+        with self._operation(provider):
             entry = self._entry(provider)
             if self._remaining(self._status(provider, entry)) == 0:
                 return None
@@ -143,19 +139,16 @@ class UsageLimiter:
     def _increment(self, entry: dict) -> None:
         for period in ("daily", "monthly"):
             entry[period]["count"] += 1
-        self._save()
 
     def record(self, provider: str) -> None:
-        with self._lock:
-            self._load()
+        with self._operation(provider):
             self._increment(self._entry(provider))
 
     def release(self, reservation: UsageReservation) -> None:
         """原日或月窗口仍有效时才退回其计数。"""
-        with self._lock:
+        with self._operation(reservation.provider):
             if reservation.refunded:
                 return
-            self._load()
             entry = self._entry(reservation.provider)
             for period, charged_window in (
                 ("daily", reservation.daily),
@@ -164,21 +157,16 @@ class UsageLimiter:
                 counter = entry[period]
                 if counter["window"] == charged_window and counter["count"] > 0:
                     counter["count"] -= 1
-            self._save()
             reservation.refunded = True
 
     def pause(self, provider: str, reason: str, resume_at: float | None = None) -> None:
-        with self._lock:
-            self._load()
+        with self._operation(provider):
             self._entry(provider)["paused"] = {"reason": reason, "resume_at": resume_at}
-            self._save()
 
     def note_error(self, provider: str, error) -> None:
         if error.pause_reason:
             self.pause(provider, error.pause_reason, error.resume_at)
 
     def resume(self, provider: str) -> None:
-        with self._lock:
-            self._load()
+        with self._operation(provider):
             self._entry(provider).pop("paused", None)
-            self._save()

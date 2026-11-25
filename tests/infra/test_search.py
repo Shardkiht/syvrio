@@ -20,7 +20,7 @@ def test_search_finds_keyword(tmp_path):
     store = seed(tmp_path)
     hits = KeywordRetriever(store).search("清淡")
     assert len(hits) == 1
-    assert hits[0].topic == "memories/general/preferences.md"
+    assert hits[0].topic == "general/preferences"
     assert "清淡" in hits[0].text
 
 

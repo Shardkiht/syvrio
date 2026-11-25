@@ -11,17 +11,16 @@ from collections import OrderedDict
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from itertools import count
-from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel
 
 from ..agent.runtime import ThinkingUpdate
-from ..infra.observability.diagnostics import record_event
 from ..infra.session.attachments import AttachmentBatch
 from ..infra.session.errors import ConversationError
-from ..infra.storage.files import atomic_write
+from ..infra.storage.database import transaction
+from ..infra.storage.paths import SyvrioPaths
 from .contracts import TurnCallbacks, TurnResult, UndoOutcome
 
 _TURN_IDS = count(1)
@@ -195,7 +194,7 @@ class TurnRegistry:
 
     def submit_once(
         self,
-        state_dir: Path,
+        paths: SyvrioPaths,
         submission_id: str,
         message: str,
         session_id: str | None,
@@ -207,18 +206,24 @@ class TurnRegistry:
         files = [(item.name, item.sha256) for item in attachments.files] if attachments else []
         payload = json.dumps([session_id, message.strip(), files], ensure_ascii=False).encode()
         signature = hashlib.sha256(payload).hexdigest()
-        path = state_dir / "chat-receipts" / submission_id[:2] / submission_id[2:]
         with self._delivery_lock:
-            try:
-                stored = json.loads(path.read_bytes())
-            except FileNotFoundError:
-                stored = None
+            with transaction(paths) as db:
+                row = db.execute(
+                    "SELECT request_digest,instance,session_id,turn_id FROM receipts WHERE submission_id=?",
+                    (submission_id,),
+                ).fetchone()
+                stored = row
+                if stored is None:
+                    db.execute(
+                        "INSERT INTO receipts(submission_id,request_digest,instance) VALUES(?,?,?)",
+                        (submission_id, signature, self._instance),
+                    )
             if stored is not None:
-                if stored["signature"] != signature:
+                if stored["request_digest"] != signature:
                     raise ConversationError(
                         "submission_conflict", "This delivery ID belongs to another message."
                     )
-                if stored.get("instance") != self._instance or "turn_id" not in stored:
+                if stored["instance"] != self._instance or stored["turn_id"] is None:
                     raise ConversationError(
                         "delivery_unknown",
                         "Delivery is uncertain after a backend interruption. Check the conversation before sending again.",
@@ -237,18 +242,17 @@ class TurnRegistry:
                 }
 
             # 分发前先预留，以免回执丢失后重复启动同一回合。
-            record = {"signature": signature, "instance": self._instance}
-            atomic_write(path, json.dumps(record).encode())
             try:
                 turn = submit()
             except ConversationError:
-                path.unlink()
+                with transaction(paths) as db:
+                    db.execute("DELETE FROM receipts WHERE submission_id=?", (submission_id,))
                 raise
-            record.update(session_id=turn.session_id, turn_id=turn.turn_id)
-            try:
-                atomic_write(path, json.dumps(record).encode())
-            except OSError as exc:
-                record_event("web.submission_receipt_failed", exc)
+            with transaction(paths) as db:
+                db.execute(
+                    "UPDATE receipts SET session_id=?, turn_id=? WHERE submission_id=?",
+                    (turn.session_id, turn.turn_id, submission_id),
+                )
             return turn.receipt()
 
 

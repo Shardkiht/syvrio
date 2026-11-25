@@ -243,7 +243,7 @@ class ConversationScheduler:
         attachments: AttachmentBatch | None = None,
     ) -> dict:
         return self.registry.submit_once(
-            self.conversation.runtime.service.paths.state_dir,
+            self.conversation.runtime.service.paths,
             submission_id,
             message,
             session_id,

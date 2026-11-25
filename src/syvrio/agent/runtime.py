@@ -23,11 +23,11 @@ from ..infra.observability.latency import TurnLatency, elapsed_ms, track_turn
 from ..infra.security.secrets import redact_secrets
 from ..infra.session import Session, SessionStore, new_message_id
 from ..infra.session.attachments import AttachmentBatch
-from ..infra.storage.transaction import vault_transaction
+from ..infra.storage.database import on_commit, transaction
 from ..infra.vault.files import load_persona
 from ..memory.background.titles import rename_session
 from ..memory.service import MemoryService
-from ..memory.turn_undo import TurnFileJournal, TurnUndoError
+from ..memory.turn_undo import TurnJournal, TurnUndoError
 from .context import (
     CompactionPhase,
     ContextManager,
@@ -184,7 +184,7 @@ class AgentRuntime:
         return self.session is not None
 
     def resume(self, session_id: str, *, close_current: bool = False) -> Session:
-        with self.service.write_lock:
+        with transaction(self.service.paths):
             if close_current and self.session is not None and self.session.id == session_id:
                 return self.session
             active = self._active_ask
@@ -267,7 +267,7 @@ class AgentRuntime:
         if not text:
             raise ValueError("消息为空。")
         settings = turn_settings or self.turn_settings()
-        with self.service.write_lock:
+        with transaction(self.service.paths):
             if session is None:
                 session = self.ensure_session()
             self._active_ask = session
@@ -306,7 +306,7 @@ class AgentRuntime:
             )
             raise
         finally:
-            with self.service.write_lock:
+            with transaction(self.service.paths):
                 self._active_ask = None
                 deferred = self._deferred_close
                 self._deferred_close = None
@@ -346,22 +346,31 @@ class AgentRuntime:
                 raise GenerationCancelled("Stopped by user")
 
         message_id = new_message_id()
-        journal = TurnFileJournal(
-            self.service.paths, session.id, message_id, self.service.memory_references
-        )
+        journal = TurnJournal(self.service.paths, session.id, message_id)
         record = {"type": "message", "id": message_id, "role": "user", "content": text}
         if attachments:
-            attachments.bind(session.id, message_id)
+            from ..infra.session.attachment_objects import release, reserve
+
+            token = message_id
+            reserve(self.service.paths, token, attachments.files)
             record["attachments"] = [asdict(item) for item in attachments.files]
         try:
-            if replace_message_id is None:
-                self.sessions.append(session, record)
-            else:
-                self.undo(session, expected_latest=replace_message_id, replacement=record)
+            if attachments:
+                attachments.publish(self.service.paths)
+            with transaction(self.service.paths):
+                if replace_message_id is None:
+                    self.sessions.append(session, record)
+                else:
+                    self.undo(session, expected_latest=replace_message_id, replacement=record)
+                if attachments:
+                    release(self.service.paths, token)
         except BaseException:
             if attachments:
+                release(self.service.paths, token)
                 attachments.discard()
             raise
+        if attachments:
+            attachments.finish()
         if on_user_message is not None:
             # 立即上报本条用户消息 ID；生成期间 /undo 用它精确撤销当前回合。
             on_user_message(message_id)
@@ -742,7 +751,7 @@ class AgentRuntime:
 
         传入 message_id 时校验该条消息所属回合。编辑重发时在同一事务中保存替代消息。
         """
-        with self.service.write_lock:
+        with transaction(self.service.paths):
             target_session = session or self.current
             # 在追加和回滚使用的同一把锁内重新核对已保存的末尾记录。
             live = self.sessions.load(target_session.id)
@@ -750,9 +759,9 @@ class AgentRuntime:
                 raise TurnUndoError(
                     "This message is no longer the latest. Refresh the conversation."
                 )
-            target_session.records = live.records
-            target_session.damaged_tail_line = live.damaged_tail_line
-            return self._undo_locked(target_session, message_id, replacement)
+            result = self._undo_locked(live, message_id, replacement)
+            on_commit(lambda: setattr(target_session, "records", live.records))
+            return result
 
     def _undo_locked(
         self, target_session: Session, message_id: str | None, replacement: dict | None
@@ -787,32 +796,29 @@ class AgentRuntime:
         events = [{"type": "undo", "id": new_message_id(), "message_id": root_id}]
         if replacement is not None:
             events.append(replacement)
-        journal = TurnFileJournal(
-            self.service.paths, target_session.id, root_id, self.service.memory_references
-        )
-        with self.service.write_lock:
+        journal = TurnJournal(self.service.paths, target_session.id, root_id)
+        with transaction(self.service.paths):
             first = records.index(inputs[0])
-            if not journal.path.is_file() and any(
+            if not journal.has_effects() and any(
                 record.get("turn_undo_recorded") is True for record in records[first:]
             ):
                 raise TurnUndoError(
-                    "This turn's local undo journal is missing. Restore the matching Runtime to undo it."
+                    "This turn's undo records are missing. Restore a complete backup to undo it."
                 )
-            files = journal.plan()
-            with vault_transaction(self.service.paths) as transaction:
-                for path, original in files.items():
-                    transaction.write(path, original)
-                if files:
-                    self.service.audit.write(
-                        "undo_tool_writes",
-                        session=target_session.id,
-                        message=root_id,
-                        paths=len(files),
-                    )
-                self.sessions.append_event_transactionally(target_session, *events)
-                live = self.sessions.load(target_session.id)
+            live = self.sessions.load(target_session.id)
+            if live.latest_turn_inputs() != inputs:
+                raise TurnUndoError("The latest turn changed; refresh before undoing.")
+            restored = journal.restore()
+            if restored:
+                self.service.audit.write(
+                    "undo_tool_writes",
+                    session=target_session.id,
+                    message=root_id,
+                    entities=restored,
+                )
+            self.sessions.append_event_transactionally(target_session, *events)
+            live = self.sessions.load(target_session.id)
             target_session.records = live.records
-            target_session.damaged_tail_line = live.damaged_tail_line
         if self.session is not None and target_session.id == self.session.id:
             self.last_plan = None
             self.last_plan_session = None

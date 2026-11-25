@@ -147,13 +147,13 @@ def test_topic_directory_returns_metadata_and_opens_each_exact_path(client, back
     service.deprecate(service.note("An old synthetic note.", topic="general/reading").id)
 
     parsed = []
-    original = service.store.document
+    original = service.store.entries
 
-    def count_parse(path):
-        parsed.append(path.relative_to(service.paths.vault_dir).as_posix())
-        return original(path)
+    def count_parse(topic):
+        parsed.append(topic)
+        return original(topic)
 
-    monkeypatch.setattr(service.store, "document", count_parse)
+    monkeypatch.setattr(service.store, "entries", count_parse)
     listing = run(client, "/topics").json()
     assert parsed == []
     assert listing["status"] == "ok"
@@ -453,7 +453,9 @@ def test_review_receipt_failure_preserves_decision_for_retry(client, backend, mo
         assert run(client, command, confirmed=True).json()["status"] == "error"
     if kind == "pending":
         assert service.pending() == [item]
-        assert not service.queue.resolved_path.exists()
+        from tests.support.storage import rejected
+
+        assert not rejected(service.queue)
     else:
         assert service.list_inferences() == [item]
     assert run(client, command, confirmed=True).json()["status"] == "ok"

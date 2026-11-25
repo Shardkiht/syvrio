@@ -1,13 +1,9 @@
-"""读取最近发布的画像，生成工作由 Dream 负责。"""
+"""Latest published profile. Only Dream publishes new evidence snapshots."""
 
-from __future__ import annotations
-
-from collections.abc import Callable
+import json
 from dataclasses import dataclass
 
-from ..infra.storage.locking import vault_write_lock
-from ..infra.storage.paths import SyvrioPaths
-from .background.jobs import job_path, read_job
+from ..infra.storage.database import encode, transaction
 
 
 @dataclass(frozen=True)
@@ -19,42 +15,36 @@ class ProfileSummaryView:
 
 
 class ProfileReader:
-    def __init__(self, paths: SyvrioPaths):
+    def __init__(self, paths):
         self.paths = paths
-        self.path = paths.vault_dir / "profile.md"
 
-    def _read_published[T](self, read: Callable[[], T]) -> T:
-        lock = vault_write_lock(self.paths)
-        if not lock.path.exists():
-            result = read()
-            # 首个写者会先创建锁文件。若它在读取期间出现，在锁内重读已提交的画像。
-            if not lock.path.exists():
-                return result
-        with lock:
-            return read()
+    def _published(self):
+        with transaction(self.paths, write=False) as db:
+            row = db.execute("SELECT body,metadata FROM profile WHERE singleton=1").fetchone()
+            return (row[0], json.loads(row[1])) if row else ("", {})
 
-    def _read_text(self) -> str:
-        if self.path.is_symlink():
-            raise ValueError("Profile cannot redirect outside the Vault.")
-        try:
-            return self.path.read_text(encoding="utf-8")
-        except FileNotFoundError:
-            return ""
+    def read_text(self):
+        return self._published()[0]
 
-    def read_text(self) -> str:
-        return self._read_published(self._read_text)
+    def metadata(self):
+        return self._published()[1]
 
-    def profile_summary(self) -> ProfileSummaryView | None:
-        return self._read_published(self._summary)
+    def publish(self, body, metadata):
+        with transaction(self.paths) as db:
+            db.execute(
+                "INSERT INTO profile VALUES(1,?,?) ON CONFLICT(singleton) DO UPDATE SET body=excluded.body, metadata=excluded.metadata",
+                (body, encode(metadata)),
+            )
 
-    def _summary(self) -> ProfileSummaryView | None:
-        text = self._read_text().strip()
-        if not text:
-            return None
-        metadata = read_job(job_path(self.paths, "dream", "profile")) or {}
-        return ProfileSummaryView(
-            text=text,
-            generated_at=metadata.get("generated_at", ""),
-            fact_count=metadata.get("fact_count", 0),
-            unique_count=metadata.get("unique_count", 0),
+    def profile_summary(self):
+        body, meta = self._published()
+        return (
+            ProfileSummaryView(
+                body,
+                meta.get("generated_at", ""),
+                meta.get("fact_count", 0),
+                meta.get("unique_count", 0),
+            )
+            if body
+            else None
         )

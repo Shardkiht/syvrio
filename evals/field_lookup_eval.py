@@ -7,17 +7,16 @@ from statistics import median
 from tempfile import TemporaryDirectory
 from time import perf_counter
 
-from syvrio.memory.schema import Core, render_record
 from syvrio.memory.service import MemoryService
 
 if __name__ == "__main__" and not __package__:
     from retrieval_fixture import guard_vector
     from retrieval_metrics import LIMITS
-    from sandbox import eval_environment, local_hybrid_config
+    from sandbox import eval_environment, local_hybrid_config, seed_topic
 else:
     from evals.retrieval_fixture import guard_vector
     from evals.retrieval_metrics import LIMITS
-    from evals.sandbox import eval_environment, local_hybrid_config
+    from evals.sandbox import eval_environment, local_hybrid_config, seed_topic
 
 FIELDS = (
     ("port", "端口：4826"),
@@ -51,8 +50,6 @@ NESTED_LABELS = {"mapping": "port", "handover": "place", "postal-tool": "postcod
 
 
 def seed(vault: Path) -> None:
-    topics = vault / "memories" / "general"
-    topics.mkdir(parents=True)
     for group in range(12):
         rows = (
             FIELDS
@@ -66,16 +63,7 @@ def seed(vault: Path) -> None:
                 for i in range(109)
             ]
         )
-        records = [
-            render_record(
-                Core(id=ident, status="active", text=text),
-                extensions=[("recorded_at", "2024-01-01T00:00:00Z")],
-            )
-            for ident, text in rows
-        ]
-        (topics / f"{group:02}.md").write_text(
-            "# 独立设备与工作资料\n\n" + "\n".join(records), encoding="utf-8"
-        )
+        seed_topic(vault, f"{group:02}", rows, "独立设备与工作资料")
 
 
 def main() -> None:

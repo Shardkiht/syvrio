@@ -1,54 +1,65 @@
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from io import BytesIO
-from uuid import uuid4
 
-from syvrio.infra.session.attachment_objects import original_path, upgrade_originals
+from syvrio.infra.session.attachment_objects import cleanup, original_path, release, reserve
 from syvrio.infra.session.attachments import AttachmentBatch
+from syvrio.infra.session.store import SessionStore
+from syvrio.infra.storage.database import transaction
 
 
-def test_concurrent_bindings_share_bytes_and_release_only_the_last_reference(tmp_path):
-    root = tmp_path / "attachments"
+def test_concurrent_bindings_share_bytes_and_release_only_last_reference(service, monkeypatch):
+    root = service.paths.attachments_dir
+    store = SessionStore(service.paths)
 
-    def attach(index):
-        first = (f"file-{index}.txt", BytesIO(b"common bytes"))
-        alias = ("renamed.md", BytesIO(b"common bytes"))
-        batch = AttachmentBatch.stage(root, [first, alias])
-        assert len(batch.files) == 1 and batch.files[0].name == first[0]
-        batch.bind(f"s-{index % 2}", f"m-{index}")
-        return batch
+    def attach(i):
+        session = store.create()
+        batch = AttachmentBatch.stage(
+            root,
+            [(f"file-{i}.txt", BytesIO(b"common bytes")), ("renamed.md", BytesIO(b"common bytes"))],
+        )
+        assert len(batch.files) == 1
+        token = batch.folder.name
+        reserve(service.paths, token, batch.files)
+        with transaction(service.paths):
+            batch.publish(service.paths)
+            store.append(
+                session,
+                dict(
+                    type="message",
+                    role="user",
+                    content="synthetic",
+                    attachments=[asdict(batch.files[0])],
+                ),
+            )
+            release(service.paths, token)
+        batch.finish()
+        return session, batch
 
     with ThreadPoolExecutor(max_workers=6) as pool:
-        batches = list(pool.map(attach, range(6)))
-        original = original_path(root, batches[0].files[0].sha256)
-        assert len({next(iter(batch.documents().values())) for batch in batches}) == 1
-        assert list(root.rglob("original")) == [original]
-        list(pool.map(lambda batch: batch.discard(), batches[:-1]))
-    assert original.read_bytes() == b"common bytes"
-    batches[-1].discard()
+        bindings = list(pool.map(attach, range(6)))
+    first = bindings[0][1]
+    original = original_path(root, first.files[0].sha256)
+    assert len({next(iter(b.documents().values())) for _, b in bindings}) == 1
+    for s, _ in bindings[:-1]:
+        store.set_archived(s.id, True)
+        store.delete(s.id, archived=True)
+        assert original.read_bytes() == b"common bytes"
+    last = bindings[-1][0]
+    store.set_archived(last.id, True)
+    real_unlink = type(original).unlink
+
+    def fail(path, *a, **kw):
+        if path == original:
+            raise OSError("simulated cleanup failure")
+        return real_unlink(path, *a, **kw)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(type(original), "unlink", fail)
+        store.delete(last.id, archived=True)
+    assert original.exists() and not store.exists(last.id, archived=True)
+    cleanup(service.paths)
     assert not original.exists()
-
-
-def test_historical_originals_coalesce_and_keep_their_message_ids(tmp_path):
-    root = tmp_path / "attachments"
-    batch = AttachmentBatch.stage(root, [("sample.txt", BytesIO(b"old upload"))])
-    item = batch.files[0]
-    batch.bind("new", "m-new")
-    old = asdict(item) | {"id": uuid4().hex, "name": "original.md"}
-    folder = root / "older" / "m-old"
-    folder.mkdir(parents=True)
-    legacy = folder / (old["id"] + ".md")
-    legacy.write_bytes(b"old upload")
-    for _ in range(2):
-        upgrade_originals(root)
-        saved = AttachmentBatch.restore(root, "older", "m-old", [old])
-        assert saved.files[0].id == old["id"]
-        assert saved.documents()["1. original.md"] == batch.documents()["1. sample.txt"]
-    assert not legacy.exists()
-    batch.discard()
-    assert saved.documents()["1. original.md"].read_bytes() == b"old upload"
-    saved.discard()
-    assert not list(root.rglob("original"))
 
 
 def test_same_name_and_length_with_different_bytes_are_distinct(tmp_path):

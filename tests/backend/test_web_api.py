@@ -32,12 +32,14 @@ from syvrio.infra.llm import (
     LiteLLMChatModel,
     ToolCall,
 )
+from syvrio.infra.storage.database import transaction
 from syvrio.infra.storage.locking import LockTimeout
 from syvrio.memory.background import distillation
-from syvrio.memory.background.jobs import job_path, read_job
+from syvrio.memory.background.jobs import job_key, read_job
 from syvrio.memory.models import MemoryDraft
 from syvrio.memory.service import MemoryService
 from tests.support.resident_api import create_app
+from tests.support.storage import rows
 
 pytestmark = pytest.mark.web
 
@@ -154,7 +156,7 @@ def backend(tmp_path, monkeypatch):
             auto_recall=0, recall_rewrite=False, extract_on_exit=False, max_tool_steps=4
         ),
         retrieval=RetrievalConfig(method="keyword"),
-        search=SearchConfig(enabled=False),
+        search=SearchConfig(enabled=False, auto_start=False),
         git=GitConfig(auto_sync=False),
     )
     service = MemoryService(config)
@@ -201,7 +203,7 @@ def test_gateway_preserves_attachment_if_range(resident_backend):
     session = sessions.create()
     data = b"synthetic attachment"
     batch = AttachmentBatch.stage(sessions.attachments_dir, [("notes.txt", BytesIO(data))])
-    batch.bind(session.id, "m-file")
+    batch.publish(sessions.paths)
     item = batch.files[0]
     sessions.append(
         session,
@@ -213,6 +215,7 @@ def test_gateway_preserves_attachment_if_range(resident_backend):
             "attachments": [asdict(item)],
         },
     )
+    batch.finish()
     path = f"/api/sessions/{session.id}/messages/m-file/attachments/{item.id}"
     gateway = create_gateway(resident.base, "127.0.0.1")
     with TestClient(gateway, base_url=BASE_URL) as browser:
@@ -295,8 +298,8 @@ def test_mixed_attachments_reach_model_and_survive_move(client, backend, tmp_pat
     url = f"/api/sessions/{sid}/messages/{record['id']}/attachments/{file_id}"
     # 下载线程与持锁的测试线程并发，不能重新加载整段历史。
     with monkeypatch.context() as patch, ThreadPoolExecutor(max_workers=1) as pool:
-        patch.setattr(backend._sessions, "_load_path", lambda *a, **kw: pytest.fail("full load"))
-        with backend._service.write_lock:
+        patch.setattr(backend._sessions, "load", lambda *a, **kw: pytest.fail("full load"))
+        with transaction(backend._service.paths):
             download = pool.submit(client.get, url).result(timeout=3)
     assert download.content == data and download.headers["content-disposition"].startswith(
         "attachment;"
@@ -361,9 +364,10 @@ def test_mixed_attachments_reach_model_and_survive_move(client, backend, tmp_pat
     assert client.post(f"/api/sessions/{sid}/restore").status_code == 200
     assert client.get(url).content == data
     paths = backend._service.paths
+    backend.git.is_dirty()
     backend.git.repo.stage_all()
     staged = backend.git.repo.staged_paths()
-    assert any(item.startswith("sessions/") for item in staged)
+    assert any(item.startswith("content/sessions/") for item in staged)
     assert not any(item.startswith("attachments/") for item in staged)
     moved = SyvrioPaths(tmp_path / "moved-vault", tmp_path / "moved-runtime")
     copytree(paths.vault_dir, moved.vault_dir)
@@ -865,7 +869,10 @@ def test_undo_during_tool_write_reverts_the_completed_write_and_stops_the_next(
     )
     entered = threading.Event()
     release = threading.Event()
-    affected = service.store.topic_path("undo-inflight")
+
+    def affected():
+        return service.store.entries("undo-inflight")
+
     memorize = service.memorize
     written = threading.Event()
 
@@ -873,7 +880,7 @@ def test_undo_during_tool_write_reverts_the_completed_write_and_stops_the_next(
         entered.set()
         assert release.wait(5)
         result = memorize(*args, **kwargs)
-        if affected.exists():
+        if affected():
             written.set()
         return result
 
@@ -894,7 +901,7 @@ def test_undo_during_tool_write_reverts_the_completed_write_and_stops_the_next(
         assert response["status"] == "ok"
         assert response["data"]["restored"] == "tool undo"
         events = stream.result(timeout=5)
-    assert written.is_set() and not affected.exists()
+    assert written.is_set() and not affected()
     assert model.calls == 2
     assert not any(
         event.get("name") == "correct" for event in events if event["type"] == "tool_start"
@@ -953,7 +960,7 @@ def test_archive_then_confirm_permanent_deletion(client, backend):
     store.append(
         target, {"type": "message", "id": "m-1", "role": "user", "content": "original bytes"}
     )
-    original = target.path.read_bytes()
+    original = store.load(target.id).records
     url = f"/api/sessions/{target.id}"
     permanent = {"permanent": True, "confirmed": True}
     assert client.delete(url, params=permanent).json()["error"]["code"] == "archive_required"
@@ -963,7 +970,7 @@ def test_archive_then_confirm_permanent_deletion(client, backend):
             "archived": True,
         }
     assert not store.exists(target.id)
-    assert store.load(target.id, archived=True).path.read_bytes() == original
+    assert store.load(target.id, archived=True).records == original
     assert client.get(url).status_code == 404
     assert (
         client.get(url, params={"archived": True}).json()["items"][0]["content"] == "original bytes"
@@ -987,14 +994,14 @@ def test_archiving_idle_readers_detaches_each_immediately_and_restores_bytes(cli
     first, second = ({"X-Syvrio-View": uuid4().hex} for _ in range(2))
     for headers in (first, second):
         assert client.post(url + "/switch", headers=headers).status_code == 200
-    original = target.path.read_bytes()
+    original = store.load(target.id).records
     assert client.post(url + "/archive", headers=first).status_code == 200
     for headers in (first, second):
         queue = client.get("/api/chat/queue", headers=headers).json()
         assert queue["session_id"] is None and queue["archived_session_id"] == target.id
     assert client.post(url + "/switch", headers=second).status_code == 404
     assert client.post(url + "/restore", headers=second).status_code == 200
-    assert target.path.read_bytes() == original
+    assert store.load(target.id).records == original
     assert client.post(url + "/switch", headers=first).status_code == 200
     assert client.get("/api/chat/queue", headers=first).json()["session_id"] == target.id
     assert client.get("/api/chat/queue", headers=second).json()["session_id"] is None
@@ -1207,7 +1214,7 @@ def test_archive_interlocks_with_model_call_and_discards_archived_work(
 ):
     from syvrio.memory.background import context_fill, titles
     from syvrio.memory.background.jobs import enqueue_context_fill
-    from syvrio.memory.inference import source_fingerprint
+    from syvrio.memory.inference import source_version
     from syvrio.memory.models import MemoryContext
 
     background, store, service = backend._background, backend._sessions, backend._service
@@ -1243,9 +1250,11 @@ def test_archive_interlocks_with_model_call_and_discards_archived_work(
         )
         key = fact.id
         monkeypatch.setattr(context_fill, "ask", model)
-        enqueue_context_fill(service.paths, key, source_fingerprint(fact))
-    path = job_path(service.paths, lane, key)
-    original_job = path.read_bytes()
+        enqueue_context_fill(service.paths, key, source_version(fact))
+    path = job_key(service.paths, lane, key)
+    from syvrio.memory.background.jobs import save_job
+
+    original_job = read_job(path)
     with ThreadPoolExecutor(1) as pool:
         running = pool.submit(background._step_job, lane, path, threading.Event())
         try:
@@ -1257,9 +1266,9 @@ def test_archive_interlocks_with_model_call_and_discards_archived_work(
             release.set()
         running.result(timeout=10)
     assert client.post(f"/api/sessions/{target.id}/archive").status_code == 200
-    path.write_bytes(original_job)
+    save_job(path, original_job)
     assert background._step_job(lane, path, threading.Event())
-    assert not path.exists() and calls == [lane]
+    assert not read_job(path) and calls == [lane]
 
 
 def test_archive_tree_is_outside_recall_source_topic_and_background_inputs(
@@ -1282,10 +1291,8 @@ def test_archive_tree_is_outside_recall_source_topic_and_background_inputs(
     root = service.paths.vault_dir / "archived"
     moved_fact = service.add(MemoryDraft(text=marker, topic="cold-evidence"))
     assert moved_fact.id in {hit.id for hit in service.recall(marker)}
-    topic = service.store.topic_path("cold-evidence")
-    stored = root / topic.relative_to(service.paths.vault_dir)
-    stored.parent.mkdir(parents=True, exist_ok=True)
-    topic.rename(stored)
+    with transaction(service.paths) as db:
+        db.execute("UPDATE topics SET archived=1 WHERE name=?", (moved_fact.topic,))
     for name in ("memories/general/topic.md", "inferences/idea/i.md", "nested/future-format.jsonl"):
         path = root / name
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -1301,7 +1308,7 @@ def test_archive_tree_is_outside_recall_source_topic_and_background_inputs(
     assert all(row.id != target.id for row in backend.list_sessions().items)
     assert not store.unconsolidated()
     background._discover(threading.Event())
-    assert not job_path(service.paths, "distillation", target.id).exists()
+    assert not read_job(job_key(service.paths, "distillation", target.id))
     with pytest.raises(ValueError, match="unavailable"):
         service.read_memory_source(fact.id)
     assert [entry.id for entry in service.topic_entries("topic")] == [fact.id]
@@ -1373,10 +1380,10 @@ def test_conditional_switch_returns_history_and_reuses_it_after_leaving(
     store.append(first, {"type": "assistant", "id": "reply", "content": "First answer"})
     url = f"/api/sessions/{first.id}"
     reads, projections = [], []
-    load, project = store._load_path, backend.project_history
+    load, project = store.load, backend.project_history
 
-    def count_read(path, *, include_reasoning):
-        if path == first.path and include_reasoning:
+    def count_read(path, *, include_reasoning=True, archived=False):
+        if path == first.id and include_reasoning:
             reads.append(path)
         return load(path, include_reasoning=include_reasoning)
 
@@ -1385,7 +1392,7 @@ def test_conditional_switch_returns_history_and_reuses_it_after_leaving(
             projections.append(session.id)
         return project(session, **kwargs)
 
-    monkeypatch.setattr(store, "_load_path", count_read)
+    monkeypatch.setattr(store, "load", count_read)
     monkeypatch.setattr(backend, "project_history", count_projection)
     first_open = client.post(f"{url}/switch", params={"include_history": True}).json()
     assert first_open["history"] == client.get(url).json()
@@ -1429,7 +1436,11 @@ def test_conditional_switch_uses_committed_history_even_while_bound(client, back
     params = {"include_history": True}
     initial = client.post(f"{url}/switch", params=params).json()
     params["known_version"] = initial["history_version"]
-    store._reasoning_path(session.id, "answer").write_text('{"text":"After"}', encoding="utf-8")
+    with transaction(store.paths) as db:
+        db.execute(
+            "UPDATE session_reasoning SET body=? WHERE event_id=(SELECT seq FROM session_events WHERE session_id=? AND message_id='answer')",
+            ('{"text":"After"}', session.id),
+        )
     changed = client.post(f"{url}/switch", params=params).json()
     assert changed["history_version"] != initial["history_version"]
     assert changed["history"] == client.get(url).json()
@@ -1505,14 +1516,14 @@ def test_history_and_switch_share_one_read_across_views(client, backend, monkeyp
         },
     )
     reads = []
-    original = store._load_path
+    original = store.load
 
-    def count(path, *, include_reasoning):
-        if include_reasoning and path == session.path:
+    def count(path, *, include_reasoning=True, archived=False):
+        if include_reasoning and path == session.id:
             reads.append(path)
         return original(path, include_reasoning=include_reasoning)
 
-    monkeypatch.setattr(store, "_load_path", count)
+    monkeypatch.setattr(store, "load", count)
     url = f"/api/sessions/{session.id}"
     history_view = {"X-Syvrio-View": "11" * 16}
     chat_view = {"X-Syvrio-View": "22" * 16}
@@ -1537,9 +1548,11 @@ def test_history_and_switch_share_one_read_across_views(client, backend, monkeyp
         switch()
         history()
     assert len(reads) == 1
-    store._reasoning_path(session.id, "answer").write_text(
-        '{"text":"Changed reasoning"}', encoding="utf-8"
-    )
+    with transaction(store.paths) as db:
+        db.execute(
+            "UPDATE session_reasoning SET body=? WHERE event_id=(SELECT seq FROM session_events WHERE session_id=? AND message_id='answer')",
+            ('{"text":"Changed reasoning"}', session.id),
+        )
     assert history()[0]["reasoning"]["text"] == "Changed reasoning"
     store.append(
         session, {"type": "message", "role": "user", "id": "followup", "content": "Follow-up"}
@@ -1990,8 +2003,8 @@ def wait_until(check):
 
 
 def wait_for_distillation(backend, session):
-    path = job_path(backend._service.paths, "distillation", session.id)
-    wait_until(lambda: not path.exists())
+    path = job_key(backend._service.paths, "distillation", session.id)
+    wait_until(lambda: not read_job(path))
 
 
 @pytest.mark.parametrize("outcome", ["generated", "renamed", "undone", "failure"])
@@ -2114,7 +2127,7 @@ def test_background_failure_leaves_a_retryable_job(client, backend, monkeypatch)
     monkeypatch.setattr(distillation, "ask", extractor.ask)
     extractor.release.set()
     assert client.post("/api/sessions").status_code == 201
-    path = job_path(backend._service.paths, "distillation", session.id)
+    path = job_key(backend._service.paths, "distillation", session.id)
     wait_until(lambda: (read_job(path) or {}).get("failures"))
     assert len(backend._sessions.load(session.id).undistilled_messages()) == 3
     extractor.fail = False
@@ -2337,7 +2350,6 @@ def test_edit_waits_for_the_user_record_before_returning_a_receipt(
     client, backend, monkeypatch, failure
 ):
     from syvrio.infra.session.attachments import AttachmentBatch
-    from syvrio.infra.storage.transaction import VaultTransaction
 
     first = client.post(
         "/api/chat/attachments?receipt=1",
@@ -2353,33 +2365,33 @@ def test_edit_waits_for_the_user_record_before_returning_a_receipt(
     path = f"/api/chat/attachments?receipt=1&replace={target}"
     fields = {"message": "replacement", "session_id": session}
     files = {"files": ("note.txt", b"retain me")}
-    transcript = backend._sessions.load(session).path
-    original = transcript.read_bytes()
-    append = VaultTransaction.append
+    store = backend._sessions
+    original = store.load(session).records
+    append = store._insert
 
-    def fail_write(tx, path, payload):
-        if path == transcript and b'"replacement"' in payload:
+    def fail_write(db, sid, record):
+        if sid == session and record.get("content") == "replacement":
             if failure == "after_write":
-                append(tx, path, payload)
+                append(db, sid, record)
             raise OSError("synthetic storage failure")
-        return append(tx, path, payload)
+        return append(db, sid, record)
 
     def fail_bind(*args):
         raise OSError("synthetic attachment failure")
 
     with monkeypatch.context() as patch:
         if failure == "bind":
-            patch.setattr(AttachmentBatch, "bind", fail_bind)
+            patch.setattr(AttachmentBatch, "publish", fail_bind)
         else:
-            patch.setattr(VaultTransaction, "append", fail_write)
+            patch.setattr(store, "_insert", fail_write)
         response = client.post(path, data=fields, files=files)
         assert response.status_code == 503, response.text
         assert response.json()["error"]["code"] == "edit_not_sent"
     assert client.get(history).json()["items"] == before
-    assert transcript.read_bytes() == original
+    assert store.load(session).records == original
     assert backend._conversation.current.user_texts() == ["original"]
     assert client.get(download).content == b"original file"
-    assert len(list(backend._service.paths.attachments_dir.rglob("original"))) == 1
+    assert len(rows(backend._service.paths, "attachments")) == 1
     assert not list((backend._service.paths.attachments_dir / ".incoming").iterdir())
     response = client.post(path, data=fields, files=files)
     assert response.status_code == 202, response.text
@@ -2392,7 +2404,6 @@ def test_edit_waits_for_the_user_record_before_returning_a_receipt(
 def test_failed_edit_preserves_the_original_tool_writes(
     client, backend, monkeypatch, foreign_write
 ):
-    from syvrio.infra.storage.transaction import VaultTransaction
 
     service = backend._service
     args = {"text": "合成书签使用蓝色", "topic": "synthetic-bookmarks"}
@@ -2406,41 +2417,40 @@ def test_failed_edit_preserves_the_original_tool_writes(
     events = collect(client, "synthetic bookmarks")
     sid = events[-1]["session_id"]
     target = next(event["message_id"] for event in events if event["type"] == "message_saved")
-    topic = service.store.topic_path(args["topic"])
-    assert args["text"] in topic.read_text(encoding="utf-8")
+    affected = service.store.entries(args["topic"])[0]
+    assert affected.text == args["text"]
     if foreign_write:
-        service.note("另一项合成书签记录", topic=args["topic"])
-    transcript = backend._sessions.load(sid).path
+        service.deprecate(affected.id)
+    store = backend._sessions
     before = {
-        p: p.read_bytes()
-        for p in (topic, service.store.changes_path, service.audit.path, transcript)
+        k: rows(service.paths, k) for k in ("memories", "memory_changes", "audit", "session_events")
     }
     path = f"/api/chat?receipt=1&replace={target}"
     body = {"session_id": sid, "message": "replacement"}
-    append = VaultTransaction.append
+    append = store._insert
 
-    def fail_after_publish(tx, path, payload):
-        append(tx, path, payload)
-        if path == transcript:
-            assert not topic.exists()  # 事务已撤回工具写入。
+    def fail_after_publish(db, key, record):
+        append(db, key, record)
+        if key == sid:
+            assert not service.store.find(affected.id)
             raise OSError("synthetic write failure")
 
     with monkeypatch.context() as patch:
         if not foreign_write:
-            patch.setattr(VaultTransaction, "append", fail_after_publish)
+            patch.setattr(store, "_insert", fail_after_publish)
         response = client.post(path, json=body)
     assert response.status_code == (409 if foreign_write else 503), response.text
     assert response.json()["error"]["code"] == (
         "edit_conflict" if foreign_write else "edit_not_sent"
     )
-    assert all(p.read_bytes() == expected for p, expected in before.items())
+    assert all(rows(service.paths, k) == expected for k, expected in before.items())
     assert client.get(f"/api/sessions/{sid}").json()["items"][-1]["content"] == "original reply"
     assert model.calls == 3
     if not foreign_write:
         accepted = client.post(path, json=body)
         assert accepted.status_code == 202
         client.get(f"/api/chat/turns/{accepted.json()['turn_id']}")
-        assert not topic.exists()
+        assert not service.store.find(affected.id)
         assert client.post(path, json=body).json()["turn_id"] == accepted.json()["turn_id"]
         assert model.calls == 4
 
@@ -2448,20 +2458,19 @@ def test_failed_edit_preserves_the_original_tool_writes(
 def test_history_refresh_during_a_failed_edit_sees_the_committed_exchange(
     client, backend, monkeypatch
 ):
-    from syvrio.infra.storage.transaction import VaultTransaction
 
     events = collect(client, "original")
     sid = events[-1]["session_id"]
     target = next(event["message_id"] for event in events if event["type"] == "message_saved")
     history_path = f"/api/sessions/{sid}"
     original = client.get(history_path).json()["items"]
-    transcript = backend._sessions.load(sid).path
+    store = backend._sessions
     published, reading, fail = threading.Event(), threading.Event(), threading.Event()
-    append, history = VaultTransaction.append, backend.history
+    append, history = store._insert, backend.history
 
-    def delay_failure(tx, path, payload):
-        append(tx, path, payload)
-        if path == transcript:
+    def delay_failure(db, key, record):
+        append(db, key, record)
+        if key == sid:
             published.set()
             assert fail.wait(5)
             raise OSError("synthetic failure before commit")
@@ -2470,7 +2479,7 @@ def test_history_refresh_during_a_failed_edit_sees_the_committed_exchange(
         reading.set()
         return history(*args, **kwargs)
 
-    monkeypatch.setattr(VaultTransaction, "append", delay_failure)
+    monkeypatch.setattr(store, "_insert", delay_failure)
     monkeypatch.setattr(backend, "history", refresh)
     with ThreadPoolExecutor(2) as pool:
         edit = pool.submit(
@@ -2482,8 +2491,9 @@ def test_history_refresh_during_a_failed_edit_sees_the_committed_exchange(
             assert published.wait(5)
             reader = pool.submit(client.get, history_path)
             assert reading.wait(5)
-            with pytest.raises(TimeoutError):
-                reader.result(timeout=0.1)
+            # The reader may finish immediately with the prior committed snapshot.
+            if reader.done():
+                assert reader.result().json()["items"] == original
         finally:
             fail.set()
         assert edit.result(5).status_code == 503

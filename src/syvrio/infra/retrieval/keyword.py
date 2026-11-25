@@ -191,7 +191,6 @@ class KeywordRetriever[Record: SearchRecord]:
         return [
             SearchHit.from_record(
                 entries[index],
-                self.store.topic_path(entries[index].topic),
                 max(float(score), 0.0),
                 fields.get(index, ""),
             )

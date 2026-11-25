@@ -205,7 +205,6 @@ def test_submit_failure_and_interrupted_worker_can_be_retried(tmp_path, monkeypa
 def test_handover_only_shuts_down_verified_idle_resident(
     tmp_path, monkeypatch, busy, same, expected
 ):
-    monkeypatch.setattr("syvrio.backend.ownership.syvrio_home", lambda: tmp_path / "home")
     paths = SyvrioPaths(tmp_path / "vault", tmp_path / "runtime")
     monkeypatch.setattr(
         update_worker, "discover", lambda paths: ("http://127.0.0.1:8760", "credential")

@@ -1,7 +1,6 @@
 """仅为用户实际继续过的对话生成标题。"""
 
 from collections.abc import Callable
-from pathlib import Path
 from threading import Event
 
 from pydantic import BaseModel, Field
@@ -9,8 +8,8 @@ from pydantic import BaseModel, Field
 from ...infra.llm.tokens import truncate_to_tokens
 from ...infra.observability.diagnostics import record_event
 from ...infra.session import Session, SessionStore
-from ...infra.storage.transaction import vault_transaction
-from .jobs import encode_job, job_path, read_job
+from ...infra.storage.database import transaction
+from .jobs import JobKey, job_key, read_job, save_job
 from .model import ask
 
 PROMPT = """Give this conversation a short, specific title summarizing the question and answer.
@@ -25,16 +24,16 @@ class Title(BaseModel):
 
 def rename_session(sessions: SessionStore, session: Session, title: str) -> None:
     """手动标题和取消自动标题任务一起生效。"""
-    with vault_transaction(sessions.paths) as tx:
-        pending = job_path(sessions.paths, "title", session.id)
-        if pending.exists():
-            tx.write(pending, None)
+    with transaction(sessions.paths):
+        pending = job_key(sessions.paths, "title", session.id)
+        if read_job(pending):
+            save_job(pending, None)
         sessions.rename(session, title)
 
 
 def request(sessions: SessionStore, session_id: str) -> None:
-    path = job_path(sessions.paths, "title", session_id)
-    with vault_transaction(sessions.paths) as tx:
+    path = job_key(sessions.paths, "title", session_id)
+    with transaction(sessions.paths):
         session = sessions.load(session_id, include_reasoning=False)
         exchange = None if session.saved_title() else session.title_exchange()
         if exchange:
@@ -45,7 +44,7 @@ def request(sessions: SessionStore, session_id: str) -> None:
                 "answer_id": answer["id"],
             }
             if read_job(path) != job:
-                tx.write(path, encode_job(job))
+                save_job(path, job)
 
 
 def _exchange(sessions: SessionStore, job: dict):
@@ -75,17 +74,17 @@ def generate(service, user: str, answer: str) -> str:
 def process(
     service,
     sessions: SessionStore,
-    path: Path,
+    path: JobKey,
     stop: Event,
     live_session: Callable[[str], Session | None],
 ) -> bool:
-    with vault_transaction(service.paths) as tx:
+    with transaction(service.paths):
         job = read_job(path)
         if not job:
             return True
         pair = _exchange(sessions, job)
         if not pair:
-            tx.write(path, None)
+            save_job(path, None)
             return True
     if stop.is_set():
         return False
@@ -95,7 +94,7 @@ def process(
         # 标题生成失败不影响聊天，后续回合完成后可再次请求。
         record_event("session.title_failed", exc)
         title = ""
-    with vault_transaction(service.paths) as tx:
+    with transaction(service.paths):
         if stop.is_set() or read_job(path) != job:
             return False
         if title and _exchange(sessions, job) == pair:
@@ -111,5 +110,5 @@ def process(
                     "title": title,
                 },
             )
-        tx.write(path, None)
+        save_job(path, None)
     return True

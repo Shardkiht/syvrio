@@ -4,9 +4,9 @@ import type { TopicDocument } from './commands';
 import { TopicBrowser } from './TopicBrowser';
 
 const topics = [
-  { topic: 'memories/library/reading.md', title: 'Reading notes', entries: 2 },
-  { topic: 'memories/crafts/reading.md', title: 'Pattern reading', entries: 1 },
-  { topic: 'memories/crafts/materials.md', title: 'Materials', entries: 0 },
+  { topic: 'library/reading', title: 'Reading notes', entries: 2 },
+  { topic: 'crafts/reading', title: 'Pattern reading', entries: 1 },
+  { topic: 'crafts/materials', title: 'Materials', entries: 0 },
 ];
 const reading: TopicDocument = {
   topic: 'library/reading',

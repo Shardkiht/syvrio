@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import logging
 import os
 import re
 from collections.abc import Callable, Iterable
@@ -15,7 +16,7 @@ from uuid import uuid4
 from PIL import Image
 
 from ..storage.documents import SUPPORTED_SUFFIXES, DocumentError
-from .attachment_objects import original_path, publish, release_message
+from .attachment_objects import original_path, publish
 
 MAX_FILES = 8
 MAX_FILE_BYTES = 20 * 1024 * 1024
@@ -41,10 +42,8 @@ class Attachment:
             self.id != self.sha256 and not re.fullmatch(r"[a-f0-9]{32}", self.id)
         ) or PureWindowsPath(self.name).name != self.name:
             raise DocumentError("Invalid attachment metadata.")
-        shared = original_path(root, self.sha256)
-        marker = folder / (self.sha256 + ".ref")
-        if marker.resolve() == marker and marker.is_file():
-            return shared
+        if folder == root:
+            return original_path(root, self.sha256)
         return folder / self.filename
 
     def verify(
@@ -135,6 +134,8 @@ class AttachmentBatch:
                             )
                         output.write(chunk)
                         digest.update(chunk)
+                    output.flush()
+                    os.fsync(output.fileno())
                 if not size:
                     raise DocumentError("Empty attachments cannot be read.")
                 media = "application/octet-stream"
@@ -172,28 +173,25 @@ class AttachmentBatch:
             raise
         return cls(root, folder, tuple(files))
 
-    def bind(self, session_id: str, message_id: str) -> None:
-        if not _ID.fullmatch(session_id) or not _ID.fullmatch(message_id):
-            raise DocumentError("Invalid attachment identifier.")
-        # 并发提交可首次创建同一个会话目录；创建后再解析，避免 Windows 解析中途遇到新目录。
-        (_directory(self.root) / session_id).mkdir(exist_ok=True)
-        dest = _directory(self.root, session_id, message_id)
-        dest.mkdir()
-        try:
+    def publish(self, paths):
+        if self.folder != self.root:
             for item in self.files:
-                publish(self.root, self.folder / item.filename, dest, item.sha256)
-            self.folder.rmdir()
-        except BaseException:
-            release_message(self.root, dest, session_id)
-            dest.rmdir()
-            raise
-        self.folder = dest
+                publish(paths, item, self.folder / item.filename)
 
-    def discard(self) -> None:
-        if self.folder.resolve() != self.folder or not self.folder.is_relative_to(self.root):
-            raise DocumentError("Invalid attachment directory.")
-        if self.folder.parent.name != ".incoming":
-            release_message(self.root, self.folder, self.folder.parent.name)
+    def finish(self):
+        try:
+            self.discard()
+        except OSError:
+            logging.getLogger(__name__).warning(
+                "Committed attachment staging cleanup deferred until restart", exc_info=True
+            )
+        self.folder = self.root
+
+    def discard(self):
+        if self.folder == self.root:
+            return
+        if self.folder.parent != self.root / ".incoming" or self.folder.resolve() != self.folder:
+            raise DocumentError("Invalid attachment staging directory.")
         for item in self.files:
             (self.folder / item.filename).unlink(missing_ok=True)
         self.folder.rmdir()
@@ -214,7 +212,7 @@ class AttachmentBatch:
         record: dict,
         destination: Callable[[bytes], object],
     ) -> tuple[Attachment, os.stat_result]:
-        folder = _directory(root, session_id, message_id)
+        folder = root
         item = Attachment(**record)
         return item, item.verify(root, folder, destination)
 
@@ -222,7 +220,7 @@ class AttachmentBatch:
     def restore(
         cls, root: Path, session_id: str, message_id: str, records: list[dict]
     ) -> AttachmentBatch:
-        folder = _directory(root, session_id, message_id)
+        folder = root
         files = tuple(Attachment(**record) for record in records)
         for item in files:
             item.verify(root, folder)

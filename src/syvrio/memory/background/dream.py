@@ -8,15 +8,14 @@ import secrets
 import time
 from collections.abc import Callable
 from dataclasses import replace
-from pathlib import Path
 from threading import Event
 
 from ...infra.llm.client import effective_context_window
 from ...infra.llm.tokens import estimate_tokens
-from ...infra.storage.transaction import vault_transaction
+from ...infra.storage.database import transaction
 from ...infra.time import utc_timestamp
 from ..models import ProfileSummaryResponse, ReflectionResponse
-from .jobs import encode_job, job_path, read_job
+from .jobs import job_key, read_job, save_job
 from .model import (
     MAX_DREAM_OUTPUT_TOKENS,
     MESSAGE_OVERHEAD,
@@ -106,12 +105,11 @@ class Dream:
     def __init__(self, service):
         self.service = service
         self.paths = service.paths
-        self.path = job_path(self.paths, "dream", "job")
-        self.metadata = job_path(self.paths, "dream", "profile")
+        self.path = job_key(self.paths, "dream", "job")
         self._active_request: tuple[str, int, int] | None = None
 
     def status(self, *, live: bool = False) -> dict:
-        with vault_transaction(self.paths):
+        with transaction(self.paths):
             job = read_job(self.path) or {"state": "idle"}
             if (
                 live
@@ -125,7 +123,7 @@ class Dream:
     def _generate(self, job, config, prompt, payload, schema):
         # 只有预留该请求的常驻服务可以将其报告为运行中。
         request = (job["id"], job["generation"], job["requests"])
-        with self.service.write_lock:
+        with transaction(self.service.paths):
             self._active_request = request
         try:
             options = (
@@ -135,19 +133,19 @@ class Dream:
             )
             return ask(config, prompt, payload, schema, **options)
         finally:
-            with self.service.write_lock:
+            with transaction(self.service.paths):
                 if self._active_request == request:
                     self._active_request = None
 
     def request(self, *, retry_now: bool = False) -> str:
         max_requests = self.service.config.chat.default_budget
-        with vault_transaction(self.paths) as tx:
+        with transaction(self.paths):
             job = read_job(self.path) or {}
             if job.get("state") == "queued":
                 # 检查点已到期或正在处理时，逐字节保留原文件。
                 if retry_now and job.get("retry_at", 0) > time.time():
                     job["retry_at"] = 0
-                    tx.write(self.path, encode_job(job))
+                    save_job(self.path, job)
                 return job["id"]
             if job.get("state") == "paused" and not max_requests:
                 return job["id"]
@@ -171,7 +169,7 @@ class Dream:
                 failures=0,
             )
             job.pop("error", None)
-            tx.write(self.path, encode_job(job))
+            save_job(self.path, job)
             return job["id"]
 
     def due(self) -> bool:
@@ -180,7 +178,7 @@ class Dream:
 
     def step(self, stop: Event) -> None:
         """执行一次模型请求，随后原子地发布结果或保存检查点。"""
-        with vault_transaction(self.paths) as tx:
+        with transaction(self.paths):
             job = read_job(self.path)
             if not job or job["state"] != "queued" or stop.is_set():
                 return
@@ -226,14 +224,14 @@ class Dream:
             if rows:
                 if job["remaining_requests"] == 0:
                     job.update(state="paused", updated_at=utc_timestamp())
-                    tx.write(self.path, encode_job(job))
+                    save_job(self.path, job)
                     return
                 # 发送前先预留，失败、中断或过期的调用仍计入预算。
                 if job.get("retry_output_tokens", 0) > MAX_DREAM_OUTPUT_TOKENS:
                     job["retry_output_tokens"] = MAX_DREAM_OUTPUT_TOKENS
                 job["requests"] += 1
                 job["remaining_requests"] -= 1
-            tx.write(self.path, encode_job(job))
+            save_job(self.path, job)
         if phase == "profile":
             profile = (
                 self._generate(
@@ -256,7 +254,7 @@ class Dream:
             )
             if any(not set(p.source_ids).issubset(ids) for p in proposals):
                 raise ValueError("Dream proposed evidence outside its source batch.")
-        with vault_transaction(self.paths) as tx:
+        with transaction(self.paths):
             if stop.is_set() or read_job(self.path) != job:
                 return
             _, _, latest_inferences, latest_version = _state(self.service)
@@ -268,18 +266,14 @@ class Dream:
             if phase == "profile":
                 job["partial"] = profile
                 if finished:
-                    path: Path = self.paths.vault_dir / "profile.md"
-                    tx.write(path, (profile.rstrip() + "\n").encode("utf-8") if profile else b"")
-                    tx.write(
-                        self.metadata,
-                        encode_job(
-                            {
-                                "version": version,
-                                "generated_at": utc_timestamp(),
-                                "fact_count": len(facts),
-                                "unique_count": len({f["text"] for f in facts}),
-                            }
-                        ),
+                    self.service.profile.publish(
+                        profile.strip(),
+                        {
+                            "version": version,
+                            "generated_at": utc_timestamp(),
+                            "fact_count": len(facts),
+                            "unique_count": len({f["text"] for f in facts}),
+                        },
                     )
                     job.update(phase="hypotheses", batch=0, cursor=[0, 0], partial="")
                     if not facts:
@@ -305,10 +299,10 @@ class Dream:
             # 本阶段的下一批沿用上次成功取得有效响应时的额度。
             if job["phase"] != phase or job["state"] == "completed":
                 job.pop("retry_output_tokens", None)
-            tx.write(self.path, encode_job(job))
+            save_job(self.path, job)
 
     def failed(self, error: Exception, expected: str, generation: int) -> None:
-        with vault_transaction(self.paths) as tx:
+        with transaction(self.paths):
             job = read_job(self.path)
             if job and (job["id"], job["generation"], job["state"]) == (
                 expected,
@@ -329,4 +323,4 @@ class Dream:
                     job["retry_at"] = 0
                     if not job["remaining_requests"] or error.next_limit <= error.used_limit:
                         job["state"] = "paused"
-                tx.write(self.path, encode_job(job))
+                save_job(self.path, job)

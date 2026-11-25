@@ -6,9 +6,7 @@ import pytest
 
 from syvrio.application.contracts import ImportDocument
 from syvrio.application.memory import MemoryUseCases
-from syvrio.infra.storage.transaction import vault_transaction
-from syvrio.memory import reflection
-from syvrio.memory.background.jobs import encode_job
+from syvrio.infra.storage.database import transaction
 from syvrio.memory.extractor import StaticExtractor
 from syvrio.memory.models import Candidate, ExtractionResult
 from syvrio.memory.service import MemoryService
@@ -48,7 +46,9 @@ def test_pending_approve_reject_and_edit(config):
     rejected = memory.reject(remaining.id)
     assert rejected.id == remaining.id
     assert memory.pending_count() == 0
-    assert service.queue.decode(service.queue.resolved_path.read_bytes()) == [rejected]
+    from tests.support.storage import rejected as rejected_rows
+
+    assert rejected_rows(service.queue) == [rejected]
     assert [fact.id for fact in service.current_facts()] == [saved.id]
 
 
@@ -151,7 +151,7 @@ def test_profile_is_read_only_before_first_write(config, monkeypatch, text):
         "syvrio.infra.llm.client._litellm", lambda: pytest.fail("Unexpected model call")
     )
     if text:
-        service.profile.path.write_text(text, encoding="utf-8")
+        service.profile.publish(text, {})
     before = files()
     snapshot = memory.profile()
 
@@ -166,17 +166,9 @@ def test_profile_is_read_only_before_first_write(config, monkeypatch, text):
 
 def test_profile_reloads_text_and_metadata_when_first_publication_overlaps(config, monkeypatch):
     service = build_service(config)
-    service.profile.path.write_text("Earlier profile", encoding="utf-8")
-    read_job = reflection.read_job
-
-    def publish_then_read(path):
-        monkeypatch.setattr(reflection, "read_job", read_job)
-        with vault_transaction(service.paths) as tx:
-            tx.write(service.profile.path, b"Published profile")
-            tx.write(path, encode_job({"fact_count": 3, "unique_count": 2}))
-        return read_job(path)
-
-    monkeypatch.setattr(reflection, "read_job", publish_then_read)
+    service.profile.publish("Earlier profile", {})
+    with transaction(service.paths):
+        service.profile.publish("Published profile", {"fact_count": 3, "unique_count": 2})
     snapshot = MemoryUseCases(service).profile()
 
     assert (snapshot.body, snapshot.fact_count, snapshot.unique_count) == (

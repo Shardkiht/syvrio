@@ -17,6 +17,7 @@ from syvrio.infra.search.cache import SearchCache
 from syvrio.infra.search.router import SearchRouter, _dedupe_failures
 from syvrio.infra.search.usage import UsageLimiter
 from syvrio.infra.session import SessionStore
+from syvrio.infra.storage.paths import vault_paths
 from syvrio.memory.service import MemoryService
 
 pytestmark = pytest.mark.search
@@ -155,7 +156,7 @@ def test_cache_key_separates_preferred_and_auto(tmp_path):
     router = SearchRouter(
         {"first": first, "second": second},
         order=["first", "second"],
-        cache=SearchCache(tmp_path / "cache.json", 60),
+        cache=SearchCache(vault_paths(tmp_path / "vault"), 60),
     )
     preferred = router.search(SearchQuery("tibo", providers=("second",)))
     assert preferred.provider == "second" and not preferred.cached
@@ -330,7 +331,7 @@ def test_cache_key_separates_compare_and_auto(tmp_path):
     router = SearchRouter(
         {"first": first, "second": second},
         order=["first", "second"],
-        cache=SearchCache(tmp_path / "cache.json", 60),
+        cache=SearchCache(vault_paths(tmp_path / "vault"), 60),
     )
     compared = router.search(SearchQuery("tibo", strategy="compare"))
     assert set(compared.attempted) == {"first", "second"}
@@ -362,7 +363,7 @@ def test_compare_budget_truncation_is_not_cached(tmp_path):
     router = SearchRouter(
         {"searxng": first, "anysearch": second},
         order=["searxng", "anysearch"],
-        cache=SearchCache(tmp_path / "cache.json", 60),
+        cache=SearchCache(vault_paths(tmp_path / "vault"), 60),
         max_requests=1,
     )
     first_outcome = router.search(
@@ -397,7 +398,7 @@ def test_compare_truncation_keeps_actual_contributor_verification(tmp_path):
     router = SearchRouter(
         {"searxng": first, "anysearch": second, "tavily": third},
         order=["searxng", "anysearch", "tavily"],
-        cache=SearchCache(tmp_path / "cache.json", 60),
+        cache=SearchCache(vault_paths(tmp_path / "vault"), 60),
         max_requests=2,
     )
     outcome = router.search(SearchQuery("tibo codex", strategy="compare"))
@@ -418,7 +419,7 @@ def test_cache_isolates_auto_and_compare_strategies(tmp_path):
     router = SearchRouter(
         {"searxng": first, "anysearch": second},
         order=["searxng", "anysearch"],
-        cache=SearchCache(tmp_path / "cache.json", 60),
+        cache=SearchCache(vault_paths(tmp_path / "vault"), 60),
     )
 
     auto = router.search(SearchQuery("tibo"))
@@ -440,7 +441,7 @@ def test_compare_cache_restores_complete_verification(tmp_path):
     router = SearchRouter(
         {"searxng": first, "anysearch": second},
         order=["searxng", "anysearch"],
-        cache=SearchCache(tmp_path / "cache.json", 60),
+        cache=SearchCache(vault_paths(tmp_path / "vault"), 60),
     )
     first_outcome = router.search(SearchQuery("tibo", strategy="compare"))
     cached = router.search(SearchQuery("tibo", strategy="compare"))
@@ -458,7 +459,7 @@ def test_compare_cache_restores_incomplete_verification(tmp_path):
     router = SearchRouter(
         {"searxng": only, "anysearch": empty},
         order=["searxng", "anysearch"],
-        cache=SearchCache(tmp_path / "cache.json", 60),
+        cache=SearchCache(vault_paths(tmp_path / "vault"), 60),
     )
     first = router.search(SearchQuery("tibo", strategy="compare"))
     cached = router.search(SearchQuery("tibo", strategy="compare"))
@@ -479,7 +480,7 @@ def test_compare_cache_restores_incomplete_diagnostics(tmp_path):
     router = SearchRouter(
         {"searxng": first, "anysearch": failing},
         order=["searxng", "anysearch"],
-        cache=SearchCache(tmp_path / "cache.json", 60),
+        cache=SearchCache(vault_paths(tmp_path / "vault"), 60),
     )
     router.search(SearchQuery("tibo", strategy="compare"))
     cached = router.search(SearchQuery("tibo", strategy="compare"))
@@ -497,7 +498,7 @@ def test_compare_cache_keeps_same_url_not_independent(tmp_path):
     router = SearchRouter(
         {"searxng": first, "anysearch": second},
         order=["searxng", "anysearch"],
-        cache=SearchCache(tmp_path / "cache.json", 60),
+        cache=SearchCache(vault_paths(tmp_path / "vault"), 60),
     )
     first_outcome = router.search(SearchQuery("tibo", strategy="compare"))
     cached = router.search(SearchQuery("tibo", strategy="compare"))
@@ -513,26 +514,21 @@ def test_compare_cache_missing_verification_is_discarded(tmp_path):
     import json
     from dataclasses import asdict
 
-    from syvrio.infra.search.cache import CACHE_VERSION
+    from syvrio.infra.storage.database import transaction
 
-    path = tmp_path / "cache.json"
+    path = vault_paths(tmp_path / "vault")
     result = _strong("searxng", "https://example.com/s")
-    path.write_text(
-        json.dumps(
-            {
-                "version": CACHE_VERSION,
-                "entries": {
-                    "legacy": {
-                        "expires": 9999999999,
-                        "provider": "searxng",
-                        "strategy": "compare",
-                        "results": [asdict(result)],
-                    }
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
+    with transaction(path) as db:
+        db.execute(
+            "INSERT INTO search_cache VALUES(?,?,?)",
+            (
+                "legacy",
+                9999999999,
+                json.dumps(
+                    {"provider": "searxng", "strategy": "compare", "results": [asdict(result)]}
+                ),
+            ),
+        )
     cache = SearchCache(path, 60)
     assert cache.get_record("legacy") is None
 
@@ -542,7 +538,7 @@ def test_cache_hit_deduplicates_repeated_selection_failures(tmp_path):
     router = SearchRouter(
         {"fake": provider},
         order=["fake"],
-        cache=SearchCache(tmp_path / "cache.json", 60),
+        cache=SearchCache(vault_paths(tmp_path / "vault"), 60),
     )
     query = SearchQuery("tibo", providers=("fake", "missing"))
 

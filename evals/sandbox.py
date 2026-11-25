@@ -8,8 +8,10 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from syvrio.infra.config import Config, EmbeddingConfig, RetrievalConfig
-from syvrio.infra.storage.locking import vault_write_lock
+from syvrio.infra.storage.database import transaction
 from syvrio.infra.storage.paths import SyvrioPaths
+from syvrio.infra.time import parse_timestamp
+from syvrio.memory.store import MemoryStore
 
 if __package__:
     from .retrieval_fixture import MODEL
@@ -41,8 +43,7 @@ def eval_environment(root: Path) -> Iterator[Path]:
     try:
         os.environ.update({key: str(path) for key, path in paths.items()})
         layout = SyvrioPaths(paths["SYVRIO_VAULT"], paths["SYVRIO_RUNTIME"])
-        with vault_write_lock(layout):
-            layout.bind()
+        layout.bind()
         yield paths["SYVRIO_VAULT"]
     finally:
         for key, value in previous.items():
@@ -50,3 +51,16 @@ def eval_environment(root: Path) -> Iterator[Path]:
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = value
+
+
+def seed_topic(vault, topic, rows, title):
+    store = MemoryStore(vault)
+    with transaction(store.paths):
+        for ident, text in rows:
+            store.append(
+                topic,
+                text,
+                entry_id=ident,
+                title=title,
+                when=parse_timestamp("2024-01-01T00:00:00Z"),
+            )

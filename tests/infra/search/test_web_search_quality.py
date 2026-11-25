@@ -16,6 +16,7 @@ from syvrio.infra.search.base import (
 from syvrio.infra.search.cache import SearchCache
 from syvrio.infra.search.quality import analyze_query, result_relevance
 from syvrio.infra.search.router import SearchRouter
+from syvrio.infra.storage.paths import vault_paths
 
 pytestmark = pytest.mark.search
 
@@ -836,7 +837,9 @@ def test_published_date_trust_rules(value, expected):
 
 def test_cached_low_relevance_keeps_warning(tmp_path):
     provider = NamedProvider("fake", [SearchResult("Unrelated", "https://example.com/a", "")])
-    router = SearchRouter({"fake": provider}, cache=SearchCache(tmp_path / "cache.json", 60))
+    router = SearchRouter(
+        {"fake": provider}, cache=SearchCache(vault_paths(tmp_path / "vault"), 60)
+    )
     first = router.search(SearchQuery("uniqueentity"))
     calls = len(provider.calls)
     second = router.search(SearchQuery("uniqueentity"))

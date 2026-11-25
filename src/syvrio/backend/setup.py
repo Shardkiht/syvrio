@@ -82,9 +82,7 @@ class SetupSession:
         return endpoint
 
     def usage(self) -> UsageLimiter:
-        return UsageLimiter(
-            self._config.search.usage_limits, self._config.paths(self.path).state_dir / "usage.json"
-        )
+        return UsageLimiter(self._config.search.usage_limits, self._config.paths(self.path))
 
     def usage_rows(self):
         limiter = self.usage()
@@ -235,7 +233,7 @@ class SetupSession:
         return test_connection(self._config.llm)
 
     def needs_initialization(self) -> bool:
-        return not (self._config.vault / ".git").exists()
+        return not (self._config.vault / "export" / ".git").exists()
 
     def initialize(self) -> None:
         from .maintenance import initialize_owned_vault

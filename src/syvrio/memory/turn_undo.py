@@ -1,209 +1,166 @@
-"""提交模型工具写入时，一并记录本回合可撤回的 Vault 文件变更。"""
+"""记录工具影响的实体前像，与该次业务变更一起提交。"""
 
 from __future__ import annotations
 
-import hashlib
 import json
-import re
-from base64 import b64decode, b64encode
-from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from pathlib import Path, PurePosixPath
 
 from ..infra.errors import SyvrioError
-from ..infra.storage.paths import TURN_UNDO_DIR, SyvrioPaths
-from ..infra.storage.transaction import vault_transaction
-from .schema import parse_document
-
-_active: ContextVar[TurnFileJournal | None] = ContextVar("turn_file_journal", default=None)
-_ID = re.compile(r"[A-Za-z0-9_-]+")
-_CHANGE_LOG = "records/memory-changes.jsonl"
+from ..infra.storage.database import encode, transaction
 
 
 class TurnUndoError(SyvrioError, ValueError):
-    """无法安全撤回该回合的文件变更。"""
+    pass
 
 
-def _bytes(path: Path) -> bytes | None:
-    return path.read_bytes() if path.exists() else None
+_active: ContextVar[TurnJournal | None] = ContextVar("turn_journal", default=None)
+_KEYS = {
+    "topics": "name",
+    "memories": "id",
+    "inferences": "id",
+    "candidates": "id",
+    "memory_changes": "seq",
+}
+_LINKS = {
+    "inferences": ("inference_sources", "inference_id", "memory_id"),
+    "candidates": ("candidate_related", "candidate_id", "memory_id"),
+}
 
 
-def _digest(payload: bytes | None) -> str | None:
-    return None if payload is None else hashlib.sha256(payload).hexdigest()
+def image(db, entity, key):
+    row = db.execute(f"SELECT * FROM {entity} WHERE {_KEYS[entity]}=?", (key,)).fetchone()
+    if row is None:
+        return None
+    result = dict(row)
+    if entity in _LINKS:
+        table, fk, _ = _LINKS[entity]
+        result["_links"] = [
+            dict(r)
+            for r in db.execute(f"SELECT * FROM {table} WHERE {fk}=? ORDER BY rowid", (key,))
+        ]
+    return result
 
 
-def _fact_records(relative: str, payload: bytes | None) -> dict[str, str]:
-    if not relative.startswith("memories/") or relative == "memories/pending.md" or not payload:
-        return {}
-    doc = parse_document(payload.decode("utf-8"), relative, relative)
-    return {r.entry.id: r.entry.raw_markdown.rstrip("\r\n") for r in doc.records}
+def references(db, key):
+    return {
+        r[0]
+        for r in db.execute(
+            """SELECT 'memory:'||id FROM memories WHERE supersedes=?
+        UNION SELECT 'inference:'||inference_id FROM inference_sources WHERE memory_id=?
+        UNION SELECT 'pending:'||candidate_id FROM candidate_related JOIN candidates c ON c.id=candidate_id
+        WHERE memory_id=? AND state='pending'""",
+            (key, key, key),
+        )
+    }
 
 
-class TurnFileJournal:
-    def __init__(
-        self,
-        paths: SyvrioPaths,
-        session_id: str,
-        turn_id: str,
-        references: Callable[[set[str], dict[Path, bytes | None]], dict[str, set[str]]],
-    ) -> None:
-        if not _ID.fullmatch(session_id) or not _ID.fullmatch(turn_id):
-            raise TurnUndoError("Invalid turn identity.")
-        self.paths = paths
-        self.root = paths.vault_dir.resolve()
-        self.path = paths.runtime_dir.resolve() / TURN_UNDO_DIR / session_id / f"{turn_id}.json"
-        self.references = references
+def track(db, entity, key, *, before):
+    journal = _active.get()
+    if journal is None:
+        return
+    after = image(db, entity, key)
+    db.execute(
+        """INSERT INTO undo_effects(session_id,turn_id,entity,entity_id,before_row,after_row,prior_references)
+        VALUES(?,?,?,?,?,?,?) ON CONFLICT(session_id,turn_id,entity,entity_id) DO UPDATE SET
+        conflicted=conflicted OR undo_effects.after_row IS NOT excluded.before_row,after_row=excluded.after_row""",
+        (
+            journal.session,
+            journal.turn,
+            entity,
+            str(key),
+            encode(before) if before is not None else None,
+            encode(after) if after is not None else None,
+            encode(sorted(references(db, key)) if entity == "memories" else []),
+        ),
+    )
+
+
+class TurnJournal:
+    def __init__(self, paths, session, turn):
+        self.paths, self.session, self.turn = paths, session, turn
 
     @contextmanager
-    def capture(self) -> Iterator[None]:
+    def capture(self):
         token = _active.set(self)
         try:
             yield
         finally:
             _active.reset(token)
 
-    def _allowed(self, name: PurePosixPath) -> bool:
-        return name.as_posix() in {_CHANGE_LOG, "archived/pending/rejected.md"} or (
-            name.suffix == ".md"
-            and (
-                (len(name.parts) >= 2 and name.parts[0] == "memories")
-                or (len(name.parts) == 3 and name.parts[0] == "inferences")
+    def has_effects(self):
+        with transaction(self.paths, write=False) as db:
+            return bool(
+                db.execute(
+                    "SELECT 1 FROM undo_effects WHERE session_id=? AND turn_id=? LIMIT 1",
+                    (self.session, self.turn),
+                ).fetchone()
             )
-        )
 
-    def _target(self, relative: str) -> Path:
-        name = PurePosixPath(relative)
-        if (
-            name.is_absolute()
-            or ".." in name.parts
-            or "\\" in relative
-            or ":" in relative
-            or not self._allowed(name)
-        ):
-            raise TurnUndoError("Invalid Vault path in the undo journal.")
-        path = self.root.joinpath(*name.parts)
-        if path.resolve() != path or not path.is_relative_to(self.root):
-            raise TurnUndoError("An affected Vault path is redirected.")
-        return path
-
-    def _load(self) -> dict:
-        if self.path.resolve() != self.path:
-            raise TurnUndoError("The undo journal path is redirected.")
-        payload = _bytes(self.path)
-        if payload is None:
-            return {"version": 3, "vault": str(self.root), "files": {}, "references": {}}
-        try:
-            data = json.loads(payload)
-            if (
-                data["version"] != 3
-                or data["vault"] != str(self.root)
-                or not isinstance(data["files"], dict)
-                or not isinstance(data["references"], dict)
-            ):
-                raise ValueError
-            return data
-        except (KeyError, TypeError, ValueError) as exc:
-            raise TurnUndoError("The undo journal could not be read.") from exc
-
-    def has_effects(self) -> bool:
-        with vault_transaction(self.paths):
-            return bool(self._load()["files"])
-
-    def record_file(self, path: Path, after: bytes) -> None:
-        if not path.absolute().is_relative_to(self.root):
-            return
-        relative = path.absolute().relative_to(self.root).as_posix()
-        if not self._allowed(PurePosixPath(relative)):
-            return
-        path = self._target(relative)
-        with vault_transaction(self.paths) as tx:
-            before = _bytes(path)
-            if before == after:
-                return
-            data = self._load()
-            files = data["files"]
-            earlier = files.get(relative)
-            if earlier and _digest(before) != earlier["after"]:
-                # 等待模型时，另一回合写入了同一文件。保留文件现状，将本回合标记为不可撤回。
-                data["conflict"] = True
-            references = data["references"]
-            old, new = _fact_records(relative, before), _fact_records(relative, after)
-            touched = {
-                key
-                for key in old.keys() | new.keys()
-                if old.get(key) != new.get(key) and key not in references
-            }
-            if touched:
-                baseline = self.references(touched, {})
-                references.update({key: sorted(baseline[key]) for key in touched})
-            if earlier:
-                revision = earlier
-            elif relative == _CHANGE_LOG:
-                # 权威事件日志只追加记录，校验并恢复原有前缀即可，无需在每回合复制全部历史。
-                revision = {"prefix_size": len(before or b""), "prefix_hash": _digest(before)}
-            else:
-                revision = {
-                    "original": None if before is None else b64encode(before).decode("ascii")
-                }
-            revision["after"] = _digest(after)
-            files[relative] = revision
-            tx.write(self.path, json.dumps(data, ensure_ascii=False).encode("utf-8"))
-
-    def plan(self) -> dict[Path, bytes | None]:
-        """撤回前检查每个文件和恢复后仍会保留的所有外部引用。"""
-        with vault_transaction(self.paths):
-            data = self._load()
-            if data.get("conflict"):
-                raise TurnUndoError("Another turn modified an affected Vault file.")
-            files = {}
-            touched, removed = set(), set()
-            try:
-                for relative, revision in data["files"].items():
-                    path = self._target(relative)
-                    current = _bytes(path)
-                    if _digest(current) != revision["after"]:
-                        raise TurnUndoError(
-                            "An affected Vault file changed after the tool write. Undo left the turn intact."
+    def restore(self):
+        with transaction(self.paths) as db:
+            rows = db.execute(
+                "SELECT * FROM undo_effects WHERE session_id=? AND turn_id=? ORDER BY seq DESC",
+                (self.session, self.turn),
+            ).fetchall()
+            for row in rows:
+                current = image(db, row["entity"], row["entity_id"])
+                expected = json.loads(row["after_row"]) if row["after_row"] is not None else None
+                if row["entity"] == "topics":
+                    continue
+                if row["conflicted"] or current != expected:
+                    raise TurnUndoError(
+                        "Another operation changed an affected record. The turn was preserved."
+                    )
+            for row in rows:
+                table, key = row["entity"], row["entity_id"]
+                before = json.loads(row["before_row"]) if row["before_row"] is not None else None
+                if table == "topics":
+                    expected = json.loads(row["after_row"])
+                    db.execute(
+                        "DELETE FROM topics WHERE name=? AND title=? AND NOT EXISTS(SELECT 1 FROM memories WHERE topic=?)",
+                        (key, expected["title"], key),
+                    )
+                    continue
+                if before is None:
+                    db.execute(f"DELETE FROM {table} WHERE {_KEYS[table]}=?", (key,))
+                    continue
+                if "revision" in before:
+                    # Reversal is another write. Never reuse a version held by a late task.
+                    version = db.execute(
+                        "SELECT version+1 FROM revisions WHERE domain=?", (table,)
+                    ).fetchone()[0]
+                    original = dict(before)
+                    before["revision"] = version
+                    db.execute(
+                        """UPDATE undo_effects SET after_row=? WHERE entity=? AND entity_id=?
+                                  AND seq<? AND after_row=?""",
+                        (encode(before), table, key, row["seq"], encode(original)),
+                    )
+                links = before.pop("_links", [])
+                cols = list(before)
+                assignments = ",".join(f"{c}=excluded.{c}" for c in cols if c != _KEYS[table])
+                db.execute(
+                    f"INSERT INTO {table}({','.join(cols)}) VALUES({','.join('?' for _ in cols)}) ON CONFLICT({_KEYS[table]}) DO UPDATE SET {assignments}",
+                    tuple(before.values()),
+                )
+                if table in _LINKS:
+                    relation, fk, _ = _LINKS[table]
+                    db.execute(f"DELETE FROM {relation} WHERE {fk}=?", (key,))
+                    for link in links:
+                        db.execute(
+                            f"INSERT INTO {relation}({','.join(link)}) VALUES({','.join('?' for _ in link)})",
+                            tuple(link.values()),
                         )
-                    if relative == _CHANGE_LOG:
-                        size, expected = revision["prefix_size"], revision["prefix_hash"]
-                        if type(size) is not int or not 0 <= size <= len(current or b""):
-                            raise ValueError("Invalid log prefix size.")
-                        original = None if expected is None else (current or b"")[:size]
-                        if _digest(original) != expected or (original is None and size != 0):
-                            raise ValueError("The original change-log prefix does not match.")
-                    else:
-                        b64 = revision["original"]
-                        original = None if b64 is None else b64decode(b64, validate=True)
-                    if current == original:
-                        continue
-                    files[path] = original
-                    live, restored = (
-                        _fact_records(relative, current),
-                        _fact_records(relative, original),
+            for row in rows:
+                if row["entity"] == "memories":
+                    allowed = (
+                        set(json.loads(row["prior_references"])) if row["before_row"] else set()
                     )
-                    removed.update(live.keys() - restored.keys())
-                    touched.update(
-                        key
-                        for key in live.keys() | restored.keys()
-                        if live.get(key) != restored.get(key)
-                    )
-                if touched:
-                    remaining = self.references(touched, files)
-                    for key in touched:
-                        allowed = set() if key in removed else set(data["references"][key])
-                        if remaining[key] - allowed:
-                            raise TurnUndoError(
-                                "Another record now references an affected memory. Undo left the turn intact."
-                            )
-            except TurnUndoError:
-                raise
-            except (AttributeError, KeyError, TypeError, ValueError) as exc:
-                raise TurnUndoError("The undo journal could not be read.") from exc
-            return files
-
-
-def capture_file_write(path: Path, after: bytes) -> None:
-    if journal := _active.get():
-        journal.record_file(path, after)
+                    if references(db, row["entity_id"]) - allowed:
+                        raise TurnUndoError("Another record now references an affected memory.")
+            db.execute(
+                "DELETE FROM undo_effects WHERE session_id=? AND turn_id=?",
+                (self.session, self.turn),
+            )
+            return len(rows)

@@ -1,6 +1,6 @@
 # Syvrio 统一后端架构
 
-适用于 `main`。
+本页描述使用 SQLite 的存储架构。
 
 ## 分层与运行入口
 
@@ -21,7 +21,7 @@ Web、TUI、CLI 和 MCP 共用一个持有 Vault 的常驻后端。首个客户�
 | `infra/retrieval/` | 关键词、向量索引及结果融合，只从调用者提供的只读来源取数据 |
 | `infra/llm/`、`infra/search/` | 模型协议与 token 估算，搜索与抓取路由。搜索供应商适配集中于 `providers/` |
 | `infra/config/` | 加载 `defaults/` 内的四份默认 TOML，合并指定字段的本地覆盖 |
-| `infra/storage/`、`infra/security/`、`infra/system/`、`infra/observability/` | 文件、路径、锁与事务，凭据保护，系统命令，诊断与耗时记录 |
+| `infra/storage/`、`infra/security/`、`infra/system/`、`infra/observability/` | SQLite 连接、业务事务、完整备份、文件与部署锁，凭据保护，系统命令，诊断与耗时记录 |
 | `backend/updates/` | 获取与验证发行包、切换服务、上报更新进度 |
 
 ## 会话调度
@@ -34,22 +34,12 @@ Web、TUI、CLI 和 MCP 共用一个持有 Vault 的常驻后端。首个客户�
 
 ## 存储和时间
 
-| 位置 | 内容 |
-| --- | --- |
-| `Vault/memories/<category>/<topic>.md` | 正文、Core、Context、Extensions；事实 ID 稳定 |
-| `Vault/sessions/YYYY/MM/<id>.jsonl` | 追加式会话、工具结果、摘要、撤销与沉淀游标 |
-| `Vault/memories/pending.md`、`Vault/inferences/` | 待审核候选和分类推断 |
-| `Vault/records/memory/audit.jsonl` | 操作审计 |
-| `Runtime/session-reasoning/<session-id>/<message-id>.json` | 本机推理附件；会话只持有引用标记。旧会话或附件缺失时仍读取正文 |
-| `Runtime/indexes/`、`cache/` | 向量索引、搜索缓存、画像摘要 |
-| `Runtime/state/`、`jobs/`、`logs/` | Vault 绑定、配额、反思状态、后台任务和本地诊断 |
-
-Vault 与 Runtime 相互独立，Runtime 在 Git 工作树之外。绝对时间持久化为 UTC ISO 8601，界面按本地 24 小时制显示。事件日期、有效期的日历精度独立于写入时间。字段清单、目录布局和备份步骤见 [Vault 格式、备份与时间规范](vault-v2.md)。
+领域存储使用同一个 SQLite 工作单元。会话事件、记忆、来源、画像、向量和任务使用独立的数据表。写入模型结果前复核输入版本。绝对时间采用 UTC，事件日期保留证据中的日历精度。存储布局、事务和备份步骤见[存储与恢复](storage.md)。
 
 ## 锁与资源生命周期
 
 - 常驻进程同时持有 Vault 身份锁和 Runtime 实例锁。客户端可并发连接。进程停止时先关闭会话入口并等待写入和后台任务收尾，最后释放所有权。
-- `vault.lock` 保护会话与记忆持久化，`git.lock` 串行 Git 操作。模型抽取在写锁外进行，提交前在锁内复核状态。单文件写入可原子替换，多文件操作依赖现有异常恢复和备份。
+- SQLite 串行化写事务，读者在 WAL 上持有一致快照。Git 操作单独串行化。模型、向量计算和网络推送在数据库事务之外运行。
 - LiteLLM 请求使用当前显式配置的模型；旧的自动候补路径已移除。流式完成、取消和错误时释放本次请求拥有的连接。外部共享客户端由其所有者管理。
 - API Key 由环境变量或系统凭据提供，模型发现缓存按供应商、端点和凭据隔离。思考回传仅在同一受支持模型路由与协议范围内发生，Runtime 推理附件不进入 Vault Git 或沉淀输入。
 - Web 默认为 loopback。Host/Origin 检查阻止跨站请求，远程访问的认证与网络边界见 [Web 指南](web.md)。

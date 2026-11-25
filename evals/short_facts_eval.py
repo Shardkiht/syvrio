@@ -9,19 +9,18 @@ from statistics import median
 from tempfile import TemporaryDirectory
 from time import perf_counter
 
-from syvrio.memory.schema import Core, render_record
 from syvrio.memory.service import MemoryService
 
 if __name__ == "__main__" and not __package__:
     from retrieval_eval import load_data
     from retrieval_fixture import guard_vector
     from retrieval_metrics import LIMITS, target_indices
-    from sandbox import eval_environment, local_hybrid_config
+    from sandbox import eval_environment, local_hybrid_config, seed_topic
 else:
     from evals.retrieval_eval import load_data
     from evals.retrieval_fixture import guard_vector
     from evals.retrieval_metrics import LIMITS, target_indices
-    from evals.sandbox import eval_environment, local_hybrid_config
+    from evals.sandbox import eval_environment, local_hybrid_config, seed_topic
 
 SHORT_FACTS = (
     ("name", "identity", "人物基本资料", "姓名：虚构人物甲"),
@@ -92,19 +91,8 @@ def seed_vault(vault: Path, *, short_fields: bool = True) -> int:
             text += "\n\n附录记录项目的排期、协作方式和复核流程，用于提供长文本干扰。"
         topics[topic].append((f"distractor-{index:04}", text))
 
-    root = vault / "memories" / "general"
-    root.mkdir(parents=True)
     for topic, entries in topics.items():
-        records = [
-            render_record(
-                Core(id=ident, status="active", text=text),
-                extensions=[("recorded_at", "2024-01-01T00:00:00Z")],
-            )
-            for ident, text in entries
-        ]
-        (root / f"{topic}.md").write_text(
-            f"# {titles.get(topic, topic)}\n\n" + "\n".join(records), encoding="utf-8"
-        )
+        seed_topic(vault, topic, entries, titles.get(topic, topic))
     return sum(map(len, topics.values()))
 
 

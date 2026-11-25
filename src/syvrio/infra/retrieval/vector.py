@@ -2,21 +2,19 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
-import os
-import tempfile
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path
 from threading import Lock
 
 import numpy as np
 
 from ..observability.diagnostics import record_event
+from ..storage.database import transaction
+from ..storage.paths import SyvrioPaths
 from .base import Embedder, RecordSnapshot, RecordSource, SearchHit, SearchRecord
 
 MIN_SCORE = 0.05
-CACHE_FILENAME = "vectors.npz"
 RETRY_COOLDOWN_SECONDS = 60.0
 
 
@@ -63,7 +61,7 @@ class _VectorIndex:
 
 
 class VectorRetriever:
-    """numpy 暴力余弦检索；vectors.npz 是派生缓存，删除后下次检索自动重建。"""
+    """基于一致事实快照的余弦检索。"""
 
     def __init__(
         self,
@@ -71,13 +69,13 @@ class VectorRetriever:
         embedder: Embedder,
         batch_size: int = 32,
         *,
-        cache_dir: Path,
+        paths: SyvrioPaths | None = None,
         clock: Callable[[], float] = time.monotonic,
     ):
         self.store = store
+        self.paths = paths
         self.embedder = embedder
         self.batch_size = batch_size
-        self.cache_path = cache_dir / CACHE_FILENAME
         self._index = _VectorIndex(-1, [], None)
         self._degraded = False
         self._clock = clock
@@ -162,7 +160,7 @@ class VectorRetriever:
         if index.revision >= self._index.revision:
             self._index = index
             if fresh or len(keep) != len(ids):
-                self._save_cache(ordered, matrix)
+                self._save_cache(ordered, matrix, snapshot.revision)
         return index
 
     def search(
@@ -203,55 +201,52 @@ class VectorRetriever:
             if score <= MIN_SCORE:
                 continue
             entry = index.entries[row]
-            hits.append(SearchHit.from_record(entry, self.store.topic_path(entry.topic), score))
+            hits.append(SearchHit.from_record(entry, score))
         return hits
 
     def _load_cache(self) -> tuple[list[str], list[str], np.ndarray | None]:
-        if not self.cache_path.exists():
+        if self.paths is None:
             return [], [], None
-        try:
-            with np.load(self.cache_path, allow_pickle=False) as data:
-                if str(data["model"]) != self.embedder.model_id:
-                    return [], [], None
-                ids = data["ids"].tolist()
-                hashes = data["hashes"].tolist()
-                matrix = np.asarray(data["vectors"], dtype=np.float32)
-            if (
-                not isinstance(ids, list)
-                or not isinstance(hashes, list)
-                or any(not isinstance(value, str) for value in ids + hashes)
-                or len(set(ids)) != len(ids)
-                or matrix.ndim != 2
-                or matrix.shape[1] == 0
-                or len(ids) != len(hashes)
-                or len(ids) != matrix.shape[0]
-                or not np.isfinite(matrix).all()
-            ):
-                return [], [], None
-        except Exception:
+        with transaction(self.paths, write=False) as db:
+            rows = db.execute(
+                "SELECT memory_id,input_digest,dimensions,vector FROM vectors WHERE model=? ORDER BY memory_id",
+                (self.embedder.model_id,),
+            ).fetchall()
+        if not rows:
             return [], [], None
-        return ids, hashes, matrix
+        dims = rows[0]["dimensions"]
+        if dims <= 0 or any(r["dimensions"] != dims or len(r["vector"]) != dims * 4 for r in rows):
+            return [], [], None
+        matrix = np.vstack([np.frombuffer(r["vector"], dtype="<f4") for r in rows])
+        if not np.isfinite(matrix).all():
+            return [], [], None
+        return [r["memory_id"] for r in rows], [r["input_digest"] for r in rows], matrix
 
-    def _save_cache(self, entries: list[SearchRecord], matrix: np.ndarray | None) -> None:
-        if matrix is None:
+    def _save_cache(self, entries, matrix, revision):
+        if self.paths is None:
             return
-        self.cache_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp: Path | None = None
-        try:
-            with tempfile.NamedTemporaryFile(dir=self.cache_path.parent, delete=False) as handle:
-                tmp = Path(handle.name)
-                np.savez_compressed(
-                    handle,
-                    model=np.array(self.embedder.model_id),
-                    ids=np.array([entry.id for entry in entries]),
-                    hashes=np.array([text_hash(entry.embedding_text) for entry in entries]),
-                    vectors=matrix,
+        with transaction(self.paths) as db:
+            if (
+                db.execute("SELECT version FROM revisions WHERE domain='memories'").fetchone()[0]
+                != revision
+            ):
+                return
+            db.execute(
+                "DELETE FROM vectors WHERE model=? AND memory_id IN (SELECT id FROM memories WHERE status!='active')",
+                (self.embedder.model_id,),
+            )
+            if matrix is not None:
+                db.executemany(
+                    """INSERT INTO vectors VALUES(?,?,?,?,?) ON CONFLICT(memory_id,model) DO UPDATE SET
+                    input_digest=excluded.input_digest,dimensions=excluded.dimensions,vector=excluded.vector""",
+                    (
+                        (
+                            e.id,
+                            self.embedder.model_id,
+                            text_hash(e.embedding_text),
+                            len(v),
+                            v.astype("<f4").tobytes(),
+                        )
+                        for e, v in zip(entries, matrix, strict=True)
+                    ),
                 )
-            os.replace(tmp, self.cache_path)
-        except OSError:
-            # 写盘失败不影响本次检索；下次进程启动会重新计算缺失向量。
-            try:
-                if tmp is not None:
-                    tmp.unlink(missing_ok=True)
-            except OSError:
-                pass

@@ -8,7 +8,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from ..infra.session.model import Session
-from ..infra.storage.transaction import vault_transaction
+from ..infra.storage.database import transaction
 from ..memory.service import MemoryService, pending_view
 
 
@@ -70,7 +70,7 @@ class RecallContext:
             json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()
         ).hexdigest()
         service = self.service
-        with vault_transaction(service.paths):
+        with transaction(service.paths):
             version = service.evidence_version(include_pending=include_pending)
             prior = self.reviewed
             if (
@@ -93,7 +93,7 @@ class RecallContext:
                 for question in dict.fromkeys((query, *additional_queries))
                 for item in service.recall(question)
             ]
-            with vault_transaction(service.paths):
+            with transaction(service.paths):
                 now = service.evidence_version(include_pending=include_pending)
                 if now != version:
                     version = now

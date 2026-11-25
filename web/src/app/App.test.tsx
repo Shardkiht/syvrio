@@ -1332,7 +1332,7 @@ describe('Slash commands and shortcuts', () => {
   });
 
   it('reads a selected topic through the same command API and returns to the filtered list', async () => {
-    const topic = 'memories/garden/seed-notes.md';
+    const topic = 'garden/seed-notes';
     const spy = spyCommands(({ line }) => commandResult({
       command: 'topics', intent: 'topics',
       data: line === '/topics' ? { topics: [{ topic, title: 'Seed notes', entries: 1 }] }

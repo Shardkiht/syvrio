@@ -8,10 +8,10 @@ import pytest
 
 from syvrio.agent.context import ContextManager
 from syvrio.infra.config import ChatConfig
-from syvrio.infra.storage.transaction import vault_transaction
+from syvrio.infra.storage.database import transaction
 from syvrio.memory.background import BackgroundMemory, context_fill, distillation
-from syvrio.memory.background.jobs import enqueue_context_fill, job_path, read_job
-from syvrio.memory.inference import source_fingerprint
+from syvrio.memory.background.jobs import enqueue_context_fill, job_key, read_job
+from syvrio.memory.inference import source_version
 from syvrio.memory.models import MemoryContext, MemoryDraft, MemoryUpdate
 
 pytestmark = pytest.mark.memory
@@ -37,7 +37,7 @@ def test_compaction_enqueues_only_undistilled_originals(service, monkeypatch):
     )
     plan = context.prepare(session, "system", "", tool_tokens=context.trigger_tokens)
     assert plan.compacted and plan.summary == summarizer.summarize.return_value
-    path = job_path(service.paths, "distillation", session.id)
+    path = job_key(service.paths, "distillation", session.id)
     assert read_job(path)["through"] == "second"
 
     extract = Mock(return_value=distillation.Result(memories=[]))
@@ -45,7 +45,7 @@ def test_compaction_enqueues_only_undistilled_originals(service, monkeypatch):
     assert distillation.process(service, owner.sessions, path, lambda _: False, Event())
     extract.assert_called_once()
     assert extract.call_args.args[2]["source_text"] == "尚未处理的原始消息"
-    assert not path.exists() and not owner.sessions.load(session.id).undistilled_messages()
+    assert not read_job(path) and not owner.sessions.load(session.id).undistilled_messages()
 
 
 def test_distillation_commits_each_original_source_and_empty_decision(service, monkeypatch):
@@ -68,12 +68,12 @@ def test_distillation_commits_each_original_source_and_empty_decision(service, m
 
     monkeypatch.setattr(distillation, "ask", extract)
     owner.request_distillation(session.id, "empty")
-    path = job_path(service.paths, "distillation", session.id)
+    path = job_key(service.paths, "distillation", session.id)
     assert distillation.process(service, owner.sessions, path, lambda _: True, Event()) is False
     assert not seen
     for _ in range(2):
         distillation.process(service, owner.sessions, path, lambda _: False, Event())
-    assert not path.exists()
+    assert not read_job(path)
     assert [r["id"] for r in owner.sessions.load(session.id).undistilled_messages()] == ["third"]
     BackgroundMemory(service)._discover(Event())
     owner.request_distillation(session.id, "first")
@@ -101,7 +101,7 @@ def test_distillation_checks_all_evidence_within_model_window_and_advances(servi
     message(owner.sessions, session, "large", "合成用户喜欢芍药，也喜欢薄荷。")
     message(owner.sessions, session, "next", "今天无事。")
     owner.request_distillation(session.id)
-    path = job_path(service.paths, "distillation", session.id)
+    path = job_key(service.paths, "distillation", session.id)
     window = 6000
     monkeypatch.setattr(model, "effective_context_window", lambda *_: window)
     all_evidence = [
@@ -151,7 +151,7 @@ def test_distillation_checks_all_evidence_within_model_window_and_advances(servi
         ]
         assert "".join(fragments) == model.encode_payload(row.model_dump(exclude_none=True))
     assert [entry.text for entry in service.current_facts()] == ["合成用户喜欢薄荷"]
-    assert not owner.sessions.load(session.id).undistilled_messages() and not path.exists()
+    assert not owner.sessions.load(session.id).undistilled_messages() and not read_job(path)
 
 
 def test_distillation_rolls_back_facts_if_cursor_write_fails(service, monkeypatch):
@@ -159,7 +159,7 @@ def test_distillation_rolls_back_facts_if_cursor_write_fails(service, monkeypatc
     session = owner.sessions.create()
     message(owner.sessions, session, "first", "我养猫和狗")
     owner.request_distillation(session.id)
-    path = job_path(service.paths, "distillation", session.id)
+    path = job_key(service.paths, "distillation", session.id)
     monkeypatch.setattr(
         distillation,
         "ask",
@@ -180,7 +180,7 @@ def test_distillation_rolls_back_facts_if_cursor_write_fails(service, monkeypatc
         patch.setattr(owner.sessions, "advance_distilled", fail_after_append)
         with pytest.raises(OSError):
             distillation.process(service, owner.sessions, path, lambda _: False, Event())
-    assert path.is_file()
+    assert read_job(path)
     assert not service.current_facts()
     assert [r["id"] for r in owner.sessions.load(session.id).undistilled_messages()] == ["first"]
     distillation.process(service, owner.sessions, path, lambda _: False, Event())
@@ -193,17 +193,17 @@ def test_distilling_revoked_user_message_cannot_publish(service, monkeypatch):
     session = owner.sessions.create()
     message(owner.sessions, session, "gone", "原话")
     owner.request_distillation(session.id)
-    path = job_path(service.paths, "distillation", session.id)
+    path = job_key(service.paths, "distillation", session.id)
 
     def deleted(*_):
         owner.sessions.delete(session.id)
         return distillation.Result(memories=[MemoryDraft(topic="t", text="不应写入")])
 
     monkeypatch.setattr(distillation, "ask", deleted)
-    assert not distillation.process(service, owner.sessions, path, lambda _: False, Event())
-    assert not service.current_facts()
     distillation.process(service, owner.sessions, path, lambda _: False, Event())
-    assert not path.exists()
+    assert not owner.sessions.exists(session.id) and not service.current_facts()
+    distillation.process(service, owner.sessions, path, lambda _: False, Event())
+    assert not read_job(path)
 
 
 def test_context_fill_only_empty_fields_and_quote_grounding(service, monkeypatch):
@@ -215,8 +215,8 @@ def test_context_fill_only_empty_fields_and_quote_grounding(service, monkeypatch
         session_id=session.id,
         message_id="source",
     )
-    enqueue_context_fill(service.paths, fact.id, source_fingerprint(fact))
-    path = job_path(service.paths, "context", fact.id)
+    enqueue_context_fill(service.paths, fact.id, source_version(fact))
+    path = job_key(service.paths, "context", fact.id)
     calls = []
 
     def extract(_, prompt, payload, schema):
@@ -247,8 +247,8 @@ def test_context_fill_only_empty_fields_and_quote_grounding(service, monkeypatch
 @pytest.mark.parametrize("changed", [True, False])
 def test_context_no_overwrite_when_version_changes_or_provider_fails(service, monkeypatch, changed):
     fact = service.add(MemoryDraft(topic="t", text="我的正式记忆"))
-    enqueue_context_fill(service.paths, fact.id, source_fingerprint(fact))
-    path = job_path(service.paths, "context", fact.id)
+    enqueue_context_fill(service.paths, fact.id, source_version(fact))
+    path = job_key(service.paths, "context", fact.id)
 
     def extract(*_):
         if changed:
@@ -265,24 +265,19 @@ def test_context_no_overwrite_when_version_changes_or_provider_fails(service, mo
     assert (actual.context.model_dump(exclude_none=True) if actual.context else {}) == (
         {"location": "新地点"} if changed else {}
     )
-    assert not path.exists()
+    assert not read_job(path)
 
 
 def test_transactional_event_keeps_bad_tail_and_discards_rolled_back_projection(service):
     owner = BackgroundMemory(service)
     session = owner.sessions.create()
     message(owner.sessions, session, "m", "hello")
-    with session.path.open("ab") as fh:
-        fh.write(b'{"broken"')
-    before = session.path.read_bytes()
-    with pytest.raises(RuntimeError), vault_transaction(service.paths):
+    before = owner.sessions.load(session.id).records
+    with pytest.raises(RuntimeError), transaction(service.paths):
         owner.sessions.advance_distilled(session, "m")
         raise RuntimeError
-    assert session.path.read_bytes() == before
-    assert not any(r["type"] == "distilled" for r in session.records)
+    assert owner.sessions.load(session.id).records == before
     owner.sessions.advance_distilled(session, "m")
-    added = session.path.read_bytes()[len(before) :].strip().splitlines()
-    assert [json.loads(line)["type"] for line in added] == ["recovery", "distilled"]
     assert not owner.sessions.load(session.id).undistilled_messages()
 
 
@@ -364,7 +359,7 @@ def test_original_calendar_day_drives_background_distillation_and_source_lookup(
 
     monkeypatch.setattr(distillation, "ask", extract)
     owner.request_distillation(session.id)
-    path = job_path(service.paths, "distillation", session.id)
+    path = job_key(service.paths, "distillation", session.id)
     distillation.process(service, owner.sessions, path, lambda _: False, Event())
     entry = service.current_facts()[0]
     assert entry.context.event_time == "2024-02-29"
@@ -395,7 +390,7 @@ def test_server_clock_never_supplies_an_unknown_user_timezone(service, monkeypat
     distillation.process(
         service,
         owner.sessions,
-        job_path(service.paths, "distillation", session.id),
+        job_key(service.paths, "distillation", session.id),
         lambda _: False,
         Event(),
     )
@@ -413,7 +408,7 @@ def test_edited_pending_confirmation_enqueues_once_and_reuses_context_after_disk
     memory = service.approve(old.id, "我在杭州看展")
     assert service.approve(old.id, "我在杭州看展").id == memory.id and not service.pending()
     assert memory.context is None
-    path = job_path(service.paths, "context", memory.id)
+    path = job_key(service.paths, "context", memory.id)
     calls = []
 
     def extract(_, prompt, data, schema):
@@ -430,7 +425,7 @@ def test_edited_pending_confirmation_enqueues_once_and_reuses_context_after_disk
         with pytest.raises(OSError):
             context_fill.fill(service, path, Event())
     assert read_job(path)["context"] == {"location": "杭州"}
-    enqueue_context_fill(service.paths, memory.id, source_fingerprint(memory))
+    enqueue_context_fill(service.paths, memory.id, source_version(memory))
     context_fill.fill(service, path, Event())
     assert service.store.find(memory.id).context.location == "杭州"
     assert calls == ["我在杭州看展"]
@@ -466,7 +461,7 @@ def test_shutdown_waits_for_inflight_worker_before_new_owner_can_resume(service,
         release.set()
         assert stopped.wait(3)
         task.join(2)
-        path = job_path(service.paths, "distillation", session.id)
+        path = job_key(service.paths, "distillation", session.id)
         assert "retry_at" not in read_job(path)
         assert owner.sessions.load(session.id).needs_consolidation()
         monkeypatch.setattr(distillation, "ask", lambda *args: distillation.Result(memories=[]))
@@ -474,9 +469,9 @@ def test_shutdown_waits_for_inflight_worker_before_new_owner_can_resume(service,
         restarted.start()
         try:
             until = monotonic() + 5
-            while path.exists() and monotonic() < until:
+            while read_job(path) and monotonic() < until:
                 sleep(0.03)
-            assert not path.exists()
+            assert not read_job(path)
             assert not owner.sessions.load(session.id).needs_consolidation()
         finally:
             restarted.stop()

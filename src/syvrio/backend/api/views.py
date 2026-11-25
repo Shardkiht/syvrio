@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+from collections import OrderedDict
 from threading import Lock
-from weakref import WeakKeyDictionary
 
 from ...infra.session import HistoryRevision
 from ...infra.session.errors import SessionProtectedError
@@ -22,9 +22,7 @@ class ClientViews:
     def __init__(self, owner: APIChannel) -> None:
         self.owner = owner
         self._history_lock = Lock()
-        self._histories: WeakKeyDictionary[HistoryRevision, tuple[str, HistoryResponse]] = (
-            WeakKeyDictionary()
-        )
+        self._histories: OrderedDict[HistoryRevision, tuple[str, HistoryResponse]] = OrderedDict()
 
     def create_session(self, key: str) -> CreateSessionResponse:
         return self.owner.directory.new(key, APIChannel.create_session)
@@ -80,6 +78,8 @@ class ClientViews:
                 version = hashlib.sha256(content).hexdigest()
                 projection = (version, history)
                 self._histories[snapshot.history_revision] = projection
+                if len(self._histories) > 16:
+                    self._histories.popitem(last=False)
         version, history = projection
         return version, history if current else history.model_copy(update={"current": False})
 

@@ -589,7 +589,7 @@ async def test_profile_view_keeps_published_summary_until_dream_runs(resident_ba
     from syvrio.app.tui.widgets import ProfileScreen
 
     _, client = resident_backend
-    service.profile.path.write_text("Previous profile", encoding="utf-8")
+    service.profile.publish("Previous profile", {})
     service.note("Subsequent fact", topic="preferences")
     app = ResidentChatApp(client)
     async with app.run_test() as pilot:
@@ -603,7 +603,10 @@ async def test_profile_view_keeps_published_summary_until_dream_runs(resident_ba
 
 async def test_profile_view_reports_read_failure(resident_backend, service, monkeypatch):
     _, client = resident_backend
-    service.profile.path.write_bytes(b"\xff")
+    from syvrio.infra.storage.database import transaction
+
+    with transaction(service.paths) as db:
+        db.execute("INSERT INTO profile VALUES(1, 'fixture', 'invalid JSON')")
     app = ResidentChatApp(client)
     notifications = []
     monkeypatch.setattr(app, "notify", lambda message, **kwargs: notifications.append(message))
@@ -612,7 +615,8 @@ async def test_profile_view_reports_read_failure(resident_backend, service, monk
         await pilot.pause()
         assert notifications == ["Could not read the published profile."]
         assert app.query_one("#input", Input).has_focus
-        assert service.profile.path.read_bytes() == b"\xff"
+        with transaction(service.paths, write=False) as db:
+            assert db.execute("SELECT metadata FROM profile").fetchone()[0] == "invalid JSON"
 
 
 async def test_profile_long_mixed_text_scrolls_and_resizes(resident_backend, service):
@@ -624,7 +628,7 @@ async def test_profile_long_mixed_text_scrolls_and_resizes(resident_backend, ser
         for n in range(40)
     )
     assert len(summary_text) > 2000
-    service.profile.path.write_text(summary_text, encoding="utf-8")
+    service.profile.publish(summary_text, {})
     app = ResidentChatApp(client)
     async with app.run_test(size=(120, 36)) as pilot:
         await app._command("/profile")
@@ -667,7 +671,7 @@ async def test_dream_publishes_profile_in_background(resident_backend, service, 
     async with app.run_test() as pilot:
         await app._command("/dream", confirmed=True)
         async with asyncio.timeout(8):
-            while not service.profile.path.exists():
+            while not service.profile.read_text():
                 await pilot.pause(0.05)
         assert not app.query_one("#input", Input).disabled
         assert service.profile.read_text().strip() == "Updated profile"
@@ -682,7 +686,7 @@ async def test_profile_remains_readable_while_dream_runs(resident_backend, servi
     _, client = resident_backend
     service.config.chat.default_budget = 1
     service.note("Synthetic preference", topic="preferences")
-    service.profile.path.write_text("Current profile", encoding="utf-8")
+    service.profile.publish("Current profile", {})
     started, release = threading.Event(), threading.Event()
 
     def slow_summary(_, prompt, data, schema):
@@ -1593,11 +1597,11 @@ def test_startup_commits_dirty_vault_without_crashed_sessions(service):
     owner = WebBackend(service=service)
     initialize_vault(owner.git, service.initialize_files)
     service.note("Uncommitted synthetic fact", topic="misc")
-    assert owner.git.repo.has_changes()
+    assert owner.git.is_dirty()
     owner.startup()
     try:
         assert not owner.health().busy
-        assert not owner.git.repo.has_changes()
+        assert not owner.git.is_dirty()
     finally:
         owner.shutdown()
 
@@ -1904,7 +1908,9 @@ async def test_pending_decision_keeps_tui_responsive(
         else:
             assert isinstance(app.screen, PickScreen)
             assert any("reject applied" in message for message in notifications)
-            assert item.text in service.queue.resolved_path.read_text(encoding="utf-8")
+            from tests.support.storage import rejected
+
+            assert item.id in {r.id for r in rejected(service.queue)}
         await pilot.press("escape")
         assert widget.has_focus
 
@@ -2200,7 +2206,6 @@ async def test_startup_catchup_does_not_block_switching(service, monkeypatch):
 
 async def test_transcript_replays_tool_events(resident_backend):
     # 回归：旧会话不仅回放问答正文，也要能看到当时的工具事件。
-    import json
 
     from syvrio.agent.tools import SEARCH_NOTICE
 
@@ -2628,12 +2633,11 @@ async def test_startup_compensation_runs_missed_daily_sync(service):
     service.config.git = GitConfig(auto_sync=True, sync_time="00:00")
     service.config.search.auto_start = False
     owner = WebBackend(service=service)
-    state_path = service.paths.state_dir / "git-sync.json"
     owner.startup()
     try:
         async with asyncio.timeout(8):
             while True:
-                state = json.loads(state_path.read_text()) if state_path.exists() else {}
+                state = owner.git._read_state()
                 if (
                     state.get("last_daily_blocked_date") == date.today().isoformat()
                     and not owner.git.running

@@ -65,6 +65,18 @@ def _service(config: Path | None) -> ResidentClient:
     return ResidentClient(config)
 
 
+@app.command()
+def backup(destination: Path, config: Path | None = CONFIG_OPTION):
+    """Copy a complete offline database and its external originals into a new directory."""
+    typer.echo(maintenance.backup_database(config, destination))
+
+
+@app.command()
+def restore(source: Path, destination: Path):
+    """Verify a complete backup and restore into a new Vault directory."""
+    typer.echo(maintenance.restore_database(source, destination))
+
+
 @app.command("verify-attachments")
 def verify_attachments(
     vault: Annotated[Path, typer.Option("--vault")],

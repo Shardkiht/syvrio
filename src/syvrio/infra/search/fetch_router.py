@@ -177,7 +177,7 @@ def build_fetch_router(
     if vault is not None:
         paths = vault if isinstance(vault, SyvrioPaths) else vault_paths(vault)
         paths.validate()
-        limiter = UsageLimiter(search_config.usage_limits, paths.state_dir / "usage.json")
+        limiter = UsageLimiter(search_config.usage_limits, paths)
     return FetchRouter(
         build_fetch_registry(fetch_config, search_config),
         order=fetch_config.providers,

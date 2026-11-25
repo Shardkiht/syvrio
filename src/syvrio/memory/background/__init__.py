@@ -6,14 +6,13 @@ import sys
 import threading
 import time
 from collections.abc import Callable
-from pathlib import Path
 
 from ...infra.observability.diagnostics import record_event
 from ...infra.session import Session, SessionStore
-from ...infra.storage.transaction import vault_transaction
+from ...infra.storage.database import transaction
 from . import context_fill, distillation, titles
 from .dream import Dream
-from .jobs import encode_job, job_directory, read_job
+from .jobs import JobKey, list_jobs, read_job, save_job
 from .schedule import DreamSchedule
 
 
@@ -35,7 +34,7 @@ class BackgroundMemory:
         self._working_sessions: dict[str, str] = {}
 
     def session_job(self, session_id: str) -> str | None:
-        with self.service.write_lock:
+        with transaction(self.service.paths):
             return next(
                 (lane for lane, sid in self._working_sessions.items() if sid == session_id), None
             )
@@ -83,9 +82,9 @@ class BackgroundMemory:
         self._signals["title"].set()
 
     def pending_titles(self) -> set[str]:
-        folder = job_directory(self.service.paths, "title")
+        jobs = list_jobs(self.service.paths, "title")
         pending = set()
-        for path in folder.glob("*.json"):
+        for path in jobs:
             try:
                 if job := read_job(path):
                     pending.add(job["id"])
@@ -148,7 +147,7 @@ class BackgroundMemory:
                                 record_event("reflection.failed", exc)
                         progressed = True
                 else:
-                    for path in sorted(job_directory(self.service.paths, lane).glob("*.json")):
+                    for path in list_jobs(self.service.paths, lane):
                         if stop.is_set():
                             break
                         try:
@@ -160,8 +159,8 @@ class BackgroundMemory:
             if not progressed and not stop.is_set():
                 signal.wait(2.0)
 
-    def _step_job(self, lane: str, path: Path, stop: threading.Event) -> bool:
-        with vault_transaction(self.service.paths) as tx:
+    def _step_job(self, lane: str, path: JobKey, stop: threading.Event) -> bool:
+        with transaction(self.service.paths):
             job = read_job(path)
             if not job or job.get("retry_at", 0) > time.time():
                 return False
@@ -173,7 +172,7 @@ class BackgroundMemory:
             if session_id:
                 # 后台任务只打开活动会话，查找任务和证据时均跳过归档。
                 if not self.sessions.exists(session_id):
-                    tx.write(path, None)
+                    save_job(path, None)
                     return True
                 self._working_sessions[lane] = session_id
         try:
@@ -187,15 +186,15 @@ class BackgroundMemory:
             record_event("catchup.failed", exc)
             if stop.is_set():
                 return False
-            with vault_transaction(self.service.paths) as tx:
+            with transaction(self.service.paths):
                 if read_job(path) == job:
                     failures = job.get("failures", 0) + 1
                     job.update(
                         failures=failures,
                         retry_at=time.time() + min(3600, 5 * 2 ** min(10, failures - 1)),
                     )
-                    tx.write(path, encode_job(job))
+                    save_job(path, job)
             return False
         finally:
-            with self.service.write_lock:
+            with transaction(self.service.paths):
                 self._working_sessions.pop(lane, None)

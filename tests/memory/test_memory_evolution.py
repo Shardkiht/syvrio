@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from datetime import date
 
 import pytest
@@ -10,6 +9,7 @@ from syvrio.app.cli import app
 from syvrio.infra.session import dated_message, now_iso
 from syvrio.memory.models import MemoryContext, MemoryDraft
 from syvrio.memory.temporal import matches_context, resolve_relative, validate_range
+from tests.support.storage import rows
 
 pytestmark = pytest.mark.memory
 
@@ -17,12 +17,12 @@ pytestmark = pytest.mark.memory
 def test_inference_review_edit_and_source_changes_preserve_history(service):
     source = service.note("偏好阅读")
     item = service.propose_inference("可能喜欢安静活动", [source.id], "爱好")
-    path = service.inferences.path_for(item.kind, item.id)
     confirmed = service.review_inference(item.id, "confirm")
     assert confirmed.status == "confirmed"
-    initial = path.read_bytes()
+    initial = rows(service.paths, "inferences")
     assert (
-        service.review_inference(item.id, "confirm") == confirmed and path.read_bytes() == initial
+        service.review_inference(item.id, "confirm") == confirmed
+        and rows(service.paths, "inferences") == initial
     )
     replacement = service.review_inference(item.id, "correct", "可能喜欢室内活动")
     assert replacement.id != item.id and replacement.status == "confirmed"
@@ -31,11 +31,10 @@ def test_inference_review_edit_and_source_changes_preserve_history(service):
     assert history[item.id].status == "deprecated" and history[item.id].text == item.text
     assert history[replacement.id] == replacement
     assert service.store.entries() == [source]
-    paths = [path, service.inferences.path_for(replacement.kind, replacement.id)]
-    before = [p.read_bytes() for p in paths]
+    before = rows(service.paths, "inferences")
     service.correct(source.id, MemoryDraft(text="只喜欢阅读散文", topic="preferences"))
     service.list_inferences()
-    assert [p.read_bytes() for p in paths] == before
+    assert rows(service.paths, "inferences") == before
 
 
 def test_deprecated_inference_stays_deprecated_until_a_new_record(service):
@@ -185,33 +184,13 @@ def test_inference_cli(service, monkeypatch):
     assert "confirmed" in result.output
 
 
-def test_formal_updates_do_not_read_or_rewrite_a_damaged_inference(service):
-    source = service.note("合成事实")
-    item = service.propose_inference("合成假设", [source.id], "动态主题")
-    path = service.inferences.path_for(item.kind, item.id)
-    original = path.read_bytes()
-    broken = original + b"\nmalformed Markdown\n"
-    path.write_bytes(broken)
-    for operation in (
-        service.list_inferences,
-        lambda: service.review_inference(item.id, "confirm"),
-    ):
-        with pytest.raises(ValueError):
-            operation()
+def test_formal_write_does_not_read_inferences(service, monkeypatch):
+    source = service.note("synthetic")
+    service.propose_inference("synthetic prediction", [source.id], "profile")
+    original = rows(service.paths, "inferences")
+    monkeypatch.setattr(service.inferences, "all", lambda: pytest.fail("unrelated inference read"))
     assert service.deprecate(source.id).status == "deprecated"
-    assert path.read_bytes() == broken
-    path.write_bytes(original)
-    assert service.list_inferences() == [item]
-
-
-def test_review_preserves_unknown_extensions_and_missing_final_newline(service):
-    source = service.note("合成事实")
-    item = service.propose_inference("合成假设", [source.id], "阅读")
-    path = service.inferences.path_for(item.kind, item.id)
-    extra = b"  * `custom.reviewer`: `manual`"
-    path.write_bytes(path.read_bytes() + extra)
-    assert service.review_inference(item.id, "confirm").status == "confirmed"
-    assert path.read_bytes().endswith(extra)
+    assert rows(service.paths, "inferences") == original
 
 
 @pytest.mark.parametrize("action", ["deprecate", "correct", "transition"])
@@ -219,8 +198,7 @@ def test_formal_mutations_require_no_inference_review_and_keep_audit(service, mo
     source = service.note("合成事实", "work")
     item = service.propose_inference("合成假设", [source.id], "工作")
     confirmed = service.review_inference(item.id, "confirm")
-    path = service.inferences.path_for(item.kind, item.id)
-    original = path.read_bytes()
+    original = rows(service.paths, "inferences")
 
     def fail(*args):
         pytest.fail("A formal fact change must not mutate inferences.")
@@ -239,8 +217,10 @@ def test_formal_mutations_require_no_inference_review_and_keep_audit(service, mo
             new.supersedes == source.id
             and service.store.find(source.id).context.valid_to == "2026-10"
         )
-    assert service.list_inferences() == [confirmed] and path.read_bytes() == original
-    audit = [json.loads(row) for row in service.audit.path.read_bytes().splitlines()]
+    assert (
+        service.list_inferences() == [confirmed] and rows(service.paths, "inferences") == original
+    )
+    audit = rows(service.paths, "audit")
     assert audit[0]["action"] == "add" and audit[-1]["action"] == "update"
 
 

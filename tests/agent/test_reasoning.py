@@ -132,7 +132,9 @@ def test_stream_multi_tool_reasoning_survives_session_reload(tmp_path, monkeypat
         "second phase",
     ]
     session_id = runtime.current.id
-    assert "first phase" not in runtime.current.path.read_text(encoding="utf-8")
+    assert "first phase" not in str(
+        runtime.sessions.load(runtime.current.id, include_reasoning=False).records
+    )
     runtime.resume(session_id)
     runtime.ask("Synthetic next turn", on_thinking=updates.append, cancel=Event())
     assert [
@@ -407,7 +409,7 @@ def test_compaction_summarizes_tool_turns_without_disclosing_private_reasoning(
     assert "private" not in transcript and "private" not in str(plan.messages)
     assert [m["role"] for m in plan.messages] == ["system", "system", "user"]
     assert plan.messages[-1]["content"] == "continue"
-    assert "private" not in session.path.read_text(encoding="utf-8")
+    assert "private" not in str(store.load(session.id, include_reasoning=False).records)
     restored = store.load(session.id)
     assert [r["id"] for r in restored.records_after_summary()] == ["now"]
     replay = records_to_messages(restored.active_records())

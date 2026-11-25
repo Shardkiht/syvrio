@@ -233,10 +233,10 @@ def build_search_router(
         paths = vault if isinstance(vault, SyvrioPaths) else vault_paths(vault)
         paths.validate()
         if config.cache_ttl > 0:
-            cache = SearchCache(paths.cache_dir / "search" / "search-cache.json", config.cache_ttl)
+            cache = SearchCache(paths, config.cache_ttl)
         from .usage import UsageLimiter
 
-        limiter = UsageLimiter(config.usage_limits, paths.state_dir / "usage.json")
+        limiter = UsageLimiter(config.usage_limits, paths)
     return SearchRouter(
         build_registry(config),
         order=config.providers,

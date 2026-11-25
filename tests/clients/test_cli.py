@@ -227,7 +227,7 @@ def test_init_note_recall_commit(tmp_path):
     result = invoke(["init", "--vault", str(vault), "--config", str(config)])
     assert result.exit_code == 0, result.output
     assert config.exists()
-    assert (vault / ".git").is_dir()
+    assert (vault / "export" / ".git").is_dir()
 
     # 即使每日同步已经到期，该变更也仍须归入手工提交。
     settings = load_config(config)
@@ -350,12 +350,14 @@ def test_import_dry_run_then_apply(tmp_path, monkeypatch, suffix):
     assert result.exit_code == 0, result.output
     assert "dry-run" in result.output
     assert "直写 1" in result.output
-    assert not (vault / "memories" / "general" / "preferences.md").exists()
+    from syvrio.memory.store import MemoryStore
+
+    assert not MemoryStore(vault).entries("preferences")
 
     result = invoke(["import", str(source), "--apply", "--config", str(config)])
     assert result.exit_code == 0, result.output
     assert "已写入" in result.output
-    assert (vault / "memories" / "general" / "preferences.md").exists()
+    assert len(MemoryStore(vault).entries("preferences")) == 1
 
 
 def test_cli_correct_and_forget(tmp_path):

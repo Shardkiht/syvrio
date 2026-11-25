@@ -113,10 +113,11 @@ class GitRepo:
 
     def repo_root(self) -> Path | None:
         """Git 工作树根目录；当前目录位于父仓库子目录时可能是父目录。"""
-        if not self.path.exists():
-            return None
+        probe = self.path
+        while not probe.exists() and probe.parent != probe:
+            probe = probe.parent
         try:
-            completed = self._run(["rev-parse", "--show-toplevel"])
+            completed = GitRepo(probe)._run(["rev-parse", "--show-toplevel"])
         except GitError:
             return None
         raw = completed.stdout.strip()

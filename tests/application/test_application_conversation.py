@@ -320,16 +320,17 @@ def test_refuses_session_delete_if_memory_was_written_during_confirmation(tmp_pa
     )
     assert conv.delete_guard(target.id) == (True, None)
     conv.archive_session(target.id)
-    archived = runtime.sessions.load(target.id, archived=True).path
-    original = archived.read_bytes()
-    with runtime.service.write_lock:
+    from syvrio.infra.storage.database import transaction
+
+    original = runtime.sessions.load(target.id, archived=True).records
+    with transaction(runtime.service.paths):
         fact = runtime.service.store.append(
             "personal", "Saved fact", extra={"session_id": target.id, "message_id": "m-source"}
         )
         runtime.service.store.set_status(fact.id, status)
     with pytest.raises(SessionProtectedError, match=fact.id):
         conv.delete_session(target.id, confirmed=True)
-    assert archived.read_bytes() == original
+    assert runtime.sessions.load(target.id, archived=True).records == original
 
 
 def test_session_switch_new_resume_and_rename(tmp_path):
