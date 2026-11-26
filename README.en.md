@@ -140,6 +140,8 @@ Each deployment stores its conversations, facts, candidates, inferences, publish
 
 Git operates in `Vault/export/` on Markdown and JSONL rendered from a single committed database snapshot. Rolled-back changes never appear in the export. For a complete backup run `syvrio backup DEST --config CONFIG`. Restore into a new directory with `syvrio restore DEST NEW_VAULT`. Chat search and distillation indexes are created together with a new database. For a fresh installation, use an empty Vault and a dedicated Runtime. [Storage and recovery](docs/storage.md)
 
+In the Web sidebar, click a title or message search result to open its conversation. The sidebar keeps the query and results until you clear the search.
+
 ## Configuration and Git
 
 Use `syvrio setup` to configure the model and API base URL. The wizard and `/think` share the active model’s reasoning choices, using provider-declared levels when available and protocol presets otherwise. `SYVRIO_CONFIG` selects the entry configuration file and `SYVRIO_RUNTIME` selects its paired Runtime. When the configuration omits `vault`, `SYVRIO_VAULT` supplies the deployment default. Retrieval supports keywords, local embeddings and embedding APIs. An optional `SOUL.md` holds a user-written assistant persona. For a Vault with a Git remote, `/git` shows status and synchronization actions. Complete backups include referenced originals. Model-generated commit summaries include the file statistics. If a diff exceeds the model window, the summary uses excerpts from individual files so smaller changes later in the diff remain visible.

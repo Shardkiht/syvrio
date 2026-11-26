@@ -249,11 +249,6 @@ export interface ChatSearchHit {
   excerpt: string;
 }
 
-export interface SearchContext {
-  title: string;
-  messages: Array<{ message_id: string; role: 'user' | 'assistant'; content: string; at: string }>;
-}
-
 export interface PendingEvidence {
   state: 'found' | 'unrecorded' | 'unavailable';
   source: { title: string; content: string; at: string; archived: boolean } | null;

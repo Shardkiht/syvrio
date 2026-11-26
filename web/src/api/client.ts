@@ -16,7 +16,6 @@ import type {
   ModelSearchResponse,
   PendingEvidence,
   ChatSearchHit,
-  SearchContext,
   SessionDeletionPreview,
   SessionListResponse,
   StreamEvent,
@@ -80,8 +79,6 @@ export function attachmentUrl(sessionId: string, messageId: string, fileId: stri
 export const api = {
   searchChats: (q: string, signal: AbortSignal) =>
     jsonRequest<{ results: ChatSearchHit[] }>('/api/sessions/search?' + new URLSearchParams({ q }), { signal, cache: 'no-store' }),
-  searchContext: (hit: ChatSearchHit, signal: AbortSignal) =>
-    jsonRequest<SearchContext>(messagePath(hit.session_id, hit.message_id) + '/context', { signal, cache: 'no-store' }),
   toolResult: (sessionId: string, recordId: string, archived: boolean, signal: AbortSignal) =>
     jsonRequest<{ content: string }>(
       `/api/sessions/${encodeURIComponent(sessionId)}/tools/${encodeURIComponent(recordId)}${archived ? '?archived=true' : ''}`,
