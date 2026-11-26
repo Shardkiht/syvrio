@@ -139,7 +139,7 @@ The MCP server exposes recall, topic reading, recording, correction, transitions
 
 On desktop, drag the sidebar’s right edge to resize it, or double-click to restore its default width. The browser remembers your choice.
 
-Type in the sidebar to search chat titles and messages. Results appear in place of the chat list after you pause typing, or immediately on Enter. Select a highlighted result to read the surrounding messages in the sidebar. Clear the field to return to the chat list. The agent uses the same case-insensitive search through `search_chats` for other conversations. Archived chats, undone turns, reasoning and tool records are excluded. In Pending, expand **View evidence** to read the original user message, its conversation and timestamp, and any related memories.
+Click the magnifying glass beside the sidebar logo to search chat titles and messages. Results appear in place of the chat list after you pause typing, or immediately on Enter. Click a result to open its conversation. Selecting a result keeps the query. Click outside the search or press Esc to close it and return to the conversation list. The agent uses the same case-insensitive search through `search_chats` for other conversations. Archived chats, undone turns, reasoning and tool records are excluded. In Pending, expand **View evidence** to read the original user message, its conversation and timestamp, and any related memories.
 
 | Data | Location |
 | --- | --- |

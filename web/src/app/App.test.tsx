@@ -1005,36 +1005,41 @@ describe('Slash commands and shortcuts', () => {
     expect(list.getByText('No matches.')).toBeTruthy();
   });
 
-  it('searches from the chat sidebar and shows the exact message with its neighbors', async () => {
+  it('opens a matching conversation in one click and keeps the sidebar search', async () => {
     const hit = { session_id: 's-1', message_id: 'm-2', title: 'Earlier chat', role: 'user', excerpt: 'locker B-417' };
-    const context = vi.fn(() => json({ messages: [
-      { message_id: 'm-2', role: 'user', content: 'The blue locker B-417 was reserved.' },
-      { message_id: 'm-3', role: 'assistant', content: 'Understood.' },
-    ] }));
-    installFetch({
+    const history: HistoryResponse = {
+      session_id: hit.session_id, title: hit.title, current: true, has_earlier: false, summary: null,
+      items: [{ id: hit.message_id, role: 'user', content: 'The blue locker B-417 was reserved.',
+        at: '', reasoning: null, tool_calls: [], tool_name: null, tool_ok: null, interrupted: false }],
+    };
+    const calls = installFetch({
       'GET /api/sessions/search?q=locker': () => json({ results: [hit] }),
-      '/api/sessions/s-1/messages/m-2/context': context,
+      'POST /api/sessions/s-1/switch?include_history=true': () => json(switchResponse(history)),
     });
     render(<App />);
     await ready();
     const panel = within(screen.getByTestId('sidebar'));
-    expect(panel.getByRole('searchbox', { name: 'Search chats' })).not.toBe(document.activeElement);
+    const toggle = panel.getByRole('button', { name: 'Search chats' });
+    expect(panel.queryByRole('searchbox')).toBeNull();
+    fireEvent.click(toggle);
+    expect(panel.getByRole('searchbox')).toBe(document.activeElement);
     fireEvent.change(panel.getByRole('searchbox'), { target: { value: 'locker' } });
     const result = await panel.findByRole('button', { name: /Earlier chat.*locker.*B-417/ });
-    expect(context).not.toHaveBeenCalled();
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(panel.queryByTestId('session-s-1')?.closest('[hidden]')).toBeTruthy();
     fireEvent.click(result);
-    const matchingText = await panel.findByText('locker', { selector: 'article mark' });
-    expect(matchingText.closest('article.matched')?.textContent).toContain('The blue locker B-417 was reserved.');
-    expect(panel.getByText('Understood.')).toBeTruthy();
-    fireEvent.click(panel.getByRole('button', { name: 'Back' }));
-    expect((panel.getByRole('searchbox') as HTMLInputElement).value).toBe('locker');
-    expect(document.activeElement).toBe(result);
+    expect(await within(screen.getByTestId('message-list')).findByText('The blue locker B-417 was reserved.')).toBeTruthy();
+    expect(calls.filter(call => call.includes('/api/sessions/s-1'))).toEqual(['POST /api/sessions/s-1/switch?include_history=true']);
+    expect(panel.getByRole<HTMLInputElement>('searchbox').value).toBe('locker');
+    expect(panel.getByRole('button', { name: /Earlier chat.*locker.*B-417/ })).toBe(result);
     fireEvent.keyDown(result, { key: 'Escape' });
-    expect(panel.getByRole<HTMLInputElement>('searchbox').value).toBe('');
+    expect(panel.queryByRole('searchbox')).toBeNull();
     expect(panel.getByTestId('session-s-1').closest('[hidden]')).toBeNull();
-    expect(document.activeElement).toBe(panel.getByRole('searchbox'));
+    expect(document.activeElement).toBe(toggle);
+    fireEvent.click(toggle);
+    expect(panel.getByRole<HTMLInputElement>('searchbox').value).toBe('');
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
   });
 
   it('selects a pending candidate once, edits it, and refreshes after confirmed writes', async () => {

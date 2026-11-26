@@ -1,7 +1,7 @@
 import type { SessionInfo } from '../../types';
 import { ResizableSidebar } from './ResizableSidebar';
-import { ChatSearchPanel } from './ChatSearchPanel';
-import { ArchiveIcon, PanelIcon, PlusIcon } from '../../shared/Icons';
+import { ChatSearchField, ChatSearchPanel, useChatSearch } from './ChatSearchPanel';
+import { ArchiveIcon, PanelIcon, PlusIcon, SearchIcon } from '../../shared/Icons';
 
 export function Sidebar({
   sessions,
@@ -26,13 +26,22 @@ export function Sidebar({
   onOpenArchive: () => void;
   onClose: () => void;
 }) {
+  const search = useChatSearch();
   return (
     <>
       <div className="sidebar-scrim" data-open={open} aria-hidden="true"
         onClick={onClose} data-testid="sidebar-scrim" />
       <ResizableSidebar open={open}>
-        <div className="sidebar-head">
-          <img className="brand-mark" src="/syvrio.svg" alt="Syvrio" width={30} height={30} />
+        <div className="sidebar-head" data-search-open={search.expanded} onKeyDown={search.onKeyDown}>
+          <div className="sidebar-brand-search">
+            <img className="brand-mark" src="/syvrio.svg" alt="Syvrio" width={30} height={30} aria-hidden={search.expanded} />
+            <ChatSearchField search={search} />
+          </div>
+          <button type="button" className="icon-button sidebar-search-toggle" ref={search.trigger}
+            aria-label="Search chats" title={search.expanded ? 'Close search' : 'Search chats'}
+            aria-controls="sidebar-chat-search-field" aria-expanded={search.expanded} onClick={search.toggle}>
+            <SearchIcon size={20} />
+          </button>
           <button
             type="button"
             className="icon-button sidebar-close"
@@ -45,12 +54,12 @@ export function Sidebar({
         </div>
 
         <button type="button" className="new-chat" onClick={onNew}>
-          <PlusIcon size={16} />
+          <PlusIcon size={24} className="new-chat-icon" />
           <span className="new-chat-label">New chat</span>
           <span className="new-chat-hint" aria-hidden="true">/new</span>
         </button>
 
-        <ChatSearchPanel onOpen={onSelect}>
+        <ChatSearchPanel onOpen={onSelect} search={search}>
           <div className="sidebar-section">Chats</div>
           <div className="session-list">
             {sessions.length === 0 && <div className="empty">No conversations yet</div>}
