@@ -208,7 +208,7 @@ def test_memory_tools_are_marked_mutating(tmp_path):
     from syvrio.agent.tools import build_tools
 
     runtime, service = build_runtime(tmp_path, FakeChatModel([]))
-    tools = build_tools(service, runtime.ensure_session())
+    tools = build_tools(service, runtime.ensure_session(), config=service.config)
     assert {name for name, spec in tools._tools.items() if spec.mutating} == {
         "memorize",
         "correct",
@@ -422,7 +422,7 @@ def test_writes_wait_for_the_model_to_review_current_evidence(service, change):
         session, {"type": "message", "id": "user-a", "role": "user", "content": "合成文件"}
     )
     guard = RecallContext(service)
-    tools = build_tools(service, session, evidence=guard)
+    tools = build_tools(service, session, config=service.config, evidence=guard)
     pending = change == "pending"
     name = "create_pending" if pending else "memorize"
     args = {"topic": "tests", "text": "模拟审阅"}
@@ -482,7 +482,7 @@ def test_recall_tool_default_and_explicit_limits(service):
     assert len(ranked) == 12
     assert [entry.id for entry in service.recall(query)] == ranked[:10]
 
-    tools = build_tools(service, SessionStore(service.paths).create())
+    tools = build_tools(service, SessionStore(service.paths).create(), config=service.config)
     schema = next(
         item["function"] for item in tools.schemas() if item["function"]["name"] == "recall"
     )
@@ -897,7 +897,7 @@ def test_recall_tool_guides_query_with_synonyms():
     service = MemoryService(config)
     service.initialize_files()
     session = SessionStore(config.vault).create()
-    spec = build_tools(service, session)._tools["recall"]
+    spec = build_tools(service, session, config=service.config)._tools["recall"]
     assert "同义词" in spec.description
     assert "自然问句" in spec.parameters["properties"]["query"]["description"]
     assert "姓名" in spec.parameters["properties"]["query"]["description"]
@@ -1209,7 +1209,9 @@ def schema_cost(runtime, paths=()):
     from syvrio.agent.tools import build_tools
     from syvrio.infra.llm.tokens import estimate_tokens
 
-    schemas = build_tools(runtime.service, runtime.ensure_session(), file_paths=paths).schemas()
+    schemas = build_tools(
+        runtime.service, runtime.ensure_session(), config=runtime.service.config, file_paths=paths
+    ).schemas()
     return estimate_tokens(json.dumps(schemas, ensure_ascii=False, separators=(",", ":")))
 
 

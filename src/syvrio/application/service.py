@@ -35,10 +35,10 @@ class ApplicationService:
             background_job=background.session_job if background else None,
         )
         self.memory = MemoryUseCases(service)
-        self.settings = SettingsUseCases(service, runtime)
+        self.settings = SettingsUseCases(service.config, runtime, config_path=service.config_path)
         self.reflection = ReflectionUseCases(background)
         self.git = GitUseCases(git)
-        self._service = service
+        self.config = service.config
 
     # ---------- 生命周期 ----------
 
@@ -47,10 +47,6 @@ class ApplicationService:
 
     def close(self, distill: bool = True) -> dict:
         return self.conversation.runtime.close(distill=distill)
-
-    @property
-    def config(self):
-        return self._service.config
 
     @property
     def pending_count(self) -> int:

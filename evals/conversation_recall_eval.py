@@ -175,7 +175,7 @@ def evaluate(method: str = "keyword") -> dict:
                 for limit in LIMITS:
                     # 调用工具时省略 limit，以检验配置的默认值。
                     with patch.object(config.retrieval, "default_limit", limit):
-                        tools = build_tools(service, runtime.current)
+                        tools = build_tools(service, runtime.current, config=config)
                         result = tool_search(tools, case["query"], corpus["facts"])
                     row[f"explicit_{limit}"] = evidence_score(case, result.ids)
                 rows.append(row)

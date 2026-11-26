@@ -12,7 +12,6 @@ from ..infra.llm.client import chat_history
 from ..infra.llm.tokens import estimate_messages_tokens, estimate_tokens, truncate_to_tokens
 from ..infra.observability.diagnostics import record_event
 from ..infra.session import Session, SessionStore, new_message_id, transcript
-from ..infra.storage.database import transaction, transaction_mode
 from .summarizer import LLMSummarizer, Summarizer
 
 SUMMARY_MAX_CHARS = 1200
@@ -200,10 +199,9 @@ class ContextManager:
         active_message_id: str | None,
     ) -> int:
         _, source = chat_history(self.model_config, [])
-        with transaction(self.sessions.paths, write=False):
-            version = self.sessions.history_version(session_id)
+        with self.sessions.history_view(session_id) as version:
             key = (session_id, version, source, active_message_id, system_prompt, tool_tokens)
-            shared = transaction_mode() == "read"
+            shared = version is not None
             if shared:
                 with self._meter_lock:
                     if key in self._meter_cache:

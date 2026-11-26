@@ -4,6 +4,8 @@
 
 接续开发使用 `refactor/sqlite-storage`。先用 `git branch --show-current` 核对当前检出。
 
+验证读写边界可运行 `tests/application/test_read_views.py`、`tests/infra/test_chat_search.py` 和 `tests/infra/test_export.py`。依赖测试还会检查模型循环、命令和 HTTP 视图是否直接依赖数据库。回执位于 `infra/session/receipts.py`，撤销持久化位于 `memory/undo_store.py`。
+
 业务读写统一经后端。查会话、召回记忆、查看候选和更改设置时，先看 `backend/api/` 与 `application/`；离线初始化、诊断启动和附件核验在 `backend/`。会话、检索、配置、模型适配与搜索的实现见 `infra/` 对应子目录，后台记忆任务在 `memory/background/`。依赖边界测试在 `tests/application/test_application_architecture.py`。Web 组件与对应的交互测试同放在 `web/src/features/` 下。
 
 斜杠命令目录归应用层，TUI 读取后端公开的客户端契约，Web 读取命令 API。聊天与 MCP 共用搜索模块的请求解析，供应商选择和策略校验归搜索路由。常驻服务按实际启用的搜索和抓取供应商预热 open-websearch。抓取失败按预扣时的日、月分别退款。聊天和 MCP 在发起更正或状态演化的召回复核前，由记忆服务统一检查目标仍然有效。

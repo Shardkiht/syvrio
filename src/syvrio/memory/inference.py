@@ -5,7 +5,8 @@ from pathlib import Path
 from ..infra.storage.database import transaction
 from ..infra.storage.paths import SyvrioPaths, vault_paths
 from .models import Entry, Inference
-from .turn_undo import image, track
+from .source_links import INFERENCE_SOURCES
+from .undo_store import image, track
 
 
 def source_version(entry: Entry) -> str:
@@ -78,8 +79,5 @@ class InferenceStore:
                             item.updated_at,
                         ),
                     )
-                    db.executemany(
-                        "INSERT INTO inference_sources(inference_id,memory_id,position) VALUES(?,?,?)",
-                        [(item.id, key, i) for i, key in enumerate(item.source_ids)],
-                    )
+                    INFERENCE_SOURCES.add(db, item.id, item.source_ids)
                 track(db, "inferences", item.id, before=before)

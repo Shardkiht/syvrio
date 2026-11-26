@@ -429,7 +429,7 @@ def test_normal_agent_fetch_uses_independent_config(service, monkeypatch, name):
     service.config.search.fetch_timeout = 47
     service.config.search.usage_limits = {name: UsageLimit(daily=1)}
     service.config.fetch.providers = [name]
-    tools = build_tools(service, SessionStore(service.config.vault).create())
+    tools = build_tools(service, SessionStore(service.config.vault).create(), config=service.config)
     assert tools.execute("fetch_web", {"url": "https://example.com/a"}).ok
     assert not tools.execute("fetch_web", {"url": "https://example.com/a"}).ok
     assert provider.calls == ["https://example.com/a"]
@@ -563,7 +563,7 @@ def test_build_tools_official_pause_shared_across_search_fetch(service, monkeypa
     service.config.search.providers = ["exa", "fallback"]
     service.config.fetch.providers = ["exa"]
     session = SessionStore(service.config.vault).create()
-    tools = build_tools(service, session)
+    tools = build_tools(service, session, config=service.config)
     assert tools.execute("search", {"query": "Synthetic entity"}).ok
     assert len(search.calls) == 1 and len(fallback.calls) == 1
     assert not tools.execute("fetch_web", {"url": "https://example.com"}).ok

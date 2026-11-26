@@ -8,7 +8,8 @@ from ..infra.session.errors import SessionDeletionChanged
 from ..infra.storage.database import encode, transaction
 from ..infra.storage.paths import SyvrioPaths, vault_paths
 from .models import PendingItem
-from .turn_undo import image, track
+from .source_links import CANDIDATE_SOURCES
+from .undo_store import image, track
 
 
 class PendingQueue:
@@ -81,10 +82,7 @@ class PendingQueue:
                     item.message_id,
                 ),
             )
-            db.executemany(
-                "INSERT INTO candidate_related VALUES(?,?,?)",
-                [(item.id, i, k) for i, k in enumerate(item.related_ids)],
-            )
+            CANDIDATE_SOURCES.add(db, item.id, item.related_ids)
             track(db, "candidates", item.id, before=None)
 
     def resolve(self, item_id, status):

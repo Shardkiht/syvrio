@@ -7,7 +7,6 @@
 
 from __future__ import annotations
 
-import sqlite3
 from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -15,7 +14,6 @@ from typing import TYPE_CHECKING, Any
 from ..infra.config import MIN_CONTEXT_WINDOW
 from ..infra.observability.diagnostics import record_event
 from ..infra.session.errors import ConversationError
-from ..infra.storage.database import transaction
 from ..memory.turn_undo import TurnUndoError
 from .command_catalog import SLASH_COMMANDS, SLASH_SUBCOMMANDS, command_names, parse_command
 
@@ -362,7 +360,7 @@ class CommandUseCases:
                 )
             # 审核回执失败时保留原决定，以便重试。
             review_write = name in {"pending", "inferences"} and self.is_mutating(name, argument)
-            with transaction(self.app.memory.service.paths) if review_write else nullcontext():
+            with self.app.memory.service.work.write() if review_write else nullcontext():
                 return self._dispatch(name, argument, busy, expected_message_id)
         except TurnUndoError as exc:
             record_event("undo.failed", exc)
@@ -506,7 +504,7 @@ class CommandUseCases:
         if name == "profile":
             try:
                 snapshot = application.memory.profile()
-            except (OSError, ValueError, sqlite3.DatabaseError) as exc:
+            except (OSError, ValueError) as exc:
                 record_event("command.failed", exc)
                 return CommandResult(
                     "error", name, "profile", "Could not read the published profile."

@@ -28,7 +28,7 @@ from ..infra.retrieval import (
 )
 from ..infra.security.secrets import contains_secret
 from ..infra.session.query import SessionQuery
-from ..infra.storage.database import transaction
+from ..infra.storage.work import VaultWork
 from ..infra.time import utc_timestamp
 from .audit import AuditLog
 from .background.jobs import enqueue_context_fill
@@ -128,6 +128,7 @@ class MemoryService:
         self.config = config
         self.paths = config.paths(config_path)
         self.paths.validate()
+        self.work = VaultWork(self.paths)
         self.store = MemoryStore(self.paths)
         self.session_query = SessionQuery(self.paths)
         self.queue = PendingQueue(self.paths)
@@ -171,7 +172,7 @@ class MemoryService:
             raise ValueError("Provide a memory draft or at least one update.")
         if len({change.id for change in changes}) != len(changes):
             raise ValueError("Combine updates for the same memory ID.")
-        with transaction(self.paths):
+        with self.work.write():
             source = self._source_fields(session_id, message_id)
             result = []
             if draft is not None:
@@ -241,7 +242,7 @@ class MemoryService:
         return self.add(draft, **source)
 
     def correct(self, entry_id: str, draft: MemoryDraft, **source) -> Entry:
-        with transaction(self.paths):
+        with self.work.write():
             old = self.require_entry(entry_id)
             draft = MemoryDraft.model_validate(draft)
             if draft.text == old.text:
@@ -261,7 +262,7 @@ class MemoryService:
         previous_valid_to: str | None = None,
         **source,
     ) -> Entry:
-        with transaction(self.paths):
+        with self.work.write():
             self.require_entry(entry_id)
             changes = []
             if previous_valid_to is not None:
@@ -298,7 +299,7 @@ class MemoryService:
         )
         if contains_secret(item.question):
             raise ValueError("Credentials cannot be stored in a pending question.")
-        with transaction(self.paths):
+        with self.work.write():
             self._source_fields(session_id, message_id)
             if any(self.store.find(key) is None for key in item.related_ids):
                 raise ValueError("Pending references must identify existing memories.")
@@ -365,7 +366,7 @@ class MemoryService:
         session_id: str | None = None,
         message_id: str | None = None,
     ) -> MemorizeResult:
-        with transaction(self.paths):
+        with self.work.write():
             if self.evidence_version(include_pending=True) != version:
                 raise ValueError("Memory changed after document review. Request fresh evidence.")
             return self._import_candidates(candidates, dry_run, session_id, message_id)
@@ -429,13 +430,15 @@ class MemoryService:
             existing.add(identity)
         return result
 
+    def dream_version(self) -> tuple[int, ...]:
+        return self.store.revisions("inferences", "memories")
+
     def evidence_version(self, *, include_pending: bool = False) -> tuple:
-        with transaction(self.paths, write=False) as db:
-            domains = ("memories", "candidates") if include_pending else ("memories",)
-            return tuple(
-                db.execute("SELECT version FROM revisions WHERE domain=?", (domain,)).fetchone()[0]
-                for domain in domains
-            )
+        return (
+            self.store.revisions("memories", "candidates")
+            if include_pending
+            else self.store.revisions("memories")
+        )
 
     def propose_inference(self, text: str, source_ids: list[str], kind: InferenceKind) -> Inference:
         text = text.strip()
@@ -450,7 +453,7 @@ class MemoryService:
             created_at=stamp,
             updated_at=stamp,
         )
-        with transaction(self.paths):
+        with self.work.write():
             for key in item.source_ids:
                 self.require_entry(key)
             for record in self.inferences.all():
@@ -471,7 +474,7 @@ class MemoryService:
     ) -> Inference:
         if action not in {"confirm", "reject", "correct"}:
             raise ValueError("操作须为 confirm、reject 或 correct。")
-        with transaction(self.paths):
+        with self.work.write():
             old = next((item for item in self.inferences.all() if item.id == inference_id), None)
             if old is None:
                 raise KeyError("推断不存在。")
@@ -583,13 +586,7 @@ class MemoryService:
         return self.store.entries()
 
     def read_topic(self, topic: str) -> dict:
-        with transaction(self.paths, write=False) as db:
-            logical = self.store.topic_name(topic)
-            if not db.execute(
-                "SELECT 1 FROM topics WHERE archived=0 AND name=?", (logical,)
-            ).fetchone():
-                raise KeyError(topic)
-            matches = self.store.entries(logical)
+        logical, matches = self.store.read_topic(topic)
         return {
             "topic": logical,
             "entries": [entry.as_recall().model_dump(exclude_none=True) for entry in matches],
@@ -600,7 +597,7 @@ class MemoryService:
 
     def approve(self, item_id: str, text_override: str | None = None) -> Entry:
         entry_id = "mem-" + hashlib.sha256(("pending:" + item_id).encode("utf-8")).hexdigest()[:24]
-        with transaction(self.paths):
+        with self.work.write():
             item = self.queue.get(item_id)
             if item is None:
                 entry = self.store.find(entry_id)
@@ -623,7 +620,7 @@ class MemoryService:
             return entry
 
     def reject(self, item_id: str) -> PendingItem:
-        with transaction(self.paths):
+        with self.work.write():
             item = self.queue.resolve(item_id, "rejected")
             if item is None:
                 raise KeyError(f"待确认项不存在：{item_id}")
@@ -633,11 +630,7 @@ class MemoryService:
         return [topic.model_dump() for topic in self.store.topics()]
 
     def memory_referencing_session(self, session_id: str) -> str | None:
-        with transaction(self.paths, write=False) as db:
-            row = db.execute(
-                "SELECT id FROM memories WHERE session_id=? ORDER BY id LIMIT 1", (session_id,)
-            ).fetchone()
-            return row[0] if row else None
+        return self.store.first_source_reference(session_id)
 
     def _source_fields(self, session_id: str | None, message_id: str | None) -> dict[str, str]:
         if not session_id and not message_id:
@@ -657,7 +650,7 @@ class MemoryService:
             r"[A-Za-z0-9][A-Za-z0-9_.:-]*", memory_id
         ):
             raise ValueError("Invalid memory ID.")
-        with transaction(self.paths, write=False):
+        with self.work.read():
             entry = self.store.find(memory_id)
             if entry is None:
                 raise KeyError("Memory not found.")
@@ -680,14 +673,11 @@ class MemoryService:
         return self.store.entries(topic)
 
     def status(self) -> dict:
-        with transaction(self.paths, write=False) as db:
-            counts = db.execute("""
-                SELECT (SELECT count(*) FROM topics WHERE archived=0) AS topics,
-                       (SELECT count(*) FROM memories m JOIN topics t ON t.name=m.topic
-                        WHERE m.status='active' AND t.archived=0) AS entries,
-                       (SELECT count(*) FROM candidates WHERE state='pending') AS pending
-            """).fetchone()
-        return {"vault": str(self.config.vault), **dict(counts), "retrieval": self.retrieval_mode}
+        return {
+            "vault": str(self.config.vault),
+            **self.store.counts(),
+            "retrieval": self.retrieval_mode,
+        }
 
 
 def get_service(

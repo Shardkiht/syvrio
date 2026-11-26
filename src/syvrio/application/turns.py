@@ -19,8 +19,7 @@ from pydantic import BaseModel
 from ..agent.runtime import ThinkingUpdate
 from ..infra.session.attachments import AttachmentBatch
 from ..infra.session.errors import ConversationError
-from ..infra.storage.database import transaction
-from ..infra.storage.paths import SyvrioPaths
+from ..infra.session.receipts import ReceiptStore
 from .contracts import TurnCallbacks, TurnResult, UndoOutcome
 
 _TURN_IDS = count(1)
@@ -194,7 +193,7 @@ class TurnRegistry:
 
     def submit_once(
         self,
-        paths: SyvrioPaths,
+        receipts: ReceiptStore,
         submission_id: str,
         message: str,
         session_id: str | None,
@@ -207,36 +206,26 @@ class TurnRegistry:
         payload = json.dumps([session_id, message.strip(), files], ensure_ascii=False).encode()
         signature = hashlib.sha256(payload).hexdigest()
         with self._delivery_lock:
-            with transaction(paths) as db:
-                row = db.execute(
-                    "SELECT request_digest,instance,session_id,turn_id FROM receipts WHERE submission_id=?",
-                    (submission_id,),
-                ).fetchone()
-                stored = row
-                if stored is None:
-                    db.execute(
-                        "INSERT INTO receipts(submission_id,request_digest,instance) VALUES(?,?,?)",
-                        (submission_id, signature, self._instance),
-                    )
+            stored = receipts.reserve(submission_id, signature, self._instance)
             if stored is not None:
-                if stored["request_digest"] != signature:
+                if stored.request_digest != signature:
                     raise ConversationError(
                         "submission_conflict", "This delivery ID belongs to another message."
                     )
-                if stored["instance"] != self._instance or stored["turn_id"] is None:
+                if stored.instance != self._instance or stored.turn_id is None:
                     raise ConversationError(
                         "delivery_unknown",
                         "Delivery is uncertain after a backend interruption. Check the conversation before sending again.",
                     )
                 if attachments:
                     attachments.discard()
-                sid = stored["session_id"]
-                turn = self.get(stored["turn_id"], sid)
+                sid = stored.session_id
+                turn = self.get(stored.turn_id, sid)
                 if turn:
                     return turn.receipt()
                 return {
                     "session_id": sid,
-                    "turn_id": stored["turn_id"],
+                    "turn_id": stored.turn_id,
                     "text": message,
                     "history_only": True,
                 }
@@ -245,14 +234,9 @@ class TurnRegistry:
             try:
                 turn = submit()
             except ConversationError:
-                with transaction(paths) as db:
-                    db.execute("DELETE FROM receipts WHERE submission_id=?", (submission_id,))
+                receipts.release(submission_id)
                 raise
-            with transaction(paths) as db:
-                db.execute(
-                    "UPDATE receipts SET session_id=?, turn_id=? WHERE submission_id=?",
-                    (turn.session_id, turn.turn_id, submission_id),
-                )
+            receipts.complete(submission_id, turn.session_id, turn.turn_id)
             return turn.receipt()
 
 

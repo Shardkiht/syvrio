@@ -8,7 +8,6 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from ..infra.session.model import Session
-from ..infra.storage.database import transaction
 from ..memory.service import MemoryService, pending_view
 
 
@@ -70,20 +69,22 @@ class RecallContext:
             json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()
         ).hexdigest()
         service = self.service
-        with transaction(service.paths):
+        prior = self.reviewed
+        if (
+            prior is not None
+            and prior.operation == operation
+            and prior.target_id == target_id
+            and prior.payload_hash == token
+            and prior.generation == self.generation
+            and prior.model_round < self.model_round
+        ):
+            with service.work.write():
+                version = service.evidence_version(include_pending=include_pending)
+                if prior.version == version:
+                    self.reviewed = None
+                    return write()
+        else:
             version = service.evidence_version(include_pending=include_pending)
-            prior = self.reviewed
-            if (
-                prior is not None
-                and prior.operation == operation
-                and prior.target_id == target_id
-                and prior.payload_hash == token
-                and prior.version == version
-                and prior.generation == self.generation
-                and prior.model_round < self.model_round
-            ):
-                self.reviewed = None
-                return write()
         self.reviewed = None
         # 调用远程嵌入服务时释放 Vault 写锁。只有检索结果与直接引用的记录
         # 来自同一版本时，才登记证据。
@@ -93,7 +94,7 @@ class RecallContext:
                 for question in dict.fromkeys((query, *additional_queries))
                 for item in service.recall(question)
             ]
-            with transaction(service.paths):
+            with service.work.read():
                 now = service.evidence_version(include_pending=include_pending)
                 if now != version:
                     version = now

@@ -15,7 +15,7 @@ from ..infra.storage.files import safe_component
 from ..infra.storage.paths import SyvrioPaths, vault_paths
 from ..infra.time import local_timestamp, serialize_timestamp, utc_now
 from .models import Entry, MemoryContext, RecallEntry, TopicInfo
-from .turn_undo import track
+from .undo_store import track
 
 SLUG_RE = re.compile(r"[^\w\u4e00-\u9fff-]+")
 STATUS_ACTIVE = "active"
@@ -75,6 +75,40 @@ class MemoryStore:
     def ensure(self) -> None:
         with transaction(self.paths):
             pass
+
+    def revisions(self, *domains: str) -> tuple[int, ...]:
+        with transaction(self.paths, write=False) as db:
+            return tuple(
+                db.execute("SELECT version FROM revisions WHERE domain=?", (domain,)).fetchone()[0]
+                for domain in domains
+            )
+
+    def read_topic(self, topic: str) -> tuple[str, list[Entry]]:
+        with transaction(self.paths, write=False) as db:
+            logical = self.topic_name(topic)
+            if not db.execute(
+                "SELECT 1 FROM topics WHERE archived=0 AND name=?", (logical,)
+            ).fetchone():
+                raise KeyError(topic)
+            return logical, self.entries(logical)
+
+    def first_source_reference(self, session_id: str) -> str | None:
+        with transaction(self.paths, write=False) as db:
+            row = db.execute(
+                "SELECT id FROM memories WHERE session_id=? ORDER BY id LIMIT 1", (session_id,)
+            ).fetchone()
+            return row[0] if row else None
+
+    def counts(self) -> dict[str, int]:
+        with transaction(self.paths, write=False) as db:
+            return dict(
+                db.execute("""
+                SELECT (SELECT count(*) FROM topics WHERE archived=0) AS topics,
+                       (SELECT count(*) FROM memories m JOIN topics t ON t.name=m.topic
+                        WHERE m.status='active' AND t.archived=0) AS entries,
+                       (SELECT count(*) FROM candidates WHERE state='pending') AS pending
+            """).fetchone()
+            )
 
     def topic_name(self, topic: str) -> str:
         parts = topic.strip().split("/")

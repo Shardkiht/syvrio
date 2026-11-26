@@ -181,7 +181,9 @@ def test_tool_schema_exposes_enabled_providers(tmp_path):
     )
     service = MemoryService(config)
     service.initialize_files()
-    tools = build_tools(service, SessionStore(config.vault).create(), search_router=router)
+    tools = build_tools(
+        service, SessionStore(config.vault).create(), config=service.config, search_router=router
+    )
     spec = tools._tools["search"]
     properties = spec.parameters["properties"]
     assert set(properties) == {
@@ -577,7 +579,9 @@ def test_tool_exposes_multi_provider_schema_and_rejects_strict_without_list(tmp_
     )
     service = MemoryService(config)
     service.initialize_files()
-    tools = build_tools(service, SessionStore(config.vault).create(), search_router=router)
+    tools = build_tools(
+        service, SessionStore(config.vault).create(), config=service.config, search_router=router
+    )
     properties = tools._tools["search"].parameters["properties"]
     assert properties["providers"]["items"]["enum"] == ["searxng", "anysearch"]
     assert properties["strategy"]["enum"] == ["auto", "compare", "strict"]
@@ -609,7 +613,10 @@ def test_tool_schema_without_enabled_providers_stays_valid(tmp_path):
     service = MemoryService(config)
     service.initialize_files()
     tools = build_tools(
-        service, SessionStore(config.vault).create(), search_router=SearchRouter({})
+        service,
+        SessionStore(config.vault).create(),
+        config=service.config,
+        search_router=SearchRouter({}),
     )
     providers = tools._tools["search"].parameters["properties"]["providers"]
     assert providers["maxItems"] == 0

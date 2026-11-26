@@ -147,7 +147,7 @@ MCP 提供检索、主题阅读、记录、更正、状态变化、弃用和待�
 
 每个部署的业务主库位于 `Vault/syvrio.sqlite3`。会话、事实、推断、待审候选、已发布画像、后台进度和撤回凭据都在其中。搜索供应商的用量、暂停状态和本机 Git 同步状态也在主库中，可直接在同一连接查看。向量缓存与网页搜索缓存分别保存在 `Runtime/cache/vectors.sqlite3` 和 `Runtime/cache/web-search.sqlite3`。上传原件按 SHA-256 保存在 `Vault/attachments/objects/`。归档会话保留在数据库中，可从 Archive 恢复；正式事实仍引用原话时禁止永久删除。
 
-Git 仓库位于 `Vault/export/`，其中的 Markdown 和 JSONL 由一致快照生成。完整备份使用 `syvrio backup DEST --config CONFIG`，恢复到新目录使用 `syvrio restore DEST NEW_VAULT`。会话检索和沉淀索引随空库一同创建。首次配置请使用空 Vault 和独立 Runtime。[存储与恢复](docs/storage.md)
+Git 仓库位于 `Vault/export/`，其中的 Markdown 和 JSONL 由同一个已提交的快照生成。事务回滚时，导出文件仍保留上次提交的内容。完整备份使用 `syvrio backup DEST --config CONFIG`，恢复到新目录使用 `syvrio restore DEST NEW_VAULT`。会话检索和沉淀索引随空库一同创建。首次配置请使用空 Vault 和独立 Runtime。[存储与恢复](docs/storage.md)
 
 ## 配置与 Git
 

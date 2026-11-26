@@ -73,12 +73,15 @@ def test_export_batches_sources_and_invalidates_on_direct_source_changes(service
 def test_rolled_back_revision_cannot_be_reused_for_a_different_export(service):
     git = GitSyncService(service.config, service.paths)
     initialize_vault(git, service.initialize_files)
+    profile_path = git.repo.path / "content" / "profile.md"
+    before = profile_path.read_bytes() if profile_path.exists() else None
     with pytest.raises(ValueError, match="rollback"):
         with transaction(service.paths):
             service.profile.publish("Discarded", {})
-            assert git.is_dirty()
+            assert not git.is_dirty()
             raise ValueError("rollback")
 
+    assert (profile_path.read_bytes() if profile_path.exists() else None) == before
     service.profile.publish("Committed", {})
     assert git.is_dirty()
     assert (git.repo.path / "content" / "profile.md").read_text(encoding="utf-8") == "Committed\n"

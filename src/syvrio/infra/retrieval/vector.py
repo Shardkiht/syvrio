@@ -12,7 +12,7 @@ import numpy as np
 
 from ..observability.diagnostics import record_event, record_once
 from ..storage.cache_database import cache_transaction
-from ..storage.database import DatabaseError, on_commit, transaction, transaction_mode
+from ..storage.database import DatabaseError, after_commit, transaction
 from ..storage.paths import SyvrioPaths
 from .base import Embedder, RecordSnapshot, RecordSource, SearchHit, SearchRecord
 
@@ -138,10 +138,7 @@ class VectorRetriever:
                     # 结果已在内存中可用，业务提交后失败的缓存写入仅影响下次复用。
                     record_once("degraded.vector_cache", exc)
 
-            if transaction_mode() is None:
-                persist()
-            else:
-                on_commit(persist)
+            after_commit(persist)
         return index
 
     def _build(self, snapshot: RecordSnapshot, *, expected_dim: int | None):

@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import time
 
-from ...infra.storage.database import transaction
-from .dream import Dream, _revision, _state
+from .dream import Dream, _state
 from .jobs import job_key, read_job, save_job
 
 
@@ -24,15 +23,15 @@ class DreamSchedule:
             return
         now = time.time() if now is None else now
         interval = max(60.0, config.dream_auto_interval_hours * 3600)
-        with transaction(self.service.paths, write=False) as db:
+        with self.service.work.read():
             saved = read_job(self.path)
             if saved and saved["next_at"] > now:
                 return
-            revision = _revision(db)
+            revision = self.service.dream_version()
             if saved:
                 _, _, _, version = _state(self.service)
-        with transaction(self.service.paths) as db:
-            if read_job(self.path) != saved or _revision(db) != revision:
+        with self.service.work.write():
+            if read_job(self.path) != saved or self.service.dream_version() != revision:
                 return
             if saved:
                 job = read_job(self.dream.path) or {}

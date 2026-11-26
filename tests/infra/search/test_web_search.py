@@ -7,7 +7,8 @@ import socket
 import httpx
 import pytest
 
-from syvrio.agent.tools import SEARCH_NOTICE, build_tools
+from syvrio.agent.network_tools import SEARCH_NOTICE
+from syvrio.agent.tools import build_tools
 from syvrio.app.server import build_server
 from syvrio.infra.config import (
     ChatConfig,
@@ -448,7 +449,7 @@ def test_agent_fetch_tool_uses_config_fetch_router(tmp_path, monkeypatch):
     service = MemoryService(config)
     service.initialize_files()
     session = SessionStore(config.vault).create()
-    tools = build_tools(service, session, fetch_router=ConfigFetchRouter())
+    tools = build_tools(service, session, config=service.config, fetch_router=ConfigFetchRouter())
 
     assert "search" not in tools._tools
     assert "fetch_web" in tools._tools
@@ -1340,7 +1341,7 @@ def test_disabled_search_does_not_register_tool(tmp_path):
     service = MemoryService(config)
     service.initialize_files()
     session = SessionStore(config.vault).create()
-    tools = build_tools(service, session)
+    tools = build_tools(service, session, config=service.config)
 
     assert "search" not in tools._tools
     assert "fetch_web" not in tools._tools
@@ -1358,7 +1359,7 @@ def test_agent_search_tool_returns_notice_and_results(tmp_path):
     service = MemoryService(config)
     service.initialize_files()
     session = SessionStore(config.vault).create()
-    tools = build_tools(service, session, search_router=router)
+    tools = build_tools(service, session, config=service.config, search_router=router)
 
     outcome = tools.execute("search", {"query": "查询", "limit": 3})
 
@@ -1380,7 +1381,7 @@ def test_agent_search_tool_passes_search_engine(tmp_path):
     service = MemoryService(config)
     service.initialize_files()
     session = SessionStore(config.vault).create()
-    tools = build_tools(service, session, search_router=router)
+    tools = build_tools(service, session, config=service.config, search_router=router)
 
     outcome = tools.execute("search", {"query": "智谱 GLM 最新消息", "search_engine": "baidu"})
 
@@ -1401,7 +1402,7 @@ def test_agent_search_tool_rejects_unknown_fields_and_accepts_multiple_engines(t
     service = MemoryService(config)
     service.initialize_files()
     session = SessionStore(config.vault).create()
-    tools = build_tools(service, session, search_router=router)
+    tools = build_tools(service, session, config=service.config, search_router=router)
 
     invalid = tools.execute("search", {"query": "旧参数", unknown: "baidu"})
     assert not invalid.ok and unknown in invalid.content
@@ -1426,7 +1427,7 @@ def test_agent_search_tool_accepts_many_engines(tmp_path):
     service = MemoryService(config)
     service.initialize_files()
     session = SessionStore(config.vault).create()
-    tools = build_tools(service, session, search_router=router)
+    tools = build_tools(service, session, config=service.config, search_router=router)
 
     outcome = tools.execute(
         "search",
@@ -1450,7 +1451,7 @@ def test_agent_search_tool_honors_configured_engine_limit(tmp_path):
     service = MemoryService(config)
     service.initialize_files()
     session = SessionStore(config.vault).create()
-    tools = build_tools(service, session, search_router=router)
+    tools = build_tools(service, session, config=service.config, search_router=router)
 
     outcome = tools.execute(
         "search",
@@ -1474,7 +1475,7 @@ def test_agent_search_schema_does_not_expose_provider_engine(tmp_path):
     service = MemoryService(config)
     service.initialize_files()
     session = SessionStore(config.vault).create()
-    tools = build_tools(service, session, search_router=router)
+    tools = build_tools(service, session, config=service.config, search_router=router)
 
     properties = tools._tools["search"].parameters["properties"]
 
@@ -1494,7 +1495,7 @@ def test_agent_search_tool_rejects_unknown_search_engine(tmp_path):
     service = MemoryService(config)
     service.initialize_files()
     session = SessionStore(config.vault).create()
-    tools = build_tools(service, session, search_router=router)
+    tools = build_tools(service, session, config=service.config, search_router=router)
 
     outcome = tools.execute("search", {"query": "查询", "search_engine": "notreal"})
 
@@ -1518,7 +1519,7 @@ def test_long_fetch_reaches_model_and_session_with_tail_intact(tmp_path, monkeyp
         ),
     )
     router = FetchRouter({"anysearch": provider})
-    monkeypatch.setattr("syvrio.agent.tools.build_fetch_router", lambda *args: router)
+    monkeypatch.setattr("syvrio.agent.network_tools.build_fetch_router", lambda *args: router)
     calls = [
         ToolCall("whole", "fetch_web", {"url": url}),
         ToolCall("preview", "fetch_web", {"url": url, "max_chars": 12_000}),
@@ -1556,7 +1557,7 @@ def test_agent_fetch_tool_returns_page_content(tmp_path):
     service = MemoryService(config)
     service.initialize_files()
     session = SessionStore(config.vault).create()
-    tools = build_tools(service, session, fetch_router=FetchRouter())
+    tools = build_tools(service, session, config=service.config, fetch_router=FetchRouter())
 
     assert tools._tools["fetch_web"].executor == "network"
     outcome = tools.execute("fetch_web", {"url": "https://example.com/news"})

@@ -251,7 +251,7 @@ def test_agent_recall_passes_context_filters(service):
         return []
 
     service.recall = recall
-    tools = build_tools(service, SessionStore(service.config.vault).create())
+    tools = build_tools(service, SessionStore(service.config.vault).create(), config=service.config)
     result = tools.execute(
         "recall", {"query": "展览", "time_range": {"start": "2024"}, "location": "合成展馆"}
     )

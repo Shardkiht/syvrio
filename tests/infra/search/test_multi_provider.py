@@ -85,7 +85,7 @@ def test_agent_search_and_fetch_schema(tmp_path):
     service = MemoryService(config)
     service.initialize_files()
     session = SessionStore(config.vault).create()
-    tools = build_tools(service, session)
+    tools = build_tools(service, session, config=service.config)
 
     schemas = {schema["function"]["name"]: schema["function"] for schema in tools.schemas()}
     assert "search" in schemas and "fetch_web" in schemas

@@ -147,6 +147,25 @@ def on_commit(callback):
 
 
 @contextmanager
+def committed_read(paths: SyvrioPaths) -> Iterator[sqlite3.Connection]:
+    """为对外发布读取已提交快照，屏蔽调用方尚未提交的写入。"""
+    token = _current.set(None)
+    try:
+        with transaction(paths, write=False) as db:
+            yield db
+    finally:
+        _current.reset(token)
+
+
+def after_commit(callback: Callable[[], None]) -> None:
+    """没有活动事务时立即发布，嵌套事务回滚时随之丢弃。"""
+    if transaction_mode() is None:
+        callback()
+    else:
+        on_commit(callback)
+
+
+@contextmanager
 def wal_connection(
     path: Path, *, initialize: Callable[[sqlite3.Connection], None] | None = None
 ) -> Iterator[sqlite3.Connection]:
@@ -217,14 +236,9 @@ def transaction(paths: SyvrioPaths, *, write: bool = True) -> Iterator[sqlite3.C
             db.execute("PRAGMA query_only=ON")
         db.execute("BEGIN IMMEDIATE" if write else "BEGIN")
         unit = Unit(path, db, owner, write)
-        previous_changes = db.total_changes
         token = _current.set(unit)
         try:
             yield db
-            if write and db.total_changes != previous_changes:
-                from .session_indexes import refresh_search
-
-                refresh_search(db)
             db.commit()
         finally:
             _current.reset(token)

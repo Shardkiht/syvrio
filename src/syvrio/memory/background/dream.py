@@ -13,7 +13,6 @@ from threading import Event, Lock
 
 from ...infra.llm.client import effective_context_window
 from ...infra.llm.tokens import estimate_tokens
-from ...infra.storage.database import transaction
 from ...infra.time import utc_timestamp
 from ..models import Inference, ProfileSummaryResponse, ReflectionResponse
 from .jobs import job_key, read_job, save_job
@@ -40,15 +39,6 @@ source_ids 只允许本批真实事实的 ID。只输出 JSON {"proposals":[{"te
 def _fingerprint(rows: list[dict]) -> str:
     data = json.dumps(rows, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(data.encode("utf-8")).hexdigest()
-
-
-def _revision(db) -> tuple[int, ...]:
-    return tuple(
-        row[0]
-        for row in db.execute(
-            "SELECT version FROM revisions WHERE domain IN ('memories','inferences') ORDER BY domain"
-        )
-    )
 
 
 def _state(service):
@@ -150,7 +140,7 @@ class Dream:
 
     def request(self, *, retry_now: bool = False) -> str:
         max_requests = self.service.config.chat.default_budget
-        with transaction(self.paths):
+        with self.service.work.write():
             job = read_job(self.path) or {}
             if job.get("state") == "queued":
                 # 检查点已到期或正在处理时，逐字节保留原文件。
@@ -197,17 +187,17 @@ class Dream:
         stop: Event,
     ) -> Iterator[list[Inference] | None]:
         while True:
-            with transaction(self.paths) as db:
+            with self.service.work.write():
                 if stop.is_set() or read_job(self.path) != job:
                     yield None
                     return
-                if _revision(db) == revision:
+                if self.service.dream_version() == revision:
                     yield existing
                     return
             # 待审核推断等变化不一定影响证据正文。释放写锁后读新快照，
             # 再在写事务内核对，避免丢弃有效回答或遗漏刚新增的重复提议。
-            with transaction(self.paths, write=False) as db:
-                revision = _revision(db)
+            with self.service.work.read():
+                revision = self.service.dream_version()
                 _, _, existing, latest_version = _state(self.service)
             if latest_version != version:
                 yield None
@@ -215,11 +205,11 @@ class Dream:
 
     def step(self, stop: Event) -> None:
         """执行一次模型请求，随后原子地发布结果或保存检查点。"""
-        with transaction(self.paths, write=False) as db:
+        with self.service.work.read():
             checkpoint = read_job(self.path)
             if not checkpoint or checkpoint["state"] != "queued" or stop.is_set():
                 return
-            revision = _revision(db)
+            revision = self.service.dream_version()
             facts, confirmed, existing, version = _state(self.service)
         job = dict(checkpoint)
         # 规划和发送使用同一快照，即使用户在请求期间切换了模型。
@@ -261,8 +251,12 @@ class Dream:
         )
         request_payload = payload(rows)
         # 只有检查点和证据仍匹配时，才为这批输入预留模型预算。
-        with transaction(self.paths) as db:
-            if stop.is_set() or read_job(self.path) != checkpoint or _revision(db) != revision:
+        with self.service.work.write():
+            if (
+                stop.is_set()
+                or read_job(self.path) != checkpoint
+                or self.service.dream_version() != revision
+            ):
                 return
             if rows:
                 if job["remaining_requests"] == 0:
@@ -342,7 +336,7 @@ class Dream:
             save_job(self.path, job)
 
     def failed(self, error: Exception, expected: str, generation: int) -> None:
-        with transaction(self.paths):
+        with self.service.work.write():
             job = read_job(self.path)
             if job and (job["id"], job["generation"], job["state"]) == (
                 expected,

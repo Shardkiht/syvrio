@@ -11,7 +11,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from ..session.query import SessionQuery
-from ..storage.database import encode, transaction
+from ..storage.database import committed_read, encode, transaction
 
 
 def _jsonl(rows):
@@ -180,7 +180,7 @@ def publish_export(paths, repo, previous: ExportSnapshot | None = None) -> Expor
             saved.rename(dest)
         else:
             shutil.rmtree(saved)
-    with transaction(paths, write=False) as db:
+    with committed_read(paths) as db:
         revision = db.execute("SELECT version FROM revisions WHERE domain='git_export'").fetchone()[
             0
         ]

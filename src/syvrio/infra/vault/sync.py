@@ -14,7 +14,7 @@ from datetime import datetime, time, timedelta
 from typing import Callable
 
 from ..config import Config
-from ..storage.database import encode, transaction, transaction_mode
+from ..storage.database import encode, transaction
 from ..storage.locking import LockTimeout, git_operation_lock
 from ..storage.paths import SyvrioPaths
 from ..system.gitops import GitError
@@ -75,9 +75,9 @@ class GitSyncService:
         self._git_lock = git_operation_lock(paths)
 
     def _publish_export(self, *, check_only: bool = False) -> None:
-        published = publish_export(self.paths, self.repo.path, self._export if check_only else None)
-        # 回滚后，同一版号可能对应另一批内容，不能缓存未提交的导出。
-        self._export = None if transaction_mode() == "write" else published
+        self._export = publish_export(
+            self.paths, self.repo.path, self._export if check_only else None
+        )
 
     def ensure_ignore_rules(self) -> None:
         with self._git_lock:

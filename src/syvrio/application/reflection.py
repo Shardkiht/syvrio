@@ -5,7 +5,6 @@ from __future__ import annotations
 import time
 from datetime import UTC, datetime
 
-from ..infra.storage.database import transaction
 from ..infra.time import format_local_timestamp
 from ..memory.background import BackgroundMemory
 from .commands import CommandResult, is_command_form
@@ -33,7 +32,8 @@ class ReflectionUseCases:
             )
 
         # 后台线程可能立即完成，须在任务推进前取得回执。
-        with transaction(self.background.service.paths):
+        work = self.background.service.work
+        with work.write() if action == "run" else work.read():
             before = self.background.dream_status()
             status = before
             if action == "run":

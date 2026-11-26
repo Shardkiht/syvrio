@@ -138,7 +138,7 @@ The MCP server exposes recall, topic reading, recording, correction, transitions
 
 Each deployment stores its conversations, facts, candidates, inferences, published profile, jobs and undo records in `Vault/syvrio.sqlite3`. The same database stores provider usage, quota pauses and local Git sync state. Vector embeddings and web search results are cached separately in `Runtime/cache/vectors.sqlite3` and `Runtime/cache/web-search.sqlite3`. Uploaded originals are addressed by SHA-256 under `Vault/attachments/objects/`. Archived conversations remain available in Archive. A fact that cites a conversation prevents permanent deletion.
 
-Git operates in `Vault/export/` on Markdown and JSONL rendered from one consistent database snapshot. For a complete backup run `syvrio backup DEST --config CONFIG`. Restore into a new directory with `syvrio restore DEST NEW_VAULT`. Chat search and distillation indexes are created together with a new database. For a fresh installation, use an empty Vault and a dedicated Runtime. [Storage and recovery](docs/storage.md)
+Git operates in `Vault/export/` on Markdown and JSONL rendered from a single committed database snapshot. Rolled-back changes never appear in the export. For a complete backup run `syvrio backup DEST --config CONFIG`. Restore into a new directory with `syvrio restore DEST NEW_VAULT`. Chat search and distillation indexes are created together with a new database. For a fresh installation, use an empty Vault and a dedicated Runtime. [Storage and recovery](docs/storage.md)
 
 ## Configuration and Git
 

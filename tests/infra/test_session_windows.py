@@ -30,6 +30,8 @@ def test_pages_preserve_tool_groups_and_use_saved_preview(tmp_path):
     assert [r["id"] for r in page.records] == ["a", "tool", "end"]
     assert page.records[1]["content"] == text[:200]
     assert page.records[1]["tool_content_length"] == len(text)
+    longer = store.history_window(session.id, 2, before_seq=None, archived=False, tool_preview=600)
+    assert longer.records[1]["content"] == text[:600]
     previous = store.history_window(session.id, 2, before_seq=page.earlier_cursor, **args)
     assert [r["id"] for r in previous.records] == ["u"] and previous.earlier_cursor is None
     with database.transaction(store.paths, write=False) as db:

@@ -45,7 +45,7 @@ def read_page(sessions, session, tools, filename):
 def test_chat_keeps_quoted_emotions_and_ignores_generated_draft_and_assistant(service):
     sessions, session, evidence = start_chat(service, "当时有点紧张，现在想起来很开心。")
     sessions.append(session, {"type": "assistant", "content": "或许还无比激动。"})
-    tools = build_tools(service, session, evidence=evidence)
+    tools = build_tools(service, session, config=service.config, evidence=evidence)
     data = reviewed_write(
         tools,
         evidence,
@@ -79,7 +79,13 @@ def test_pending_accepts_only_emotions_from_actually_read_attachment_pages(
     attached.write_text(
         "当时满怀期待。\n" + "合成材料。" * 1000 + "\n现在深感遗憾。", encoding="utf-8"
     )
-    tools = build_tools(service, session, evidence=evidence, file_paths={"attachment-A": attached})
+    tools = build_tools(
+        service,
+        session,
+        config=service.config,
+        evidence=evidence,
+        file_paths={"attachment-A": attached},
+    )
     page = read_page(sessions, session, tools, "attachment-A")
     assert page["next_offset"] and "满怀期待" in page["text"] and "深感遗憾" not in page["text"]
     monkeypatch.setattr(
@@ -104,7 +110,9 @@ def test_safely_inserted_message_starts_new_emotion_sources(service, tmp_path):
     sessions, session, evidence = start_chat(service, "之前我有点担心。")
     attached = tmp_path / "before-insertion.txt"
     attached.write_text("我经历这件事时欣喜。", encoding="utf-8")
-    previous_tools = build_tools(service, session, evidence=evidence, file_paths={"old": attached})
+    previous_tools = build_tools(
+        service, session, config=service.config, evidence=evidence, file_paths={"old": attached}
+    )
     read_page(sessions, session, previous_tools, "old")
     sessions.append(
         session,
@@ -117,7 +125,7 @@ def test_safely_inserted_message_starts_new_emotion_sources(service, tmp_path):
         },
     )
     evidence.invalidate()
-    tools = build_tools(service, session, evidence=evidence)
+    tools = build_tools(service, session, config=service.config, evidence=evidence)
     data = reviewed_write(
         tools,
         evidence,

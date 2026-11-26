@@ -3,12 +3,13 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+from contextlib import contextmanager
 from dataclasses import dataclass
 from heapq import merge
 from itertools import islice
 from pathlib import Path
 
-from ..storage.database import transaction
+from ..storage.database import transaction, transaction_mode
 from ..storage.documents import DocumentError
 from ..storage.paths import SESSION_ID_RE, SyvrioPaths, vault_paths
 from ..storage.session_indexes import PENDING_USER, search_signature
@@ -31,6 +32,30 @@ class SessionQuery:
         self.paths = vault if isinstance(vault, SyvrioPaths) else vault_paths(vault)
         self.attachments_dir = self.paths.attachments_dir
         self.runtime_dir = self.paths.runtime_dir
+
+    @contextmanager
+    def history_view(self, session_id: str):
+        """在同一快照内读取历史，只有可共享的版本才提供缓存标识。"""
+        with transaction(self.paths, write=False):
+            version = self.history_version(session_id)
+            yield version if transaction_mode() == "read" else None
+
+    def latest_history_page(
+        self,
+        session_id: str,
+        *,
+        limit: int,
+        tool_preview: int,
+        known_revision: int | None,
+    ) -> tuple[int | None, HistoryWindow | None]:
+        """版本与首页必须来自同一快照。调用方已持有该版本时跳过正文读取。"""
+        with self.history_view(session_id) as revision:
+            if revision is not None and revision == known_revision:
+                return revision, None
+            page = self.history_window(
+                session_id, limit, archived=False, before_seq=None, tool_preview=tool_preview
+            )
+            return revision, page
 
     @staticmethod
     def _validate_session_id(session_id):
@@ -164,7 +189,7 @@ class SessionQuery:
         self._validate_session_id(session_id)
         if before_seq is not None and not (1 <= before_seq < 2**63):
             raise ValueError("Invalid history cursor.")
-        if not (0 <= tool_preview <= PREVIEW_SIZE):
+        if tool_preview < 0:
             raise ValueError("Invalid history preview size.")
         with transaction(self.paths, write=False) as db:
             session = db.execute(
@@ -174,11 +199,17 @@ class SessionQuery:
                 raise KeyError(session_id)
             bounds = " AND e.seq < ?" if before_seq is not None else ""
             args = (session_id, before_seq) if before_seq is not None else (session_id,)
-            db.create_function("tool_excerpt", 1, lambda text: (text or "")[:PREVIEW_SIZE])
+            db.create_function("tool_excerpt", 1, lambda text: (text or "")[:tool_preview])
             db.create_function("tool_length", 1, lambda text: len(text or ""))
             preview = "e.kind='tool' AND e.message_id IS NOT NULL"
+            # 较短的预生成摘要可直接命中；请求更长时按本次长度读取原文。
+            excerpt = (
+                "coalesce(p.preview,tool_excerpt(e.content))"
+                if tool_preview <= PREVIEW_SIZE
+                else "tool_excerpt(e.content)"
+            )
             select = f"""SELECT e.seq,e.kind,e.message_id,e.role,e.at,e.payload,r.body,
-                CASE WHEN {preview} THEN coalesce(p.preview,tool_excerpt(e.content)) ELSE e.content END AS content,
+                CASE WHEN {preview} THEN {excerpt} ELSE e.content END AS content,
                 CASE WHEN {preview} THEN coalesce(p.length,tool_length(e.content)) END AS tool_length FROM session_events e
                 LEFT JOIN tool_previews p ON p.event_id=e.seq
                 LEFT JOIN session_reasoning r ON r.event_id=e.seq

@@ -45,7 +45,11 @@ def build(tmp_path):
     service = MemoryService(config)
     service.initialize_files()
     runtime = DummyRuntime(service)
-    return service, runtime, SettingsUseCases(service, runtime)
+    return (
+        service,
+        runtime,
+        SettingsUseCases(service.config, runtime, config_path=service.config_path),
+    )
 
 
 def test_model_options_only_show_discovered_models(tmp_path):
@@ -64,7 +68,7 @@ def test_qianwen_catalog_and_chat_use_dedicated_credentials_on_the_wire(
     from syvrio.infra.llm.client import LiteLLMChatModel
 
     service, _, settings = build(tmp_path)
-    service.config_path = tmp_path / "config.toml"
+    service.config_path = settings.config_path = tmp_path / "config.toml"
     isolate_llm_credentials["QIANWEN_API_KEY"] = "synthetic-qianwen"
     model_id = "qwen3.8-max"
     bodies = []
@@ -204,7 +208,7 @@ def test_discover_models_for_inactive_provider_at_saved_endpoint(
     from syvrio.infra.config import load_config
 
     service, runtime, settings = build(tmp_path)
-    service.config_path = tmp_path / "config.toml"
+    service.config_path = settings.config_path = tmp_path / "config.toml"
     isolate_llm_credentials["DEEPSEEK_API_KEY"] = "synthetic-deepseek-key"
     isolate_llm_credentials["DASHSCOPE_API_KEY"] = "synthetic-workspace-key"
     endpoint = "https://workspace.example.invalid/compatible-mode/v1"
@@ -252,7 +256,7 @@ def test_active_endpoint_is_used_by_chat_and_survives_restart(
     from syvrio.infra.llm import LiteLLMChatModel
 
     service, runtime, settings = build(tmp_path)
-    service.config_path = tmp_path / "config.toml"
+    service.config_path = settings.config_path = tmp_path / "config.toml"
     old, new = "https://old.example.invalid/v1", "https://new.example.invalid/v1"
     config = LLMConfig(provider=provider, base_url=old, api_key_env="SYNTHETIC_ENDPOINT_TEST_KEY")
     service.config.llm = config
@@ -322,7 +326,7 @@ def test_provider_key_lifecycle_ignores_environment(tmp_path, monkeypatch, isola
 
 def test_apply_model_reloads_runtime_and_persists(tmp_path):
     service, runtime, settings = build(tmp_path)
-    service.config_path = tmp_path / "syvrio.toml"
+    service.config_path = settings.config_path = tmp_path / "syvrio.toml"
 
     result = settings.apply_model("deepseek", "deepseek-v4-pro")
 
@@ -334,7 +338,7 @@ def test_apply_model_reloads_runtime_and_persists(tmp_path):
 
 def test_failed_save_keeps_the_current_model_and_context(tmp_path, monkeypatch):
     service, runtime, settings = build(tmp_path)
-    service.config_path = tmp_path / "config.toml"
+    service.config_path = settings.config_path = tmp_path / "config.toml"
     current = service.config.llm
     window = service.config.chat.context_window
     monkeypatch.setattr(settings_module, "model_metadata", lambda *_: {})
@@ -361,7 +365,7 @@ def test_switch_model_preserves_chat_configuration(tmp_path, monkeypatch):
     from syvrio.infra.config import write_config
 
     service, _, settings = build(tmp_path)
-    service.config_path = tmp_path / "config.toml"
+    service.config_path = settings.config_path = tmp_path / "config.toml"
     chat = replace(
         service.config.chat,
         auto_reflect=False,
@@ -380,7 +384,7 @@ def test_recent_models_survive_reload_and_prioritize_matching_catalog_entries(
     tmp_path, isolate_llm_credentials
 ):
     service, _, settings = build(tmp_path)
-    service.config_path = tmp_path / "config.toml"
+    service.config_path = settings.config_path = tmp_path / "config.toml"
     isolate_llm_credentials["DEEPSEEK_API_KEY"] = "synthetic-key"
     isolate_llm_credentials["DASHSCOPE_API_KEY"] = "synthetic-key"
     for model in ("oldest", "unlisted", "shared", "two", "three"):
@@ -575,7 +579,7 @@ def test_spark_switch_respects_declared_modes(tmp_path, monkeypatch, declared, o
     from syvrio.infra.llm import client
 
     service, _, settings = build(tmp_path)
-    service.config_path = tmp_path / "config.toml"
+    service.config_path = settings.config_path = tmp_path / "config.toml"
     service.config.llm = LLMConfig(provider="spark", model="old", spark_thinking="disabled")
     levels = client._advertised_levels({"thinking": {"supported_types": declared}}, spark=True)
     monkeypatch.setattr(client, "_provider_catalog", lambda *args, **kwargs: {"new": levels})
@@ -591,7 +595,7 @@ def test_spark_switch_respects_declared_modes(tmp_path, monkeypatch, declared, o
 
 def test_spark_thinking_modes_persist_without_overwriting_reasoning_effort(tmp_path):
     service, _, settings = build(tmp_path)
-    service.config_path = tmp_path / "config.toml"
+    service.config_path = settings.config_path = tmp_path / "config.toml"
     llm = service.config.llm
     llm.provider = "spark"
     llm.model = "spark-x2.6"
@@ -615,9 +619,9 @@ def test_apply_model_updates_config_and_runtime(tmp_path, service):
     runtime = AgentRuntime(
         service, LiteLLMChatModel(service.config.llm), SessionStore(service.paths)
     )
-    settings = SettingsUseCases(service, runtime)
+    settings = SettingsUseCases(service.config, runtime, config_path=service.config_path)
     config_path = tmp_path / "syvrio.toml"
-    service.config_path = config_path
+    service.config_path = settings.config_path = config_path
 
     result = settings.apply_model("deepseek", "deepseek-v4-pro")
     assert result.ok
@@ -629,13 +633,17 @@ def test_apply_model_updates_config_and_runtime(tmp_path, service):
 
 
 def test_model_options_lists_current_first_when_api_returns_it(service):
-    options = SettingsUseCases(service, None).model_options(["future-model", "deepseek-flash"])
+    options = SettingsUseCases(service.config, None, config_path=service.config_path).model_options(
+        ["future-model", "deepseek-flash"]
+    )
     assert [option.model for option in options] == ["deepseek-flash", "future-model"]
     assert options[0].current
 
 
 def test_model_options_do_not_inject_unlisted_current_model(service):
-    options = SettingsUseCases(service, None).model_options(["future-model"])
+    options = SettingsUseCases(service.config, None, config_path=service.config_path).model_options(
+        ["future-model"]
+    )
     assert [(option.model, option.current) for option in options] == [("future-model", False)]
 
 
@@ -647,14 +655,18 @@ def test_model_options_can_skip_metadata_for_fast_open(service, monkeypatch):
         settings_module, "supported_params", lambda *_: pytest.fail("快速开屏不应读取模型能力")
     )
 
-    options = SettingsUseCases(service, None).model_options(["deepseek-flash"], capabilities=False)
+    options = SettingsUseCases(service.config, None, config_path=service.config_path).model_options(
+        ["deepseek-flash"], capabilities=False
+    )
 
     assert options[0].current
     assert "(" not in options[0].label
 
 
 def test_provider_options_mark_current_and_unconfigured(service):
-    options = SettingsUseCases(service, None).provider_options()
+    options = SettingsUseCases(
+        service.config, None, config_path=service.config_path
+    ).provider_options()
     by_key = {option.key: option for option in options}
 
     assert by_key["deepseek"].current
@@ -669,7 +681,7 @@ def test_configure_provider_saves_key_without_guessing_model(tmp_path, monkeypat
 
     service, _, settings = build(tmp_path)
     config_path = tmp_path / "syvrio.toml"
-    service.config_path = config_path
+    service.config_path = settings.config_path = config_path
     keys: dict[str, str] = {}
     fake = types.ModuleType("keyring")
     fake.get_password = lambda service_name, name: keys.get(name)
@@ -692,7 +704,7 @@ def test_configure_provider_keeps_state_when_keyring_fails(tmp_path, monkeypatch
 
     service, _, settings = build(tmp_path)
     config_path = tmp_path / "syvrio.toml"
-    service.config_path = config_path
+    service.config_path = settings.config_path = config_path
     fake = types.ModuleType("keyring")
 
     def locked(service_name, name):
@@ -755,7 +767,7 @@ def test_apply_reasoning_updates_config_hot(tmp_path, monkeypatch, service):
         "syvrio.infra.llm.client.supported_params", lambda model: ("reasoning_effort",)
     )
 
-    settings = SettingsUseCases(service, None)
+    settings = SettingsUseCases(service.config, None, config_path=service.config_path)
     assert settings.reasoning_options()
     result = settings.apply_reasoning("high")
     assert result.ok
@@ -769,7 +781,10 @@ def test_apply_reasoning_updates_config_hot(tmp_path, monkeypatch, service):
 
 def test_reasoning_options_empty_when_unsupported(service, monkeypatch):
     monkeypatch.setattr("syvrio.infra.llm.client.supported_params", lambda model: ())
-    assert SettingsUseCases(service, None).reasoning_options() == []
+    assert (
+        SettingsUseCases(service.config, None, config_path=service.config_path).reasoning_options()
+        == []
+    )
 
 
 def test_context_options_and_apply(tmp_path, monkeypatch, service):
@@ -777,7 +792,7 @@ def test_context_options_and_apply(tmp_path, monkeypatch, service):
     service.config_path = config_path
 
     monkeypatch.setattr(settings_module, "model_metadata", lambda *_: {})
-    settings = SettingsUseCases(service, None)
+    settings = SettingsUseCases(service.config, None, config_path=service.config_path)
     options = settings.context_options()
     assert options == [50_000, 100_000, 200_000, 400_000, 600_000]
     assert "60K" in settings.apply_context(60000).message
@@ -806,7 +821,11 @@ def test_model_change_preserves_same_provider_endpoint_and_credentials(
     runtime = SimpleNamespace(reload_llm=reloaded.append, model_label=f"{provider}/synthetic-new")
     monkeypatch.setattr("syvrio.application.settings.model_metadata", lambda model: {})
     monkeypatch.setattr("syvrio.infra.llm.client.supported_params", lambda model: ())
-    assert SettingsUseCases(service, runtime).apply_model(provider, "synthetic-new").ok
+    assert (
+        SettingsUseCases(service.config, runtime, config_path=service.config_path)
+        .apply_model(provider, "synthetic-new")
+        .ok
+    )
     saved = load_config(config_path)
     assert saved.llm.model == "synthetic-new"
     assert saved.llm.base_url == "https://provider.example.invalid/v1"

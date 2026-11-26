@@ -1,9 +1,10 @@
 """Latest published profile. Only Dream publishes new evidence snapshots."""
 
 import json
+import sqlite3
 from dataclasses import dataclass
 
-from ..infra.storage.database import encode, transaction
+from ..infra.storage.database import DatabaseError, encode, transaction
 
 
 @dataclass(frozen=True)
@@ -19,9 +20,12 @@ class ProfileReader:
         self.paths = paths
 
     def _published(self):
-        with transaction(self.paths, write=False) as db:
-            row = db.execute("SELECT body,metadata FROM profile WHERE singleton=1").fetchone()
-            return (row[0], json.loads(row[1])) if row else ("", {})
+        try:
+            with transaction(self.paths, write=False) as db:
+                row = db.execute("SELECT body,metadata FROM profile WHERE singleton=1").fetchone()
+                return (row[0], json.loads(row[1])) if row else ("", {})
+        except sqlite3.DatabaseError as exc:
+            raise DatabaseError("Could not read the published profile.") from exc
 
     def read_text(self):
         return self._published()[0]

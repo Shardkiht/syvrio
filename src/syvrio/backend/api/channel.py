@@ -12,7 +12,6 @@ from ...infra.session import SESSION_ID_RE
 from ...infra.session.attachments import AttachmentBatch
 from ...infra.session.errors import ConversationError, SessionDeletionChanged, SessionProtectedError
 from ...infra.session.query import HistoryWindow
-from ...infra.storage.session_previews import PREVIEW_SIZE as TOOL_CONTENT_LIMIT
 from ..channel import ResidentChannel
 from ..ownership import BackendLease
 from .models import (
@@ -43,6 +42,7 @@ from .models import (
 from .turns import stream_frames
 
 HISTORY_ITEM_LIMIT = 300
+TOOL_CONTENT_LIMIT = 300
 
 
 class APIError(SyvrioError):

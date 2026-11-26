@@ -108,3 +108,21 @@ def test_long_message_signatures_include_matches_at_the_end(service):
     assert query.search_chats("rarez", 1)["results"][0]["message_id"] == "m0"
     assert query.search_chats("i猫🦊", 1)["results"][0]["message_id"] == "m1"
     assert not query.search_chats("猫i", 1)["results"]
+
+
+def test_only_session_writes_maintain_their_own_search_signatures(service):
+    from syvrio.infra.search.usage import UsageLimiter
+    from syvrio.infra.session import SessionStore
+
+    with transaction(service.paths) as db:
+        _seed(db, "external", "1", "", ["external message"])
+    UsageLimiter({}, service.paths).record("synthetic")
+    store = SessionStore(service.paths)
+    session = store.create()
+    store.append(session, {"type": "message", "role": "user", "content": "ordinary message"})
+    with transaction(service.paths, write=False) as db:
+        assert dict(db.execute("SELECT session_id,ready FROM search_signatures")) == {
+            "external": 0,
+            session.id: 1,
+        }
+    assert store.search_chats("external")["results"][0]["session_id"] == "external"

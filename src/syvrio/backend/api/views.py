@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import hashlib
 from collections import OrderedDict
+from dataclasses import dataclass
 from threading import Lock
 
-from ...infra.session import HistoryRevision
 from ...infra.session.errors import SessionProtectedError
-from ...infra.storage.database import transaction
 from .channel import HISTORY_ITEM_LIMIT, TOOL_CONTENT_LIMIT, APIChannel, APIError
 from .models import (
     CommandResponse,
@@ -19,11 +18,18 @@ from .models import (
 )
 
 
+@dataclass(frozen=True)
+class CachedHistory:
+    revision: int
+    version: str
+    history: HistoryResponse
+
+
 class ClientViews:
     def __init__(self, owner: APIChannel) -> None:
         self.owner = owner
         self._history_lock = Lock()
-        self._histories: OrderedDict[HistoryRevision, tuple[str, HistoryResponse]] = OrderedDict()
+        self._histories: OrderedDict[str, CachedHistory] = OrderedDict()
 
     def create_session(self, key: str) -> CreateSessionResponse:
         return self.owner.directory.new(key, APIChannel.create_session)
@@ -66,30 +72,33 @@ class ClientViews:
             channel = self.owner.directory.channel(key)
             store = channel.conversation.sessions
             current = select or channel.conversation.current_id == session_id
-            with transaction(store.paths, write=False):
-                revision = HistoryRevision(session_id, store.history_version(session_id))
-                with self._history_lock:
-                    projection = self._histories.get(revision)
-                if projection is None:
-                    page = store.history_window(
-                        session_id,
-                        HISTORY_ITEM_LIMIT,
-                        archived=False,
-                        before_seq=None,
-                        tool_preview=TOOL_CONTENT_LIMIT,
-                    )
-                    history = self.owner.project_history(page, current=True)
-                    content = history.model_dump_json(exclude={"current"}).encode()
-                    projection = hashlib.sha256(content).hexdigest(), history
+            with self._history_lock:
+                cached = self._histories.get(session_id)
+            revision, page = store.latest_history_page(
+                session_id,
+                limit=HISTORY_ITEM_LIMIT,
+                tool_preview=TOOL_CONTENT_LIMIT,
+                known_revision=cached.revision if cached else None,
+            )
+            if page is None:
+                assert cached is not None
+                version, history = cached.version, cached.history
+            else:
+                history = self.owner.project_history(page, current=True)
+                content = history.model_dump_json(exclude={"current"}).encode()
+                version = hashlib.sha256(content).hexdigest()
+                if revision is not None:
                     with self._history_lock:
-                        self._histories[revision] = projection
-                        if len(self._histories) > 16:
-                            self._histories.popitem(last=False)
+                        latest = self._histories.get(session_id)
+                        if latest is None or latest.revision < revision:
+                            self._histories[session_id] = CachedHistory(revision, version, history)
+                            self._histories.move_to_end(session_id)
+                            if len(self._histories) > 16:
+                                self._histories.popitem(last=False)
         except KeyError as exc:
             raise APIError("session_not_found", "Session not found.", 404) from exc
         except (ValueError, OSError) as exc:
             raise APIError("session_unreadable", "Session history could not be read.", 500) from exc
-        version, history = projection
         return version, history if current else history.model_copy(update={"current": False})
 
     def archive(self, session_id: str, archived: bool) -> dict:

@@ -2226,7 +2226,7 @@ async def test_startup_catchup_does_not_block_switching(service, monkeypatch):
 async def test_transcript_replays_tool_events(resident_backend):
     # 回归：旧会话不仅回放问答正文，也要能看到当时的工具事件。
 
-    from syvrio.agent.tools import SEARCH_NOTICE
+    from syvrio.agent.network_tools import SEARCH_NOTICE
 
     owner, client = resident_backend
     app = ResidentChatApp(client)

@@ -46,17 +46,12 @@ def search_signature(text: str) -> tuple[int, int, int, int]:
     return chars & _WORD, chars >> 63, pairs & _WORD, pairs >> 63
 
 
-def refresh_search(db: sqlite3.Connection) -> None:
-    """由外层写事务发布变更；直接用 SQLite 写入的记录在建立签名前仍可搜到。"""
-    pending = """SELECT s.event_id,e.content FROM search_signatures s
-                 JOIN session_events e ON e.seq=s.event_id AND e.session_id=s.session_id
-                 WHERE s.ready=0 LIMIT 128"""
-    while batch := db.execute(pending).fetchall():
-        db.executemany(
-            """UPDATE search_signatures SET c0=?,c1=?,p0=?,p1=?,ready=1
-               WHERE event_id=?""",
-            ((*search_signature(body), seq) for seq, body in batch),
-        )
+def index_message(db: sqlite3.Connection, event_id: int, text: str) -> None:
+    """消息与它的搜索签名在同一次写入中生效。"""
+    db.execute(
+        "UPDATE search_signatures SET c0=?,c1=?,p0=?,p1=?,ready=1 WHERE event_id=?",
+        (*search_signature(text), event_id),
+    )
 
 
 def install(db: sqlite3.Connection) -> None:

@@ -12,12 +12,13 @@ from ..llm.tokens import estimate_tokens
 from ..security.secrets import redact_secrets
 from ..storage import session_previews
 from ..storage.database import encode, on_commit, transaction
-from ..storage.session_indexes import PENDING_USER
+from ..storage.session_indexes import PENDING_USER, index_message
 from ..time import serialize_timestamp, timestamp_calendar_date, utc_now
 from .attachment_objects import cleanup
 from .errors import ConversationError
 from .model import Session, new_message_id, now_iso, validate_record
 from .query import SessionQuery
+from .receipts import ReceiptStore
 
 
 @dataclass(frozen=True)
@@ -61,6 +62,12 @@ class SessionStore(SessionQuery):
         super().__init__(*args, **kwargs)
         self._snapshot_lock = RLock()
         self._snapshots = OrderedDict()
+        self.receipts = ReceiptStore(self.paths)
+
+    @staticmethod
+    def publish_records(target: Session, updated: Session) -> None:
+        """外层提交后再替换活跃会话的内存记录。"""
+        on_commit(lambda: setattr(target, "records", updated.records))
 
     def load_snapshot(self, session_id):
         return self.read_snapshot(session_id).session
@@ -153,6 +160,8 @@ class SessionStore(SessionQuery):
             "INSERT INTO session_events(session_id,kind,message_id,role,at,content,payload) VALUES(?,?,?,?,?,?,?)",
             (key, kind, msg, role, at, content, encode(data)),
         )
+        if kind in {"message", "assistant"} and content is not None:
+            index_message(db, cur.lastrowid, content)
         if kind == "tool" and msg is not None and content and "\x00" in content:
             session_previews.save(db, cur.lastrowid, content)
         if reason:
