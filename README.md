@@ -33,7 +33,7 @@ uv run syvrio setup
 uv run syvrio chat
 ```
 
-每个部署使用一个 Vault。Git 提供只读导出。需要还原完整数据时，停止后端并使用 `syvrio restore` 恢复到新目录。`setup` 配置模型；需要自定义记忆库位置时，首次部署先运行 `syvrio init --vault <目录>`。凭据可以由系统凭据库或供应商环境变量提供。首次发送消息时创建会话。Web、终端、命令行和 MCP 连接到同一个常驻后端，共用会话、记忆、任务进度和配置。任一客户端首次连接时都可启动后端。终端直接访问后端，浏览器通过 Web 网关加载页面并访问同一套 API。在 Web 和终端同时打开一个会话，两端的消息按接收顺序排队。不同会话可以并行生成。回复中可以切换或新建会话。原会话继续生成并处理排队消息，切回时可接着查看。
+每个部署使用一个 Vault。Git 提供只读导出。需要还原完整数据时，停止后端并使用 `syvrio restore` 恢复到新目录。`setup` 配置模型；需要自定义记忆库位置时，首次部署先运行 `syvrio init --vault <目录>`。通过设置页或 `syvrio setup` 将供应商 API Key 保存到凭据库。首次发送消息时创建会话。Web、终端、命令行和 MCP 连接到同一个常驻后端，共用会话、记忆、任务进度和配置。任一客户端首次连接时都可启动后端。终端直接访问后端，浏览器通过 Web 网关加载页面并访问同一套 API。在 Web 和终端同时打开一个会话，两端的消息按接收顺序排队。不同会话可以并行生成。回复中可以切换或新建会话。原会话继续生成并处理排队消息，切回时可接着查看。
 
 从源码启动网页需要 Node.js 和 Corepack。构建一次前端，再运行网页入口：
 
@@ -62,11 +62,13 @@ Syvrio 只维护 `main` 正式版，安装和更新共用 PyPI 的 `syvrio` 包�
 | 同目录文件 | 设置范围 |
 |---|---|
 | `config.toml` | Vault、Runtime、Git、联网搜索和网页抓取 |
-| `models.toml` | 供应商、端点、模型及请求参数。API Key 原值来自环境变量或系统凭据库 |
+| `models.toml` | 供应商、端点、模型及请求参数。API Key 由凭据库提供 |
 | `chat.toml` | 上下文、压缩、输出预留和工具预算 |
 | `memory.toml` | 检索和 embedding、自动召回、会话沉淀和 Dream |
 
-供应商环境变量优先。已设置环境变量 Key 时，请在环境中更新它；Settings 和 `syvrio setup` 均使用该值。通过 Settings 或 `syvrio setup` 保存的密钥使用系统钥匙串。在没有可用钥匙串的 Linux 或 WSL 上，Syvrio 可调用 `systemd-creds --user` 加密保存。密文默认放在用户数据目录下的 `syvrio/credentials/`，也可用 `SYVRIO_CREDENTIALS_DIR` 指定专用绝对路径。换机器或系统账号后需要重新添加密钥。
+在 Settings → Providers 或 `syvrio setup` 中保存模型 API Key。搜索和抓取的 Key 通过 `syvrio setup` 管理。此前仅通过环境变量提供的 Key，升级后需要在对应入口保存一次。**Remove API key** 删除该凭据，之后可在同一张卡片重新添加。如果当前模型正在使用这条凭据，先切换到使用其他凭据的模型。
+
+模型配置中的 `api_key_env` 指定凭据库里的条目名。密钥默认保存在系统钥匙串。在没有可用钥匙串的 Linux 或 WSL 上，Syvrio 可调用 `systemd-creds --user` 加密保存。密文默认放在用户数据目录下的 `syvrio/credentials/`，也可用 `SYVRIO_CREDENTIALS_DIR` 指定专用绝对路径。换机器或系统账号后需要重新添加密钥。
 
 例如在本地 `memory.toml` 写入以下内容，可将显式检索默认返回数改为 15。聊天自动召回数量由同一文件的 `[recall].auto_recall` 单独控制。
 
@@ -151,7 +153,7 @@ Git 仓库位于 `Vault/export/`，其中的 Markdown 和 JSONL 由一致快照�
 
 `syvrio setup` 可配置模型和 API Base URL。向导和聊天中的 `/think` 共用当前模型的思考档位，优先显示厂商声明的选项，缺失时使用协议预设。`SYVRIO_CONFIG` 指定入口配置，`SYVRIO_RUNTIME` 指定配对的 Runtime。未配置 `vault` 时使用 `SYVRIO_VAULT` 作为部署默认目录。支持本地向量、模型 API 向量和关键词检索。`SOUL.md` 可保存用户编写的助手人设。已有远端的 Vault 可以用 `/git` 查看状态及同步；附件备份仍独立于 Git。手动生成提交摘要时，模型能看到完整文件统计。差异超出模型窗口时，按文件节选，保留靠后的小文件。
 
-千问 AI 平台的按量付费入口在 **Settings → Providers → 千问 AI 平台**。选择 **Add key** 保存凭据，再到 **Model** 刷新并选择模型。也可在千问卡片选择 **Use model ID**，输入平台提供的模型 ID，例如 `glm-5.3`。终端可用 `syvrio setup` 或通过 `QIANWEN_API_KEY` 提供密钥。千问和百炼分别保存凭据。[千问平台 API 说明](https://platform.qianwenai.com/docs/api-reference/preparation/api-key)
+千问 AI 平台的按量付费入口在 **Settings → Providers → 千问 AI 平台**。选择 **Add key** 保存凭据，再到 **Model** 刷新目录，按名称搜索并选择模型。终端可用 `syvrio setup` 保存密钥。千问和百炼分别保存凭据。[千问平台 API 说明](https://platform.qianwenai.com/docs/api-reference/preparation/api-key)
 
 ## 联网搜索
 
@@ -168,8 +170,8 @@ npx -y open-websearch@latest serve
 
 AnySearch 和 Parallel MCP 都支持 Search 和 Fetch，可分别加入 `[search].providers` 或 `[fetch].providers`。两类操作共用同一个 Key，未配置 Key 时使用匿名模式：
 
-- `anysearch`：调用 AnySearch REST 搜索（`https://api.anysearch.com/v1/search`）。未配置 Key 时不发送 `Authorization`；配置 `ANYSEARCH_API_KEY` 后自动改用 Bearer Token。`zone` 与 `language` 取 `[search]` 的 `anysearch_zone` / `anysearch_language`，默认 `cn` / `zh-CN`。查询原文不会被改写。
-- `parallel_mcp`：Search 继续通过现有的独立 Search MCP（`https://search.parallel.ai/mcp`）调用 `web_search`；该端点由官方保留用于兼容。匿名和认证模式使用相同的接口；配置 `PARALLEL_API_KEY` 后只增加 Bearer 认证。优先读取 `structuredContent.results`，也兼容 `content[].text` 中的 JSON；重复 URL 会合并，排序和会话会使用上游提供的全部摘录，无法验证的发布时间保留为空。
+- `anysearch`：调用 AnySearch REST 搜索（`https://api.anysearch.com/v1/search`）。未配置 Key 时不发送 `Authorization`；在凭据库保存 `ANYSEARCH_API_KEY` 后自动改用 Bearer Token。`zone` 与 `language` 取 `[search]` 的 `anysearch_zone` / `anysearch_language`，默认 `cn` / `zh-CN`。查询原文不会被改写。
+- `parallel_mcp`：Search 继续通过现有的独立 Search MCP（`https://search.parallel.ai/mcp`）调用 `web_search`；该端点由官方保留用于兼容。匿名和认证模式使用相同的接口；在凭据库保存 `PARALLEL_API_KEY` 后只增加 Bearer 认证。优先读取 `structuredContent.results`，也兼容 `content[].text` 中的 JSON；重复 URL 会合并，排序和会话会使用上游提供的全部摘录，无法验证的发布时间保留为空。
 
 示例（默认顺序不变，只有显式加入才会启用）：
 
@@ -253,7 +255,7 @@ LLM 可以在 `search` 调用里用 `providers` 指定多个已启用来源的�
 - daemon 未启动或全部 provider 失败时返回结构化错误和启动提示，不编造结果。
 - `[search]` 配置：`enabled`（关闭时不注册工具）、`providers`（按顺序降级）、`base_url`、`timeout`、`max_results`、`cache_ttl`、`transport`（`http` 默认；`mcp` 每次启动 npx MCP 进程）、`auto_start`（常驻后端仅在启用的搜索或抓取使用 open-websearch HTTP 服务时，才后台探测并启动该服务）、`engines`（上游搜索引擎，默认 `["bing"]`）、`fallback_engines`（候补引擎序列，默认 `["baidu", "duckduckgo", "sogou"]`）、`max_engines`（自动回退最多尝试的引擎数，默认 3）、`max_search_engines`（显式 `search_engine` 列表上限，0 表示不限，默认 0）、`timeout_budget`（回退共享超时预算，默认 25 秒，单次请求超时不超过剩余预算）、`max_requests`（一次搜索跨所有 provider 共享的请求次数上限，默认 9；超出即返回当前最佳候选并附截断提示，该结果不写入缓存）、`anysearch_zone` / `anysearch_language`（AnySearch 的区域与语言，默认 `cn` / `zh-CN`）、`searxng_base_url` / `searxng_timeout`（自托管 SearXNG 实例地址与单次超时，默认 `http://127.0.0.1:8888` / 10 秒）、`usage_limits`（每厂商调用上限，`[search.usage_limits.<provider>]` 设 `daily` 与 `monthly`（0 不限）；同一厂商的 Search 与 Fetch 共用同一计数池，达到上限即跳过该厂商并正常回退；计数保存在主库的 `usage` 表，**本地计数不等于服务商实际账单上限**）、`fetch_timeout`（抓取正文的单独超时，默认 45 秒）。`syvrio setup` 可管理双周期额度与官方暂停。
 
-受控真实冒烟：`scripts/smoke_search_apis.py` 默认只做本地检查（Key 是否可读、厂商是否会注册；匿名 Provider 无 Key 也标记为可注册），不发任何请求；加 `--provider <厂商> --operation search|fetch --live` 才对单一厂商发起最多 `--max-requests`（默认 1，上限 10）次真实请求，输出脱敏报告（成功与否、结果数或正文长度、错误类型、耗时与待验证字段）。Key 只从环境变量或系统凭据读取，不回显。网页抓取由独立的 `[fetch]` 配置控制：`providers` 是抓取正文用的 provider 顺序（默认 `["open_websearch"]`），与搜索的 provider 顺序相互独立；配置了 Key 的官方厂商（tavily / exa / you / volcengine）加入该列表后才参与抓取。
+受控真实冒烟：`scripts/smoke_search_apis.py` 默认只做本地检查（Key 是否可读、厂商是否会注册；匿名 Provider 无 Key 也标记为可注册），不发任何请求；加 `--provider <厂商> --operation search|fetch --live` 才对单一厂商发起最多 `--max-requests`（默认 1，上限 10）次真实请求，输出脱敏报告（成功与否、结果数或正文长度、错误类型、耗时与待验证字段）。脚本从凭据库读取 Key，仅输出检查结果。网页抓取由独立的 `[fetch]` 配置控制：`providers` 是抓取正文用的 provider 顺序（默认 `["open_websearch"]`），与搜索的 provider 顺序相互独立；配置了 Key 的官方厂商（tavily / exa / you / volcengine）加入该列表后才参与抓取。
 - `auto_start` 启动的 daemon 在 Windows 下隐藏控制台窗口；退出 TUI 后继续常驻，下次直接复用。
 - 网页搜索结果保存在 `Runtime/cache/web-search.sqlite3` 中，可在过期后重建。普通成功结果缓存 24 小时（`cache_ttl`）；「今天/最新/latest」等时效性查询与空结果只短缓存（10/5 分钟），上游失败一律不入缓存。
 

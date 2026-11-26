@@ -718,7 +718,7 @@ def test_build_retriever_hybrid_when_local_available(tmp_path, monkeypatch):
     assert isinstance(retriever.vector.embedder.model_id, str)
 
 
-def test_build_retriever_api_backend(tmp_path, monkeypatch):
+def test_build_retriever_api_backend(tmp_path, monkeypatch, isolate_llm_credentials):
     config = Config(
         vault=tmp_path,
         retrieval=RetrievalConfig(
@@ -728,11 +728,12 @@ def test_build_retriever_api_backend(tmp_path, monkeypatch):
             ),
         ),
     )
-    monkeypatch.setenv("TEST_EMBED_KEY", "test-key")
+    monkeypatch.setenv("TEST_EMBED_KEY", "ignored-environment-key")
+    isolate_llm_credentials["TEST_EMBED_KEY"] = "test-key"
     retriever, mode = service_module.build_retriever(config, MemoryStore(tmp_path))
     assert mode == "hybrid"
 
-    monkeypatch.delenv("TEST_EMBED_KEY")
+    del isolate_llm_credentials["TEST_EMBED_KEY"]
     retriever, mode = service_module.build_retriever(config, MemoryStore(tmp_path))
     assert isinstance(retriever, KeywordRetriever)
     assert mode == "hybrid-fallback-keyword"

@@ -14,12 +14,18 @@ from threading import Thread
 import httpx
 from fastmcp import Client
 from fastmcp.client.transports import StdioTransport
+from keyring.backends.null import Keyring as NullKeyring
 from textual.widgets import Input
 
 from syvrio.app.tui.resident import ResidentChatApp
 from syvrio.backend.client import ResidentClient
 from syvrio.backend.endpoint import client_paths, discover
 from syvrio.infra.storage.database import database_path
+
+
+class LocalModelKeyring(NullKeyring):
+    def get_password(self, service, username):
+        return "local-test-only" if (service, username) == ("syvrio", "LOCAL_TEST_TOKEN") else None
 
 
 class LocalModel(BaseHTTPRequestHandler):
@@ -112,8 +118,7 @@ async def test_four_clients_share_one_database(tmp_path, monkeypatch):
         "SYVRIO_VAULT": vault,
         "SYVRIO_RUNTIME": runtime,
         "SYVRIO_CREDENTIALS_DIR": tmp_path / "creds",
-        "PYTHON_KEYRING_BACKEND": "keyring.backends.null.Keyring",
-        "LOCAL_TEST_TOKEN": "local-test-only",
+        "PYTHON_KEYRING_BACKEND": "tests.backend.test_sqlite_clients.LocalModelKeyring",
         "LITELLM_LOCAL_MODEL_COST_MAP": "True",
     }.items():
         monkeypatch.setenv(name, str(value))

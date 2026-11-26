@@ -127,13 +127,7 @@ def delete_password(env_name: str) -> None:
     keyring.delete_password(KEYRING_SERVICE, env_name)
 
 
-def environment_key(env_name: str) -> str:
-    return os.environ.get(env_name, "").strip()
-
-
 def save_api_key(env_name: str, api_key: str) -> bool:
-    if environment_key(env_name):
-        return False
     try:
         set_password(env_name, api_key)
         return True
@@ -146,8 +140,6 @@ def save_api_key(env_name: str, api_key: str) -> bool:
 
 
 def delete_api_key(env_name: str) -> bool:
-    if environment_key(env_name):
-        return False
     try:
         delete_password(env_name)
         return True

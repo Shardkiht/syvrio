@@ -2,11 +2,9 @@ from __future__ import annotations
 
 import calendar
 from datetime import date, timedelta
-from pathlib import Path
 
 from ..infra.time import timestamp_calendar_date
-from .models import Entry, MemoryContext
-from .store import MemoryStore
+from .models import MemoryContext
 
 
 def date_bounds(value: str) -> tuple[date, date]:
@@ -21,13 +19,6 @@ def date_bounds(value: str) -> tuple[date, date]:
         year, end_month, parts[2] if len(parts) > 2 else calendar.monthrange(year, end_month)[1]
     )
     return start, end
-
-
-def validate_range(start: str | None, end: str | None) -> None:
-    low = date_bounds(start)[0] if start else date.min
-    high = date_bounds(end)[1] if end else date.max
-    if low > high:
-        raise ValueError("查询结束日期不能早于开始日期。")
 
 
 def resolve_relative(value: str, anchor: date | str | None) -> str | None:
@@ -84,89 +75,3 @@ def matches_context(
             )
         return any(low <= last and high >= first for low, high in periods)
     return True
-
-
-def disjoint_periods(left: MemoryContext | None, right: MemoryContext | None) -> bool:
-    """只有明确封闭且不重叠的有效期才排除冲突，缺省结束日期不补猜。"""
-    if left is None or right is None:
-        return False
-    return bool(
-        (
-            left.valid_to
-            and right.valid_from
-            and date_bounds(left.valid_to)[1] < date_bounds(right.valid_from)[0]
-        )
-        or (
-            right.valid_to
-            and left.valid_from
-            and date_bounds(right.valid_to)[1] < date_bounds(left.valid_from)[0]
-        )
-    )
-
-
-def select_facts(
-    entries: list[Entry], *, as_of: str | None = None, history: bool = False
-) -> list[Entry]:
-    """历史只接受明确的演化链；纠错与删除不能使旧内容重新成为事实。"""
-    target = date.fromisoformat(as_of) if as_of else date.today()
-    if as_of and (len(as_of) != 10 or target.isoformat() != as_of):
-        raise ValueError("历史时点须为 YYYY-MM-DD。")
-    children: dict[str, list[Entry]] = {}
-    for entry in entries:
-        if entry.supersedes:
-            children.setdefault(entry.supersedes, []).append(entry)
-    result = []
-    for entry in entries:
-        context = entry.context
-        start = date_bounds(context.valid_from)[0] if context and context.valid_from else None
-        end = date_bounds(context.valid_to)[1] if context and context.valid_to else None
-        if entry.status != "active":
-            if not (history or as_of) or entry.status != "deprecated":
-                continue
-            node = entry
-            visited = {node.id}
-            valid_chain = True
-            while node.status == "deprecated":
-                successors = children.get(node.id, [])
-                if len(successors) != 1:
-                    valid_chain = False
-                    break
-                successor = successors[0]
-                if successor.id in visited or successor.metadata.get("change_kind") != "evolution":
-                    valid_chain = False
-                    break
-                successor_context = successor.context
-                if not successor_context or not successor_context.valid_from:
-                    valid_chain = False
-                    break
-                transition = date_bounds(successor_context.valid_from)[0]
-                if transition == date.min:
-                    valid_chain = False
-                    break
-                boundary = transition - timedelta(days=1)
-                end = min(end, boundary) if end else boundary
-                visited.add(successor.id)
-                node = successor
-            if not valid_chain or node.status != "active":
-                continue
-        if history and not as_of:
-            result.append(entry)
-            continue
-        if as_of and start is None:
-            # 无起点的历史状态只可展示来源，不能断言其在某一天成立。
-            continue
-        if (start and target < start) or (end and target > end):
-            continue
-        result.append(entry)
-    return result
-
-
-class TemporalStore(MemoryStore):
-    """显式历史查询的只读快照，复用关键词检索；不覆盖向量缓存。"""
-
-    def __init__(self, vault: Path, selected: list[Entry]) -> None:
-        super().__init__(vault)
-        self.selected = selected
-
-    def entries(self, topic: str | None = None, include_inactive: bool = False) -> list[Entry]:
-        return [entry for entry in self.selected if topic is None or entry.topic == topic]

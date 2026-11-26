@@ -172,10 +172,9 @@ const EarlierRows = memo(function EarlierRows({ cursor, sessionId, archived }: {
   </EarlierHistory>;
 });
 
-function SegmentView({ segment, onToggle }: { segment: Segment; onToggle: () => void }) {
+function SegmentView({ segment, onToggle }: { segment: Exclude<Segment, ToolSegment>; onToggle: () => void }) {
   if (segment.kind === 'thinking') return <Thinking segment={segment} onToggle={onToggle} />;
   if (segment.kind === 'text') return <Markdown text={segment.content} />;
-  if (segment.kind === 'tool') return <ToolView segment={segment} onToggle={onToggle} />;
   return <div className="event-line">{segment.text}</div>;
 }
 

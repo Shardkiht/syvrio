@@ -35,7 +35,7 @@ def test_cached_snapshot_tracks_topic_visibility_and_does_not_share_mutable_cont
     entry = store.append("topic", "synthetic", context=MemoryContext(location="原地点"))
     snapshot = store.snapshot()
     assert store.snapshot() is snapshot
-    snapshot.by_id[entry.id].as_recall().context.location = "未保存"
+    snapshot.by_id[entry.id].context.location = "未保存"
     assert store.snapshot().by_id[entry.id].context.location == "原地点"
     with transaction(store.paths) as db:
         db.execute("UPDATE topics SET archived=1 WHERE name=?", (entry.topic,))

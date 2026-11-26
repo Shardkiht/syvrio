@@ -106,6 +106,7 @@ class ProviderInfo(BaseModel):
     label: str
     configured: bool
     current: bool
+    can_remove_key: bool
     endpoint: str = ""
 
 
@@ -119,7 +120,7 @@ class ModelSearchResponse(BaseModel):
 
 
 class ProviderActionRequest(BaseModel):
-    action: Literal["set_key", "update_key", "set_endpoint", "remove"]
+    action: Literal["set_key", "update_key", "set_endpoint", "remove_key"]
     api_key: str = Field(default="", max_length=4096)
     endpoint: str = Field(default="", max_length=512)
     confirmed: bool = False

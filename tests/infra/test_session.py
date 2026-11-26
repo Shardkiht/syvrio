@@ -359,7 +359,7 @@ def test_create_retries_id_collision_without_overwrite(tmp_path, monkeypatch):
     assert store.load(first.id).records[0]["id"] == first.id
 
 
-def test_unconsolidated_filters_threshold_before_limit(tmp_path):
+def test_pending_sessions_return_ids_in_most_recent_order(tmp_path):
     store = SessionStore(tmp_path)
     sessions = []
     for index, count in enumerate((5, 1, 2, 1)):
@@ -377,9 +377,7 @@ def test_unconsolidated_filters_threshold_before_limit(tmp_path):
                 },
             )
 
-    assert [s.id for s in store.unconsolidated(3, min_new_messages=3)] == [sessions[0].id]
-    assert [s.id for s in store.unconsolidated(3)] == [s.id for s in reversed(sessions[1:])]
-    assert store.unconsolidated(3, exclude=sessions[0].id, min_new_messages=3) == []
+    assert store.pending_sessions() == [s.id for s in reversed(sessions)]
 
 
 def test_distillation_tracks_ids_separately_from_new_summary_boundaries(tmp_path):
@@ -475,7 +473,7 @@ def test_list_reuses_cached_summary_until_file_changes(tmp_path, monkeypatch):
     assert third[0]["messages"] == 2
 
 
-def test_unconsolidated_skips_unchanged_consolidated_files(tmp_path, monkeypatch):
+def test_pending_sessions_skip_completed_sessions_without_loading_history(tmp_path, monkeypatch):
     store, session = make_store(tmp_path)
     message_id = new_message_id()
     store.append(
@@ -491,8 +489,7 @@ def test_unconsolidated_skips_unchanged_consolidated_files(tmp_path, monkeypatch
     monkeypatch.setattr(
         store, "load", lambda *a, **kw: pytest.fail("loaded completed conversation")
     )
-    assert store.unconsolidated(3) == []
-    assert store.unconsolidated(3, min_new_messages=3) == []
+    assert store.pending_sessions() == []
 
 
 def test_distilled_high_water_mark_does_not_move_backwards(tmp_path):

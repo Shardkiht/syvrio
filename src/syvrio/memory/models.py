@@ -3,7 +3,7 @@ from __future__ import annotations
 import calendar
 import re
 import secrets
-from datetime import date, datetime
+from datetime import date
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -120,17 +120,6 @@ class RecallEntry(MemoryDraft):
     status: MemoryStatus = "active"
 
 
-class MemoryEntry(RecallEntry):
-    recorded_at: datetime
-
-    @field_validator("recorded_at")
-    @classmethod
-    def aware_timestamp(cls, value: datetime) -> datetime:
-        if value.utcoffset() is None:
-            raise ValueError("recorded_at needs an explicit UTC offset.")
-        return value
-
-
 class MemoryUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: str = Field(min_length=1)
@@ -223,15 +212,6 @@ class ProfileSummaryResponse(BaseModel):
         return value.strip()
 
 
-class ProfileItem(BaseModel):
-    id: str
-    text: str
-    kind: Literal["fact", "inference"]
-    source_ids: list[str]
-    status: str
-    updated_at: str
-
-
 class PendingItem(MemoryDraft):
     id: str = Field(default_factory=lambda: f"p-{secrets.token_hex(12)}", min_length=1)
     created_at: str = Field(default_factory=utc_timestamp)
@@ -283,11 +263,6 @@ class Entry(BaseModel):
     def as_recall(self) -> RecallEntry:
         return RecallEntry(
             id=self.id, status=self.status, topic=self.topic, text=self.text, context=self.context
-        )
-
-    def as_memory(self) -> MemoryEntry:
-        return MemoryEntry(
-            **self.as_recall().model_dump(), recorded_at=parse_timestamp(self.timestamp)
         )
 
     @property

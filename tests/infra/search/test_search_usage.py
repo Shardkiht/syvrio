@@ -90,7 +90,7 @@ def _persisted_usage(paths):
         for provider, period, window, count in db.execute("SELECT * FROM usage"):
             result.setdefault(provider, {})[period] = {"window": window, "count": count}
         for provider, reason, resume_at in db.execute("SELECT * FROM quota_pauses"):
-            result[provider]["paused"] = {"reason": reason, "resume_at": resume_at}
+            result.setdefault(provider, {})["paused"] = {"reason": reason, "resume_at": resume_at}
     return result
 
 
@@ -105,6 +105,49 @@ def test_counts_persist_across_instances(tmp_path):
     data = _persisted_usage(path)
     assert set(data["tavily"]) == {"daily", "monthly"}
     assert data["tavily"]["daily"]["count"] == data["tavily"]["monthly"]["count"] == 1
+
+
+def test_unchanged_quota_skips_database_writes(tmp_path):
+    paths = vault_paths(tmp_path / "vault")
+    limiter = UsageLimiter({"exa": UsageLimit(daily=1)}, paths, clock=lambda: 0.0)
+    with transaction(paths) as db:
+        assert limiter.acquire("exa")
+        refunded = limiter.acquire("refunded")
+        assert refunded
+        limiter.release(refunded)
+        limiter.pause("paused", "quota")
+        statements = []
+        db.set_trace_callback(statements.append)
+        assert limiter.acquire("exa") is None
+        limiter.release(refunded)
+        limiter.pause("paused", "quota")
+        limiter.resume("unused")
+
+    assert not [
+        sql for sql in statements if sql.lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE"))
+    ]
+
+
+def test_blocked_quota_persists_only_changed_rows(tmp_path):
+    from datetime import datetime
+
+    now = [datetime(2025, 1, 15, 12).timestamp()]
+    paths = vault_paths(tmp_path / "vault")
+    limiter = UsageLimiter({"exa": UsageLimit(monthly=1)}, paths, clock=lambda: now[0])
+    with transaction(paths) as db:
+        assert limiter.acquire("exa")
+        limiter.pause("exa", "quota", now[0] + 60)
+        before = db.total_changes
+        now[0] += 60
+        assert limiter.acquire("exa") is None
+        assert db.total_changes == before + 1
+        assert not db.execute("SELECT 1 FROM quota_pauses").fetchall()
+
+        before = db.total_changes
+        now[0] += 86400
+        assert limiter.acquire("exa") is None
+        assert db.total_changes == before + 1
+        assert _persisted_usage(paths)["exa"]["daily"] == {"window": "2025-01-16", "count": 0}
 
 
 def test_usage_and_pause_follow_the_vault_transaction(tmp_path):

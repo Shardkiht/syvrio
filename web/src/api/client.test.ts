@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { StreamEvent } from '../types';
-import { api, streamChat } from './client';
+import { api, replayTurn, submitChat } from './client';
 
 const encoder = new TextEncoder();
 
@@ -49,21 +49,24 @@ function jsonResponse(payload: unknown, status = 200) {
 
 afterEach(() => vi.unstubAllGlobals());
 
-describe('SSE client', () => {
+describe('chat client', () => {
   it('parses multiple frames and keeps UTF-8 characters split across chunks', async () => {
     const first = frame({ seq: 1, type: 'start', turn_id: 7 });
     const second = frame({ seq: 2, type: 'content_delta', text: '你好' });
     const third = frame({ seq: 3, type: 'done', text: '你好' });
     const bytes = encoder.encode(second);
     // 从最后一个多字节字符中间切分，验证 stream:true 能将其完整还原。
-    const split = bytes.length - 4;
-    vi.stubGlobal('fetch', async () => sseResponse(
+    const split = encoder.encode(second.slice(0, second.indexOf('好'))).length + 1;
+    const fetch = vi.fn(async () => sseResponse(
       first,
       bytes.slice(0, split),
       join(bytes.slice(split), encoder.encode(third)),
     ));
+    vi.stubGlobal('fetch', fetch);
+    const { signal } = new AbortController();
     const events: StreamEvent[] = [];
-    await streamChat({ message: 'hi', session_id: null }, (event) => events.push(event));
+    await replayTurn(7, 0, (event) => events.push(event), signal);
+    expect(fetch).toHaveBeenCalledWith('/api/chat/turns/7?after=0', expect.objectContaining({ signal }));
     expect(events.map((item) => item.type)).toEqual(['start', 'content_delta', 'done']);
     expect(events[1].text).toBe('你好');
   });
@@ -74,16 +77,29 @@ describe('SSE client', () => {
       'data: {not-json}\n\n' + frame({ seq: 2, type: 'done', text: 'ok' }),
     ));
     const events: StreamEvent[] = [];
-    await streamChat({ message: 'hi', session_id: null }, (event) => events.push(event));
+    await replayTurn(1, 0, (event) => events.push(event));
     expect(events.map((item) => item.seq)).toEqual([1, 2]);
+  });
+
+  it('posts a message and returns the receipt for replay', async () => {
+    const receipt = { session_id: 'chat', turn_id: 7, text: 'hi' };
+    const fetch = vi.fn().mockResolvedValue(jsonResponse(receipt));
+    vi.stubGlobal('fetch', fetch);
+    const body = { message: 'hi', session_id: 'chat', submission_id: 'submission' };
+    await expect(submitChat(body)).resolves.toEqual(receipt);
+    expect(fetch).toHaveBeenCalledWith('/api/chat?receipt=1', expect.objectContaining({
+      method: 'POST', body: JSON.stringify(body),
+    }));
   });
 
   it('surfaces structured API errors', async () => {
     vi.stubGlobal('fetch', async () => jsonResponse(
       { error: { code: 'busy', message: 'A reply is still generating' } }, 409,
     ));
-    await expect(streamChat({ message: 'hi', session_id: null }, () => {}))
-      .rejects.toThrow('A reply is still generating');
+    await expect(submitChat({ message: 'hi', session_id: null }))
+      .rejects.toMatchObject({ code: 'busy', status: 409, message: 'A reply is still generating' });
+    await expect(replayTurn(7, 0, () => {}))
+      .rejects.toMatchObject({ code: 'busy', status: 409, message: 'A reply is still generating' });
   });
 
   it('posts the turn id when cancelling', async () => {

@@ -10,7 +10,7 @@
   uv run python scripts/smoke_search_apis.py --provider tavily --operation search
   uv run python scripts/smoke_search_apis.py --provider volcengine --operation fetch --live
 
-Key 从环境变量或系统凭据读取，输出只含状态与数量，不回显 Key。
+Key 从凭据库读取，输出只含状态与数量，不回显 Key。
 """
 
 from __future__ import annotations
@@ -79,12 +79,12 @@ def _dry_report(config) -> list[dict]:
     ):
         for name in listed:
             spec = PROVIDERS.get(name)
-            env_name = spec.key_env if spec else None
-            key_present = None if env_name is None else bool(read_api_key(env_name))
+            key_name = spec.key_env if spec else None
+            key_present = None if key_name is None else bool(read_api_key(key_name))
             would_register = bool(
                 spec
                 and (operation == "search" or supports_fetch(name, config.search.transport))
-                and (env_name is None or spec.optional_key or key_present)
+                and (key_name is None or spec.optional_key or key_present)
             )
             row = {
                 "provider": name,

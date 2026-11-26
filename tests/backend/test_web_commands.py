@@ -601,6 +601,28 @@ def test_command_api_rejects_cross_site_writes(client):
     assert response.json()["error"]["code"] == "untrusted_origin"
 
 
+def test_remove_key_keeps_provider_and_endpoint(client, monkeypatch, isolate_llm_credentials):
+    path = "/api/settings/providers/dashscope"
+    endpoint = "https://workspace.example.invalid/v1"
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "synthetic-environment-value")
+    assert client.post(path, json={"action": "set_endpoint", "endpoint": endpoint}).json()["ok"]
+    assert client.post(path, json={"action": "set_key", "api_key": "synthetic-saved"}).json()["ok"]
+
+    def provider():
+        rows = client.get("/api/settings/providers").json()["items"]
+        return next(row for row in rows if row["key"] == "dashscope")
+
+    assert provider()["configured"] and provider()["can_remove_key"]
+    assert client.post(path, json={"action": "remove_key"}).status_code == 409
+    assert isolate_llm_credentials["DASHSCOPE_API_KEY"] == "synthetic-saved"
+    result = client.post(path, json={"action": "remove_key", "confirmed": True}).json()
+    assert result["ok"] and result["message"] == "百炼 API key deleted."
+    row = provider()
+    assert not row["configured"] and not row["can_remove_key"]
+    assert row["endpoint"] == endpoint
+    assert "DASHSCOPE_API_KEY" not in isolate_llm_credentials
+
+
 # 忙碌期间的命令策略
 
 

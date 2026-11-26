@@ -526,7 +526,7 @@ class MemoryService:
             or (context.valid_to and date_bounds(context.valid_to)[1] < today)
         ):
             return None
-        return entry.as_recall()
+        return entry.as_recall(context)
 
     def recall(
         self,
@@ -565,15 +565,16 @@ class MemoryService:
             entry = entries.get(hit.id)
             if entry is None:
                 continue
+            context = entry.context
             if (period or location or emotion) and not matches_context(
-                entry.context,
+                context,
                 period.start if period else None,
                 period.end if period else None,
                 location,
                 emotion,
             ):
                 continue
-            results.append(entry.as_recall())
+            results.append(entry.as_recall(context))
             if len(results) == limit:
                 break
         return results

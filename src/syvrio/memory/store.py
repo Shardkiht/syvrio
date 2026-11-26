@@ -55,8 +55,8 @@ class RecallRecord:
         # 每个调用方获得自己的上下文对象，无法改动共享快照。
         return MemoryContext.model_validate_json(self.context_json) if self.context_json else None
 
-    def as_recall(self) -> RecallEntry:
-        return RecallEntry(id=self.id, topic=self.topic, text=self.text, context=self.context)
+    def as_recall(self, context: MemoryContext | None) -> RecallEntry:
+        return RecallEntry(id=self.id, topic=self.topic, text=self.text, context=context)
 
 
 @dataclass(frozen=True, slots=True)

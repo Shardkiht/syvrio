@@ -6,9 +6,9 @@ import pytest
 from typer.testing import CliRunner
 
 from syvrio.app.cli import app
-from syvrio.infra.session import dated_message, now_iso
+from syvrio.infra.session import now_iso
 from syvrio.memory.models import MemoryContext, MemoryDraft
-from syvrio.memory.temporal import matches_context, resolve_relative, validate_range
+from syvrio.memory.temporal import matches_context, resolve_relative
 from tests.support.storage import rows
 
 pytestmark = pytest.mark.memory
@@ -101,6 +101,9 @@ def test_source_retains_original_time_zone_and_distinct_event_date(service):
     assert entry.context.event_time == "2024-02-29"
     original = service.read_memory_source(entry.id)["message"]
     assert original["at"] == "2024-02-29T16:10:00+00:00"
+    pending = store.first_pending(session.id)
+    assert pending["at"] == original["at"]
+    assert pending["original_local_date"] == original["original_local_date"]
     local_day = date.fromisoformat(original["original_local_date"])
     assert resolve_relative("昨天", local_day) == resolved
     assert {"event": "紧张", "recollection": "开心"} == entry.context.emotion.model_dump(
@@ -111,19 +114,16 @@ def test_source_retains_original_time_zone_and_distinct_event_date(service):
 def test_message_anchor_rejects_missing_timezone():
     with pytest.raises(ValueError, match="explicit UTC offset"):
         resolve_relative("昨天", "2024-01-01T00:10:00")
-    with pytest.raises(ValueError, match="explicit UTC offset"):
-        dated_message({"content": "昨天", "at": "2024-03-01T00:00:00"})
-    assert dated_message({"content": "昨天"}) == "昨天"
     assert now_iso().endswith("+00:00")
 
 
-def test_context_range_and_missing_metadata():
+def test_context_range_and_missing_metadata(service):
     context = MemoryContext(event_time="2024", location="合成展馆")
     assert matches_context(context, "2024-06", "2024-06", "展馆", None)
     assert not matches_context(context, "2025", None, None, None)
     assert not matches_context(None, "2024", None, None, None)
     with pytest.raises(ValueError):
-        validate_range("2025", "2024")
+        service.recall("展览", time_range={"start": "2025", "end": "2024"})
 
 
 def test_filtered_recall_filters_before_limit(service):

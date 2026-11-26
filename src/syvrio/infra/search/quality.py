@@ -342,13 +342,6 @@ def score_entry(
     )
 
 
-def is_relevant(results: list[SearchResult], analysis: QueryAnalysis) -> bool:
-    """保守判定：任一结果命中核心词即算相关；无核心词时不判定。"""
-    if not analysis.core_terms or not results:
-        return False
-    return any(has_core_hit(result, analysis) for result in results)
-
-
 @dataclass(frozen=True)
 class GateDecision:
     should_stop: bool

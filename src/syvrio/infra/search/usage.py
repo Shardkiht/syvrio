@@ -44,28 +44,35 @@ class UsageLimiter:
             return
         # 嵌套调用可能已持有主库写锁。所有调用统一先取得数据库事务，再锁实例计数。
         with transaction(self.paths, write=write) as db, self._mutex:
-            entry = {}
+            stored = {}
             for period, window, count in db.execute(
                 "SELECT period,window,units FROM usage WHERE provider=?", (provider,)
             ):
-                entry[period] = {"window": window, "count": count}
+                stored[period] = {"window": window, "count": count}
             pause = db.execute(
                 "SELECT reason,resume_at FROM quota_pauses WHERE provider=?", (provider,)
             ).fetchone()
             if pause:
-                entry["paused"] = {"reason": pause[0], "resume_at": pause[1]}
+                stored["paused"] = {"reason": pause[0], "resume_at": pause[1]}
+            entry = {key: row.copy() for key, row in stored.items()} if write else stored
             self._counts[provider] = entry
             yield
             if not write:
                 return
             for period in ("daily", "monthly"):
                 counter = entry.get(period)
-                if counter:
-                    db.execute(
-                        "INSERT OR REPLACE INTO usage VALUES(?,?,?,?)",
-                        (provider, period, counter["window"], counter["count"]),
-                    )
-            if paused := entry.get("paused"):
+                if not counter or counter == stored.get(period):
+                    continue
+                if period not in stored and counter["count"] == 0:
+                    continue
+                db.execute(
+                    "INSERT OR REPLACE INTO usage VALUES(?,?,?,?)",
+                    (provider, period, counter["window"], counter["count"]),
+                )
+            paused = entry.get("paused")
+            if paused == stored.get("paused"):
+                return
+            if paused:
                 db.execute(
                     "INSERT OR REPLACE INTO quota_pauses VALUES(?,?,?)",
                     (provider, paused["reason"], paused.get("resume_at")),

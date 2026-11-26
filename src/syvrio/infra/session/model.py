@@ -237,25 +237,12 @@ class Session:
     def user_texts_after_distilled(self) -> list[str]:
         return [record["content"] for record in self.undistilled_messages()]
 
-    def distillation_texts(self) -> list[str]:
-        return [dated_message(record) for record in self.undistilled_messages()]
-
     def estimated_tokens(self) -> int:
         return sum(
             estimate_tokens(str(record.get("content") or ""))
             for record in self.active_records()
             if record.get("type") in ("message", "assistant", "summary")
         )
-
-
-def dated_message(record: dict) -> str:
-    raw = record.get("at")
-    if not raw:
-        return record.get("content", "")
-    stamp = serialize_timestamp(parse_timestamp(raw))
-    local = record.get("original_local_date")
-    calendar = f"；原始本地日期：{local}" if local else ""
-    return f"[归档时间（UTC）：{stamp}{calendar}]\n{record.get('content', '')}"
 
 
 def record_label(record: dict) -> str:

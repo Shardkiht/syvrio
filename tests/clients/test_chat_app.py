@@ -1093,7 +1093,9 @@ async def test_rename_command_prompts_for_title(resident_backend):
         assert owner._sessions.load(session.id).title() == "新标题"
 
 
-@pytest.mark.parametrize("shortcut,sentinel", [("ctrl+r", "__refresh__"), ("ctrl+n", "__custom__")])
+@pytest.mark.parametrize(
+    "shortcut,sentinel", [("ctrl+r", "__refresh__"), ("ctrl+p", "__providers__")]
+)
 async def test_model_picker_shortcuts_work_from_search(layout_app, monkeypatch, shortcut, sentinel):
     selected = []
     app = layout_app
@@ -1101,7 +1103,11 @@ async def test_model_picker_shortcuts_work_from_search(layout_app, monkeypatch, 
     async with app.run_test(size=(120, 40)) as pilot:
         app.push_screen(ModelPickerScreen("Model", [], app._model_choice, searchable=True))
         await pilot.pause()
-        assert app.screen.query_one("#pick-search", Input).has_focus
+        picker = app.screen
+        assert picker.query_one("#pick-search", Input).has_focus
+        await pilot.press("ctrl+n")
+        await pilot.pause()
+        assert app.screen is picker and not selected
         await pilot.press(shortcut)
         await pilot.pause()
         assert selected == [(sentinel, "")]
@@ -1764,7 +1770,7 @@ async def test_startup_catchup_advances_crashed_session_cursor(service, monkeypa
             while sessions.load(crashed.id).undistilled_messages():
                 await asyncio.sleep(0.02)
         assert not owner.health().busy
-        assert not sessions.unconsolidated(limit=10)
+        assert not sessions.pending_sessions()
         assert calls == [message_id]
     finally:
         owner.shutdown()
@@ -2791,10 +2797,23 @@ async def test_provider_key_entry_and_removal_confirmation_use_resident_commands
     app = ResidentChatApp(client)
     sent = []
     original = client.request
+    provider = {
+        "key": "spark",
+        "label": "Spark",
+        "current": False,
+        "configured": False,
+        "can_remove_key": False,
+        "endpoint": "",
+    }
+    shared = dict(provider, key="shared", label="Shared", configured=True)
 
     def request(method, path, **kwargs):
-        if method == "POST" and path.startswith("/api/settings/providers/"):
+        if method == "GET" and path == "/api/settings/providers":
+            return {"items": [provider.copy(), shared.copy()]}
+        if method == "POST" and path == "/api/settings/providers/spark":
             sent.append((path, kwargs["json"]))
+            has_key = kwargs["json"]["action"] != "remove_key"
+            provider.update(configured=has_key, can_remove_key=has_key)
             return {"message": "Updated"}
         return original(method, path, **kwargs)
 
@@ -2809,8 +2828,17 @@ async def test_provider_key_entry_and_removal_confirmation_use_resident_commands
     async with app.run_test(size=(120, 40)) as pilot:
         await app._providers()
         await pilot.pause()
-        provider = app.screen.query_one("#pick-list", ListView).children[0].value
+        await choose(1)
+        choices = app.screen.query_one("#pick-list", ListView).children
+        assert [item.value for item in choices] == ["update_key", "set_endpoint"]
+        await pilot.press("escape")
+        await pilot.pause()
+
+        await app._providers()
+        await pilot.pause()
         await choose(0)
+        choices = app.screen.query_one("#pick-list", ListView).children
+        assert [item.value for item in choices] == ["set_key", "set_endpoint"]
         await choose(0)
         assert isinstance(app.screen, TextInputScreen)
         editor = app.screen.query_one("#pick-input", Input)
@@ -2825,14 +2853,22 @@ async def test_provider_key_entry_and_removal_confirmation_use_resident_commands
             )
         ]
         for confirm in (False, True):
-            app._provider_actions(provider)
+            await app._providers()
             await pilot.pause()
+            await choose(0)
+            choices = app.screen.query_one("#pick-list", ListView).children
+            assert [item.value for item in choices] == ["update_key", "set_endpoint", "remove_key"]
             await choose(2)
             assert app.screen.query_one("#pick-list", ListView).highlighted_child.value is False
             await choose(int(confirm))
             await app.workers.wait_for_complete()
             assert len(sent) == 1 + int(confirm)
-        assert sent[-1][1] == {"action": "remove", "confirmed": True}
+        assert sent[-1][1] == {"action": "remove_key", "confirmed": True}
+        await app._providers()
+        await pilot.pause()
+        await choose(0)
+        choices = app.screen.query_one("#pick-list", ListView).children
+        assert [item.value for item in choices] == ["set_key", "set_endpoint"]
 
 
 async def test_replayed_markdown_stays_selectable_and_copies_rendered_text(resident_backend):

@@ -26,6 +26,8 @@ def test_native_credentials_need_no_files_or_system_commands(monkeypatch):
     monkeypatch.setattr(subprocess, "run", lambda *a, **kw: pytest.fail("unexpected command"))
 
     name = "SYNTHETIC_NATIVE_KEY"
+    monkeypatch.setenv(name, "environment-only")
+    assert not read_api_key(name)
     assert save_api_key(name, "sample-value")
     assert read_api_key(name) == "sample-value"
     assert delete_api_key(name)
@@ -86,8 +88,7 @@ def test_systemd_key_survives_native_backend_changes_and_stays_deleted(
     assert save_api_key(name, "fake-second-key")
     assert read_api_key(name) == "fake-second-key"
     monkeypatch.setenv(name, "fake-environment-value")
-    assert llm.api_key() == "fake-environment-value"
-    monkeypatch.delenv(name)
+    assert llm.api_key() == "fake-second-key"
     assert delete_api_key(name)
     assert path.read_bytes() == b""
     assert LLMConfig(api_key_env=name).api_key() is None

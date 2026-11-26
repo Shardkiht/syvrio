@@ -9,6 +9,7 @@ from ..infra.config import (
     MIN_CONTEXT_WINDOW,
     LLMConfig,
     context_window_options,
+    read_api_key,
     write_config,
 )
 from ..infra.formatting import format_tokens
@@ -21,12 +22,13 @@ from ..infra.llm import (
 )
 from ..infra.llm.providers import (
     PRESETS,
+    ProviderPreset,
     has_api_key,
     normalize_provider_url,
     provider_base_url,
     provider_label,
 )
-from ..infra.security.credentials import delete_api_key, environment_key, save_api_key
+from ..infra.security.credentials import delete_api_key, save_api_key
 from ..memory.service import MemoryService
 from .contracts import ModelOption, ProviderOption, SettingsResult
 
@@ -139,18 +141,28 @@ class SettingsUseCases:
         ]
         return matches, [provider for provider, models in catalog.items() if not models]
 
+    def _credential_name(self, preset: ProviderPreset) -> str:
+        current = self.service.config.llm
+        return current.api_key_env if preset.key == current.provider else preset.api_key_env
+
     def provider_options(self) -> list[ProviderOption]:
-        current = self.service.config.llm.provider
-        return [
-            ProviderOption(
-                preset.key,
-                provider_label(preset.key),
-                has_api_key(preset),
-                preset.key == current,
+        current = self.service.config.llm
+        options = []
+        for preset in PRESETS:
+            if preset.key == "custom":
+                continue
+            credential = self._credential_name(preset)
+            configured = bool(read_api_key(credential))
+            options.append(
+                ProviderOption(
+                    key=preset.key,
+                    label=provider_label(preset.key),
+                    configured=configured,
+                    current=preset.key == current.provider,
+                    can_remove_key=configured and credential != current.api_key_env,
+                )
             )
-            for preset in PRESETS
-            if preset.key != "custom"
-        ]
+        return options
 
     def supports_reasoning(self) -> bool:
         return bool(self.reasoning_options())
@@ -177,7 +189,7 @@ class SettingsUseCases:
 
     # ---------- 应用 ----------
 
-    def configure_provider(self, provider: str, api_key: str) -> SettingsResult:
+    def set_provider_key(self, provider: str, api_key: str) -> SettingsResult:
         return self._save_provider_key(provider, api_key, updating=False)
 
     def update_provider_key(self, provider: str, api_key: str) -> SettingsResult:
@@ -190,19 +202,8 @@ class SettingsUseCases:
         key = api_key.strip()
         if not key:
             return SettingsResult(False, "API key is empty; nothing changed.")
-        if environment_key(preset.api_key_env):
-            return SettingsResult(
-                False,
-                f"{provider_label(preset.key)} API key is provided by {preset.api_key_env}. "
-                "Update the environment variable and restart the backend, "
-                "or unset it and restart to manage the key here.",
-            )
-        if not save_api_key(preset.api_key_env, key):
-            return SettingsResult(
-                False,
-                "Could not save the API key to system credentials. "
-                f"Set {preset.api_key_env} in your environment instead.",
-            )
+        if not save_api_key(self._credential_name(preset), key):
+            return SettingsResult(False, "Could not save the API key to system credentials.")
         if updating:
             return SettingsResult(True, f"{provider_label(preset.key)} API key updated.")
         return SettingsResult(
@@ -246,26 +247,23 @@ class SettingsUseCases:
             message += " Applies next turn."
         return SettingsResult(True, message, True)
 
-    def remove_provider(self, provider: str) -> SettingsResult:
+    def remove_provider_key(self, provider: str) -> SettingsResult:
         preset = self._preset(provider)
         if preset is None:
             return SettingsResult(False, f"Unknown provider: {provider}")
         label = provider_label(preset.key)
-        if provider == self.service.config.llm.provider:
+        credential = self._credential_name(preset)
+        if credential == self.service.config.llm.api_key_env:
             return SettingsResult(
-                False, f"{label} is the current provider; switch to another model first."
+                False, "The current model uses this API key. Switch models before removing it."
             )
-        if environment_key(preset.api_key_env):
-            return SettingsResult(
-                False,
-                f"{label} API key is provided by {preset.api_key_env}; "
-                "unset it in your environment to remove this provider.",
-            )
-        if not has_api_key(preset):
+        if not read_api_key(credential):
             return SettingsResult(False, f"{label} has no saved API key.")
-        if not delete_api_key(preset.api_key_env):
-            return SettingsResult(False, f"Could not remove {label} from system credentials.")
-        return SettingsResult(True, f"{label} provider removed; its saved API key was deleted.")
+        if not delete_api_key(credential):
+            return SettingsResult(
+                False, f"Could not delete the {label} API key from system credentials."
+            )
+        return SettingsResult(True, f"{label} API key deleted.")
 
     def apply_model(self, provider: str, model: str) -> SettingsResult:
         current = self.service.config.llm

@@ -361,17 +361,6 @@ class SessionQuery:
                 ORDER BY updated_at DESC,id DESC""")
             ]
 
-    def unconsolidated(self, limit=3, exclude=None, min_new_messages=1):
-        with transaction(self.paths, write=False) as db:
-            return [
-                self.load(row[0], include_reasoning=False)
-                for row in db.execute(
-                    """SELECT id FROM sessions
-                WHERE archived=0 AND id!=? AND undistilled>=? ORDER BY updated_at DESC,id DESC LIMIT ?""",
-                    (exclude or "", max(1, min_new_messages), max(0, limit)),
-                )
-            ]
-
     def search_chats(self, query: str, limit: int = 20, *, exclude_session: str = "") -> dict:
         keyword = query.strip()
         if not 1 <= len(keyword) <= 160 or not 1 <= limit <= 50:

@@ -188,11 +188,11 @@ FastAPI 自动提供 `/openapi.json` 与 `/docs`。
 | Appearance | 浏览器 `localStorage` | 默认跟随系统 / 浏览器明暗主题，也可固定亮色或暗色；只保存在当前浏览器 |
 | Thinking | `/think` | 优先读取模型目录为当前模型公布的档位，缺少有效档位或查询失败时采用预设。`auto` 置顶，`default` 表示使用供应商默认设置 |
 | Context | `/context` | 最小和默认值为 50,000 tokens。可选 50K、100K、200K、400K、600K 或输入自定义值。旧配置低于下限时按 50K 读取。更大的值按原值保存，实际请求受当前模型容量限制。 |
-| Providers | `GET /api/settings/providers`、`POST /api/settings/providers/{provider}`、`/model <provider>/<model>` | 在供应商卡片内编辑 Key 或 Base URL、确认移除、查看结果。配置凭据后可在同一卡片手动输入模型 ID。保存的 Key 由服务端保管 |
+| Providers | `GET /api/settings/providers`、`POST /api/settings/providers/{provider}` | 在供应商卡片中管理 API Key 和 Base URL。配置凭据后，到 Model 搜索并选择模型 |
 | Shortcuts | `web/src/shared/shortcuts.ts` | 网页快捷键、浏览器保留键及替代组合键 |
 | About | `/api/health` | 版本、当前 provider/model、是否生成中、单客户端锁与静态资源状态 |
 
-打开面板只读取当前设置；删除供应商仍需二次确认，服务端复用 `SettingsUseCases` 的「当前供应商不可删」等守卫，失败原因以 `provider-error` 原样展示。
+确认 **Remove API key** 后，后端从凭据库删除该 Key，供应商卡片可重新添加凭据。当前模型使用的 Key 会提示先切换模型。
 
 ### 上下文占用
 
@@ -309,7 +309,7 @@ syvrio web share --domain demo.ngrok-free.dev --github-id 12345
 
 ngrok 校验 GitHub 账号的数字 ID，邮箱可以隐藏。手机和电脑使用同一个 HTTPS 地址。验收时用无痕窗口分别打开首页和 `/api/sessions`，两者都应先跳转至 GitHub。授权账号登录后应可打开会话，其他账号应收到 403。Ctrl+C 或停止 Web 服务会同时结束随它启动的 ngrok 子进程。
 
-使用 PyPI 自更新部署时，可在已配置以上设置后，将现有用户服务的 Web 启动命令设为 `%h/.syvrio/update/current web share --yes`（使用包装脚本加载凭据的部署，保留原来的环境加载步骤）。`--yes` 代表同意使用已指定的公开入口。服务的 PATH 需要包含 ngrok 可执行文件。安装包更新后仍读取同一份本地设置。外部网址、账号和令牌均由部署方提供。
+使用 PyPI 自更新部署时，可在已配置以上设置后，将现有用户服务的 Web 启动命令设为 `%h/.syvrio/update/current web share --yes`。服务应使用保存 API Key 时的系统账号运行。`--yes` 代表同意使用已指定的公开入口。服务的 PATH 需要包含 ngrok 可执行文件。安装包更新后仍读取同一份本地设置。外部网址、账号和令牌均由部署方提供。
 
 ## Tailscale Serve（仅 tailnet，不启用 Funnel）
 
@@ -397,7 +397,7 @@ TimeoutStopSec=5min
 WantedBy=default.target
 ```
 
-将现有 Web 服务的配置、凭据环境、域名白名单和启动参数迁入该服务。切换前停掉旧的源码服务，再启用此 unit，核对 `/api/health` 中的版本和前端状态。跨 Windows 重启仍需确保 WSL 和用户 systemd 实例会启动。
+将现有 Web 服务的配置、凭据库访问权限、域名白名单和启动参数迁入该服务。切换前停掉旧的源码服务，再启用此 unit，核对 `/api/health` 中的版本和前端状态。跨 Windows 重启仍需确保 WSL 和用户 systemd 实例会启动。
 
 创建 `~/.syvrio/update/config.toml`：
 

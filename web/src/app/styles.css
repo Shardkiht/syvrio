@@ -2,8 +2,8 @@
     */
 :root {
   color-scheme: light;
-  --orb-glass-shade: rgb(80 109 164 / .51);
-  --orb-water-base: #708bc2;
+  --orb-glass-shade: rgb(127 163 208 / .44);
+  --orb-water-base: #a6c4ed;
   --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC",
     "PingFang SC", "Microsoft YaHei", sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
@@ -69,8 +69,8 @@
 
 :root[data-theme="light"] {
   color-scheme: light;
-  --orb-glass-shade: rgb(80 109 164 / .51);
-  --orb-water-base: #708bc2;
+  --orb-glass-shade: rgb(127 163 208 / .44);
+  --orb-water-base: #a6c4ed;
   --bg: #ffffff;
   --sidebar-bg: #f7f8fa;
   --panel: #ffffff;
@@ -1642,7 +1642,6 @@ button.fold-summary:hover {
 .provider-form button[aria-disabled="true"], .provider-form button:disabled, .provider-buttons button:disabled { opacity: .55; }
 .provider-row > .action-feedback, .provider-editor { margin-top: 8px; }
 .provider-form {
-  border-top: 1px solid var(--border);
   padding-top: 10px;
   display: flex;
   flex-direction: column;

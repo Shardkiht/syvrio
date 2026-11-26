@@ -294,6 +294,26 @@ def test_recall_and_read_topic_return_structured_active_facts(tmp_path):
         service.read_topic("no-such-topic")
 
 
+@pytest.mark.parametrize("filtered", [False, True], ids=["exact-field", "location-filter"])
+def test_recall_decodes_matched_context_once(tmp_path, filtered):
+    from unittest.mock import patch
+
+    service = make_service(tmp_path)
+    fact = service.store.append("events", "口味：清淡", context=MemoryContext(location="展馆"))
+    service.store.snapshot()
+    with patch.object(
+        MemoryContext, "model_validate_json", wraps=MemoryContext.model_validate_json
+    ) as decode:
+        if filtered:
+            (hit,) = service.recall("清淡", location="展馆")
+        else:
+            hit = service.current_field("口味")
+        assert hit.id == fact.id
+        assert decode.call_count == 1
+    hit.context.location = "其他地点"
+    assert service.current_field("口味").context.location == "展馆"
+
+
 def test_commit_push_failure_does_not_hide_commit(tmp_path):
     # auto_push 但无 remote：本地提交必须成功返回 hash，push 失败只记录在 push_error。
     config = Config(vault=tmp_path / "vault", llm=LLMConfig(), auto_push=True)
