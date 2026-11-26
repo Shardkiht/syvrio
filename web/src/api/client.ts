@@ -126,6 +126,11 @@ export const api = {
   listArchive: (offset = 0) => jsonRequest<SessionListResponse>('/api/sessions?archived=true&limit=500' + (offset ? `&offset=${offset}` : '')),
   archiveSession: (id: string) => jsonRequest(`/api/sessions/${encodeURIComponent(id)}/archive`, { method: 'POST' }),
   restoreSession: (id: string) => jsonRequest(`/api/sessions/${encodeURIComponent(id)}/restore`, { method: 'POST' }),
+  earlierHistory: (id: string, before: number, archived: boolean, signal: AbortSignal) =>
+    jsonRequest<HistoryResponse>(
+      `/api/sessions/${encodeURIComponent(id)}?before_seq=${before}${archived ? '&archived=true' : ''}`,
+      { signal, cache: 'no-store' },
+    ),
   archivedHistory: (id: string) => jsonRequest<HistoryResponse>(`/api/sessions/${encodeURIComponent(id)}?archived=true`),
 
   createSession: () =>

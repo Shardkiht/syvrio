@@ -567,6 +567,7 @@ textarea, input, select { touch-action: manipulation; }
 .jump-to-bottom svg { transform: rotate(180deg); }
 
 .messages-content { display: flow-root; }
+.history-page-actions { display: flex; align-items: center; gap: 0.75rem; max-width: var(--content); margin: 0 auto 1rem; }
 .history-loading { margin-block: 1rem; color: var(--muted); }
 @media (prefers-reduced-motion: no-preference) {
   .history-loading { animation: surface-fade-in 120ms ease-out both; }

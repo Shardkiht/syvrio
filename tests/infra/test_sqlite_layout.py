@@ -108,9 +108,17 @@ def test_runtime_validation_checks_the_resolved_child(tmp_path, monkeypatch):
 
 
 @pytest.mark.skipif(os.name != "nt", reason="模拟 Windows 解析不存在子目录时返回的扩展盘符路径")
-def test_runtime_accepts_extended_name_for_missing_windows_child(tmp_path, monkeypatch):
+@pytest.mark.parametrize("member", ["runtime-lock", "attachments", "export", "database"])
+def test_storage_accepts_extended_name_for_missing_windows_child(tmp_path, monkeypatch, member):
+    from syvrio.infra.storage.database import database_path, transaction
+
     paths = SyvrioPaths(tmp_path / "vault", tmp_path / "runtime")
-    missing = paths.lock_dir
+    missing = {
+        "runtime-lock": paths.lock_dir,
+        "attachments": paths.attachments_dir,
+        "export": paths.vault_dir / "export",
+        "database": database_path(paths),
+    }[member]
     resolve = Path.resolve
 
     def extended(path, *args, **kwargs):
@@ -125,3 +133,5 @@ def test_runtime_accepts_extended_name_for_missing_windows_child(tmp_path, monke
 
     monkeypatch.setattr(Path, "resolve", extended)
     paths.validate()
+    with transaction(paths) as db:
+        assert db.execute("SELECT 1").fetchone()[0] == 1

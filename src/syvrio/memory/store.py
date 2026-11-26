@@ -3,15 +3,18 @@ from __future__ import annotations
 import json
 import re
 import secrets
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from threading import Lock
+from types import MappingProxyType
 
-from ..infra.storage.database import encode, transaction
+from ..infra.storage.database import encode, transaction, transaction_mode
 from ..infra.storage.files import safe_component
 from ..infra.storage.paths import SyvrioPaths, vault_paths
 from ..infra.time import local_timestamp, serialize_timestamp, utc_now
-from .models import Entry, MemoryContext, TopicInfo
+from .models import Entry, MemoryContext, RecallEntry, TopicInfo
 from .turn_undo import track
 
 SLUG_RE = re.compile(r"[^\w\u4e00-\u9fff-]+")
@@ -28,15 +31,46 @@ def normalize_text(text: str) -> str:
     return re.sub(r"\s+", "", text).strip().lower()
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
+class RecallRecord:
+    id: str
+    topic: str
+    text: str
+    timestamp: str
+    index_text: str
+    context_json: str | None
+
+    @classmethod
+    def from_row(cls, row):
+        key, topic, text, stamp, raw = row
+        context = MemoryContext.model_validate_json(raw) if raw else None
+        return cls(key, topic, text, stamp, context.index_text(text) if context else text, raw)
+
+    @property
+    def embedding_text(self) -> str:
+        return self.text
+
+    @property
+    def context(self) -> MemoryContext | None:
+        # 每个调用方获得自己的上下文对象，无法改动共享快照。
+        return MemoryContext.model_validate_json(self.context_json) if self.context_json else None
+
+    def as_recall(self) -> RecallEntry:
+        return RecallEntry(id=self.id, topic=self.topic, text=self.text, context=self.context)
+
+
+@dataclass(frozen=True, slots=True)
 class MemorySnapshot:
-    revision: int
-    records: tuple[Entry, ...]
+    revision: int | None
+    records: tuple[RecallRecord, ...]
+    by_id: Mapping[str, RecallRecord]
 
 
 class MemoryStore:
     def __init__(self, vault: Path | SyvrioPaths):
         self.paths = vault if isinstance(vault, SyvrioPaths) else vault_paths(vault)
+        self._snapshot_lock = Lock()
+        self._snapshot: MemorySnapshot | None = None
 
     def ensure(self) -> None:
         with transaction(self.paths):
@@ -66,8 +100,29 @@ class MemoryStore:
             return db.execute("SELECT version FROM revisions WHERE domain='memories'").fetchone()[0]
 
     def snapshot(self) -> MemorySnapshot:
-        with transaction(self.paths, write=False):
-            return MemorySnapshot(self.revision(), tuple(self.entries()))
+        with transaction(self.paths, write=False) as db, self._snapshot_lock:
+            version = db.execute(
+                "SELECT version FROM revisions WHERE domain='memories'"
+            ).fetchone()[0]
+            cached = self._snapshot
+            if cached is not None and cached.revision == version:
+                return cached
+            # 写事务的版本在回滚后可被另一份数据复用，不能发布到任一检索索引。
+            revision = None if transaction_mode() == "write" else version
+            records = tuple(
+                RecallRecord.from_row(row)
+                for row in db.execute("""
+                    SELECT m.id,m.topic,m.text,m.recorded_at,m.context FROM memories m
+                    JOIN topics t ON t.name=m.topic WHERE t.archived=0 AND m.status='active'
+                    ORDER BY m.topic,m.rowid
+                """)
+            )
+            snapshot = MemorySnapshot(
+                revision, records, MappingProxyType({r.id: r for r in records})
+            )
+            if revision is not None and (cached is None or cached.revision < revision):
+                self._snapshot = snapshot
+            return snapshot
 
     @staticmethod
     def new_entry_id(stamp: datetime | None = None) -> str:
@@ -168,6 +223,31 @@ class MemoryStore:
             if not include_inactive:
                 sql += " AND m.status='active'"
             return [self._entry(r) for r in db.execute(sql + " ORDER BY m.topic,m.rowid", args)]
+
+    def entries_from_message(self, session_id: str, message_id: str) -> list[Entry]:
+        with transaction(self.paths, write=False) as db:
+            return [
+                self._entry(row)
+                for row in db.execute(
+                    """SELECT m.*, t.title FROM memories m JOIN topics t ON t.name=m.topic
+                       WHERE m.session_id=? AND m.message_id=? AND m.status='active'
+                       AND t.archived=0 ORDER BY m.topic,m.rowid""",
+                    (session_id, message_id),
+                )
+            ]
+
+    def source_texts(self, ids: set[str]) -> dict[str, str]:
+        if not ids:
+            return {}
+        with transaction(self.paths, write=False) as db:
+            return dict(
+                db.execute(
+                    """SELECT m.id, m.text FROM json_each(?) ids
+                   JOIN memories m ON m.id=ids.value JOIN topics t ON t.name=m.topic
+                   WHERE t.archived=0""",
+                    (encode(sorted(ids)),),
+                )
+            )
 
     def find(self, entry_id: str) -> Entry | None:
         with transaction(self.paths, write=False) as db:

@@ -14,13 +14,13 @@ from datetime import datetime, time, timedelta
 from typing import Callable
 
 from ..config import Config
-from ..storage.database import encode, transaction
+from ..storage.database import encode, transaction, transaction_mode
 from ..storage.locking import LockTimeout, git_operation_lock
 from ..storage.paths import SyvrioPaths
 from ..system.gitops import GitError
 from ..time import parse_timestamp, serialize_timestamp, utc_now
 from .commit_summary import summarize_diff
-from .export import publish_export
+from .export import ExportSnapshot, publish_export
 from .git import VaultGitRepo, ensure_vault_gitignore
 
 STAGE_CHECK = "Checking working tree"
@@ -70,8 +70,14 @@ class GitSyncService:
         self.paths = paths
         paths.validate()
         self.repo = VaultGitRepo(paths.vault_dir / "export")
+        self._export: ExportSnapshot | None = None
         self._running = threading.Lock()
         self._git_lock = git_operation_lock(paths)
+
+    def _publish_export(self, *, check_only: bool = False) -> None:
+        published = publish_export(self.paths, self.repo.path, self._export if check_only else None)
+        # 回滚后，同一版号可能对应另一批内容，不能缓存未提交的导出。
+        self._export = None if transaction_mode() == "write" else published
 
     def ensure_ignore_rules(self) -> None:
         with self._git_lock:
@@ -82,7 +88,7 @@ class GitSyncService:
         with self._git_lock:
             created = self.repo.ensure_init()
             prepare_files()
-            publish_export(self.paths, self.repo.path)
+            self._publish_export()
             ensure_vault_gitignore(self.repo.path)
             self.repo.stage_all_checked()
             commit_hash = self.repo.commit("memory: 初始化记忆库")
@@ -92,7 +98,7 @@ class GitSyncService:
         with self._git_lock:
             if not self.repo.is_repo:
                 return False
-            publish_export(self.paths, self.repo.path)
+            self._publish_export(check_only=True)
             return self.repo.has_changes()
 
     def history(self, limit: int = 10) -> list[dict]:
@@ -102,7 +108,7 @@ class GitSyncService:
         """启动检查用：自动提交 vault 未保存变更（不 push、不调 LLM 生成总结）。"""
         with self._git_lock:
             self.repo.ensure_init()
-            publish_export(self.paths, self.repo.path)
+            self._publish_export()
             self.repo.stage_all_checked()
             return self.repo.commit("memory: 自动提交未保存变更（启动检查）")
 
@@ -112,7 +118,7 @@ class GitSyncService:
 
     def _commit_locked(self, push: bool | None) -> dict:
         self.repo.ensure_init()
-        publish_export(self.paths, self.repo.path)
+        self._publish_export()
         self.repo.stage_all_checked()
         staged = self.repo.has_staged()
         if staged:
@@ -180,17 +186,19 @@ class GitSyncService:
             row = db.execute("SELECT state FROM git_sync WHERE singleton=1").fetchone()
             return json.loads(row[0]) if row else {}
 
-    def _write_state(self, state):
+    def _update_state(self, changes: dict) -> None:
         with transaction(self.paths) as db:
+            row = db.execute("SELECT state FROM git_sync WHERE singleton=1").fetchone()
+            state = json.loads(row[0]) if row else {}
+            state.update(changes)
             db.execute("INSERT OR REPLACE INTO git_sync VALUES(1,?)", (encode(state),))
 
     def record_push_success(self, now: datetime | None = None) -> None:
         """CLI 等入口实际 push 成功后记录时间；不能从 Commit 时间推断。"""
-        state = self._read_state()
-        state["version"] = 1
+        state = {"version": 1}
         state["last_push_at"] = serialize_timestamp((now or utc_now()).replace(microsecond=0))
         try:
-            self._write_state(state)
+            self._update_state(state)
         except OSError as exc:
             # 推送已成功，时间戳丢失只会多触发一次同步。
             # 如果状态文件持续无法写入，仍需报告。
@@ -254,7 +262,7 @@ class GitSyncService:
                 pass
             else:
                 try:
-                    publish_export(self.paths, self.repo.path)
+                    self._publish_export(check_only=True)
                 finally:
                     self._git_lock.release()
         branch = self.repo.branch() if initialized else None
@@ -362,7 +370,7 @@ class GitSyncService:
         commit_hash: str | None = None
         modified = 0
         try:
-            publish_export(self.paths, self.repo.path)
+            self._publish_export()
             modified = self.repo.modified_count()
             sensitive = self.repo.sensitive_paths()
             if sensitive:
@@ -487,8 +495,7 @@ class GitSyncService:
         *,
         commit_at: str | None,
     ) -> None:
-        state = self._read_state()
-        state["version"] = 1
+        state = {"version": 1}
         state["last_sync_at"] = serialize_timestamp(now.replace(microsecond=0))
         state["last_sync_trigger"] = result.trigger
         state["last_result"] = result.status
@@ -519,7 +526,7 @@ class GitSyncService:
         elif result.status == "success":
             state["retry_after"] = None
         try:
-            self._write_state(state)
+            self._update_state(state)
         except OSError:
             # 状态文件不可写不能影响已完成或已失败的 Git 操作。
             pass

@@ -1,4 +1,4 @@
-"""Standalone data archive. The caller owns the source lease during backup."""
+"""持有源 Vault 租约后，生成可独立还原的数据备份。"""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from ..session.attachment_objects import original_path
-from .database import APPLICATION_ID, SCHEMA_VERSION, encode
+from .database import encode, require_current_schema
 
 
 def _digest(path):
@@ -21,17 +21,27 @@ def _digest(path):
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
-def _verify(db):
-    if (
-        db.execute("PRAGMA application_id").fetchone()[0],
-        db.execute("PRAGMA user_version").fetchone()[0],
-    ) != (APPLICATION_ID, SCHEMA_VERSION):
-        raise ValueError("Unsupported database.")
-    if (
-        db.execute("PRAGMA integrity_check").fetchall() != [("ok",)]
-        or db.execute("PRAGMA foreign_key_check").fetchone()
+def _snapshot(path, target, checksums):
+    if path.is_symlink() or path.resolve() != path:
+        raise ValueError("Redirected database.")
+    uri = path.as_uri() + "?mode=ro"
+    if checksums is not None:
+        if _digest(path) != checksums.get(path.name):
+            raise ValueError(f"Database checksum mismatch: {path.name}")
+        # 归档成员已经过校验并完成检查点，恢复只读取清单覆盖的数据库内容。
+        uri += "&immutable=1"
+    elif any(
+        path.with_name(path.name + suffix).is_symlink() for suffix in ("-wal", "-shm", "-journal")
     ):
-        raise ValueError("Database integrity check failed.")
+        raise ValueError("Redirected database journal.")
+    with closing(sqlite3.connect(uri, uri=True)) as live, closing(sqlite3.connect(target)) as db:
+        live.backup(db)
+        require_current_schema(db)
+        if (
+            db.execute("PRAGMA integrity_check").fetchall() != [("ok",)]
+            or db.execute("PRAGMA foreign_key_check").fetchone()
+        ):
+            raise ValueError("Database integrity check failed.")
 
 
 def assemble(source: Path, destination: Path, *, restore: bool = False):
@@ -45,13 +55,14 @@ def assemble(source: Path, destination: Path, *, restore: bool = False):
         raise ValueError("Choose a new directory outside the source.")
     destination.parent.mkdir(parents=True, exist_ok=True)
     name = "syvrio.sqlite3"
-    ledger = {}
+    checksums = None
     manifest = source / "manifest.json"
     if restore:
         _digest(manifest)
         ledger = json.loads(manifest.read_text(encoding="utf-8"))
         if ledger.get("version") != 1 or not isinstance(ledger.get("files"), dict):
             raise ValueError("Invalid backup manifest.")
+        checksums = ledger["files"]
 
     def copy(rel):
         path = source / rel
@@ -65,17 +76,8 @@ def assemble(source: Path, destination: Path, *, restore: bool = False):
     with TemporaryDirectory(dir=destination.parent, prefix=".syvrio-copy-") as temp:
         out = Path(temp) / "vault"
         out.mkdir(mode=0o700)
-        database = source / name
-        if database.resolve() != database:
-            raise ValueError("Redirected database.")
-        with (
-            closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)) as live,
-            closing(sqlite3.connect(out / name)) as db,
-        ):
-            live.backup(db)
-            _verify(db)
-            if restore and _digest(database) != ledger["files"].get(name):
-                raise ValueError("Database checksum mismatch.")
+        _snapshot(source / name, out / name, checksums)
+        with closing(sqlite3.connect(out / name)) as db:
             hashes = {}
             for digest, size in db.execute(
                 "SELECT DISTINCT o.sha256,o.size FROM attachment_objects o JOIN attachments a USING(sha256) ORDER BY o.sha256"
@@ -88,12 +90,10 @@ def assemble(source: Path, destination: Path, *, restore: bool = False):
             if (source / "SOUL.md").exists():
                 hashes["SOUL.md"] = copy("SOUL.md")
             if restore:
-                if hashes != {k: v for k, v in ledger["files"].items() if k != name}:
+                if hashes != {k: v for k, v in checksums.items() if k != name}:
                     raise ValueError("Backup file manifest differs from database references.")
                 with db:
                     for table in (
-                        "vectors",
-                        "search_cache",
                         "git_sync",
                         "file_cleanup",
                         "attachment_reservations",

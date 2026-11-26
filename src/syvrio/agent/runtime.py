@@ -6,7 +6,7 @@ from copy import copy
 from dataclasses import asdict, dataclass, field, replace
 from datetime import date
 from itertools import groupby, islice
-from threading import Event
+from threading import Event, Lock
 
 from ..infra.config import ChatConfig, Config, LLMConfig, load_config
 from ..infra.llm import (
@@ -150,10 +150,11 @@ class AgentRuntime:
             request_distillation=self._request_distillation,
             model_config=model.config if isinstance(model, LiteLLMChatModel) else None,
         )
-        self.session: Session | None = None
+        self._selection: str | Session | None = None
+        self._selection_lock = Lock()
         self.last_plan = None
         self.last_plan_session: str | None = None
-        self._meter_tools: tuple[tuple[dict, dict], int] | None = None
+        self._meter_tools: tuple[tuple[dict, dict, int], int] | None = None
         self._closed = False
         # 请求进行中的会话与被延迟打关闭标记的会话（切换不阻塞生成）。
         self._active_ask: Session | None = None
@@ -173,15 +174,52 @@ class AgentRuntime:
         context.config = replace(self.config, context_window=window)
         return TurnSettings(self.model, self.model_config, context, self.recall_queries)
 
+    @property
+    def session(self) -> Session | None:
+        """仅返回已装载的工作会话，后台查询不能因为读取此属性而装载历史。"""
+        selected = self._selection
+        return selected if isinstance(selected, Session) else None
+
+    @session.setter
+    def session(self, value: Session | None) -> None:
+        with self._selection_lock:
+            self._selection = value
+
+    @property
+    def session_id(self) -> str | None:
+        selected = self._selection
+        return selected.id if isinstance(selected, Session) else selected
+
+    def browse(self, session_id: str) -> None:
+        if self.session_id == session_id:
+            return
+        self.close(distill=False)
+        with self._selection_lock:
+            self._selection = session_id
+        self.last_plan = None
+        self.last_plan_session = None
+        self._closed = False
+
     def ensure_session(self) -> Session:
-        if self.session is None:
-            self.session = self.sessions.create()
+        selected = self._selection
+        if isinstance(selected, Session):
+            return selected
+        if selected is None:
+            self.session = created = self.sessions.create()
             self._closed = False
-        return self.session
+            return created
+        # 只在业务操作确实需要历史时装载；并发请求必须共享同一工作对象。
+        loaded = self.sessions.load_snapshot(selected)
+        with self._selection_lock:
+            if self._selection == selected:
+                self._selection = loaded
+            if isinstance(self._selection, Session) and self._selection.id == selected:
+                return self._selection
+        raise RuntimeError("会话在装载时已切换。")
 
     @property
     def has_session(self) -> bool:
-        return self.session is not None
+        return self._selection is not None
 
     def resume(self, session_id: str, *, close_current: bool = False) -> Session:
         with transaction(self.service.paths):
@@ -234,9 +272,9 @@ class AgentRuntime:
 
     @property
     def current(self) -> Session:
-        if self.session is None:
+        if not self.has_session:
             raise RuntimeError("会话尚未开始")
-        return self.session
+        return self.ensure_session()
 
     def ask(
         self,
@@ -637,7 +675,7 @@ class AgentRuntime:
     def force_compact(
         self, on_compaction: Callable[[CompactionPhase], None] | None = None
     ) -> list[str]:
-        if self.session is None:
+        if not self.has_session:
             return ["This session has no records to compact."]
         context = self.turn_settings().context
         plan = context.prepare(
@@ -668,10 +706,15 @@ class AgentRuntime:
     def close(self, distill: bool = True) -> dict:
         """将剩余工作加入队列，切换或退出时无需等待记忆提取。"""
         result = {"admitted": 0, "queued": 0, "duplicates": 0, "blocked": 0, "error": None}
-        if self.session is None or self._closed:
+        session_id = self.session_id
+        if session_id is None or self._closed:
             return result
         session = self.session
-        if self._active_ask is not None and session.id == self._active_ask.id:
+        if session is None:
+            latest = self.sessions.close_browsed(session_id)
+            if not distill or self.config.extract_on_exit:
+                self._request_distillation(session_id, latest)
+        elif self._active_ask is not None and session.id == self._active_ask.id:
             self._deferred_close = self._active_ask
         else:
             self.sessions.append(session, {"type": "closed"})
@@ -704,9 +747,9 @@ class AgentRuntime:
 
     def context_usage(self) -> int:
         """当前会话的上下文占用；无会话或尚未发送消息时为 0。"""
-        if self.session is None:
+        if not self.has_session:
             return 0
-        return self.estimate_usage(self.session)
+        return self.estimate_usage(self.current)
 
     def estimate_usage(
         self,
@@ -722,7 +765,18 @@ class AgentRuntime:
             active_message_id=active_message_id,
         )
 
-    def _ordinary_tool_tokens(self, session: Session) -> int:
+    def estimate_saved_usage(
+        self, session_id: str, context: ContextManager, *, active_message_id: str | None
+    ) -> int:
+        # 计量只读取工具规格，绑定的会话仅在工具真正执行时才需要装载。
+        return context.estimate_saved_usage(
+            session_id,
+            self._system_prompt(),
+            self._ordinary_tool_tokens(lambda: self.sessions.load(session_id)),
+            active_message_id=active_message_id,
+        )
+
+    def _ordinary_tool_tokens(self, session: Session | Callable[[], Session]) -> int:
         # 附件和文件工具的授权仅对单次输入有效。空闲时，
         # 用下一次普通请求估算会话的上下文用量。
         settings = self._tool_settings()
@@ -732,9 +786,9 @@ class AgentRuntime:
             cached = self._meter_tools = settings, estimate_tool_tokens(tools.schemas())
         return cached[1]
 
-    def _tool_settings(self) -> tuple[dict, dict]:
+    def _tool_settings(self) -> tuple[dict, dict, int]:
         config = self.service.config
-        return asdict(config.search), asdict(config.fetch)
+        return asdict(config.search), asdict(config.fetch), config.retrieval.default_limit
 
     def rename(self, title: str) -> None:
         rename_session(self.sessions, self.current, title)

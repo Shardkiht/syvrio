@@ -43,6 +43,11 @@ def _comparison_path(path: PurePath) -> PurePath:
     return path
 
 
+def same_storage_path(first: PurePath, second: PurePath) -> bool:
+    """比较物理路径，只接受 Windows 为同一盘符或 UNC 路径提供的等价写法。"""
+    return first == second or _comparison_path(first) == _comparison_path(second)
+
+
 @dataclass(frozen=True, slots=True)
 class SyvrioPaths:
     vault_dir: Path
@@ -60,6 +65,10 @@ class SyvrioPaths:
     @property
     def attachments_dir(self) -> Path:
         return self.vault_dir.resolve() / "attachments"
+
+    @property
+    def cache_dir(self) -> Path:
+        return self.runtime_dir.resolve() / "cache"
 
     @property
     def state_dir(self) -> Path:
@@ -85,9 +94,10 @@ class SyvrioPaths:
         ):
             raise ValueError("Runtime cannot be placed inside a Git working tree")
         for directory in (self.attachments_dir, self.vault_dir / "export"):
-            if directory.resolve() != directory:
+            if not same_storage_path(directory.resolve(), directory):
                 raise ValueError("Vault storage directories cannot be redirected.")
         for directory in (
+            self.cache_dir,
             self.state_dir,
             self.lock_dir,
             self.log_dir,
@@ -121,7 +131,7 @@ class SyvrioPaths:
                 and Path(saved["vault"]).is_absolute()
             ):
                 raise RuntimeBindingError("Invalid Runtime binding. Restore the matching marker.")
-            if _comparison_path(Path(saved["vault"])) != _comparison_path(self.vault_dir):
+            if not same_storage_path(Path(saved["vault"]), self.vault_dir):
                 raise RuntimeBindingError(
                     "Runtime belongs to a different Vault. Use its matching Runtime."
                 )

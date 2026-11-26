@@ -37,38 +37,41 @@ class UsageLimiter:
         self._mutex = RLock()
 
     @contextmanager
-    def _operation(self, provider):
-        with self._mutex:
-            if self.paths is None:
+    def _operation(self, provider, *, write: bool = True):
+        if self.paths is None:
+            with self._mutex:
                 yield
+            return
+        # 嵌套调用可能已持有主库写锁。所有调用统一先取得数据库事务，再锁实例计数。
+        with transaction(self.paths, write=write) as db, self._mutex:
+            entry = {}
+            for period, window, count in db.execute(
+                "SELECT period,window,units FROM usage WHERE provider=?", (provider,)
+            ):
+                entry[period] = {"window": window, "count": count}
+            pause = db.execute(
+                "SELECT reason,resume_at FROM quota_pauses WHERE provider=?", (provider,)
+            ).fetchone()
+            if pause:
+                entry["paused"] = {"reason": pause[0], "resume_at": pause[1]}
+            self._counts[provider] = entry
+            yield
+            if not write:
                 return
-            with transaction(self.paths) as db:
-                entry = {}
-                for period, window, count in db.execute(
-                    "SELECT period,window,units FROM usage WHERE provider=?", (provider,)
-                ):
-                    entry[period] = {"window": window, "count": count}
-                pause = db.execute(
-                    "SELECT reason,resume_at FROM quota_pauses WHERE provider=?", (provider,)
-                ).fetchone()
-                if pause:
-                    entry["paused"] = {"reason": pause[0], "resume_at": pause[1]}
-                self._counts[provider] = entry
-                yield
-                for period in ("daily", "monthly"):
-                    counter = entry.get(period)
-                    if counter:
-                        db.execute(
-                            "INSERT OR REPLACE INTO usage VALUES(?,?,?,?)",
-                            (provider, period, counter["window"], counter["count"]),
-                        )
-                if paused := entry.get("paused"):
+            for period in ("daily", "monthly"):
+                counter = entry.get(period)
+                if counter:
                     db.execute(
-                        "INSERT OR REPLACE INTO quota_pauses VALUES(?,?,?)",
-                        (provider, paused["reason"], paused.get("resume_at")),
+                        "INSERT OR REPLACE INTO usage VALUES(?,?,?,?)",
+                        (provider, period, counter["window"], counter["count"]),
                     )
-                else:
-                    db.execute("DELETE FROM quota_pauses WHERE provider=?", (provider,))
+            if paused := entry.get("paused"):
+                db.execute(
+                    "INSERT OR REPLACE INTO quota_pauses VALUES(?,?,?)",
+                    (provider, paused["reason"], paused.get("resume_at")),
+                )
+            else:
+                db.execute("DELETE FROM quota_pauses WHERE provider=?", (provider,))
 
     def _entry(self, provider: str) -> dict:
         now = self._clock()
@@ -87,7 +90,7 @@ class UsageLimiter:
         return entry
 
     def status(self, provider: str) -> dict:
-        with self._operation(provider):
+        with self._operation(provider, write=False):
             entry = self._entry(provider)
             return self._status(provider, entry)
 

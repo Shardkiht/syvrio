@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import time
 from dataclasses import asdict, dataclass, field
 from typing import Callable
 
-from ..storage.database import encode, transaction
+from ..observability.diagnostics import record_once
+from ..storage.cache_database import cache_transaction
+from ..storage.database import DatabaseError, encode
 from ..storage.paths import SyvrioPaths
 from .base import SearchFailure, SearchResult
 
@@ -31,7 +34,7 @@ def _string_list(value: object) -> list[str]:
 
 
 class SearchCache:
-    """搜索结果的文件缓存；只是派生数据，损坏或过期都可直接丢弃。"""
+    """在 Runtime 缓存有期限的网页搜索结果。"""
 
     def __init__(
         self,
@@ -47,11 +50,16 @@ class SearchCache:
         """返回结果及验证元数据；字段缺失或损坏时重新搜索。"""
         if self.ttl <= 0:
             return None
-        with transaction(self.paths, write=False) as db:
-            row = db.execute(
-                "SELECT result FROM search_cache WHERE cache_key=? AND expires>?",
-                (key, self.clock()),
-            ).fetchone()
+        try:
+            with cache_transaction(self.paths, "web-search", write=False) as db:
+                row = db.execute(
+                    "SELECT result FROM search_cache WHERE cache_key=? AND expires>?",
+                    (key, self.clock()),
+                ).fetchone()
+        except (OSError, sqlite3.Error, DatabaseError) as exc:
+            # 缓存无法读取时，仍由供应商返回这次的搜索结果。
+            record_once("degraded.web_search_cache", exc)
+            return None
         if not row:
             return None
         try:
@@ -122,8 +130,13 @@ class SearchCache:
             failed=[asdict(item) for item in list(failed)[:_MAX_META_ITEMS]],
             results=[asdict(item) for item in results],
         )
-        with transaction(self.paths) as db:
-            db.execute("DELETE FROM search_cache WHERE expires<=?", (now,))
-            db.execute(
-                "INSERT OR REPLACE INTO search_cache VALUES(?,?,?)", (key, expires, encode(result))
-            )
+        try:
+            with cache_transaction(self.paths, "web-search") as db:
+                db.execute("DELETE FROM search_cache WHERE expires<=?", (now,))
+                db.execute(
+                    "INSERT OR REPLACE INTO search_cache VALUES(?,?,?)",
+                    (key, expires, encode(result)),
+                )
+        except (OSError, sqlite3.Error, DatabaseError) as exc:
+            # 本次结果已经取得，缓存写入失败只影响后续复用。
+            record_once("degraded.web_search_cache", exc)

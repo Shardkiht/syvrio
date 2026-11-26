@@ -369,6 +369,13 @@ def test_mixed_attachments_reach_model_and_survive_move(client, backend, tmp_pat
     staged = backend.git.repo.staged_paths()
     assert any(item.startswith("content/sessions/") for item in staged)
     assert not any(item.startswith("attachments/") for item in staged)
+    live.write_bytes(b"x" * len(data))
+    assert client.get(url + "?preview=true").status_code == 404
+    live.unlink()
+    assert client.get(url + "?preview=true").status_code == 404
+    live.write_bytes(data)
+    # 完成在线校验后停服再搬迁，确保数据库、WAL 和后端独占锁均已释放。
+    backend.shutdown()
     moved = SyvrioPaths(tmp_path / "moved-vault", tmp_path / "moved-runtime")
     copytree(paths.vault_dir, moved.vault_dir)
     sessions = SessionStore(moved)
@@ -378,11 +385,6 @@ def test_mixed_attachments_reach_model_and_survive_move(client, backend, tmp_pat
     assert result.exit_code == 0 and "Verified 2 attachment(s)" in result.output
     assert not moved.runtime_dir.exists()
     path = original_path(moved.attachments_dir, file_id)
-    live_file = live
-    live_file.write_bytes(b"x" * len(data))
-    assert client.get(url + "?preview=true").status_code == 404
-    live_file.unlink()
-    assert client.get(url + "?preview=true").status_code == 404
     path.write_bytes(b"x" * len(data))
     count, errors = sessions.verify_attachments()
     assert count == 1 and len(errors) == 1 and "checksum" in errors[0]
@@ -1406,7 +1408,9 @@ def test_conditional_switch_returns_history_and_reuses_it_after_leaving(
         "X-Syvrio-History-Version"
         not in client.get(url, params={"include_version": True, "limit": 1}).headers
     )
-    assert len(reads) == 1
+    # 切换、分页和上下文占用都不应装载完整的可写工作会话。
+    assert client.get("/api/context-usage", params={"session_id": first.id}).json()["used"] > 0
+    assert reads == [] and backend._runtime.session is None
     params = {"include_history": True, "known_version": first_open["history_version"]}
     assert client.post(f"/api/sessions/{second.id}/switch").json() == {
         "session_id": second.id,
@@ -1420,6 +1424,70 @@ def test_conditional_switch_returns_history_and_reuses_it_after_leaving(
     assert (len(reads), len(projections)) == before
     store.append_event_transactionally(first, {"type": "distilled", "up_to": "reply"})
     assert client.post(f"{url}/switch", params=params).json() == back
+
+
+def test_browsing_context_reads_only_replayed_records_and_hydrates_before_edit(
+    client, backend, monkeypatch
+):
+    store = backend._sessions
+    first = store.create()
+    store.append(first, {"type": "message", "role": "user", "id": "old", "content": "old input"})
+    store.append(first, {"type": "assistant", "content": "old answer"})
+    covered = len(first.records)
+    store.append(
+        first,
+        {
+            "type": "summary",
+            "content": "compressed",
+            "covered_records": covered,
+            "distilled_ids": [],
+        },
+    )
+    store.append(
+        first, {"type": "message", "role": "user", "id": "recent", "content": "recent input"}
+    )
+    expected = backend._conversation.estimate_usage(first)
+    original = store.context_history
+    captured = []
+
+    def observe(*args, **kwargs):
+        summary, history, active = original(*args, **kwargs)
+        captured.append(([item["id"] for item in history], summary))
+        return summary, history, active
+
+    monkeypatch.setattr(store, "context_history", observe)
+    assert client.post(
+        f"/api/sessions/{first.id}/switch", params={"include_history": True}
+    ).is_success
+    for _ in range(2):
+        assert (
+            client.get("/api/context-usage", params={"session_id": first.id}).json()["used"]
+            == expected
+        )
+    assert captured == [(["recent"], "compressed")]
+    assert backend._runtime.session is None and backend._conversation.current_id == first.id
+    # 回滚版本号会被下一笔提交复用，事务内估算不能污染共享缓存。
+    with pytest.raises(ValueError, match="rollback"), transaction(store.paths):
+        store.append(first, {"type": "message", "role": "user", "content": "discarded" * 300})
+        transient = backend._conversation.estimate_saved_usage(first.id)
+        assert transient > expected
+        raise ValueError("rollback")
+    assert backend._conversation.estimate_saved_usage(first.id) == expected
+    remote = {"type": "message", "role": "user", "id": "outside", "content": "hello"}
+    store.append_event_transactionally(first, remote)
+    committed = client.get("/api/context-usage", params={"session_id": first.id}).json()["used"]
+    assert expected < committed < transient
+    assert captured[-1] == (["recent", "outside"], "compressed")
+    # 第一次编辑必须以完整会话为基础，保留摘要前的事实与消息。
+    assert (
+        client.put(f"/api/sessions/{first.id}/title", json={"title": "edited"}).status_code == 204
+    )
+    assert backend._runtime.current.id == first.id
+    assert [item["id"] for item in backend._runtime.current.messages] == [
+        "old",
+        "recent",
+        "outside",
+    ]
 
 
 def test_conditional_switch_uses_committed_history_even_while_bound(client, backend):
@@ -1503,7 +1571,9 @@ def test_history_restores_reasoning_and_content(client, backend):
 
 
 @pytest.mark.parametrize("order", ["history-first", "switch-first", "concurrent"])
-def test_history_and_switch_share_one_read_across_views(client, backend, monkeypatch, order):
+def test_history_and_switch_avoid_hydrating_runtime_across_views(
+    client, backend, monkeypatch, order
+):
     store = backend._sessions
     session = store.create()
     store.append(
@@ -1547,7 +1617,7 @@ def test_history_and_switch_share_one_read_across_views(client, backend, monkeyp
     else:
         switch()
         history()
-    assert len(reads) == 1
+    assert reads == []
     with transaction(store.paths) as db:
         db.execute(
             "UPDATE session_reasoning SET body=? WHERE event_id=(SELECT seq FROM session_events WHERE session_id=? AND message_id='answer')",

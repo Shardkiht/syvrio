@@ -93,7 +93,7 @@ uv run python scripts/build_web.py --wheel dist/*.whl  # 校验实际 wheel 内�
 | GET | `/api/sessions/{id}/tools/{record_id}` | 按历史记录 ID 取完整工具结果。历史列表只携带长结果的预览、总字符数和预览标志。归档结果须传 `archived=true`，撤回的结果无法读取 |
 | GET | `/api/sessions/{id}/messages/{message_id}/context` | 读取命中消息及前后各一条可见对话 |
 | GET | `/api/pending/{item_id}/evidence` | 按候选的已存引用读取原话与关联记忆，包括手动追溯的归档原话 |
-| GET | `/api/sessions/{id}?limit=300` | 最近的结构化历史，思考正文默认折叠。读取活动会话的默认 300 条窗口时可传 `include_version=true`，从响应头 `X-Syvrio-History-Version` 取得下次切换可用的版本 |
+| GET | `/api/sessions/{id}?limit=300` | 按时间顺序返回最近的历史窗口，思考正文默认折叠。响应的 `earlier_cursor` 用于下一次请求的 `before_seq`，为空时已到开头。归档历史加 `archived=true`。读取活动会话的默认 300 条窗口时可传 `include_version=true`，从响应头 `X-Syvrio-History-Version` 取得下次切换可用的版本 |
 | GET | `/api/sessions/{id}/messages/{message_id}/draft` | 读取最近回合的原文及附件清单供编辑；消息已变更时返回 409 |
 | GET | `/api/settings/providers` | 供应商、端点和配置状态；不返回已保存的 Key |
 | POST | `/api/settings/providers/{provider}` | 添加、更新或删除凭据，以及修改端点 |
@@ -205,7 +205,7 @@ FastAPI 自动提供 `/openapi.json` 与 `/docs`。
 
 - 界面使用同一套 CSS 变量生成亮色与暗色主题。默认 `Follow system` 响应 `prefers-color-scheme` 的实时变化，也可在 Appearance 中固定 Light / Dark；选择只写入当前浏览器的 `syvrio.theme`，移动端地址栏 `theme-color` 同步切换。显式主题在样式加载前恢复，避免刷新时黑白闪烁。
 - 桌面会话栏默认宽 300 像素，可拖动右边缘在 240 至 480 像素之间调整，同时为聊天区保留至少 440 像素。双击边缘恢复默认宽度。键盘聚焦分隔线后，左右方向键每次调整 10 像素，Home / End 跳到当前最小或最大宽度。浏览器在 `syvrio.sidebar.width` 中保存所选宽度。侧栏头部和顶栏的面板图标或 `Ctrl+B` / `Alt+B` 可收起和展开，开合状态保存在 `syvrio.sidebar`。手机端沿用默认收起的抽屉。
-- 点击侧栏会话后，选中项和标题立即更新。网页先展示本标签页缓存的历史，首次打开时显示加载状态。一次切换请求同时确认目标和历史版本，正文发生变化时随响应更新。切换到已有会话时可以编辑草稿并提前点击发送；后台确认目标后才提交，改选或切换失败时草稿留在原目标会话。快速连续切换时，页面只显示最后选中的会话。
+- 点击侧栏会话后，选中项和标题立即更新。网页先展示本标签页缓存的历史，首次打开时显示加载状态。长会话先显示最近一页，活动和归档会话都可点击 **Load earlier messages** 向前翻页。一次切换请求同时确认目标和历史版本，正文发生变化时随响应更新。切换到已有会话时可以编辑草稿并提前点击发送；后台确认目标后才提交，改选或切换失败时草稿留在原目标会话。快速连续切换时，页面只显示最后选中的会话。
 - 恢复或切换会话时，消息区在绘制前以 `instant` 直接定位到最新一条，不播放从顶部滑到底部的长动画；同一会话的流式更新保留平滑跟随，用户向上翻阅后暂停跟随，回到底部附近后恢复。
 - 展开的思考面板同样是固定高度的独立滚动区：流式期间跟随最新一行，用户向上翻阅后停止跟随、回到底部附近恢复；已结束的思考从顶部开始阅读。
 

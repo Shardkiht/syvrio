@@ -28,10 +28,10 @@ class MemoryUseCases:
         return PendingSnapshot(list(self.service.pending()))
 
     def pending_count(self) -> int:
-        return len(self.service.pending())
+        return self.service.queue.count()
 
     def pending_item(self, item_id: str):
-        return next((item for item in self.service.pending() if item.id == item_id), None)
+        return self.service.queue.get(item_id)
 
     def pending_evidence(self, item_id: str) -> dict:
         item = self.pending_item(item_id)
@@ -88,13 +88,7 @@ class MemoryUseCases:
         )
 
     def _source_texts(self, source_ids: set[str]) -> dict[str, str]:
-        if not source_ids:
-            return {}
-        return {
-            entry.id: entry.text
-            for entry in self.service.store.entries(include_inactive=True)
-            if entry.id in source_ids
-        }
+        return self.service.store.source_texts(source_ids)
 
     # 主题
 

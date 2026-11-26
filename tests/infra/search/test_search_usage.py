@@ -15,6 +15,7 @@ from syvrio.infra.search.base import (
 from syvrio.infra.search.fetch_router import FetchRouter, build_fetch_router
 from syvrio.infra.search.router import SearchRouter
 from syvrio.infra.search.usage import UsageLimiter
+from syvrio.infra.storage.database import transaction
 from syvrio.infra.storage.paths import vault_paths
 
 pytestmark = pytest.mark.search
@@ -84,8 +85,6 @@ def test_monthly_window_counts_and_resets():
 
 
 def _persisted_usage(paths):
-    from syvrio.infra.storage.database import transaction
-
     result = {}
     with transaction(paths, write=False) as db:
         for provider, period, window, count in db.execute("SELECT * FROM usage"):
@@ -106,6 +105,31 @@ def test_counts_persist_across_instances(tmp_path):
     data = _persisted_usage(path)
     assert set(data["tavily"]) == {"daily", "monthly"}
     assert data["tavily"]["daily"]["count"] == data["tavily"]["monthly"]["count"] == 1
+
+
+def test_usage_and_pause_follow_the_vault_transaction(tmp_path):
+    paths = vault_paths(tmp_path / "vault")
+    limiter = UsageLimiter({}, paths)
+    limiter.record("exa")
+
+    with pytest.raises(RuntimeError, match="abort"), transaction(paths) as db:
+        limiter.record("exa")
+        limiter.pause("exa", "quota exhausted")
+        assert (
+            db.execute(
+                "SELECT units FROM usage WHERE provider='exa' AND period='daily'"
+            ).fetchone()[0]
+            == 2
+        )
+        assert (
+            db.execute("SELECT reason FROM quota_pauses WHERE provider='exa'").fetchone()[0]
+            == "quota exhausted"
+        )
+        raise RuntimeError("abort")
+
+    with transaction(paths, write=False):
+        state = limiter.status("exa")
+    assert state["daily"]["used"] == 1 and not state["paused"]
 
 
 def test_reload_sees_other_instance_writes(tmp_path):

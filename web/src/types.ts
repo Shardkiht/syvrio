@@ -166,6 +166,7 @@ export interface HistoryResponse {
   items: HistoryItem[];
   summary: string | null;
   has_earlier: boolean;
+  earlier_cursor?: number | null;
   current: boolean;
 }
 

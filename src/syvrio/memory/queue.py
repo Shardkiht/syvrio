@@ -49,6 +49,10 @@ class PendingQueue:
                 )
             ]
 
+    def count(self) -> int:
+        with transaction(self.paths, write=False) as db:
+            return db.execute("SELECT count(*) FROM candidates WHERE state='pending'").fetchone()[0]
+
     def get(self, item_id):
         with transaction(self.paths, write=False) as db:
             row = db.execute(

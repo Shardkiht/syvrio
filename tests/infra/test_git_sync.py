@@ -59,6 +59,20 @@ def make_services(
     return service, git
 
 
+def test_git_state_follows_the_vault_transaction(tmp_path):
+    from syvrio.infra.storage.database import transaction
+
+    service, git = make_uninitialized_services(tmp_path / "vault")
+    with pytest.raises(RuntimeError, match="abort"), transaction(service.paths) as db:
+        git.record_push_success()
+        assert json.loads(db.execute("SELECT state FROM git_sync").fetchone()[0])["last_push_at"]
+        raise RuntimeError("abort")
+
+    assert git._read_state() == {}
+    git.record_push_success()
+    assert git._read_state()["last_push_at"]
+
+
 def test_vault_git_never_stages_or_summarizes_archived_data(tmp_path):
     service, git = make_services(tmp_path)
     repo, vault = git.repo, git.repo.path

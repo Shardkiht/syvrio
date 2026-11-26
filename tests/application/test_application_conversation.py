@@ -123,8 +123,9 @@ def test_application_owns_admitted_turns_across_views(tmp_path, monkeypatch, fai
     sid = first.session_id
     try:
         assert runtime.model.entered.wait(5)
-        assert directory.select("bob", sid).id == sid
+        assert directory.select("bob", sid) is channel
         assert directory.channel("bob") is channel is owner
+        assert channel.conversation.current_id == sid
         _, second = directory.submit("bob", "second", sid)
         _, third = directory.submit("alice", "third", sid)
         assert owner.conversation.active_turn is first

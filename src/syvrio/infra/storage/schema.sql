@@ -24,6 +24,7 @@ CREATE TABLE session_events (
     at TEXT NOT NULL,
     content TEXT,
     payload TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(payload)),
+    distilled INTEGER NOT NULL DEFAULT 0,
     UNIQUE(session_id, message_id)
 );
 CREATE INDEX events_by_session ON session_events(session_id,seq);
@@ -188,27 +189,18 @@ CREATE TABLE file_cleanup (
     PRIMARY KEY(kind, object_id)
 );
 
-CREATE TABLE vectors (
-    memory_id TEXT NOT NULL REFERENCES memories ON DELETE CASCADE,
-    model TEXT NOT NULL,
-    input_digest TEXT NOT NULL,
-    dimensions INTEGER NOT NULL,
-    vector BLOB NOT NULL,
-    PRIMARY KEY(memory_id, model)
-);
-
-CREATE TABLE search_cache (
-    cache_key TEXT PRIMARY KEY,
-    expires REAL NOT NULL,
-    result TEXT NOT NULL
-);
-
 CREATE TABLE usage (
     provider TEXT NOT NULL,
     period TEXT NOT NULL,
     window TEXT NOT NULL,
     units INTEGER NOT NULL,
     PRIMARY KEY(provider, period)
+);
+
+CREATE TABLE quota_pauses (
+    provider TEXT PRIMARY KEY,
+    reason TEXT NOT NULL,
+    resume_at REAL
 );
 
 CREATE TABLE git_sync (
@@ -221,12 +213,6 @@ CREATE TABLE session_reasoning (
     body TEXT NOT NULL CHECK(json_valid(body))
 );
 CREATE TRIGGER attachment_removed AFTER DELETE ON attachments BEGIN INSERT OR IGNORE INTO file_cleanup VALUES('attachment',old.sha256); END;
-
-CREATE TABLE quota_pauses (
-    provider TEXT PRIMARY KEY,
-    reason TEXT NOT NULL,
-    resume_at REAL
-);
 
 CREATE TABLE attachment_reservations (
     token TEXT NOT NULL,

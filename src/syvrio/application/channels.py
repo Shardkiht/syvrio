@@ -6,7 +6,7 @@ from collections.abc import Callable
 from threading import RLock
 from typing import Protocol
 
-from ..infra.session import Session, SessionSnapshot
+from ..infra.session import Session
 from ..infra.session.attachments import AttachmentBatch
 from ..infra.session.errors import ConversationError
 from .conversation import ConversationUseCases
@@ -136,23 +136,17 @@ class ConversationDirectory[C: ConversationOwner]:
             self._retire(previous)
             return result
 
-    def select(self, view: str, session_id: str) -> Session:
+    def select(self, view: str, session_id: str) -> C:
         with self._lock:
             previous = self.channel(view)
             channel = self._bound(session_id)
             if channel is None:
                 channel = self._navigation_channel(view, previous)
-                channel.conversation.navigate(session_id)
+                channel.conversation.browse(session_id)
             self._views[view] = channel
             self._archived.pop(view, None)
             self._retire(previous)
-            return channel.conversation.current
-
-    def select_snapshot(self, view: str, session_id: str) -> SessionSnapshot:
-        """绑定此视图并返回已保存的修订版本，其中也包含其他客户端的写入。"""
-        with self._lock:
-            self.select(view, session_id)
-            return self.owner.conversation.sessions.read_snapshot(session_id)
+            return channel
 
     def rename(self, view: str, session_id: str, title: str) -> None:
         with self._lock:

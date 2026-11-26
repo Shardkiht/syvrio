@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sys
 import threading
 import time
 from collections.abc import Callable
@@ -117,11 +116,11 @@ class BackgroundMemory:
         }
 
     def _discover(self, stop: threading.Event) -> None:
-        for session in self.sessions.unconsolidated(limit=sys.maxsize):
+        for session_id in self.sessions.pending_sessions():
             if stop.is_set():
                 return
             try:
-                self.request_distillation(session.id, session.last_user_message_id())
+                self.request_distillation(session_id)
             except (OSError, ValueError, KeyError, TypeError) as exc:
                 record_event("catchup.failed", exc)
 

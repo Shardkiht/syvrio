@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import sqlite3
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -9,8 +10,9 @@ from threading import Lock
 
 import numpy as np
 
-from ..observability.diagnostics import record_event
-from ..storage.database import transaction
+from ..observability.diagnostics import record_event, record_once
+from ..storage.cache_database import cache_transaction
+from ..storage.database import DatabaseError, on_commit, transaction, transaction_mode
 from ..storage.paths import SyvrioPaths
 from .base import Embedder, RecordSnapshot, RecordSource, SearchHit, SearchRecord
 
@@ -34,17 +36,19 @@ class LocalEmbedder:
     def __init__(self, model: str):
         self.model_id = model
         self._model = None
+        self._load_lock = Lock()
 
     @staticmethod
     def available() -> bool:
         return importlib.util.find_spec("fastembed") is not None
 
     def _load(self):
-        if self._model is None:
-            from fastembed import TextEmbedding
+        with self._load_lock:
+            if self._model is None:
+                from fastembed import TextEmbedding
 
-            self._model = TextEmbedding(model_name=self.model_id)
-        return self._model
+                self._model = TextEmbedding(model_name=self.model_id)
+            return self._model
 
     def embed(self, texts) -> list[list[float]]:
         return [vector.tolist() for vector in self._load().embed(list(texts))]
@@ -55,7 +59,7 @@ class LocalEmbedder:
 
 @dataclass(frozen=True, slots=True)
 class _VectorIndex:
-    revision: int
+    revision: int | None
     entries: list[SearchRecord]
     matrix: np.ndarray | None
 
@@ -94,74 +98,125 @@ class VectorRetriever:
     def sync(self, *, expected_dim: int | None = None) -> None:
         """与记忆条目对齐：复用未变更向量，只为新增/变更条目计算 embedding。"""
         snapshot = self.store.snapshot()
-        with self._index_lock:
-            self._sync(snapshot, expected_dim=expected_dim)
+        self._index_for(snapshot, expected_dim=expected_dim, refresh=True)
 
-    def _sync(
-        self, snapshot: RecordSnapshot, *, expected_dim: int | None = None
+    def _index_for(
+        self, snapshot: RecordSnapshot, *, expected_dim: int | None = None, refresh: bool = False
     ) -> _VectorIndex | None:
-        if self._degraded and self._clock() < self._retry_at:
-            return
+        with self._index_lock:
+            if self._degraded and self._clock() < self._retry_at:
+                return None
+            index = self._index
+            if (
+                not refresh
+                and not self._degraded
+                and index.revision == snapshot.revision
+                and (
+                    expected_dim is None
+                    or index.matrix is not None
+                    and index.matrix.shape[1] == expected_dim
+                )
+            ):
+                return index
+            built = self._build(snapshot, expected_dim=expected_dim)
+            if built is None:
+                return None
+            index, fresh, removed = built
+            self._degraded = False
+            if index.revision is None or index.revision < self._index.revision:
+                return index
+            self._index = index
+
+        # 提交后才发布衍生数据，且不在等待磁盘时持有内存索引锁。
+        if self.paths is not None and (fresh or removed):
+
+            def persist():
+                matrix = index.matrix[-len(fresh) :] if fresh else None
+                try:
+                    self._save_cache(fresh, matrix, removed, index.revision)
+                except (sqlite3.Error, OSError, DatabaseError) as exc:
+                    # 结果已在内存中可用，业务提交后失败的缓存写入仅影响下次复用。
+                    record_once("degraded.vector_cache", exc)
+
+            if transaction_mode() is None:
+                persist()
+            else:
+                on_commit(persist)
+        return index
+
+    def _build(self, snapshot: RecordSnapshot, *, expected_dim: int | None):
         entries = snapshot.records
         # 同 ID 条目只保留首个：历史数据若存在重复 ID，去重避免矩阵行错位。
         unique: dict[str, SearchRecord] = {}
         for entry in entries:
             unique.setdefault(entry.id, entry)
         entries = list(unique.values())
-        ids, hashes, cached = self._load_cache()
-        if expected_dim is not None and cached is not None and cached.shape[1] != expected_dim:
-            ids, hashes, cached = [], [], None
-        known = {entry_id: index for index, entry_id in enumerate(ids)}
-        keep: list[int] = []
-        fresh: list[SearchRecord] = []
-        for entry in entries:
-            index = known.get(entry.id)
-            if index is not None and hashes[index] == text_hash(entry.embedding_text):
-                keep.append(index)
-            else:
-                fresh.append(entry)
-
-        if cached is None:
-            cached = np.zeros((0, 0), dtype=np.float32)
-        rows = [cached[keep]] if keep else []
+        cache_available = True
         try:
-            for start in range(0, len(fresh), self.batch_size):
-                batch = fresh[start : start + self.batch_size]
-                vectors = np.array(
-                    self.embedder.embed([entry.embedding_text for entry in batch]), dtype=np.float32
+            ids, hashes, cached = self._load_cache()
+        except (sqlite3.Error, OSError, DatabaseError) as exc:
+            # 磁盘缓存不可用时按输入摘要复用上次成功的内存向量。不覆盖未知文件。
+            record_once("degraded.vector_cache", exc)
+            cache_available = False
+            cached = self._index.matrix
+            ids = [entry.id for entry in self._index.entries]
+            hashes = [text_hash(entry.embedding_text) for entry in self._index.entries]
+        removed = set(ids).difference(unique)
+        if expected_dim is not None and cached is not None and cached.shape[1] != expected_dim:
+            cached = None
+        current = dict(zip(ids, hashes, strict=True)) if cached is not None else {}
+        vectors = dict(zip(hashes, cached, strict=True)) if cached is not None else {}
+
+        kept = []
+        fresh = []
+        missing = {}
+        for entry in entries:
+            digest = text_hash(entry.embedding_text)
+            if current.get(entry.id) == digest:
+                kept.append((entry, digest))
+            else:
+                fresh.append((entry, digest))
+            if digest not in vectors:
+                missing.setdefault(digest, entry.embedding_text)
+
+        # 相同输入可以共用一次嵌入，每个事实仍保留自己的 ID 和检索结果。
+        inputs = list(missing.items())
+        uses_cached = any(digest in vectors for _, digest in kept + fresh)
+        dimensions = cached.shape[1] if uses_cached else None
+        try:
+            for start in range(0, len(inputs), self.batch_size):
+                batch = inputs[start : start + self.batch_size]
+                values = np.array(
+                    self.embedder.embed([text for _, text in batch]), dtype=np.float32
                 )
-                if vectors.ndim != 2 or vectors.shape[0] != len(batch):
+                if values.ndim != 2 or values.shape[0] != len(batch):
                     raise ValueError("embedding 返回形状或数量与输入不一致")
-                if vectors.shape[1] == 0 or not np.isfinite(vectors).all():
+                if values.shape[1] == 0 or not np.isfinite(values).all():
                     raise ValueError("embedding 返回空维度或非有限数值")
-                if expected_dim is not None and vectors.shape[1] != expected_dim:
+                if expected_dim is not None and values.shape[1] != expected_dim:
                     record_event(
                         "retrieval.vector_dimension_failed",
                         ValueError("Embedding dimensions differ."),
                     )
                     self._mark_degraded()
                     return
-                if keep and expected_dim is None and vectors.shape[1] != cached.shape[1]:
-                    return self._sync(snapshot, expected_dim=vectors.shape[1])
-                if rows and vectors.shape[1] != rows[0].shape[1]:
+                if dimensions is not None and dimensions != values.shape[1]:
+                    if uses_cached and expected_dim is None:
+                        return self._build(snapshot, expected_dim=values.shape[1])
                     raise ValueError("embedding 返回维度与已有向量不一致")
-                rows.append(_unit(vectors))
-            matrix = np.vstack(rows) if rows else None
+                dimensions = values.shape[1]
+                vectors.update(zip((digest for digest, _ in batch), _unit(values), strict=True))
+            ordered = kept + fresh
+            matrix = np.stack([vectors[digest] for _, digest in ordered]) if ordered else None
         except Exception:
             # 冷却内停用整条向量路；不覆盖成功缓存，恢复后仍可增量复用。
             self._mark_degraded()
             return
 
-        kept_ids = {ids[index] for index in keep}
-        ordered = [entry for entry in entries if entry.id in kept_ids] + fresh
-        index = _VectorIndex(snapshot.revision, ordered, matrix)
-        self._degraded = False
-        # 迟到的查询可以使用自己的旧矩阵，不能覆盖更新的内存索引或磁盘缓存。
-        if index.revision >= self._index.revision:
-            self._index = index
-            if fresh or len(keep) != len(ids):
-                self._save_cache(ordered, matrix, snapshot.revision)
-        return index
+        index = _VectorIndex(snapshot.revision, [entry for entry, _ in ordered], matrix)
+        if not cache_available:
+            return index, [], set()
+        return index, [entry for entry, _ in fresh], removed
 
     def search(
         self, query: str, limit: int = 10, *, snapshot: RecordSnapshot | None = None
@@ -171,15 +226,7 @@ class VectorRetriever:
             return []
         if snapshot is None:
             snapshot = self.store.snapshot()
-        with self._index_lock:
-            return self._search(query, limit, snapshot)
-
-    def _search(self, query: str, limit: int, snapshot: RecordSnapshot) -> list[SearchHit]:
-        if self._degraded and self._clock() < self._retry_at:
-            return []
-        index = self._index
-        if snapshot.revision != index.revision or self._degraded:
-            index = self._sync(snapshot)
+        index = self._index_for(snapshot)
         if index is None or index.matrix is None or not index.entries:
             return []
         try:
@@ -187,13 +234,14 @@ class VectorRetriever:
             if vector.ndim != 1 or not vector.size or not np.isfinite(vector).all():
                 raise ValueError("查询 embedding 返回无效向量")
             if vector.size != index.matrix.shape[1]:
-                index = self._sync(snapshot, expected_dim=vector.size)
+                index = self._index_for(snapshot, expected_dim=vector.size)
                 if index is None or index.matrix is None:
                     return []
             vector = _unit(vector[None, :])[0]
             scores = index.matrix @ vector
         except Exception:
-            self._mark_degraded()
+            with self._index_lock:
+                self._mark_degraded()
             return []
         hits: list[SearchHit] = []
         for row in np.argsort(-scores)[:limit]:
@@ -207,38 +255,60 @@ class VectorRetriever:
     def _load_cache(self) -> tuple[list[str], list[str], np.ndarray | None]:
         if self.paths is None:
             return [], [], None
-        with transaction(self.paths, write=False) as db:
+        with cache_transaction(self.paths, "vectors", write=False) as db:
             rows = db.execute(
                 "SELECT memory_id,input_digest,dimensions,vector FROM vectors WHERE model=? ORDER BY memory_id",
                 (self.embedder.model_id,),
             ).fetchall()
         if not rows:
             return [], [], None
+        ids = [row["memory_id"] for row in rows]
         dims = rows[0]["dimensions"]
-        if dims <= 0 or any(r["dimensions"] != dims or len(r["vector"]) != dims * 4 for r in rows):
-            return [], [], None
+        if (
+            not isinstance(dims, int)
+            or dims <= 0
+            or any(
+                r["dimensions"] != dims
+                or not isinstance(r["vector"], bytes)
+                or len(r["vector"]) != dims * 4
+                for r in rows
+            )
+        ):
+            record_once("degraded.vector_cache", "Invalid vector cache row.")
+            return ids, [], None
         matrix = np.vstack([np.frombuffer(r["vector"], dtype="<f4") for r in rows])
         if not np.isfinite(matrix).all():
-            return [], [], None
-        return [r["memory_id"] for r in rows], [r["input_digest"] for r in rows], matrix
+            record_once("degraded.vector_cache", "Non-finite cached vector.")
+            return ids, [], None
+        return ids, [r["input_digest"] for r in rows], matrix
 
-    def _save_cache(self, entries, matrix, revision):
+    def _save_cache(self, entries, matrix, removed, revision):
         if self.paths is None:
             return
-        with transaction(self.paths) as db:
+        # 先打开主库，再串行发布缓存。取得缓存写锁后才在主库读取版本，
+        # 避免较早的嵌入任务覆盖另一进程已发布的结果。
+        with (
+            transaction(self.paths, write=False) as source,
+            cache_transaction(self.paths, "vectors") as db,
+        ):
             if (
-                db.execute("SELECT version FROM revisions WHERE domain='memories'").fetchone()[0]
+                source.execute("SELECT version FROM revisions WHERE domain='memories'").fetchone()[
+                    0
+                ]
                 != revision
             ):
                 return
-            db.execute(
-                "DELETE FROM vectors WHERE model=? AND memory_id IN (SELECT id FROM memories WHERE status!='active')",
-                (self.embedder.model_id,),
-            )
+            if removed:
+                db.executemany(
+                    "DELETE FROM vectors WHERE model=? AND memory_id=?",
+                    ((self.embedder.model_id, key) for key in removed),
+                )
             if matrix is not None:
                 db.executemany(
                     """INSERT INTO vectors VALUES(?,?,?,?,?) ON CONFLICT(memory_id,model) DO UPDATE SET
-                    input_digest=excluded.input_digest,dimensions=excluded.dimensions,vector=excluded.vector""",
+                    input_digest=excluded.input_digest,dimensions=excluded.dimensions,vector=excluded.vector
+                    WHERE input_digest<>excluded.input_digest OR dimensions<>excluded.dimensions
+                       OR vector<>excluded.vector""",
                     (
                         (
                             e.id,

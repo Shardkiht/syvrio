@@ -6,15 +6,16 @@ import hashlib
 import json
 import secrets
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import replace
-from threading import Event
+from threading import Event, Lock
 
 from ...infra.llm.client import effective_context_window
 from ...infra.llm.tokens import estimate_tokens
 from ...infra.storage.database import transaction
 from ...infra.time import utc_timestamp
-from ..models import ProfileSummaryResponse, ReflectionResponse
+from ..models import Inference, ProfileSummaryResponse, ReflectionResponse
 from .jobs import job_key, read_job, save_job
 from .model import (
     MAX_DREAM_OUTPUT_TOKENS,
@@ -39,6 +40,15 @@ source_ids 只允许本批真实事实的 ID。只输出 JSON {"proposals":[{"te
 def _fingerprint(rows: list[dict]) -> str:
     data = json.dumps(rows, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(data.encode("utf-8")).hexdigest()
+
+
+def _revision(db) -> tuple[int, ...]:
+    return tuple(
+        row[0]
+        for row in db.execute(
+            "SELECT version FROM revisions WHERE domain IN ('memories','inferences') ORDER BY domain"
+        )
+    )
 
 
 def _state(service):
@@ -106,11 +116,12 @@ class Dream:
         self.service = service
         self.paths = service.paths
         self.path = job_key(self.paths, "dream", "job")
+        self._active_lock = Lock()
         self._active_request: tuple[str, int, int] | None = None
 
     def status(self, *, live: bool = False) -> dict:
-        with transaction(self.paths):
-            job = read_job(self.path) or {"state": "idle"}
+        job = read_job(self.path) or {"state": "idle"}
+        with self._active_lock:
             if (
                 live
                 and job["state"] == "queued"
@@ -123,7 +134,7 @@ class Dream:
     def _generate(self, job, config, prompt, payload, schema):
         # 只有预留该请求的常驻服务可以将其报告为运行中。
         request = (job["id"], job["generation"], job["requests"])
-        with transaction(self.service.paths):
+        with self._active_lock:
             self._active_request = request
         try:
             options = (
@@ -133,7 +144,7 @@ class Dream:
             )
             return ask(config, prompt, payload, schema, **options)
         finally:
-            with transaction(self.service.paths):
+            with self._active_lock:
                 if self._active_request == request:
                     self._active_request = None
 
@@ -176,51 +187,83 @@ class Dream:
         job = self.status()
         return job["state"] == "queued" and job.get("retry_at", 0) <= time.time()
 
+    @contextmanager
+    def _publish_snapshot(
+        self,
+        job: dict,
+        version: str,
+        revision: tuple[int, ...],
+        existing: list[Inference],
+        stop: Event,
+    ) -> Iterator[list[Inference] | None]:
+        while True:
+            with transaction(self.paths) as db:
+                if stop.is_set() or read_job(self.path) != job:
+                    yield None
+                    return
+                if _revision(db) == revision:
+                    yield existing
+                    return
+            # 待审核推断等变化不一定影响证据正文。释放写锁后读新快照，
+            # 再在写事务内核对，避免丢弃有效回答或遗漏刚新增的重复提议。
+            with transaction(self.paths, write=False) as db:
+                revision = _revision(db)
+                _, _, existing, latest_version = _state(self.service)
+            if latest_version != version:
+                yield None
+                return
+
     def step(self, stop: Event) -> None:
         """执行一次模型请求，随后原子地发布结果或保存检查点。"""
-        with transaction(self.paths):
-            job = read_job(self.path)
-            if not job or job["state"] != "queued" or stop.is_set():
+        with transaction(self.paths, write=False) as db:
+            checkpoint = read_job(self.path)
+            if not checkpoint or checkpoint["state"] != "queued" or stop.is_set():
                 return
+            revision = _revision(db)
             facts, confirmed, existing, version = _state(self.service)
-            # 规划和发送使用同一快照，即使用户在请求期间切换了模型。
-            settings = self.service.config
-            config = replace(settings, llm=replace(settings.llm), dream=replace(settings.dream))
-            window = effective_context_window(config.llm, config.dream.context_window)
-            model = config.llm.litellm_model()
-            if job["version"] != version:
-                job.pop("retry_output_tokens", None)
-                job.update(
-                    version=version,
-                    phase="profile",
-                    batch=0,
-                    cursor=[0, 0],
-                    partial="",
-                )
-            if job.get("model") != model:
-                job.pop("retry_output_tokens", None)
-                job.update(model=model, failures=0, retry_at=0)
-                job.pop("error", None)
-            job["window"] = window
-            phase = job["phase"]
-            evidence = facts + confirmed if phase == "profile" else facts
-            prompt = PROFILE if phase == "profile" else INFER
-
-            def payload(batch):
-                if phase == "profile":
-                    return {"draft": job["partial"], "evidence": batch}
-                ids = {row["id"] for row in batch}
-                return {
-                    "facts": batch,
-                    "known": [i.text for i in existing if ids.intersection(i.source_ids)],
-                }
-
-            minimum_output = 2048 if config.llm.is_spark else 256
-            reserve = min(dream_output_ceiling(config.llm), max(minimum_output, window // 4))
-            rows, next_cursor = _next_batch(
-                evidence, job["cursor"], prompt, payload, window - MESSAGE_OVERHEAD - reserve
+        job = dict(checkpoint)
+        # 规划和发送使用同一快照，即使用户在请求期间切换了模型。
+        settings = self.service.config
+        config = replace(settings, llm=replace(settings.llm), dream=replace(settings.dream))
+        window = effective_context_window(config.llm, config.dream.context_window)
+        model = config.llm.litellm_model()
+        if job["version"] != version:
+            job.pop("retry_output_tokens", None)
+            job.update(
+                version=version,
+                phase="profile",
+                batch=0,
+                cursor=[0, 0],
+                partial="",
             )
-            request_payload = payload(rows)
+        if job.get("model") != model:
+            job.pop("retry_output_tokens", None)
+            job.update(model=model, failures=0, retry_at=0)
+            job.pop("error", None)
+        job["window"] = window
+        phase = job["phase"]
+        evidence = facts + confirmed if phase == "profile" else facts
+        prompt = PROFILE if phase == "profile" else INFER
+
+        def payload(batch):
+            if phase == "profile":
+                return {"draft": job["partial"], "evidence": batch}
+            ids = {row["id"] for row in batch}
+            return {
+                "facts": batch,
+                "known": [i.text for i in existing if ids.intersection(i.source_ids)],
+            }
+
+        minimum_output = 2048 if config.llm.is_spark else 256
+        reserve = min(dream_output_ceiling(config.llm), max(minimum_output, window // 4))
+        rows, next_cursor = _next_batch(
+            evidence, job["cursor"], prompt, payload, window - MESSAGE_OVERHEAD - reserve
+        )
+        request_payload = payload(rows)
+        # 只有检查点和证据仍匹配时，才为这批输入预留模型预算。
+        with transaction(self.paths) as db:
+            if stop.is_set() or read_job(self.path) != checkpoint or _revision(db) != revision:
+                return
             if rows:
                 if job["remaining_requests"] == 0:
                     job.update(state="paused", updated_at=utc_timestamp())
@@ -254,11 +297,8 @@ class Dream:
             )
             if any(not set(p.source_ids).issubset(ids) for p in proposals):
                 raise ValueError("Dream proposed evidence outside its source batch.")
-        with transaction(self.paths):
-            if stop.is_set() or read_job(self.path) != job:
-                return
-            _, _, latest_inferences, latest_version = _state(self.service)
-            if latest_version != version:
+        with self._publish_snapshot(job, version, revision, existing, stop) as current_inferences:
+            if current_inferences is None:
                 return
             job["batch"] += 1
             job["cursor"] = next_cursor
@@ -280,7 +320,7 @@ class Dream:
                         job["state"] = "completed"
             else:
                 known = {
-                    (i.text.strip().casefold(), frozenset(i.source_ids)) for i in latest_inferences
+                    (i.text.strip().casefold(), frozenset(i.source_ids)) for i in current_inferences
                 }
                 for proposal in proposals:
                     key = (proposal.text.strip().casefold(), frozenset(proposal.source_ids))

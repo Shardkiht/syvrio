@@ -7,21 +7,20 @@ import json
 import sqlite3
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..errors import SyvrioError
-from .paths import SyvrioPaths
+from .paths import SyvrioPaths, same_storage_path
 
-SCHEMA_VERSION = 1
 APPLICATION_ID = 0x53595652
 
 
 class DatabaseError(SyvrioError, ValueError):
-    """数据库版本、归属或事务用法无效。"""
+    """数据库结构、归属或事务用法无效。"""
 
 
 def encode(value: object) -> str:
@@ -53,16 +52,47 @@ def database_path(paths: SyvrioPaths) -> Path:
     return paths.vault_dir / "syvrio.sqlite3"
 
 
-def _schema(db: sqlite3.Connection) -> None:
-    version = db.execute("PRAGMA user_version").fetchone()[0]
-    app = db.execute("PRAGMA application_id").fetchone()[0]
-    if (version, app) == (SCHEMA_VERSION, APPLICATION_ID):
+def _check_layout(db: sqlite3.Connection) -> None:
+    # 只编译查询来核对当前读写需要的结构，不扫描聊天记录。
+    try:
+        db.execute("""SELECT e.distilled, s.ready, t.preview, u.units, q.resume_at, g.state
+                   FROM session_events e, search_signatures s, tool_previews t,
+                        usage u, quota_pauses q, git_sync g LIMIT 0""")
+    except sqlite3.OperationalError as exc:
+        if exc.sqlite_errorcode != sqlite3.SQLITE_ERROR:
+            raise
+        raise DatabaseError("The Vault database does not have the current Syvrio layout.") from exc
+
+
+def require_current_schema(db: sqlite3.Connection) -> None:
+    if db.execute("PRAGMA application_id").fetchone()[0] != APPLICATION_ID:
+        raise DatabaseError("The configured database does not belong to Syvrio.")
+    _check_layout(db)
+
+
+def _initialize(db: sqlite3.Connection) -> None:
+    owner, pages = db.execute(
+        "SELECT application_id,page_count FROM pragma_application_id,pragma_page_count"
+    ).fetchone()
+    if owner == APPLICATION_ID:
+        _check_layout(db)
         return
-    if version or app or db.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone():
-        raise DatabaseError(
-            "Unsupported database. Open a Syvrio SQLite backup or an empty database."
-        )
-    # executescript 会隐式提交，逐条执行，建库及版本号同一事务发布。
+    if owner or pages:
+        raise DatabaseError("Choose an empty database or an existing Syvrio Vault.")
+    # 只为新库取得写锁。并发首次打开时，等待方复核先取得锁的一方已提交的结构。
+    db.execute("BEGIN IMMEDIATE")
+    owner = db.execute("PRAGMA application_id").fetchone()[0]
+    if owner == APPLICATION_ID:
+        _check_layout(db)
+    elif owner or db.execute("SELECT 1 FROM sqlite_schema LIMIT 1").fetchone():
+        raise DatabaseError("The configured database does not belong to Syvrio.")
+    else:
+        _create_schema(db)
+    db.commit()
+
+
+def _create_schema(db: sqlite3.Connection) -> None:
+    # 逐条执行，保证当前表、索引、触发器和应用标识在同一事务内发布。
     sql = Path(__file__).with_name("schema.sql").read_text(encoding="utf-8")
     statement = ""
     for line in sql.splitlines(keepends=True):
@@ -77,7 +107,36 @@ def _schema(db: sqlite3.Connection) -> None:
             db.execute(f"""CREATE TRIGGER rev_{domain}_{event} AFTER {event} ON {domain}
                 BEGIN UPDATE revisions SET version=version+1 WHERE domain='{domain}'; END""")
     db.execute(f"PRAGMA application_id={APPLICATION_ID}")
-    db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+    _install_projections(db)
+
+
+def _install_projections(db: sqlite3.Connection) -> None:
+    from . import projection_revisions, session_indexes, session_previews
+
+    session_indexes.install(db)
+    session_previews.install(db)
+    projection_revisions.install(db)
+
+
+def keep_wal_open(paths: SyvrioPaths) -> sqlite3.Connection:
+    """由持有 Vault 的后端保留无事务连接，短事务关闭时无需反复清空 WAL。"""
+    with transaction(paths):
+        pass
+    db = sqlite3.connect(database_path(paths), isolation_level=None, check_same_thread=False)
+    try:
+        db.execute("SELECT 1 FROM sessions LIMIT 1").fetchone()
+        return db
+    except BaseException:
+        db.close()
+        raise
+
+
+def transaction_mode() -> str | None:
+    """返回当前任务的事务模式，用于决定是否可以共享或发布缓存。"""
+    unit = _current.get()
+    if unit is None or unit.owner != _owner():
+        return None
+    return "write" if unit.writable else "read"
 
 
 def on_commit(callback):
@@ -88,16 +147,48 @@ def on_commit(callback):
 
 
 @contextmanager
+def wal_connection(
+    path: Path, *, initialize: Callable[[sqlite3.Connection], None] | None = None
+) -> Iterator[sqlite3.Connection]:
+    """主库和派生缓存使用独立的 WAL，同时遵守同一套并发打开和刷盘设置。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    db = sqlite3.connect(path, timeout=10, isolation_level=None)
+    db.row_factory = sqlite3.Row
+    try:
+        db.execute("PRAGMA foreign_keys=ON")
+        db.execute("PRAGMA busy_timeout=10000")
+        if initialize is not None:
+            initialize(db)
+        if db.execute("PRAGMA journal_mode").fetchone()[0] != "wal":
+            deadline = time.monotonic() + 10
+            while True:
+                try:
+                    mode = db.execute("PRAGMA journal_mode=WAL").fetchone()[0]
+                    break
+                except sqlite3.OperationalError as exc:
+                    if (
+                        exc.sqlite_errorcode & 255 != sqlite3.SQLITE_BUSY
+                        or time.monotonic() >= deadline
+                    ):
+                        raise
+                    time.sleep(0.025)
+            if mode != "wal":
+                raise DatabaseError("WAL is unavailable for this database.")
+        db.execute("PRAGMA synchronous=FULL")
+        yield db
+    finally:
+        db.close()
+
+
+@contextmanager
 def transaction(paths: SyvrioPaths, *, write: bool = True) -> Iterator[sqlite3.Connection]:
     if sqlite3.sqlite_version_info < (3, 38, 0):
         raise DatabaseError("Syvrio requires SQLite 3.38 or later for built-in JSON support.")
     path = database_path(paths)
-    if path.resolve() != path:
-        raise DatabaseError("The database must be inside the configured Vault.")
     owner = _owner()
     parent = _current.get()
     if parent is not None and parent.owner == owner:
-        if path != parent.path or write and not parent.writable:
+        if not same_storage_path(path, parent.path) or write and not parent.writable:
             raise DatabaseError(
                 "A nested operation cannot switch databases or promote a read snapshot."
             )
@@ -118,42 +209,24 @@ def transaction(paths: SyvrioPaths, *, write: bool = True) -> Iterator[sqlite3.C
         finally:
             parent.depth -= 1
         return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    db = sqlite3.connect(path, timeout=10, isolation_level=None)
-    db.row_factory = sqlite3.Row
-    try:
-        db.execute("PRAGMA foreign_keys=ON")
-        db.execute("PRAGMA busy_timeout=10000")
-        if db.execute("PRAGMA journal_mode").fetchone()[0] != "wal":
-            deadline = time.monotonic() + 10
-            while True:
-                try:
-                    mode = db.execute("PRAGMA journal_mode=WAL").fetchone()[0]
-                    break
-                except sqlite3.OperationalError as exc:
-                    if exc.sqlite_errorcode != sqlite3.SQLITE_BUSY or time.monotonic() >= deadline:
-                        raise
-                    time.sleep(0.025)
-            if mode != "wal":
-                raise DatabaseError("WAL is unavailable for this Vault.")
-        db.execute("PRAGMA synchronous=FULL")
-        if db.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION:
-            db.execute("BEGIN IMMEDIATE")
-            _schema(db)
-            db.commit()
-        if db.execute("PRAGMA application_id").fetchone()[0] != APPLICATION_ID:
-            raise DatabaseError("The configured database belongs to another application.")
+    # 嵌套操作已经绑定同一个已打开的句柄；只有重新打开文件才需检查路径。
+    if not same_storage_path(path.resolve(), path):
+        raise DatabaseError("The database must be inside the configured Vault.")
+    with wal_connection(path, initialize=_initialize) as db:
         if not write:
             db.execute("PRAGMA query_only=ON")
         db.execute("BEGIN IMMEDIATE" if write else "BEGIN")
         unit = Unit(path, db, owner, write)
+        previous_changes = db.total_changes
         token = _current.set(unit)
         try:
             yield db
+            if write and db.total_changes != previous_changes:
+                from .session_indexes import refresh_search
+
+                refresh_search(db)
             db.commit()
         finally:
             _current.reset(token)
         for callback in unit.committed:
             callback()
-    finally:
-        db.close()

@@ -77,7 +77,7 @@ def _schema(model: type[BaseModel]) -> dict:
 def register_memory_tools(
     tools: ToolRegistry,
     service: MemoryService,
-    session: Session,
+    get_session: Callable[[], Session],
     evidence: RecallContext,
     timeout: float,
 ) -> None:
@@ -122,7 +122,9 @@ def register_memory_tools(
         "search_chats",
         "按一个关键词或连续原文片段搜索其他未归档会话的标题和对话正文。返回原文片段、角色和来源 ID；没有命中时可换词。",
         ChatSearch,
-        lambda r: service.session_query.search_chats(r.query, r.limit, exclude_session=session.id),
+        lambda r: service.session_query.search_chats(
+            r.query, r.limit, exclude_session=get_session().id
+        ),
     )
     register("read_topic", "按主题读取全部有效事实。", Topic, lambda r: service.read_topic(r.topic))
     register(
@@ -141,6 +143,7 @@ def register_memory_tools(
     def mutate(name: str, request: BaseModel) -> dict:
         payload = request.model_dump(exclude_none=True)
         target = payload.get("entry_id")
+        session = get_session()
         message_id = session.last_user_message_id()
         if not message_id:
             raise ValueError("A chat write requires an original user message.")

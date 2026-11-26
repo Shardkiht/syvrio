@@ -196,6 +196,7 @@ class HistoryResponse(BaseModel):
     items: list[HistoryItem]
     summary: str | None = None
     has_earlier: bool = False
+    earlier_cursor: int | None = None
     current: bool = False
 
 

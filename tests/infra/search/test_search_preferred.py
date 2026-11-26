@@ -514,11 +514,11 @@ def test_compare_cache_missing_verification_is_discarded(tmp_path):
     import json
     from dataclasses import asdict
 
-    from syvrio.infra.storage.database import transaction
+    from syvrio.infra.storage.cache_database import cache_transaction
 
     path = vault_paths(tmp_path / "vault")
     result = _strong("searxng", "https://example.com/s")
-    with transaction(path) as db:
+    with cache_transaction(path, "web-search") as db:
         db.execute(
             "INSERT INTO search_cache VALUES(?,?,?)",
             (

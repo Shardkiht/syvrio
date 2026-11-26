@@ -8,7 +8,8 @@ from threading import Lock
 
 from ...infra.session import HistoryRevision
 from ...infra.session.errors import SessionProtectedError
-from .channel import APIChannel, APIError
+from ...infra.storage.database import transaction
+from .channel import HISTORY_ITEM_LIMIT, TOOL_CONTENT_LIMIT, APIChannel, APIError
 from .models import (
     CommandResponse,
     CreateSessionResponse,
@@ -43,8 +44,10 @@ class ClientViews:
     ) -> SwitchSessionResponse:
         if not include_history:
             self.owner._validate_session_id(session_id)
-            session = self.owner.directory.select(key, session_id)
-            return SwitchSessionResponse(session_id=session.id, title=session.title())
+            channel = self.owner.directory.select(key, session_id)
+            return SwitchSessionResponse(
+                session_id=session_id, title=channel.conversation.sessions.session_title(session_id)
+            )
         version, history = self.versioned_history(key, session_id, select=True)
         return SwitchSessionHistoryResponse(
             session_id=history.session_id,
@@ -59,27 +62,33 @@ class ClientViews:
         self.owner._validate_session_id(session_id)
         try:
             if select:
-                snapshot = self.owner.directory.select_snapshot(key, session_id)
-                current = True
-            else:
-                channel = self.owner.directory.channel(key)
-                snapshot = channel.conversation.sessions.read_snapshot(session_id)
-                current = channel.conversation.current_id == session_id
+                self.owner.directory.select(key, session_id)
+            channel = self.owner.directory.channel(key)
+            store = channel.conversation.sessions
+            current = select or channel.conversation.current_id == session_id
+            with transaction(store.paths, write=False):
+                revision = HistoryRevision(session_id, store.history_version(session_id))
+                with self._history_lock:
+                    projection = self._histories.get(revision)
+                if projection is None:
+                    page = store.history_window(
+                        session_id,
+                        HISTORY_ITEM_LIMIT,
+                        archived=False,
+                        before_seq=None,
+                        tool_preview=TOOL_CONTENT_LIMIT,
+                    )
+                    history = self.owner.project_history(page, current=True)
+                    content = history.model_dump_json(exclude={"current"}).encode()
+                    projection = hashlib.sha256(content).hexdigest(), history
+                    with self._history_lock:
+                        self._histories[revision] = projection
+                        if len(self._histories) > 16:
+                            self._histories.popitem(last=False)
         except KeyError as exc:
             raise APIError("session_not_found", "Session not found.", 404) from exc
         except (ValueError, OSError) as exc:
             raise APIError("session_unreadable", "Session history could not be read.", 500) from exc
-        with self._history_lock:
-            projection = self._histories.get(snapshot.history_revision)
-            if projection is None:
-                history = self.owner.project_history(snapshot.session, current=True)
-                # 关闭聊天和提炼记忆会追加内部记录，界面显示的历史保持相同。
-                content = history.model_dump_json(exclude={"current"}).encode()
-                version = hashlib.sha256(content).hexdigest()
-                projection = (version, history)
-                self._histories[snapshot.history_revision] = projection
-                if len(self._histories) > 16:
-                    self._histories.popitem(last=False)
         version, history = projection
         return version, history if current else history.model_copy(update={"current": False})
 

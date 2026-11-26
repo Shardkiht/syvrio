@@ -1177,13 +1177,48 @@ def test_ensure_daemon_health_uses_spawn_port_when_url_has_no_port(monkeypatch):
     assert seen == ["http://127.0.0.1:3000"]
 
 
+def test_web_cache_is_independent_from_vault_writes(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from syvrio.infra.storage.database import transaction
+
+    paths = vault_paths(tmp_path / "vault")
+    cache = SearchCache(paths, ttl=60)
+
+    def save_and_read():
+        cache.set("test", [], "provider")
+        return cache.get_record("test")
+
+    with ThreadPoolExecutor(1) as executor, transaction(paths) as db:
+        assert (
+            db.execute("SELECT 1 FROM sqlite_schema WHERE name='search_cache'").fetchone() is None
+        )
+        assert executor.submit(save_and_read).result(timeout=5).provider == "provider"
+
+    file = paths.cache_dir / "web-search.sqlite3"
+    file.unlink()
+    assert cache.get_record("test") is None
+    assert save_and_read().provider == "provider"
+
+
+def test_unavailable_web_cache_preserves_search_results(tmp_path):
+    paths = vault_paths(tmp_path / "vault")
+    paths.cache_dir.mkdir(parents=True, exist_ok=True)
+    (paths.cache_dir / "web-search.sqlite3").write_bytes(b"invalid test cache")
+
+    cache = SearchCache(paths, ttl=60)
+    assert cache.get_record("test") is None
+    cache.set("test", [], "provider")
+    assert cache.get_record("test") is None
+
+
 def test_corrupted_cache_entry_is_treated_as_miss(tmp_path):
     import json
 
     path = vault_paths(tmp_path / "vault")
-    from syvrio.infra.storage.database import transaction
+    from syvrio.infra.storage.cache_database import cache_transaction
 
-    with transaction(path) as db:
+    with cache_transaction(path, "web-search") as db:
         db.executemany(
             "INSERT INTO search_cache VALUES(?,?,?)",
             [
@@ -1204,9 +1239,9 @@ def test_old_cache_without_verification_metadata_is_invalidated(tmp_path):
     import json
 
     path = vault_paths(tmp_path / "vault")
-    from syvrio.infra.storage.database import transaction
+    from syvrio.infra.storage.cache_database import cache_transaction
 
-    with transaction(path) as db:
+    with cache_transaction(path, "web-search") as db:
         db.execute(
             "INSERT INTO search_cache VALUES(?,?,?)",
             ("old", 9999999999, json.dumps({"provider": "fake", "results": []})),

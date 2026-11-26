@@ -1,6 +1,6 @@
 # SQLite 存储与恢复
 
-首次启动使用空 Vault。数据库文件位于 Vault 根目录，初始化在一个事务内写入应用标识和 schema 版本。版本不匹配或发现其他应用的数据表时启动失败。打开这个分支前请为它配置专用的 Vault 和 Runtime。
+首次启动使用空 Vault。业务主库位于 Vault 根目录。初始化在一个事务内建立主库的表、索引和触发器，并写入应用标识。已有数据库直接按当前结构打开。打开这个分支前请为它配置专用的 Vault 和 Runtime。
 
 ## 数据布局
 
@@ -10,10 +10,13 @@
 | 待审与推断 | `candidates`、`candidate_related`、`inferences`、`inference_sources`。拒绝保留记录，审核推断独立于事实状态。 |
 | 会话 | `sessions`、`session_events`、`session_reasoning`。稳定消息 ID 用于定位引用；事件顺序、会话历史版本和归档标志入库。 |
 | 业务记录 | `audit` 是操作审计，`memory_changes` 记录事实字段变化；`undo_effects` 保存本回合影响的实体前像，`receipts` 保存幂等结果。 |
-| 后台与检索 | `jobs` 保存沉淀、Dream 和 Context 任务的检查点；`profile` 保存已发布结果。索引使用 `revisions`；向量按事实、模型与输入摘要核对。配额、暂停、搜索缓存和同步结果使用各自的表。 |
+| 后台与检索 | `jobs` 保存沉淀、Dream 和 Context 任务的检查点；`profile` 保存已发布结果。`revisions` 跟踪索引依赖的数据版本。 |
+| 搜索用量 | 主库的 `usage` 和 `quota_pauses` 记录各供应商的用量与暂停状态。搜索和网页抓取在同一事务里检查并预扣供应商额度。 |
+| 本机 Git 同步 | 主库的 `git_sync` 记录本机同步状态。恢复到新部署时清空此表。 |
+| 可重建缓存 | `Runtime/cache/vectors.sqlite3` 保存按模型、记忆 ID 和输入摘要核验的向量。`Runtime/cache/web-search.sqlite3` 保存有有效期的网页搜索结果。停服后可单独清理其中一个缓存库及其同名 WAL 附属文件，下次使用时会重新生成。 |
 | 附件 | `attachments` 引用 `attachment_objects`，原件在 `attachments/objects/<前两位>/<sha256>`。预留及清理队列记录跨介质处理进度。 |
 
-需要 SQLite 3.38 或更新版本。可运行 `python -c "import sqlite3; print(sqlite3.sqlite_version)"` 核对当前 Python 实际链接的版本。数据库启用外键、WAL 与 FULL 同步。同一线程和任务内的嵌套写入使用保存点，外层成功后才发布。批准候选、按消息沉淀、发布画像和撤回编辑均需要在提交前核对对象状态。模型推理和向量计算可以在读快照之后进行，迟到结果须复核。归档保留原始数据，正式事实仍引用会话时拦截永久删除。绝对时刻用 UTC，来源消息的本地日期和事实的年、月、日精度独立保存。
+需要 SQLite 3.38 或更新版本。可运行 `python -c "import sqlite3; print(sqlite3.sqlite_version)"` 核对当前 Python 实际链接的版本。数据库启用外键、WAL 与 FULL 同步。常驻后端保留一个空闲连接，各次读写仍使用独立事务。同一线程和任务内的嵌套写入使用保存点，外层成功后才发布。批准候选、按消息沉淀、发布画像和撤回编辑均需要在提交前核对对象状态。模型推理和向量计算可以在读快照之后进行，迟到结果须复核。归档保留原始数据，正式事实仍引用会话时拦截永久删除。绝对时刻用 UTC，来源消息的本地日期和事实的年、月、日精度独立保存。
 
 ## Git 阅读视图
 
@@ -29,7 +32,7 @@ syvrio restore /backup/syvrio-01 /srv/syvrio/restored-vault
 syvrio verify-attachments --vault /srv/syvrio/restored-vault
 ```
 
-备份持有独占租约，使用 SQLite backup API 复制一致数据库，与当前及归档会话引用的原件、可选 SOUL.md 和哈希清单一起发布。恢复检查清单、附件长度、SHA-256、SQLite 完整性和外键，全部通过后才发布目标目录。任务、游标和幂等记录随库恢复，可重建的向量、搜索缓存及旧同步状态会清除。部署 TOML、凭据、Git 远端和服务启动设置需要分别管理。用独立 Runtime 启动恢复出的 Vault，后端会重新绑定并协调任务。
+备份持有独占租约，使用 SQLite backup API 复制业务主库，与当前及归档会话引用的原件、可选 SOUL.md 和哈希清单一起发布。恢复检查清单、附件长度、SHA-256、SQLite 完整性和外键，全部通过后才发布目标目录。任务、游标、幂等记录、供应商日月计数和暂停期限随主库恢复。恢复后的部署重新记录 Git 同步状态。使用新的 Runtime 时，向量和网页搜索结果按需重新缓存。部署 TOML、凭据、Git 远端和服务启动设置需要分别管理。用独立 Runtime 启动恢复出的 Vault，后端会重新绑定并协调任务。
 
 ## 验证存储与客户端
 
@@ -40,3 +43,18 @@ python -m pytest -q tests/infra/test_sqlite_transactions.py tests/infra/test_att
 python -m pytest -q tests/backend/test_sqlite_clients.py tests/application/test_application_architecture.py
 python evals/recall_gold_eval.py --keyword
 ```
+
+## 从历史文件 Vault 导入
+
+在 SQLite 分支根目录运行 `uv sync --frozen`。用 `scripts/import_legacy_vault.py` 迁移数据。先配置并初始化目标 SQLite Vault。若目标主库是旧版，先按该部署原有的 Vault 和 Runtime 配置启动一次新版后端，完成缓存迁移后再停服导入。下例在副本上预演，参数顺序从最新来源排到最旧来源。
+
+```sh
+uv run python scripts/import_legacy_vault.py --source /data/vault-v2 /data/runtime-v2 --source /data/old-vault /data/old-runtime --target /data/sqlite-vault --timezone Asia/Shanghai
+```
+
+预演通过后，停止目标常驻后端，在同一命令末尾加 `--apply --backup-dir /backup/syvrio-imports`。完成后用原配置重启。Windows 使用相同参数，路径替换为本机目录。没有配套 Runtime 时填 `-`，指定时区用于解释缺少偏移量的历史时间。用 `--archive-only VAULT RUNTIME` 保留旧备份的文件，避免把快照中的旧状态恢复为当前业务状态。
+
+- 会话按事件顺序写入，保留 ID、撤销、归档、摘要、工具结果和可找到的本地思考记录。相同会话只合并前缀一致的日志，分叉会中止。记忆、推断和候选按 ID 归并，以优先来源为准。多个来源的原文在档案里都可查阅。
+- 正式记忆及推断的来源经过外键核验。附件逐个核对 SHA-256，在目标 Vault 的标准对象目录保存一份原件，消息中的文件名和引用分别入库。目标里已有的画像与 SOUL 优先保留。
+- 每次正式运行生成一个私有备份目录。`before/` 是可用 `syvrio restore` 还原的导入前备份。`legacy-source.sqlite3` 保存原始文件，可关联 `sources`、`files`、`objects` 按来源、路径和 SHA-256 查阅。`report.json` 记录实际写入数量和缺失的思考附件。旧运行锁、Git 对象库和上传暂存目录不属于业务数据。Runtime 仅采集思考附件和已发布画像。
+- 正式导入在一个业务事务内提交。重复运行同一输入时通过审计回执跳过已导入对象。后续同一 ID 的源记录发生变化时会报告冲突，避免覆盖 SQLite 中继续使用的数据。已结束的旧调度任务和文件版凭据不在新后端重放。

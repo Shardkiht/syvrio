@@ -144,7 +144,7 @@ class KeywordRetriever[Record: SearchRecord]:
                     token: math.log1p((len(corpus) - count + 0.5) / (count + 0.5))
                     for token, count in frequencies.items()
                 }
-            if snapshot.revision > self._revision:
+            if snapshot.revision is not None and snapshot.revision > self._revision:
                 self._entries, self._bm25, self._fields = entries, bm25, fields
                 self._revision = snapshot.revision
             return entries, bm25, fields

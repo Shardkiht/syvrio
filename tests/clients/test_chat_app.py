@@ -129,34 +129,47 @@ async def test_inference_screen_edit_labels_and_shortcut_letters_in_editor(resid
         assert str(screen.query_one("#inference-hint").render()) == "Ctrl+S Save · Esc Cancel"
 
 
-async def test_inference_sources_use_one_fact_scan(service, resident_backend, monkeypatch):
+async def test_inference_sources_batch_only_referenced_facts(
+    service, resident_backend, monkeypatch
+):
     from syvrio.app.tui.resident import ResidentChatApp
 
     _, client = resident_backend
     app = ResidentChatApp(client)
     sources = [service.note(f"合成来源 {index}") for index in range(3)]
+    service.note("未被引用的事实")
+    proposals = set()
     for index in range(6):
-        service.propose_inference(f"合成推断 {index}", [sources[index % 3].id], kind="profile")
-    calls = []
-    entries = service.store.entries
+        ids = [sources[index % 3].id, sources[(index + 1) % 3].id]
+        proposals.add(service.propose_inference(f"合成推断 {index}", ids, kind="profile").id)
+    source_text = {entry.id: entry.text for entry in sources}
+    batches = []
+    read_sources = service.store.source_texts
 
-    def counted_entries(*args, **kwargs):
-        calls.append(kwargs)
-        return entries(*args, **kwargs)
+    def observe(ids):
+        batches.append(set(ids))
+        return read_sources(ids)
 
-    monkeypatch.setattr(service.store, "entries", counted_entries)
-    monkeypatch.setattr(service.store, "find", lambda *_: pytest.fail("来源不得逐个 find 全库扫描"))
+    def unexpected(*args, **kwargs):
+        pytest.fail("来源应一次按引用 ID 批量读取，不能全表读取或逐条查询")
+
     async with app.run_test(size=(100, 30)) as pilot:
         await app.workers.wait_for_complete()
-        before = len(calls)
+        monkeypatch.setattr(service.store, "entries", unexpected)
+        monkeypatch.setattr(service.store, "find", unexpected)
+        monkeypatch.setattr(service.store, "source_texts", observe)
         screen = await _open_resident_inferences(app, pilot)
-        assert len(calls) - before == 1
-        assert calls[-1] == {"include_inactive": True}
-        source_text = {entry.id: entry.text for entry in sources}
-        selected = screen._current()
-        assert source_text[selected.source_ids[0]] in str(
-            screen.query_one("#inference-detail-sources").render()
-        )
+        visited = set()
+        for index in range(len(proposals)):
+            if index:
+                await pilot.press("down")
+                await pilot.pause()
+            selected = screen._current()
+            visited.add(selected.id)
+            detail = str(screen.query_one("#inference-detail-sources").render())
+            assert all(source_text[key] in detail for key in selected.source_ids)
+        assert visited == proposals
+        assert batches == [set(source_text)]
 
 
 async def test_inference_edit_failure_preserves_draft_and_retries(

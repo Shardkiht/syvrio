@@ -30,6 +30,21 @@ def test_context_tag_roundtrip_and_status_change_preserve_id(tmp_path):
     assert loaded.text == "参加合成展览"
 
 
+def test_cached_snapshot_tracks_topic_visibility_and_does_not_share_mutable_context(tmp_path):
+    store = MemoryStore(tmp_path)
+    entry = store.append("topic", "synthetic", context=MemoryContext(location="原地点"))
+    snapshot = store.snapshot()
+    assert store.snapshot() is snapshot
+    snapshot.by_id[entry.id].as_recall().context.location = "未保存"
+    assert store.snapshot().by_id[entry.id].context.location == "原地点"
+    with transaction(store.paths) as db:
+        db.execute("UPDATE topics SET archived=1 WHERE name=?", (entry.topic,))
+    assert store.snapshot().records == ()
+    with transaction(store.paths) as db:
+        db.execute("UPDATE topics SET archived=0 WHERE name=?", (entry.topic,))
+    assert store.snapshot().records == snapshot.records
+
+
 def test_empty_context_omits_optional_section(tmp_path):
     store = MemoryStore(tmp_path)
     entry = store.append("test", "旧格式", context=MemoryContext())

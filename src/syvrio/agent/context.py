@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+from collections import OrderedDict
 from dataclasses import dataclass, field
+from threading import Lock
 from typing import Callable, Literal
 
 from ..infra.config import ChatConfig, LLMConfig
@@ -10,6 +12,7 @@ from ..infra.llm.client import chat_history
 from ..infra.llm.tokens import estimate_messages_tokens, estimate_tokens, truncate_to_tokens
 from ..infra.observability.diagnostics import record_event
 from ..infra.session import Session, SessionStore, new_message_id, transcript
+from ..infra.storage.database import transaction, transaction_mode
 from .summarizer import LLMSummarizer, Summarizer
 
 SUMMARY_MAX_CHARS = 1200
@@ -141,6 +144,8 @@ class ContextManager:
         self.summarizer = summarizer
         self.sessions = sessions
         self.request_distillation = request_distillation
+        self._meter_cache: OrderedDict[tuple, int] = OrderedDict()
+        self._meter_lock = Lock()
 
     @property
     def input_budget(self) -> int:
@@ -178,17 +183,57 @@ class ContextManager:
         active_message_id: str | None = None,
     ) -> int:
         """估算已落盘消息；正在继续工具链时保留本轮可重放的思考。"""
+        return self._estimate_history(
+            session.summary_text(),
+            session.records_after_summary(),
+            bool(active_message_id and session.last_user_message_id() == active_message_id),
+            system_prompt,
+            tool_tokens,
+        )
+
+    def estimate_saved_usage(
+        self,
+        session_id: str,
+        system_prompt: str,
+        tool_tokens: int,
+        *,
+        active_message_id: str | None,
+    ) -> int:
+        _, source = chat_history(self.model_config, [])
+        with transaction(self.sessions.paths, write=False):
+            version = self.sessions.history_version(session_id)
+            key = (session_id, version, source, active_message_id, system_prompt, tool_tokens)
+            shared = transaction_mode() == "read"
+            if shared:
+                with self._meter_lock:
+                    if key in self._meter_cache:
+                        self._meter_cache.move_to_end(key)
+                        return self._meter_cache[key]
+            summary, history, active = self.sessions.context_history(
+                session_id,
+                include_reasoning=bool(source),
+                active_message_id=active_message_id,
+            )
+        used = self._estimate_history(summary, history, active, system_prompt, tool_tokens)
+        if shared:
+            with self._meter_lock:
+                self._meter_cache[key] = used
+                if len(self._meter_cache) > 16:
+                    self._meter_cache.popitem(last=False)
+        return used
+
+    def _estimate_history(
+        self, summary: str, history: list[dict], active: bool, system_prompt: str, tool_tokens: int
+    ) -> int:
         messages = [{"role": "system", "content": system_prompt}]
-        if summary := session.summary_text():
+        if summary:
             messages.append({"role": "system", "content": SUMMARY_TEMPLATE.format(summary)})
-        history = session.records_after_summary()
         messages.extend(records_to_messages(history))
         # 调度器可能刚开始新回合，也可能还在收尾。核对原话已落盘，且最后仍是工具调用或结果。
         continuing_tools = bool(
-            active_message_id
+            active
             and history
             and (history[-1].get("type") == "tool" or history[-1].get("tool_calls"))
-            and session.last_user_message_id() == active_message_id
         )
         return tool_tokens + self._request_tokens(messages, next_turn=not continuing_tools)
 
@@ -270,7 +315,11 @@ class ContextManager:
             self.input_budget - base_tokens - history_tokens,
         )
         messages = system + summary + history_messages + references + current
-        used = tool_tokens + self._request_tokens(messages, next_turn=not current)
+        # 摘要是单独的系统消息，不改变其余消息的思考重放规则。
+        if compacted_records:
+            used = tool_tokens + self._request_tokens(messages, next_turn=not current)
+        else:
+            used = base_tokens + history_tokens + estimate_messages_tokens(summary)
         self.check_input_budget(used, tool_tokens)
         return ContextPlan(
             messages=messages,

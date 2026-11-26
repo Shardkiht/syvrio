@@ -38,6 +38,9 @@ class MemoryContext(BaseModel):
             return ()
         return tuple(self.emotion.model_dump(exclude_none=True).values())
 
+    def index_text(self, text: str) -> str:
+        return "\n".join(value for value in (text, self.location, *self.emotion_texts) if value)
+
     @field_validator("event_time", "valid_from", "valid_to")
     @classmethod
     def validate_date(cls, value: str | None) -> str | None:
@@ -289,12 +292,7 @@ class Entry(BaseModel):
 
     @property
     def index_text(self) -> str:
-        context = self.context
-        if context is None:
-            return self.text
-        return "\n".join(
-            value for value in (self.text, context.location, *context.emotion_texts) if value
-        )
+        return self.context.index_text(self.text) if self.context else self.text
 
     @property
     def embedding_text(self) -> str:

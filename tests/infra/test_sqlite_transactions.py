@@ -13,7 +13,6 @@ from syvrio.infra.session.store import SessionStore
 from syvrio.infra.storage.backup import assemble
 from syvrio.infra.storage.database import (
     APPLICATION_ID,
-    SCHEMA_VERSION,
     DatabaseError,
     database_path,
     transaction,
@@ -32,11 +31,41 @@ def test_schema_empty_reopen_and_refuse_foreign_database(tmp_path):
             assert db.execute("PRAGMA foreign_keys").fetchone()[0] == 1
             assert db.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
             assert db.execute("PRAGMA application_id").fetchone()[0] == APPLICATION_ID
-            assert db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
     with sqlite3.connect(database_path(paths)) as db:
-        db.execute("PRAGMA user_version=99")
+        db.execute("PRAGMA application_id=7")
     with pytest.raises(DatabaseError), transaction(paths):
-        pytest.fail("accepted newer schema")
+        pytest.fail("accepted a foreign database")
+
+
+def test_database_rejects_redirected_file(tmp_path, monkeypatch):
+    paths = SyvrioPaths(tmp_path / "vault", tmp_path / "runtime")
+    path = database_path(paths)
+    outside = tmp_path / "outside" / path.name
+    resolve = Path.resolve
+
+    def redirect(candidate, *args, **kwargs):
+        return outside if candidate == path else resolve(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", redirect)
+    with pytest.raises(DatabaseError, match="inside the configured Vault"), transaction(paths):
+        pytest.fail("accepted redirected database")
+    assert not outside.exists()
+
+
+def test_incomplete_vault_is_refused_without_changing_its_tables(tmp_path):
+    paths = SyvrioPaths(tmp_path / "vault", tmp_path / "runtime")
+    paths.vault_dir.mkdir()
+    with sqlite3.connect(database_path(paths)) as db:
+        db.execute(f"PRAGMA application_id={APPLICATION_ID}")
+        db.execute("CREATE TABLE sessions(id TEXT PRIMARY KEY)")
+        db.execute("INSERT INTO sessions VALUES('kept')")
+    with pytest.raises(DatabaseError), transaction(paths):
+        pytest.fail("accepted an incomplete database")
+    with sqlite3.connect(database_path(paths)) as db:
+        assert db.execute("SELECT * FROM sessions").fetchall() == [("kept",)]
+        assert db.execute("SELECT name FROM sqlite_schema WHERE type='table'").fetchall() == [
+            ("sessions",)
+        ]
 
 
 def test_approve_failure_is_atomic_and_replay_is_idempotent(service):

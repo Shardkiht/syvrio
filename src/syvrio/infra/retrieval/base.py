@@ -29,10 +29,10 @@ class SearchRecord(Protocol):
 
 
 class RecordSnapshot[Record: SearchRecord](Protocol):
-    """一次读取的内容与递增版本号始终对应。"""
+    """已提交的快照携带递增版本；事务内的私有视图没有可共享的版本。"""
 
     @property
-    def revision(self) -> int: ...
+    def revision(self) -> int | None: ...
 
     @property
     def records(self) -> Sequence[Record]: ...

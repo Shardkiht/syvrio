@@ -10,7 +10,9 @@ from typing import Any
 
 from ..llm.tokens import estimate_tokens
 from ..security.secrets import redact_secrets
+from ..storage import session_previews
 from ..storage.database import encode, on_commit, transaction
+from ..storage.session_indexes import PENDING_USER
 from ..time import serialize_timestamp, timestamp_calendar_date, utc_now
 from .attachment_objects import cleanup
 from .errors import ConversationError
@@ -151,6 +153,8 @@ class SessionStore(SessionQuery):
             "INSERT INTO session_events(session_id,kind,message_id,role,at,content,payload) VALUES(?,?,?,?,?,?,?)",
             (key, kind, msg, role, at, content, encode(data)),
         )
+        if kind == "tool" and msg is not None and content and "\x00" in content:
+            session_previews.save(db, cur.lastrowid, content)
         if reason:
             db.execute("INSERT INTO session_reasoning VALUES(?,?)", (cur.lastrowid, encode(reason)))
         if kind == "undo":
@@ -184,10 +188,32 @@ class SessionStore(SessionQuery):
                 key,
             ),
         )
-        if kind in {"distilled", "summary", "title", "undo"}:
+        if kind in {"distilled", "summary"}:
+            if kind == "distilled":
+                boundary = (
+                    "seq <= (SELECT seq FROM session_events WHERE session_id=? AND message_id=?)"
+                )
+                args = (key, key, data.get("up_to"))
+            else:
+                boundary = "message_id IN (SELECT value FROM json_each(?))"
+                args = (key, encode(data["distilled_ids"]))
+            consumed = db.execute(
+                f"UPDATE session_events SET distilled=1 WHERE session_id=? AND {PENDING_USER} AND {boundary}",
+                args,
+            ).rowcount
+            if consumed:
+                db.execute(
+                    "UPDATE sessions SET undistilled=undistilled-? WHERE id=?", (consumed, key)
+                )
+        if kind == "title" and data.get("title") and data.get("source") != "llm":
+            db.execute("UPDATE sessions SET title=? WHERE id=?", (data["title"], key))
+        elif kind == "title":
+            title = self.load(key, include_reasoning=False).saved_title()
+            db.execute("UPDATE sessions SET title=? WHERE id=?", (title, key))
+        elif kind == "undo":
             projected = self.load(key, include_reasoning=False)
             db.execute(
-                "UPDATE sessions SET title=?,last_message_at=?,messages=?,undistilled=?  ,tokens=? WHERE id=?",
+                "UPDATE sessions SET title=?,last_message_at=?,messages=?,undistilled=?,tokens=? WHERE id=?",
                 (
                     projected.saved_title(),
                     projected.last_message_at,
@@ -199,31 +225,53 @@ class SessionStore(SessionQuery):
             )
 
     def append(self, session, record):
-        with transaction(self.paths):
-            result = self.append_event_transactionally(session, record)
+        with transaction(self.paths) as db:
+            result = self._append_events(db, session.id, (record,))
             on_commit(lambda: session.records.append(result))
             return result
 
     def append_event_transactionally(self, session, event, *following):
         with transaction(self.paths) as db:
-            if not self.exists(session.id):
-                raise KeyError(session.id)
-            for raw in (event, *following):
-                record = _redact_record(raw)
-                if record.get("reasoning") and record["reasoning"] != raw.get("reasoning"):
-                    record["reasoning"].pop("source", None)
-                _stamp_event(record)
-                self._insert(db, session.id, record)
-            return record
+            return self._append_events(db, session.id, (event, *following))
 
-    def advance_distilled(self, session: Session, message_id: str) -> None:
+    def _append_events(self, db, session_id, events):
+        self._validate_session_id(session_id)
+        if not db.execute(
+            "SELECT 1 FROM sessions WHERE id=? AND archived=0", (session_id,)
+        ).fetchone():
+            raise KeyError(session_id)
+        for raw in events:
+            record = _redact_record(raw)
+            if record.get("reasoning") and record["reasoning"] != raw.get("reasoning"):
+                record["reasoning"].pop("source", None)
+            _stamp_event(record)
+            self._insert(db, session_id, record)
+        return record
+
+    def close_browsed(self, session_id: str) -> str | None:
+        """浏览者离开时保留关闭事件和沉淀目标，无需将全部记录装入工作会话。"""
+        with transaction(self.paths) as db:
+            self._append_events(db, session_id, ({"type": "closed"},))
+            row = db.execute(
+                """SELECT message_id FROM session_events WHERE session_id=?
+                AND active=1 AND kind='message' AND role='user' ORDER BY seq DESC LIMIT 1""",
+                (session_id,),
+            ).fetchone()
+            return row[0] if row else None
+
+    def advance_distilled(self, session: Session | str, message_id: str) -> None:
         """将下一个游标与从该消息提取的所有事实一同提交。"""
-        with transaction(self.paths):
-            current = self.load(session.id, include_reasoning=False)
-            pending = current.undistilled_messages()
-            if not pending or pending[0]["id"] != message_id:
+        session_id = session.id if isinstance(session, Session) else session
+        with transaction(self.paths) as db:
+            first = db.execute(
+                f"SELECT message_id FROM session_events WHERE session_id=? AND {PENDING_USER} AND EXISTS(SELECT 1 FROM sessions WHERE id=session_id AND archived=0) ORDER BY seq LIMIT 1",
+                (session_id,),
+            ).fetchone()
+            if first is None or first[0] != message_id:
                 raise ValueError("Distillation cursor no longer points at this message.")
-            self.append_event_transactionally(current, {"type": "distilled", "up_to": message_id})
+            record = {"type": "distilled", "up_to": message_id}
+            _stamp_event(record)
+            self._insert(db, session_id, record)
 
     def rename(self, session: Session, title: str) -> None:
         if not isinstance(title, str) or not (title := title.strip()) or len(title) > 80:

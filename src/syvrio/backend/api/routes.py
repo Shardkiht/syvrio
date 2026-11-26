@@ -375,15 +375,16 @@ def create_api(
         limit: int = Query(HISTORY_ITEM_LIMIT, ge=1, le=HISTORY_ITEM_LIMIT),
         archived: bool = False,
         include_version: bool = False,
+        before_seq: int | None = Query(None, ge=1, le=2**63 - 1),
     ):
-        if include_version and not archived and limit == HISTORY_ITEM_LIMIT:
+        if before_seq is None and include_version and not archived and limit == HISTORY_ITEM_LIMIT:
             version, body = await asyncio.to_thread(
                 views.versioned_history, view_key(request), session_id
             )
             response.headers["X-Syvrio-History-Version"] = version
             return body
         return await asyncio.to_thread(
-            channel(request).history, session_id, limit, archived=archived
+            channel(request).history, session_id, limit, archived=archived, before_seq=before_seq
         )
 
     @app.get("/api/sessions/{session_id}/tools/{record_id}", tags=["sessions"])

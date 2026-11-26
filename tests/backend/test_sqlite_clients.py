@@ -129,7 +129,7 @@ async def test_four_clients_share_one_database(tmp_path, monkeypatch):
     paths = client_paths(config)
     assert (paths.vault_dir, paths.runtime_dir, paths.config_file) == (vault, runtime, config)
     assert discover(paths) is None
-    cli = shutil.which("syvrio")
+    cli = shutil.which("syvrio", path=os.path.dirname(sys.executable))
     assert cli
     try:
         with child(
@@ -146,7 +146,7 @@ async def test_four_clients_share_one_database(tmp_path, monkeypatch):
             result = subprocess.run(
                 [cli, "note", "synthetic cobalt prism", "--topic", "demo", "--config", str(config)],
                 capture_output=True,
-                text=True,
+                encoding="utf-8",
                 timeout=20,
             )
             assert result.returncode == 0, result.stderr

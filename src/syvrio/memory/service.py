@@ -549,7 +549,7 @@ class MemoryService:
         if not (period or location or emotion or original_query):
             if exact := self.current_field(query, snapshot=snapshot):
                 return [exact]
-        entries = {entry.id: entry for entry in snapshot.records}
+        entries = snapshot.by_id
         depth = max(len(entries), limit)
         hits = self.retriever.search(query, depth, snapshot=snapshot)
         if original_query and original_query != query:
@@ -679,13 +679,14 @@ class MemoryService:
         return self.store.entries(topic)
 
     def status(self) -> dict:
-        return {
-            "vault": str(self.config.vault),
-            "topics": len(self.store.topics()),
-            "entries": len(self.store.entries()),
-            "pending": len(self.pending()),
-            "retrieval": self.retrieval_mode,
-        }
+        with transaction(self.paths, write=False) as db:
+            counts = db.execute("""
+                SELECT (SELECT count(*) FROM topics WHERE archived=0) AS topics,
+                       (SELECT count(*) FROM memories m JOIN topics t ON t.name=m.topic
+                        WHERE m.status='active' AND t.archived=0) AS entries,
+                       (SELECT count(*) FROM candidates WHERE state='pending') AS pending
+            """).fetchone()
+        return {"vault": str(self.config.vault), **dict(counts), "retrieval": self.retrieval_mode}
 
 
 def get_service(

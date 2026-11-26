@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from multiprocessing import get_context
 from threading import Barrier, Event
 
 import numpy as np
@@ -13,12 +14,12 @@ from syvrio.infra.retrieval import (
     SearchHit,
     VectorRetriever,
 )
+from syvrio.infra.storage.cache_database import cache_transaction
 from syvrio.infra.storage.database import transaction
 from syvrio.infra.vault.files import initialize_vault
 from syvrio.infra.vault.sync import GitSyncService
 from syvrio.memory import service as service_module
 from syvrio.memory.store import MemoryStore
-from tests.support.storage import rows
 
 pytestmark = pytest.mark.retrieval
 
@@ -62,6 +63,11 @@ def persisted_vector(store, embedder, **kwargs):
     return VectorRetriever(store, embedder, paths=store.paths, **kwargs)
 
 
+def vector_rows(paths):
+    with cache_transaction(paths, "vectors", write=False) as db:
+        return db.execute("SELECT * FROM vectors ORDER BY memory_id,model").fetchall()
+
+
 def seeded_store(tmp_path) -> MemoryStore:
     store = MemoryStore(tmp_path)
     store.append("housing", "在找市区的房子，预算 4000 以内")
@@ -91,6 +97,55 @@ def test_incremental_sync_embeds_only_new_entries(tmp_path):
     store.append("career", "在找后端工作")
     retriever.search("工作", 3)
     assert len(embedder.passages) == 3
+
+
+def test_vector_cache_writes_only_changed_rows(tmp_path):
+    store = seeded_store(tmp_path)
+    retriever = persisted_vector(store, FakeEmbedder(GROUPS))
+    retriever.sync()
+    with cache_transaction(store.paths, "vectors") as db:
+        db.execute("CREATE TABLE updated_vectors(id TEXT)")
+        db.execute("""CREATE TRIGGER count_vector_updates AFTER UPDATE ON vectors BEGIN
+                      INSERT INTO updated_vectors VALUES(new.memory_id); END""")
+    with transaction(store.paths) as db:
+        changed = store.entries()[0]
+        db.execute("UPDATE memories SET text=text||' updated' WHERE id=?", (changed.id,))
+    retriever.sync()
+    with cache_transaction(store.paths, "vectors", write=False) as db:
+        assert [r[0] for r in db.execute("SELECT id FROM updated_vectors")] == [changed.id]
+
+
+def test_query_embedding_does_not_hold_index_lock(tmp_path):
+    store = seeded_store(tmp_path)
+    simultaneous = Barrier(3)
+
+    class ParallelEmbedder(FakeEmbedder):
+        def embed_query(self, text):
+            simultaneous.wait(timeout=5)
+            return super().embed_query(text)
+
+    retriever = persisted_vector(store, ParallelEmbedder(GROUPS))
+    retriever.sync()
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        results = list(pool.map(retriever.search, ["咖啡"] * 3))
+    assert all(hits and hits[0].topic == "general/preferences" for hits in results)
+
+
+def test_rolled_back_recall_cannot_publish_keyword_or_vector_indexes(tmp_path):
+    store = seeded_store(tmp_path)
+    keyword = KeywordRetriever(store)
+    vector = persisted_vector(store, FakeEmbedder(GROUPS))
+    for retriever in (keyword, vector):
+        assert retriever.search("工作") == []
+    with pytest.raises(RuntimeError, match="rollback"), transaction(store.paths):
+        temporary = store.append("career", "后端工作")
+        for retriever in (keyword, vector):
+            assert retriever.search("工作")[0].id == temporary.id
+        raise RuntimeError("rollback")
+    committed = store.append("career", "新的工作安排")
+    for retriever in (keyword, vector):
+        assert retriever.search("工作")[0].id == committed.id
+    assert temporary.id not in {r["memory_id"] for r in vector_rows(store.paths)}
 
 
 def test_concurrent_queries_share_one_complete_vector_index(tmp_path):
@@ -145,7 +200,7 @@ def test_concurrent_correction_does_not_drop_a_recalled_fact(service, mode, monk
         assert [hit.id for hit in read.result(timeout=10)] == [old.id]
 
     if mode != "keyword":
-        assert [r["memory_id"] for r in rows(service.paths, "vectors")] == [new.id]
+        assert [r["memory_id"] for r in vector_rows(service.paths)] == [new.id]
     assert [hit.id for hit in service.recall("咖啡")] == [new.id]
 
 
@@ -179,6 +234,157 @@ def test_cache_persists_across_instances(tmp_path):
     retriever = persisted_vector(store, embedder)
     assert retriever.search("房子", 3)
     assert embedder.passages == []
+
+
+def test_repeated_embedding_input_keeps_distinct_facts_and_reuses_vectors(tmp_path):
+    store = MemoryStore(tmp_path)
+    first = store.append("preferences", "咖啡")
+    second = store.append("drinks", "咖啡")
+    embedder = FakeEmbedder(GROUPS)
+    vector = persisted_vector(store, embedder)
+    assert {hit.id for hit in vector.search("咖啡")} == {first.id, second.id}
+    assert embedder.passages == ["咖啡"]
+
+    third = store.append("notes", "咖啡")
+    fresh = FakeEmbedder(GROUPS)
+    assert {hit.id for hit in persisted_vector(store, fresh).search("咖啡")} == {
+        first.id,
+        second.id,
+        third.id,
+    }
+    assert fresh.passages == []
+    cached = vector_rows(store.paths)
+    assert {row["memory_id"] for row in cached} == {first.id, second.id, third.id}
+    assert len({row["input_digest"] for row in cached}) == 1
+
+
+def test_vector_cache_removal_rebuilds_from_authoritative_memories(tmp_path):
+    store = seeded_store(tmp_path)
+    before = persisted_vector(store, FakeEmbedder(GROUPS)).search("咖啡")
+    path = store.paths.cache_dir / "vectors.sqlite3"
+    assert path.is_file()
+    with transaction(store.paths, write=False) as db:
+        assert db.execute("SELECT 1 FROM sqlite_schema WHERE name='vectors'").fetchone() is None
+    path.unlink()
+    embedder = FakeEmbedder(GROUPS)
+    assert persisted_vector(store, embedder).search("咖啡") == before
+    assert len(embedder.passages) == len(store.entries()) == len(vector_rows(store.paths))
+
+
+@pytest.fixture
+def cache_diagnostics(monkeypatch):
+    from syvrio.infra.observability import diagnostics
+
+    events = []
+    monkeypatch.setattr(diagnostics, "_RECORDED_ONCE", set())
+
+    def record(event, error):
+        events.append(event)
+        return True
+
+    monkeypatch.setattr(diagnostics, "record_event", record)
+    return events
+
+
+def test_hybrid_recall_with_damaged_vector_file_uses_memory_then_keywords(
+    service, cache_diagnostics
+):
+    first = service.note("偏爱清淡的茶", topic="preferences")
+    path = service.paths.cache_dir / "vectors.sqlite3"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    unknown_bytes = b"unreadable cache; preserve this file"
+    path.write_bytes(unknown_bytes)
+    embedder = FakeEmbedder(GROUPS)
+    service.retriever = HybridRetriever(
+        KeywordRetriever(service.store), persisted_vector(service.store, embedder)
+    )
+    assert service.recall("咖啡")[0].id == first.id
+
+    second = service.note("住房预算有限", topic="housing")
+    assert service.recall("房子")[0].id == second.id
+    assert len(embedder.passages) == 2
+    assert service.recall("咖啡")[0].id == first.id
+
+    service.retriever = HybridRetriever(
+        KeywordRetriever(service.store),
+        persisted_vector(service.store, FakeEmbedder(GROUPS, fail=True)),
+    )
+    assert service.recall("住房预算")[0].id == second.id
+    assert path.read_bytes() == unknown_bytes
+    assert cache_diagnostics.count("degraded.vector_cache") == 1
+
+
+def test_failed_cache_write_after_business_commit_keeps_result(service, cache_diagnostics):
+    from syvrio.infra.session import SessionStore
+
+    fact = service.note("偏爱清淡的茶", topic="preferences")
+    service.store.snapshot()
+    embedder = FakeEmbedder(GROUPS)
+    service.retriever = HybridRetriever(
+        KeywordRetriever(service.store), persisted_vector(service.store, embedder)
+    )
+    with cache_transaction(service.paths, "vectors") as cache:
+        cache.execute("""CREATE TRIGGER fail_cache BEFORE INSERT ON vectors
+                       BEGIN SELECT RAISE(ABORT,'cache write unavailable'); END""")
+    sessions = SessionStore(service.paths)
+    with transaction(service.paths):
+        session = sessions.create()
+        assert service.recall("咖啡")[0].id == fact.id
+        assert "degraded.vector_cache" not in cache_diagnostics
+    assert sessions.load(session.id).id == session.id
+    assert vector_rows(service.paths) == []
+    assert service.recall("咖啡")[0].id == fact.id
+    assert len(embedder.passages) == 1
+    assert cache_diagnostics.count("degraded.vector_cache") == 1
+
+
+def test_cache_can_publish_while_another_connection_holds_business_write_lock(tmp_path):
+    store = seeded_store(tmp_path)
+    vector = persisted_vector(store, FakeEmbedder(GROUPS))
+    with ThreadPoolExecutor(max_workers=1) as pool, transaction(store.paths):
+        assert pool.submit(vector.search, "咖啡").result(timeout=5)
+        assert len(vector_rows(store.paths)) == 2
+
+
+def _change_vector_in_another_process(paths, memory_id):
+    store = MemoryStore(paths)
+    with transaction(paths) as db:
+        db.execute("UPDATE memories SET text='住房' WHERE id=?", (memory_id,))
+    return persisted_vector(store, FakeEmbedder(GROUPS)).search("房子")[0].id
+
+
+def test_late_vector_publish_cannot_replace_another_writers_result(tmp_path):
+    from syvrio.infra.retrieval.vector import text_hash
+
+    store = MemoryStore(tmp_path)
+    entry = store.append("preferences", "咖啡")
+    ready, resume = Event(), Event()
+
+    class SlowEmbedder(FakeEmbedder):
+        def embed(self, texts):
+            result = super().embed(texts)
+            ready.set()
+            assert resume.wait(45)
+            return result
+
+    slow = persisted_vector(store, SlowEmbedder(GROUPS))
+    with (
+        ProcessPoolExecutor(max_workers=1, mp_context=get_context("spawn")) as writers,
+        ThreadPoolExecutor(max_workers=1) as pool,
+    ):
+        old = pool.submit(slow.search, "咖啡")
+        try:
+            assert ready.wait(10)
+            update = writers.submit(_change_vector_in_another_process, store.paths, entry.id)
+            assert update.result(timeout=40) == entry.id
+        finally:
+            resume.set()
+        assert old.result(timeout=10)[0].text == "咖啡"
+
+    assert [r["input_digest"] for r in vector_rows(store.paths)] == [text_hash("住房")]
+    warm = FakeEmbedder(GROUPS)
+    assert persisted_vector(store, warm).search("房子")[0].text == "住房"
+    assert not warm.passages
 
 
 def test_model_change_rebuilds_cache(tmp_path):
@@ -367,7 +573,7 @@ def test_same_model_dimension_change_rebuilds_stale_cache(tmp_path, add_entry):
         expected.add(store.append("work", "Synthetic second note.").id)
     assert {hit.id for hit in retriever.search("synthetic")} == expected
     assert not retriever.degraded
-    assert {r["memory_id"]: r["dimensions"] for r in rows(store.paths, "vectors")} == dict.fromkeys(
+    assert {r["memory_id"]: r["dimensions"] for r in vector_rows(store.paths)} == dict.fromkeys(
         expected, 3
     )
 
@@ -451,7 +657,7 @@ def test_embedding_cache_rebuilds_changed_short_fact_only(tmp_path):
     vector = persisted_vector(store, embedder)
     vector.sync()
     embedder.passages.clear()
-    with transaction(store.paths) as db:
+    with cache_transaction(store.paths, "vectors") as db:
         db.execute(
             "UPDATE vectors SET input_digest=? WHERE memory_id=?",
             (text_hash("previous input"), short.id),
@@ -543,7 +749,7 @@ def test_vector_cache_is_outside_vault_git_worktree(tmp_path):
     git.commit(push=False)
     retriever = persisted_vector(service.store, FakeEmbedder(GROUPS))
     retriever.sync()
-    assert rows(service.paths, "vectors") and not git.is_dirty()
+    assert vector_rows(service.paths) and not git.is_dirty()
     assert not git.repo.has_changes()
     assert not (config.vault / ".syvrio").exists()
 
@@ -574,15 +780,21 @@ def test_duplicate_id_cannot_enter_second_topic(tmp_path):
     assert store.entries() == [first]
 
 
-def test_malformed_vector_is_regenerated(tmp_path):
+@pytest.mark.parametrize(
+    "assignment",
+    ["vector=X'00'", "dimensions='unknown'", "vector='not a vector'"],
+)
+def test_malformed_vector_is_regenerated(tmp_path, assignment, cache_diagnostics):
     store = seeded_store(tmp_path)
     first = persisted_vector(store, FakeEmbedder(GROUPS))
     first.sync()
-    with transaction(store.paths) as db:
-        db.execute("UPDATE vectors SET vector=X'00'")
+    with cache_transaction(store.paths, "vectors") as db:
+        db.execute(f"UPDATE vectors SET {assignment}")
     refreshed = persisted_vector(store, FakeEmbedder(GROUPS))
-    assert refreshed.search("housing") or len(rows(store.paths, "vectors")) == len(store.entries())
-    assert all(len(r["vector"]) == 4 * r["dimensions"] for r in rows(store.paths, "vectors"))
+    assert refreshed.search("房子")[0].topic == "general/housing"
+    assert cache_diagnostics.count("degraded.vector_cache") == 1
+    assert len(vector_rows(store.paths)) == len(store.entries())
+    assert all(len(r["vector"]) == 4 * r["dimensions"] for r in vector_rows(store.paths))
 
 
 def test_retrievers_read_an_independent_source_and_write_only_their_cache(tmp_path):

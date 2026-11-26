@@ -14,6 +14,7 @@ from ..infra.llm import LiteLLMChatModel
 from ..infra.observability.diagnostics import record_event
 from ..infra.session import SessionStore
 from ..infra.session.errors import ConversationError
+from ..infra.storage.database import keep_wal_open
 from ..infra.storage.locking import LockTimeout
 from ..infra.vault.files import open_vault
 from ..infra.vault.sync import GitSyncService
@@ -73,6 +74,7 @@ class ResidentChannel:
         self._commands = CommandUseCases(self._app_service)
         self._client_lock = BackendLease(self._service.paths)
         self._started = False
+        self._wal_connection = None
         self._search_warmup: threading.Thread | None = None
 
     @property
@@ -93,6 +95,7 @@ class ResidentChannel:
             ) from exc
         try:
             prepare_vault_runtime(self._service.paths)
+            self._wal_connection = keep_wal_open(self._service.paths)
             self._sessions.recover_deletions()
             open_vault(self.git, self._service.initialize_files)
             try:
@@ -104,6 +107,9 @@ class ResidentChannel:
             self._started = True
         except BaseException:
             self._background.stop()
+            if self._wal_connection is not None:
+                self._wal_connection.close()
+                self._wal_connection = None
             if ownership is None:
                 self._client_lock.release()
             raise
@@ -141,5 +147,7 @@ class ResidentChannel:
                     self._background.stop()
                     if self._search_warmup is not None and self._search_warmup.is_alive():
                         self._search_warmup.join()
+                    self._wal_connection.close()
+                    self._wal_connection = None
                     self._client_lock.release()
                     self._started = False

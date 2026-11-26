@@ -1,9 +1,15 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
+import * as markdown from 'react-markdown';
 import { api } from '../../api/client';
 import { initialChatState, loadHistory, toggleSegment } from './chat';
 import type { ChatMessage } from './chat';
 import { MessageList } from './MessageList';
+
+vi.mock('react-markdown', async load => {
+  const original = await load<typeof import('react-markdown')>();
+  return { ...original, default: vi.fn(original.default) };
+});
 
 const messages: ChatMessage[] = [
   { id: 'u1', role: 'user', content: 'question' },
@@ -12,6 +18,26 @@ const messages: ChatMessage[] = [
     segments: [{ kind: 'text', id: 'c1', content: 'latest answer' }],
   },
 ];
+
+it('parses only changed Markdown when the last assistant receives a delta', () => {
+  const parse = vi.mocked(markdown.default);
+  try {
+    const onToggle = vi.fn();
+    const saved: ChatMessage = { id: 'history', role: 'assistant', streaming: false, interrupted: false,
+      segments: [{ id: 'saved', kind: 'text', content: 'saved' }] };
+    const view = (text: string) => <MessageList messages={[saved, {
+      id: 'live', role: 'assistant', streaming: true, interrupted: false,
+      segments: [{ id: 'before-tool', kind: 'text', content: 'earlier segment' }, { id: 'answer', kind: 'text', content: text }],
+    }]} sessionId="s" onToggle={onToggle} />;
+    const { rerender } = render(view('part'));
+    parse.mockClear();
+    rerender(view('part two'));
+    expect(parse.mock.calls.map(([props]) => props.children)).toEqual(['part two']);
+    expect(screen.getByText('part two')).toBeTruthy();
+  } finally {
+    parse.mockClear();
+  }
+});
 
 function measureList() {
   const list = screen.getByTestId('message-list');
@@ -66,6 +92,34 @@ it.each([false, true])('loads the full persisted tool result only when expanded 
   fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
   expect(await screen.findByText('Full persisted result and tail')).toBeTruthy();
   expect(read).toHaveBeenCalledWith('s1', 'record-1', archived, expect.any(AbortSignal));
+  read.mockRestore();
+});
+
+it.each([false, true])('loads earlier pages in order after a retry (archived=%s)', async archived => {
+  const history = (cursor: number | null, id: string) => ({
+    session_id: 's-paged', title: '', current: !archived, summary: null,
+    has_earlier: cursor !== null, earlier_cursor: cursor,
+    items: [{ id, role: 'user' as const, content: id, at: '', tool_calls: [], reasoning: null, tool_name: null, tool_ok: null, interrupted: false }],
+  });
+  const oldest = 'first page';
+  const latest = 'last page';
+  const read = vi.spyOn(api, 'earlierHistory')
+    .mockRejectedValueOnce(new Error('Try again'))
+    .mockResolvedValueOnce(history(100, 'middle page'))
+    .mockResolvedValueOnce(history(null, oldest));
+  const state = loadHistory(initialChatState, history(200, latest), archived);
+  render(<MessageList archived={archived} sessionId="s-paged" messages={state.messages} onToggle={() => {}} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Load earlier messages' }));
+  expect((await screen.findByRole('alert')).textContent).toBe('Try again');
+  fireEvent.click(screen.getByRole('button', { name: 'Load earlier messages' }));
+  await screen.findByText('middle page');
+  fireEvent.click(screen.getByRole('button', { name: 'Load earlier messages' }));
+  await screen.findByText(oldest);
+  expect(read.mock.calls.map(args => args.slice(0, 3))).toEqual([
+    ['s-paged', 200, archived], ['s-paged', 200, archived], ['s-paged', 100, archived],
+  ]);
+  expect(screen.getAllByTestId('user-message').map(node => node.textContent)).toEqual([oldest, 'middle page', latest]);
+  expect(screen.queryByRole('button', { name: 'Load earlier messages' })).toBeNull();
   read.mockRestore();
 });
 

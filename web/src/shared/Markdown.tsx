@@ -1,4 +1,4 @@
-import { createContext, useContext, useState } from 'react';
+import { memo, createContext, useContext, useState } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeSanitize from 'rehype-sanitize';
@@ -51,7 +51,7 @@ const readingReferences: Components = {
 };
 
 /** react-markdown 不渲染原始 HTML，rehype-sanitize 提供额外过滤。 */
-export function Markdown({ text, reading = false }: { text: string; reading?: boolean }) {
+export const Markdown = memo(function Markdown({ text, reading = false }: { text: string; reading?: boolean }) {
   return (
     <div className="markdown">
       <ReactMarkdown
@@ -80,4 +80,4 @@ export function Markdown({ text, reading = false }: { text: string; reading?: bo
       </ReactMarkdown>
     </div>
   );
-}
+});

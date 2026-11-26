@@ -46,6 +46,8 @@ _EVENTS = frozenset(
         "degraded.keyring",
         "degraded.tiktoken",
         "degraded.gitsync_state",
+        "degraded.web_search_cache",
+        "degraded.vector_cache",
         "web.shutdown_distill_failed",
         "web.history_unreadable",
         "web.switch_failed",
