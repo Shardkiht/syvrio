@@ -5,18 +5,26 @@ from __future__ import annotations
 import threading
 import time
 from collections.abc import Callable
+from contextlib import AbstractContextManager, nullcontext
 
 from ...infra.observability.diagnostics import record_event
 from ...infra.session import Session, SessionStore
 from ...infra.storage.database import transaction
 from . import context_fill, distillation, titles
 from .dream import Dream
-from .jobs import JobKey, list_jobs, read_job, save_job
+from .jobs import JobKey, list_jobs, pending_title_ids, read_job, save_job
 from .schedule import DreamSchedule
 
 
 class BackgroundMemory:
-    def __init__(self, service, session_busy: Callable[[str], bool] | None = None):
+    def __init__(
+        self,
+        service,
+        session_busy: Callable[[str], bool] | None = None,
+        *,
+        work: Callable[[], AbstractContextManager[bool]] = lambda: nullcontext(True),
+    ):
+        self._work_slot = work
         self.service = service
         self.sessions = SessionStore(service.paths)
         self.busy = session_busy or (lambda session_id: False)
@@ -80,16 +88,8 @@ class BackgroundMemory:
         titles.request(self.sessions, session_id)
         self._signals["title"].set()
 
-    def pending_titles(self) -> set[str]:
-        jobs = list_jobs(self.service.paths, "title")
-        pending = set()
-        for path in jobs:
-            try:
-                if job := read_job(path):
-                    pending.add(job["id"])
-            except (OSError, ValueError, KeyError, TypeError) as exc:
-                record_event("session.title_failed", exc)
-        return pending
+    def pending_titles(self, session_ids: list[str]) -> set[str]:
+        return pending_title_ids(self.service.paths, session_ids)
 
     def dream_status(self) -> dict:
         status = self.dream.status(live=True)
@@ -132,19 +132,29 @@ class BackgroundMemory:
             progressed = False
             try:
                 if discover:
-                    self._discover(stop)
-                    discover = False
+                    with self._work_slot() as admitted:
+                        if admitted:
+                            self._discover(stop)
+                            discover = False
                 if lane == "dream":
-                    self.schedule.tick()
+                    if (
+                        self.service.config.chat.auto_reflect
+                        and (self.schedule.next_at() or 0) <= time.time()
+                    ):
+                        with self._work_slot() as admitted:
+                            if admitted:
+                                self.schedule.tick()
                     if self.dream.due() and not stop.is_set():
-                        job = self.dream.status()
-                        try:
-                            self.dream.step(stop)
-                        except Exception as exc:
-                            if not stop.is_set():
-                                self.dream.failed(exc, job["id"], job["generation"])
-                                record_event("reflection.failed", exc)
-                        progressed = True
+                        with self._work_slot() as admitted:
+                            if admitted:
+                                job = self.dream.status()
+                                try:
+                                    self.dream.step(stop)
+                                except Exception as exc:
+                                    if not stop.is_set():
+                                        self.dream.failed(exc, job["id"], job["generation"])
+                                        record_event("reflection.failed", exc)
+                                progressed = True
                 else:
                     for path in list_jobs(self.service.paths, lane):
                         if stop.is_set():
@@ -159,6 +169,10 @@ class BackgroundMemory:
                 signal.wait(2.0)
 
     def _step_job(self, lane: str, path: JobKey, stop: threading.Event) -> bool:
+        with self._work_slot() as admitted:
+            return self._run_job(lane, path, stop) if admitted else False
+
+    def _run_job(self, lane: str, path: JobKey, stop: threading.Event) -> bool:
         with transaction(self.service.paths):
             job = read_job(path)
             if not job or job.get("retry_at", 0) > time.time():

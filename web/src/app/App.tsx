@@ -275,6 +275,7 @@ export default function App() {
               checkingSelection={checkingSelection}
               onSendAfterSelection={sendAfterSelection}
               pickerRef={picker}
+              attachmentPolicy={health?.attachment_policy}
               openFiles={openFiles}
               busy={chat.busy}
               progress={chat.progress}

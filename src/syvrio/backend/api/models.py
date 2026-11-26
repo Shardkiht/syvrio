@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field, StrictBool
 
 from ...application.contracts import ModelOption
 from ...application.turns import TurnEvent
+from ...infra.session.attachment_policy import ATTACHMENT_POLICY, AttachmentPolicy
 from ..updates.installer import UpdateProgress
 
 
@@ -30,6 +31,7 @@ class HealthResponse(BaseModel):
     # 所有客户端共享常驻实例及其按会话维护的队列。
     single_client: bool = False
     static_ready: bool = False
+    attachment_policy: AttachmentPolicy = ATTACHMENT_POLICY
 
 
 class UpdateJobResponse(BaseModel):

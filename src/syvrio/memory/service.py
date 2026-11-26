@@ -85,7 +85,7 @@ def build_retriever(config: Config, store: MemoryStore) -> tuple[Retriever, str]
     embedder = _build_embedder(config.retrieval)
     if embedder is None:
         return keyword, f"{method}-fallback-keyword"
-    vector = VectorRetriever(store, embedder, paths=store.paths)
+    vector = VectorRetriever(store, embedder, paths=store.paths, current_revision=store.revision)
     if method == "vector":
         return vector, "vector"
     return HybridRetriever(keyword, vector), "hybrid"
@@ -303,27 +303,7 @@ class MemoryService:
             self._source_fields(session_id, message_id)
             if any(self.store.find(key) is None for key in item.related_ids):
                 raise ValueError("Pending references must identify existing memories.")
-            for existing in self.queue.all():
-                if (
-                    existing.text,
-                    existing.topic,
-                    existing.context,
-                    existing.question,
-                    set(existing.related_ids),
-                    existing.session_id,
-                    existing.message_id,
-                ) == (
-                    item.text,
-                    item.topic,
-                    item.context,
-                    item.question,
-                    set(item.related_ids),
-                    item.session_id,
-                    item.message_id,
-                ):
-                    return existing
-            self.queue.add(item)
-        return item
+            return self.queue.add_unique(item)
 
     def prepare_import(
         self, text: str, extractor=None, *, llm_config: LLMConfig | None = None
@@ -366,7 +346,7 @@ class MemoryService:
         session_id: str | None = None,
         message_id: str | None = None,
     ) -> MemorizeResult:
-        with self.work.write():
+        with self.work.read() if dry_run else self.work.write():
             if self.evidence_version(include_pending=True) != version:
                 raise ValueError("Memory changed after document review. Request fresh evidence.")
             return self._import_candidates(candidates, dry_run, session_id, message_id)

@@ -1,3 +1,4 @@
+import { testAttachmentPolicy } from '../test/attachmentPolicy';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import App from './App';
@@ -11,7 +12,7 @@ it('renders cached history immediately, validates its version in the switch, and
   const rows = ['a', 'b'].map(id => ({ id, title: id, messages: 1, started_at: '', updated_at: '', current: false }));
   vi.spyOn(api, 'listSessions').mockResolvedValue({ items: rows });
   vi.spyOn(api, 'health').mockResolvedValue({ provider: 'test', model: 'model', status: 'ok',
-    version: 'test', busy: false, static_ready: true, active_turn_id: null, single_client: false });
+    version: 'test', busy: false, attachment_policy: testAttachmentPolicy, static_ready: true, active_turn_id: null, single_client: false });
   vi.spyOn(api, 'commands').mockResolvedValue({ items: [] });
   vi.spyOn(api, 'contextUsage').mockResolvedValue({ session_id: null, used: 0, limit: 50000, compact_threshold: .8 });
   let bound: string | null = null;
@@ -84,7 +85,7 @@ it.each(['confirmed', 'failed', 'superseded'] as const)(
     const row = (id: string) => ({ id, title: id, messages: 1, started_at: '', updated_at: '', current: false });
     vi.spyOn(api, 'listSessions').mockResolvedValue({ items: ['a', 'b', 'c'].map(row) });
     vi.spyOn(api, 'health').mockResolvedValue({ provider: 'test', model: 'model', status: 'ok',
-      version: 'test', busy: false, static_ready: true, active_turn_id: null, single_client: false });
+      version: 'test', busy: false, attachment_policy: testAttachmentPolicy, static_ready: true, active_turn_id: null, single_client: false });
     vi.spyOn(api, 'commands').mockResolvedValue({ items: [] });
     const history = vi.spyOn(api, 'history').mockImplementation(async id => sessionHistory(id, 'History ' + id));
     const turn = { session_id: 'a', turn_id: 1, text: 'Running in A' };
@@ -152,7 +153,7 @@ it('assigns the original blank draft to a late first receipt and keeps the next 
   const origin = { id: 'a', title: 'First', messages: 1, started_at: '', updated_at: '', current: false };
   vi.spyOn(api, 'listSessions').mockResolvedValue({ items: [origin] });
   vi.spyOn(api, 'health').mockResolvedValue({ provider: 'test', model: 'model', status: 'ok',
-    version: 'test', busy: false, static_ready: true, active_turn_id: null, single_client: false });
+    version: 'test', busy: false, attachment_policy: testAttachmentPolicy, static_ready: true, active_turn_id: null, single_client: false });
   vi.spyOn(api, 'commands').mockResolvedValue({ items: [] });
   vi.spyOn(client, 'queueState').mockResolvedValue({ session_id: null, revision: 0, waiting: [], paused: false, active: null });
   vi.spyOn(api, 'history').mockResolvedValue({ session_id: 'a', title: 'First', current: true, summary: null, has_earlier: false, items: [] });

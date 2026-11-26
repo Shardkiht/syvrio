@@ -34,8 +34,7 @@ def rename_session(sessions: SessionStore, session: Session, title: str) -> None
 def request(sessions: SessionStore, session_id: str) -> None:
     path = job_key(sessions.paths, "title", session_id)
     with transaction(sessions.paths):
-        session = sessions.load(session_id, include_reasoning=False)
-        exchange = None if session.saved_title() else session.title_exchange()
+        exchange = sessions.untitled_exchange(session_id)
         if exchange:
             user, answer = exchange
             job = {
@@ -48,10 +47,7 @@ def request(sessions: SessionStore, session_id: str) -> None:
 
 
 def _exchange(sessions: SessionStore, job: dict):
-    if not sessions.exists(job["id"]):
-        return None
-    session = sessions.load(job["id"], include_reasoning=False)
-    pair = None if session.saved_title() else session.title_exchange()
+    pair = sessions.untitled_exchange(job["id"])
     if pair and (pair[0]["id"], pair[1]["id"]) == (job["user_id"], job["answer_id"]):
         return pair
     return None
@@ -100,15 +96,15 @@ def process(
         if title and _exchange(sessions, job) == pair:
             # 同时更新活动会话的事件序列和文件。上下文压缩依赖物理记录偏移，
             # 且其他视图可能仍持有该会话。
-            target = live_session(job["id"]) or sessions.load(job["id"], include_reasoning=False)
-            sessions.append(
-                target,
+            sessions.append_generated_title(
+                job["id"],
                 {
                     "type": "title",
                     "source": "llm",
                     "answer_id": job["answer_id"],
                     "title": title,
                 },
+                live_session(job["id"]),
             )
         save_job(path, None)
     return True

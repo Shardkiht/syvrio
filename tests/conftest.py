@@ -191,12 +191,15 @@ def extractor(*candidates: Candidate) -> StaticExtractor:
 @pytest.fixture
 def layout_app():
     from syvrio.app.tui.resident import ResidentChatApp
+    from syvrio.backend.api.models import HealthResponse
 
     # 布局、焦点及快捷键用例只需一个空白视图；任何业务请求都必须在集成夹具中显式验证。
     class LayoutClient:
         def request(self, method, path):
             routes = {
-                ("GET", "/api/health"): {"provider": "local", "model": "test"},
+                ("GET", "/api/health"): HealthResponse(
+                    version="test", provider="local", model="test"
+                ).model_dump(mode="json"),
                 ("GET", "/api/sessions"): {"items": []},
                 ("GET", "/api/chat/queue"): {
                     "session_id": None,

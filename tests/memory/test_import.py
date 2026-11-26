@@ -224,3 +224,38 @@ def test_import_text_passes_store_topics_to_extractor(tmp_path, monkeypatch):
     service.import_text("新内容")
 
     assert captured["topics"] == [service.store.topics()[0].topic]
+
+
+def test_import_preview_uses_reviewed_view_during_unrelated_write(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    svc = service(tmp_path)
+    entry = svc.note("existing", topic="preferences")
+    version = svc.evidence_version(include_pending=True)
+    candidates = [
+        Candidate(text="new", topic="preferences", question="which?", related_ids=[entry.id])
+    ]
+    with ThreadPoolExecutor(max_workers=1) as pool, svc.work.write():
+        result = pool.submit(svc.apply_import, candidates, version, dry_run=True).result(timeout=5)
+    assert [item.related_ids for item in result.queued] == [[entry.id]]
+    assert not svc.pending()
+    svc.note("changed", topic="preferences")
+    with pytest.raises(ValueError, match="changed"):
+        svc.apply_import(candidates, version, dry_run=True)
+
+
+def test_concurrent_pending_content_uses_one_id_and_preserves_source_order(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    svc = service(tmp_path)
+    one = svc.note("first", topic="preferences").id
+    two = svc.note("second", topic="preferences").id
+    draft = MemoryDraft(text="new", topic="preferences")
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(
+            pool.map(lambda ids: svc.create_pending(draft, "which?", ids), ([one, two], [two, one]))
+        )
+    assert results[0] == results[1]
+    assert svc.pending() == [results[0]]
+    svc.reject(results[0].id)
+    assert svc.create_pending(draft, "which?", [one, two]).id != results[0].id

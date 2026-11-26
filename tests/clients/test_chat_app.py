@@ -2709,9 +2709,17 @@ async def test_attachment_picker_send_and_undo_through_resident(resident_backend
         await app._command("/import")
         await pilot.pause()
         assert isinstance(app.screen, AttachmentScreen)
-        app.screen.query_one(TextArea).load_text("\n".join(map(str, paths)))
+        app.screen.query_one(TextArea).load_text(str(paths[0]))
         await pilot.click("#attach-selected")
         await pilot.pause()
+        await app._command("/import")
+        await pilot.pause()
+        duplicate = tmp_path / "renamed.md"
+        duplicate.write_bytes(paths[0].read_bytes())
+        app.screen.query_one(TextArea).load_text("\n".join(map(str, (duplicate, paths[1]))))
+        await pilot.click("#attach-selected")
+        await pilot.pause()
+        assert app._uploads[app.sid] == tuple(paths)
         composer = app.query_one("#input", Input)
         composer.value = "Read both attachments"
         await pilot.press("enter")

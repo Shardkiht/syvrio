@@ -23,6 +23,7 @@ from ..memory.service import MemoryService, get_service
 from .maintenance import prepare_vault_runtime
 from .ownership import BackendLease
 from .scheduler import GitScheduler
+from .updates.activity import ResidentActivity
 
 
 class ResidentChannel:
@@ -49,7 +50,12 @@ class ResidentChannel:
             self._runtime = AgentRuntime(self._service, model, self._sessions)
         self._runtime.start()
         self._runtime.allow_local_paths = False
-        self._background = parent._background if parent else BackgroundMemory(self._service)
+        self.activity = parent.activity if parent else ResidentActivity()
+        self._background = (
+            parent._background
+            if parent
+            else BackgroundMemory(self._service, work=self.activity.work)
+        )
         self._runtime.on_distillation = self._background.request_distillation
         self._runtime.on_title_needed = self._background.request_title
         self._app_service = ApplicationService(
@@ -69,7 +75,9 @@ class ResidentChannel:
         else:
             self.directory = parent.directory
         self._git_scheduler = (
-            parent._git_scheduler if parent else GitScheduler(self._app_service.git)
+            parent._git_scheduler
+            if parent
+            else GitScheduler(self._app_service.git, self.activity.work)
         )
         self._commands = CommandUseCases(self._app_service)
         self._client_lock = BackendLease(self._service.paths)
@@ -123,7 +131,9 @@ class ResidentChannel:
 
     def _warm_search(self) -> None:
         try:
-            self._app_service.warm_search()
+            with self.activity.work() as admitted:
+                if admitted:
+                    self._app_service.warm_search()
         except Exception as exc:
             record_event("backend.startup_hook_failed", exc)
 

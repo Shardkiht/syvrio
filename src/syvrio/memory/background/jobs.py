@@ -29,6 +29,20 @@ def list_jobs(paths, kind):
         ]
 
 
+def pending_title_ids(paths: SyvrioPaths, session_ids: list[str]) -> set[str]:
+    if not session_ids:
+        return set()
+    with transaction(paths, write=False) as db:
+        return {
+            row[0]
+            for row in db.execute(
+                """SELECT target FROM jobs WHERE kind='title'
+                AND target IN (SELECT value FROM json_each(?))""",
+                (encode(session_ids),),
+            )
+        }
+
+
 # Common scheduling fields and lane checkpoints live in typed columns.
 _COLUMNS = (
     "id",

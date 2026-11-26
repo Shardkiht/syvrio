@@ -26,7 +26,8 @@ from starlette.types import Lifespan, Receive, Scope, Send
 
 from ...application.command_catalog import parse_command
 from ...infra.observability.diagnostics import record_event
-from ...infra.session.attachments import IMAGE_TYPES, MAX_BATCH_BYTES, AttachmentBatch
+from ...infra.session.attachment_policy import ATTACHMENT_POLICY, IMAGE_TYPES
+from ...infra.session.attachments import AttachmentBatch
 from ...infra.session.errors import ConversationError
 from ...infra.storage.documents import DocumentError
 from ...infra.system.gitops import GitError
@@ -155,11 +156,11 @@ def create_api(
     if resident_token:
         from ..mcp_writes import MCPWrites
         from ..operations import ResidentOperations
-        from .update_admission import UpdateAdmission
+        from .update_admission import guard_update_writes
 
         operations = ResidentOperations(owner)
         mcp_writes = MCPWrites(owner._service)
-        admission = UpdateAdmission(app, lambda: owner.directory.busy)
+        guard_update_writes(app, owner.activity)
 
         def authenticate(request: Request) -> None:
             supplied = request.headers.get("x-syvrio-token", "")
@@ -193,9 +194,12 @@ def create_api(
                 if not isinstance(ticket, str) or not re.fullmatch(r"[0-9a-f]{32}", ticket):
                     raise APIError("invalid_request", "Invalid update ticket.", 422)
                 if operation == "update_drain":
-                    admission.reserve(ticket)
+                    if not owner.activity.reserve(ticket, lambda: owner.directory.busy):
+                        raise APIError(
+                            "update_busy", "Wait for active work to finish before updating.", 409
+                        )
                 else:
-                    admission.release(ticket)
+                    owner.activity.release(ticket)
                 return {"ok": True}
             if operation == "shutdown":
                 request.app.state.stop_resident()
@@ -251,7 +255,10 @@ def create_api(
 
     @app.get("/api/update/instance", include_in_schema=False)
     def update_instance():
-        return {"instance": instance_id, "busy": owner.directory.busy}
+        return {
+            "instance": instance_id,
+            "busy": owner.activity.background_busy or owner.directory.busy,
+        }
 
     @app.post("/api/update", status_code=202, response_model=UpdateJobResponse, tags=["updates"])
     def start_update(request: Request, body: UpdateRequest):
@@ -265,8 +272,8 @@ def create_api(
             raise APIError("invalid_request", "Send a JSON confirmation.", 415)
         if not body.confirmed or not re.fullmatch(r"\d{1,10}\.\d{1,10}\.\d{1,10}", body.version):
             raise APIError("invalid_update", "Confirm a specific stable release.", 422)
-        if owner.directory.busy:
-            raise APIError("update_busy", "Wait for all replies to finish before updating.", 409)
+        if owner.activity.background_busy or owner.directory.busy:
+            raise APIError("update_busy", "Wait for active work to finish before updating.", 409)
         return update_operation(software_update.start, body.version, owner._service.paths)
 
     @app.get("/api/context-usage", response_model=ContextUsageResponse, tags=["web"])
@@ -517,8 +524,10 @@ def create_api(
             size = 0
             async for chunk in request.stream():
                 size += len(chunk)
-                if size > MAX_BATCH_BYTES + 512 * 1024:
-                    raise APIError("upload_too_large", "Attachment batch exceeds 40 MiB.", 413)
+                if size > ATTACHMENT_POLICY.max_batch_bytes + 512 * 1024:
+                    raise APIError(
+                        "upload_too_large", "Attachment request exceeds the batch limit.", 413
+                    )
                 yield chunk
 
         try:

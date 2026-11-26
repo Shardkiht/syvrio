@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from itertools import count
 from typing import Any, Literal
 from uuid import uuid4
+from weakref import WeakValueDictionary
 
 from pydantic import BaseModel
 
@@ -161,7 +162,7 @@ class TurnRegistry:
 
     def __init__(self) -> None:
         self._instance = uuid4().hex
-        self._delivery_lock = threading.Lock()
+        self._delivery_locks: WeakValueDictionary[str, threading.Lock] = WeakValueDictionary()
         self._lock = threading.Lock()
         self._turns: OrderedDict[int, ConversationTurn] = OrderedDict()
 
@@ -191,6 +192,14 @@ class TurnRegistry:
                     return turn
             return None
 
+    def _delivery_lock(self, submission_id: str):
+        # 相同送达编号跨视图互斥；最后一个等待者退出后弱引用自动移除。
+        with self._lock:
+            lock = self._delivery_locks.get(submission_id)
+            if lock is None:
+                lock = self._delivery_locks[submission_id] = threading.Lock()
+            return lock
+
     def submit_once(
         self,
         receipts: ReceiptStore,
@@ -205,7 +214,7 @@ class TurnRegistry:
         files = [(item.name, item.sha256) for item in attachments.files] if attachments else []
         payload = json.dumps([session_id, message.strip(), files], ensure_ascii=False).encode()
         signature = hashlib.sha256(payload).hexdigest()
-        with self._delivery_lock:
+        with self._delivery_lock(submission_id):
             stored = receipts.reserve(submission_id, signature, self._instance)
             if stored is not None:
                 if stored.request_digest != signature:

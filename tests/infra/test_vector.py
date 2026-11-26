@@ -15,7 +15,7 @@ from syvrio.infra.retrieval import (
     VectorRetriever,
 )
 from syvrio.infra.storage.cache_database import cache_transaction
-from syvrio.infra.storage.database import transaction
+from syvrio.infra.storage.database import database_path, transaction
 from syvrio.infra.vault.files import initialize_vault
 from syvrio.infra.vault.sync import GitSyncService
 from syvrio.memory import service as service_module
@@ -60,7 +60,9 @@ class FakeEmbedder:
 
 
 def persisted_vector(store, embedder, **kwargs):
-    return VectorRetriever(store, embedder, paths=store.paths, **kwargs)
+    return VectorRetriever(
+        store, embedder, paths=store.paths, current_revision=store.revision, **kwargs
+    )
 
 
 def vector_rows(paths):
@@ -830,6 +832,16 @@ def test_retrievers_read_an_independent_source_and_write_only_their_cache(tmp_pa
         assert hit.text == source.rows[0].text
     assert hits[0].matched_field == "口味"
     assert set(tmp_path.iterdir()) == before
+    paths = MemoryStore(tmp_path).paths
+    cached = VectorRetriever(source, FakeEmbedder(GROUPS), paths=paths)
+    assert cached.search("茶")[0].id == source.rows[0].id
+    assert [row["memory_id"] for row in vector_rows(paths)] == [source.rows[0].id]
+    reused = FakeEmbedder(GROUPS)
+    assert VectorRetriever(source, reused, paths=paths).search("茶")[0].id == source.rows[0].id
+    assert reused.passages == []
+    assert not database_path(paths).exists()
     source.rows = ()
     source.revision += 1
+    cached.sync()
+    assert not vector_rows(paths)
     assert keyword.search("口味") == vector.search("茶") == []

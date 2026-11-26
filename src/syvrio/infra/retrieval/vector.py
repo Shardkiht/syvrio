@@ -12,7 +12,7 @@ import numpy as np
 
 from ..observability.diagnostics import record_event, record_once
 from ..storage.cache_database import cache_transaction
-from ..storage.database import DatabaseError, after_commit, transaction
+from ..storage.database import DatabaseError, after_commit
 from ..storage.paths import SyvrioPaths
 from .base import Embedder, RecordSnapshot, RecordSource, SearchHit, SearchRecord
 
@@ -74,10 +74,12 @@ class VectorRetriever:
         batch_size: int = 32,
         *,
         paths: SyvrioPaths | None = None,
+        current_revision: Callable[[], int | None] | None = None,
         clock: Callable[[], float] = time.monotonic,
     ):
         self.store = store
         self.paths = paths
+        self._current_revision = current_revision or (lambda: store.snapshot().revision)
         self.embedder = embedder
         self.batch_size = batch_size
         self._index = _VectorIndex(-1, [], None)
@@ -282,18 +284,9 @@ class VectorRetriever:
     def _save_cache(self, entries, matrix, removed, revision):
         if self.paths is None:
             return
-        # 先打开主库，再串行发布缓存。取得缓存写锁后才在主库读取版本，
-        # 避免较早的嵌入任务覆盖另一进程已发布的结果。
-        with (
-            transaction(self.paths, write=False) as source,
-            cache_transaction(self.paths, "vectors") as db,
-        ):
-            if (
-                source.execute("SELECT version FROM revisions WHERE domain='memories'").fetchone()[
-                    0
-                ]
-                != revision
-            ):
+        # 串行发布后再核对来源的最新快照，较早完成的计算不能覆盖新内容。
+        with cache_transaction(self.paths, "vectors") as db:
+            if self._current_revision() != revision:
                 return
             if removed:
                 db.executemany(

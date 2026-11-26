@@ -15,13 +15,10 @@ from uuid import uuid4
 
 from PIL import Image
 
-from ..storage.documents import SUPPORTED_SUFFIXES, DocumentError
+from ..storage.documents import DocumentError
 from .attachment_objects import original_path, publish
+from .attachment_policy import ATTACHMENT_POLICY, IMAGE_TYPES
 
-MAX_FILES = 8
-MAX_FILE_BYTES = 20 * 1024 * 1024
-MAX_BATCH_BYTES = 40 * 1024 * 1024
-IMAGE_TYPES = {".png": "png", ".jpg": "jpeg", ".jpeg": "jpeg", ".webp": "webp", ".gif": "gif"}
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}")
 
 
@@ -55,7 +52,7 @@ class Attachment:
             raise DocumentError(unavailable)
         with path.open("rb") as source:
             stat = os.fstat(source.fileno())
-            if not 0 < stat.st_size == self.size <= MAX_FILE_BYTES:
+            if not 0 < stat.st_size == self.size <= ATTACHMENT_POLICY.max_file_bytes:
                 raise DocumentError(unavailable)
             if copy_to is None:
                 digest = hashlib.file_digest(source, "sha256")
@@ -111,15 +108,7 @@ class AttachmentBatch:
         try:
             for name, stream in streams:
                 suffix = Path(name).suffix.lower()
-                if (
-                    not name
-                    or PureWindowsPath(name).name != name
-                    or len(name) > 255
-                    or any(ord(c) < 32 for c in name)
-                    or suffix not in SUPPORTED_SUFFIXES
-                    and suffix not in IMAGE_TYPES
-                ):
-                    raise DocumentError("Unsupported attachment name or format.")
+                ATTACHMENT_POLICY.validate_name(name)
                 identifier = uuid4().hex
                 path = folder / (identifier + suffix)
                 size = 0
@@ -128,16 +117,12 @@ class AttachmentBatch:
                     paths.append(path)
                     while chunk := stream.read(256 * 1024):
                         size += len(chunk)
-                        if size > MAX_FILE_BYTES:
-                            raise DocumentError(
-                                "Attachment limit is 20 MiB per file and 40 MiB per message."
-                            )
+                        ATTACHMENT_POLICY.validate_size(size)
                         output.write(chunk)
                         digest.update(chunk)
                     output.flush()
                     os.fsync(output.fileno())
-                if not size:
-                    raise DocumentError("Empty attachments cannot be read.")
+                ATTACHMENT_POLICY.validate_size(size)
                 media = "application/octet-stream"
                 if suffix in IMAGE_TYPES:
                     try:
@@ -156,8 +141,7 @@ class AttachmentBatch:
                     path.unlink()
                     continue
                 total += size
-                if len(files) >= MAX_FILES or total > MAX_BATCH_BYTES:
-                    raise DocumentError("Attach at most 8 files and 40 MiB per message.")
+                ATTACHMENT_POLICY.validate_batch(len(files) + 1, total)
                 item = Attachment(checksum, name, size, media, checksum)
                 final = folder / item.filename
                 path.rename(final)

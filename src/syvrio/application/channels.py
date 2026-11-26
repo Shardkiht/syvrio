@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections import Counter
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from threading import RLock
 from typing import Protocol
 
@@ -26,6 +28,7 @@ class ConversationDirectory[C: ConversationOwner]:
         self._views: dict[str, C] = {}
         self._archived: dict[str, str] = {}
         self._channels = (owner,)
+        self._submitting: Counter[C] = Counter()
         self._first_view = True
         self._closed = False
         owner.conversation.scheduling.on_idle = lambda: self._retire(owner)
@@ -63,7 +66,8 @@ class ConversationDirectory[C: ConversationOwner]:
             self._retire(channel)
         for channel in self._channels:
             if (
-                channel not in self._views.values()
+                channel not in self._submitting
+                and channel not in self._views.values()
                 and channel.conversation.current_id is None
                 and not channel.conversation.scheduling.activity()[0]
             ):
@@ -81,6 +85,21 @@ class ConversationDirectory[C: ConversationOwner]:
                 self._first_view = False
             return self._views[view]
 
+    @contextmanager
+    def _submission(self, view: str) -> Iterator[C]:
+        # 回执落盘时保留通道；视图可以切走，但旧通道不能被复用。
+        with self._lock:
+            channel = self.channel(view)
+            self._submitting[channel] += 1
+        try:
+            yield channel
+        finally:
+            with self._lock:
+                self._submitting[channel] -= 1
+                if not self._submitting[channel]:
+                    del self._submitting[channel]
+                    self._retire(channel)
+
     def submit(
         self,
         view: str,
@@ -88,10 +107,11 @@ class ConversationDirectory[C: ConversationOwner]:
         session_id: str | None,
         attachments: AttachmentBatch | None = None,
     ) -> tuple[C, ConversationTurn]:
-        with self._lock:
-            channel = self.channel(view)
+        with self._submission(view) as channel:
             turn = channel.conversation.scheduling.submit(message, session_id, attachments)
-            self._archived.pop(view, None)
+            with self._lock:
+                if self._views.get(view) is channel:
+                    self._archived.pop(view, None)
             return channel, turn
 
     def submit_once(
@@ -102,25 +122,30 @@ class ConversationDirectory[C: ConversationOwner]:
         session_id: str | None,
         attachments: AttachmentBatch | None = None,
     ) -> dict:
-        with self._lock:
-            channel = self.channel(view)
+        with self._submission(view) as channel:
             receipt = channel.conversation.scheduling.submit_once(
                 submission_id, message, session_id, attachments
             )
-            sid = receipt["session_id"]
-            if channel.conversation.current_id is None:
-                self.select(view, sid)
-            elif channel.conversation.current_id != sid:
-                raise ConversationError(
-                    "session_mismatch", "Reopen the original conversation to recover this message."
-                )
-            self._archived.pop(view, None)
+            with self._lock:
+                if self._views.get(view) is not channel:
+                    return receipt
+                sid = receipt["session_id"]
+                if channel.conversation.current_id is None:
+                    self.select(view, sid)
+                elif channel.conversation.current_id != sid:
+                    raise ConversationError(
+                        "session_mismatch",
+                        "Reopen the original conversation to recover this message.",
+                    )
+                self._archived.pop(view, None)
             return receipt
 
     def _navigation_channel(self, view: str, previous: C) -> C:
         # 即使最后一个读取端离开，活动回合或暂停的队列仍持有该对话。
-        if previous.conversation.scheduling.activity()[0] or any(
-            key != view and owner is previous for key, owner in self._views.items()
+        if (
+            previous in self._submitting
+            or previous.conversation.scheduling.activity()[0]
+            or any(key != view and owner is previous for key, owner in self._views.items())
         ):
             return self._fresh()
         return previous
@@ -161,6 +186,8 @@ class ConversationDirectory[C: ConversationOwner]:
         with self._lock:
             self._require_open()
             bound = self._bound(session_id)
+            if bound in self._submitting:
+                raise ConversationError("busy", "A message is being submitted.")
             (bound or self.owner).conversation.set_archived(session_id, archived)
             if bound is not None and archived:
                 for key in [key for key, channel in self._views.items() if channel is bound]:
@@ -169,16 +196,23 @@ class ConversationDirectory[C: ConversationOwner]:
                 self._retire(bound)
 
     def queue_state(self, view: str) -> dict:
-        with self._lock:
-            queue = self.channel(view).conversation.scheduling.queue_state()
-            queue["replying_session_ids"] = [
-                sid
-                for channel in self._channels
-                if (sid := channel.conversation.ask_in_flight) is not None
-            ]
-            if view in self._archived and queue["session_id"] is None:
-                queue["archived_session_id"] = self._archived[view]
-            return queue
+        channel = self.channel(view)
+        while True:
+            # 读取通道状态可能等待该会话的操作，期间其他视图仍可导航和读取。
+            queue = channel.conversation.scheduling.queue_state()
+            with self._lock:
+                current = self._views.get(view)
+                if current is not None and current is not channel:
+                    channel = current
+                    continue
+                queue["replying_session_ids"] = [
+                    sid
+                    for item in self._channels
+                    if (sid := item.conversation.ask_in_flight) is not None
+                ]
+                if view in self._archived and queue["session_id"] is None:
+                    queue["archived_session_id"] = self._archived[view]
+                return queue
 
     def disconnect(self, view: str) -> None:
         with self._lock:
@@ -191,6 +225,7 @@ class ConversationDirectory[C: ConversationOwner]:
         with self._lock:
             if (
                 self._closed
+                or channel in self._submitting
                 or channel in self._views.values()
                 or channel.conversation.scheduling.activity()[0]
             ):

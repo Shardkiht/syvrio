@@ -7,7 +7,7 @@ from pathlib import Path
 from ..infra.session.errors import SessionDeletionChanged
 from ..infra.storage.database import encode, transaction
 from ..infra.storage.paths import SyvrioPaths, vault_paths
-from .models import PendingItem
+from .models import MemoryContext, PendingItem
 from .source_links import CANDIDATE_SOURCES
 from .undo_store import image, track
 
@@ -60,6 +60,35 @@ class PendingQueue:
                 "SELECT * FROM candidates WHERE id=? AND state='pending'", (item_id,)
             ).fetchone()
             return self._item(db, row) if row else None
+
+    def add_unique(self, item: PendingItem) -> PendingItem:
+        with transaction(self.paths) as db:
+            rows = db.execute(
+                """SELECT * FROM candidates WHERE state='pending' AND session_id IS ?
+                   AND message_id IS ? AND topic=? AND text=? AND question=?
+                   AND (SELECT count(*) FROM candidate_related WHERE candidate_id=candidates.id)=?
+                   AND NOT EXISTS(
+                       SELECT memory_id FROM candidate_related WHERE candidate_id=candidates.id
+                       EXCEPT SELECT value FROM json_each(?)
+                   ) ORDER BY rowid""",
+                (
+                    item.session_id,
+                    item.message_id,
+                    item.topic,
+                    item.text,
+                    item.question,
+                    len(item.related_ids),
+                    encode(item.related_ids),
+                ),
+            )
+            for row in rows:
+                context = (
+                    MemoryContext.model_validate_json(row["context"]) if row["context"] else None
+                )
+                if context == item.context:
+                    return self._item(db, row)
+            self.add(item)
+            return item
 
     def add(self, item):
         item = PendingItem.model_validate(item.model_dump())

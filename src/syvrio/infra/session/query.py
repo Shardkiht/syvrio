@@ -15,7 +15,7 @@ from ..storage.paths import SESSION_ID_RE, SyvrioPaths, vault_paths
 from ..storage.session_indexes import PENDING_USER, search_signature
 from ..storage.session_previews import PREVIEW_SIZE
 from .attachments import AttachmentBatch
-from .model import Session
+from .model import Session, first_title_exchange
 
 
 @dataclass
@@ -158,6 +158,39 @@ class SessionQuery:
                 ).fetchone()
                 active = last is not None and last[0] == active_message_id
             return summary[0] or "" if summary else "", history, active
+
+    @staticmethod
+    def _first_title_exchange(db: sqlite3.Connection, session_id: str) -> tuple[dict, dict] | None:
+        rows = db.execute(
+            """SELECT kind AS type, role, message_id AS id, content,
+                json_extract(payload,'$.turn_root') AS turn_root,
+                json_extract(payload,'$.interrupted') AS interrupted,
+                json_array_length(payload,'$.tool_calls') AS tool_calls
+            FROM session_events WHERE session_id=? AND active=1
+            AND kind IN ('message','assistant') ORDER BY seq""",
+            (session_id,),
+        )
+        return first_title_exchange(dict(row) for row in rows)
+
+    def untitled_exchange(self, session_id: str) -> tuple[dict, dict] | None:
+        with transaction(self.paths, write=False) as db:
+            if not self.exists(session_id):
+                return None
+            pair = self._first_title_exchange(db, session_id)
+            if pair and not self._saved_title(db, session_id, pair[1]["id"]):
+                return pair
+            return None
+
+    @staticmethod
+    def _saved_title(db: sqlite3.Connection, session_id: str, answer_id: str | None) -> str:
+        row = db.execute(
+            """SELECT json_extract(payload,'$.title') FROM session_events
+            WHERE session_id=? AND kind='title' AND coalesce(json_extract(payload,'$.title'),'')<>''
+            AND (json_extract(payload,'$.source') IS NOT 'llm' OR json_extract(payload,'$.answer_id')=?)
+            ORDER BY seq DESC LIMIT 1""",
+            (session_id, answer_id),
+        ).fetchone()
+        return row[0] if row else ""
 
     def session_title(self, session_id: str) -> str:
         with transaction(self.paths, write=False) as db:

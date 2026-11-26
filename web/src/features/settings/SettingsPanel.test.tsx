@@ -1,3 +1,4 @@
+import { testAttachmentPolicy } from '../../test/attachmentPolicy';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SettingsPanel } from './SettingsPanel';
@@ -7,7 +8,7 @@ import type { ActionResponse, CommandResponse, ModelSearchResponse } from '../..
 
 const HEALTH = {
   status: 'ok', version: '0.4.0.dev0', provider: 'deepseek', model: 'deepseek-flash',
-  busy: false, active_turn_id: null, single_client: true, static_ready: true,
+  busy: false, active_turn_id: null, single_client: true, attachment_policy: testAttachmentPolicy, static_ready: true,
 };
 
 function json(payload: unknown, status = 200): Response {

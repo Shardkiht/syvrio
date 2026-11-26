@@ -74,10 +74,10 @@ def test_title_job_survives_restart_and_uses_first_valid_exchange(service, monke
         store.append(session, item)
         store.append(untouched, item)
     # 列出会话或重启服务都不会调度历史对话。
-    assert len(store.list()) == 2 and not backend.pending_titles()
+    assert len(store.list()) == 2 and not backend.pending_titles([session.id, untouched.id])
     backend.request_title(session.id)
     restarted = BackgroundMemory(service)
-    assert restarted.pending_titles() == {session.id}
+    assert restarted.pending_titles([session.id, untouched.id]) == {session.id}
     seen = []
 
     def generate(service, question, answer):
@@ -87,14 +87,43 @@ def test_title_job_survives_restart_and_uses_first_valid_exchange(service, monke
     monkeypatch.setattr(titles, "generate", generate)
     path = job_key(service.paths, "title", session.id)
     assert restarted._step_job("title", path, Event())
-    assert seen == [("actual question", "actual answer")] and not restarted.pending_titles()
+    assert seen == [("actual question", "actual answer")] and not restarted.pending_titles(
+        [session.id, untouched.id]
+    )
     saved = store.load(session.id)
     assert saved.title() == "Generated title"
     assert store.load(untouched.id).title() == "未命名会话"
     backend.request_title(session.id)
-    assert not backend.pending_titles()
+    assert not backend.pending_titles([session.id, untouched.id])
     store.append(saved, {"type": "undo", "message_id": "m2"})
     assert saved.title() == "未命名会话"
+
+
+def test_generated_title_only_reads_title_evidence(service, monkeypatch):
+    from threading import Event
+
+    from syvrio.memory.background import BackgroundMemory, titles
+    from syvrio.memory.background.jobs import job_key
+
+    service.initialize_files()
+    bg = BackgroundMemory(service)
+    store = bg.sessions
+    session = store.create()
+    for event in (
+        {"type": "message", "id": "m1", "role": "user", "content": "question"},
+        {"type": "tool", "id": "t1", "content": "x" * 256_000},
+        {"type": "assistant", "id": "a1", "content": "answer"},
+    ):
+        store.append(session, event)
+
+    def unexpected_load(*args, **kwargs):
+        pytest.fail("Title generation loaded full session history.")
+
+    monkeypatch.setattr(store, "load", unexpected_load)
+    monkeypatch.setattr(titles, "generate", lambda *_: "New title")
+    bg.request_title(session.id)
+    assert bg._step_job("title", job_key(service.paths, "title", session.id), Event())
+    assert not store.untitled_exchange(session.id)
 
 
 def test_missing_title_credentials_leave_history_readable(service, monkeypatch):

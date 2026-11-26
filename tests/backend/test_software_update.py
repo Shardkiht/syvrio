@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from pathlib import Path
@@ -85,6 +86,20 @@ def test_changed_release_never_installs_a_different_version(tmp_path, monkeypatc
     assert current.samefile(old)
 
 
+def post_idle_update(client, **kwargs):
+    # 常驻服务启动后可能仍在发现待处理任务；仅在这个空闲场景等待其退出。
+    deadline = time.monotonic() + 5
+    while True:
+        response = client.post("/api/update", **kwargs)
+        if (
+            response.status_code != 409
+            or response.json()["error"]["code"] != "update_busy"
+            or time.monotonic() >= deadline
+        ):
+            return response
+        time.sleep(0.025)
+
+
 def test_update_api_requires_authenticated_confirmation(resident_backend, monkeypatch):
     _, resident = resident_backend
     started = []
@@ -111,8 +126,8 @@ def test_update_api_requires_authenticated_confirmation(resident_backend, monkey
                     ).status_code
                     == 403
                 )
-            reply = browser.post(
-                "/api/update", json=payload, headers={"X-Syvrio-Token": resident.token}
+            reply = post_idle_update(
+                browser, json=payload, headers={"X-Syvrio-Token": resident.token}
             )
             assert reply.status_code == (202 if allowed else 403)
     assert resident.request("POST", "/api/update", json=payload)["state"] == "running"
@@ -235,7 +250,7 @@ def test_drain_serializes_writes_and_recovers_after_abort_or_worker_death(
     tmp_path, monkeypatch, resident_backend
 ):
     _, resident = resident_backend
-    monkeypatch.setattr("syvrio.backend.api.update_admission.syvrio_home", lambda: tmp_path)
+    monkeypatch.setattr("syvrio.backend.updates.activity.syvrio_home", lambda: tmp_path)
     entered, finish = Event(), Event()
 
     def slow_start(*args):
@@ -249,10 +264,10 @@ def test_drain_serializes_writes_and_recovers_after_abort_or_worker_death(
     with httpx.Client(base_url=resident.base, headers=headers, trust_env=False) as client:
         with ThreadPoolExecutor() as pool:
             work = pool.submit(
-                client.post, "/api/update", json={"confirmed": True, "version": "2.0.0"}
+                post_idle_update, client, json={"confirmed": True, "version": "2.0.0"}
             )
             try:
-                assert entered.wait(5)
+                assert entered.wait(10)
                 assert client.post("/api/resident/update_drain", json=ticket).status_code == 409
             finally:
                 finish.set()

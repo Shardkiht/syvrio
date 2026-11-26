@@ -11,6 +11,7 @@ from ..application.command_catalog import (
     slash_matches,
 )
 from ..infra.config import WebShareConfig as WebShareConfig
+from ..infra.session.attachment_policy import AttachmentPolicy
 from ..infra.storage.documents import SUPPORTED_SUFFIXES
 from ..infra.storage.paths import SESSION_ID_RE
 from ..infra.vault.sync import SyncResult
@@ -31,6 +32,7 @@ __all__ = [
     "parse_command",
     "slash_matches",
     "SUPPORTED_SUFFIXES",
+    "AttachmentPolicy",
     "SESSION_ID_RE",
     "ProgressCallback",
     "UpdateProgress",

@@ -1,3 +1,4 @@
+import { testAttachmentPolicy } from '../test/attachmentPolicy';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
@@ -10,7 +11,7 @@ const encoder = new TextEncoder();
 
 const HEALTH = {
   status: 'ok', version: '0.4.0.dev0', provider: 'deepseek', model: 'deepseek-flash',
-  busy: false, active_turn_id: null, single_client: true, static_ready: true,
+  busy: false, active_turn_id: null, single_client: true, attachment_policy: testAttachmentPolicy, static_ready: true,
 };
 const SESSIONS = [{
   id: 's-1', title: 'Earlier chat', messages: 1,

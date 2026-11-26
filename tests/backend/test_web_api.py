@@ -46,6 +46,67 @@ pytestmark = pytest.mark.web
 BASE_URL = "http://127.0.0.1:8765"
 
 
+def test_session_page_only_checks_its_own_title_jobs(service, monkeypatch):
+    service.initialize_files()
+    channel = WebBackend(service=service)
+    ids = []
+    for i in range(3):
+        session = channel._sessions.create()
+        channel._sessions.append(
+            session, {"type": "message", "id": "u", "role": "user", "content": str(i)}
+        )
+        channel._sessions.append(session, {"type": "assistant", "id": "a", "content": "answer"})
+        channel._background.request_title(session.id)
+        ids.append(session.id)
+    looked_up = []
+    lookup = channel._background.pending_titles
+
+    def page_lookup(session_ids):
+        looked_up.extend(session_ids)
+        return lookup(session_ids)
+
+    monkeypatch.setattr(channel._background, "pending_titles", page_lookup)
+    page = channel.list_sessions(limit=1, offset=1)
+    assert len(page.items) == 1
+    assert looked_up == [page.items[0].id]
+    assert page.items[0].id in ids and page.items[0].title_pending
+    assert not channel.list_sessions(limit=1, archived=True).items
+    assert len(looked_up) == 1
+
+
+def test_session_page_observes_title_completion(service, monkeypatch):
+    from syvrio.memory.background import titles
+
+    service.initialize_files()
+    channel = WebBackend(service=service)
+    session = channel._sessions.create()
+    channel._sessions.append(
+        session, {"type": "message", "role": "user", "id": "u", "content": "q"}
+    )
+    channel._sessions.append(session, {"type": "assistant", "id": "a", "content": "answer"})
+    channel._background.request_title(session.id)
+    lookup = channel._background.pending_titles
+    monkeypatch.setattr(titles, "generate", lambda *_: "Finished")
+
+    def finish_during_list(ids):
+        with ThreadPoolExecutor(1) as worker:
+            result = worker.submit(
+                channel._background._step_job,
+                "title",
+                job_key(service.paths, "title", session.id),
+                threading.Event(),
+            )
+            assert result.result(timeout=5)
+        return lookup(ids)
+
+    with monkeypatch.context() as context:
+        context.setattr(channel._background, "pending_titles", finish_during_list)
+        row = channel.list_sessions(limit=1).items[0]
+    assert (row.title, row.title_pending) == ("未命名会话", True)
+    refreshed = channel.list_sessions(limit=1).items[0]
+    assert (refreshed.title, refreshed.title_pending) == ("Finished", False)
+
+
 def test_rename_length_agrees_for_command_and_title_editor(client, backend):
     session_id = backend._sessions.create().id
     route = f"/api/sessions/{session_id}"

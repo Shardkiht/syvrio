@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import secrets
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
@@ -63,6 +64,27 @@ def validate_record(record: Any) -> None:
         )
     ):
         raise ValueError("Invalid session tool calls")
+
+
+def first_title_exchange(records: Iterable[dict]) -> tuple[dict, dict] | None:
+    user = answer = None
+    for item in records:
+        kind = item.get("type")
+        if kind == "message" and item.get("role") == "user":
+            if not item.get("turn_root"):
+                if user and answer:
+                    return user, answer
+                user = item
+            answer = None
+        elif user and kind == "assistant":
+            answer = (
+                item
+                if not item.get("interrupted")
+                and not item.get("tool_calls")
+                and (item.get("content") or "").strip()
+                else None
+            )
+    return (user, answer) if user and answer else None
 
 
 @dataclass
@@ -156,24 +178,7 @@ class Session:
 
     def title_exchange(self) -> tuple[dict, dict] | None:
         """首次完整问答，不计入已撤回、中断或仅有工具输出的回合。"""
-        user = answer = None
-        for item in self.active_records():
-            kind = item.get("type")
-            if kind == "message" and item.get("role") == "user":
-                if not item.get("turn_root"):
-                    if user and answer:
-                        return user, answer
-                    user = item
-                answer = None
-            elif user and kind == "assistant":
-                answer = (
-                    item
-                    if not item.get("interrupted")
-                    and not item.get("tool_calls")
-                    and (item.get("content") or "").strip()
-                    else None
-                )
-        return (user, answer) if user and answer else None
+        return first_title_exchange(self.active_records())
 
     def latest_summary(self) -> dict | None:
         for record in reversed(self.active_records()):

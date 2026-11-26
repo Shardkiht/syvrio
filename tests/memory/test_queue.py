@@ -146,3 +146,15 @@ with transaction(s.paths) as db:
     assert subprocess.run([sys.executable, "-c", code, str(tmp_path)]).returncode == 42
     assert sessions.load(session.id, archived=True).user_texts() == ["synthetic"]
     assert queue.all() == [row]
+
+
+def test_duplicate_only_reads_matching_candidates(tmp_path):
+    queue = PendingQueue(tmp_path)
+    for index in range(12):
+        queue.add(make_item(str(index)).model_copy(update={"text": f"item {index}"}))
+    statements = []
+    with transaction(queue.paths) as db:
+        db.set_trace_callback(statements.append)
+        result = queue.add_unique(make_item("other").model_copy(update={"text": "item 11"}))
+    assert result.id == "11"
+    assert sum(sql.startswith("SELECT memory_id FROM candidate_related") for sql in statements) == 1

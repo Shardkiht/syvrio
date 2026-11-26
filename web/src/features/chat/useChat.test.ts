@@ -1,3 +1,4 @@
+import { testAttachmentPolicy } from '../../test/attachmentPolicy';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import * as client from '../../api/client';
@@ -19,7 +20,7 @@ it('refreshes a pending title and stops polling once the generated title arrives
   try {
     vi.spyOn(api, 'health').mockResolvedValue({
       status: 'ok', version: 'test', provider: 'test', model: 'test', busy: false,
-      active_turn_id: null, static_ready: true, single_client: false,
+      active_turn_id: null, attachment_policy: testAttachmentPolicy, static_ready: true, single_client: false,
     });
     vi.spyOn(api, 'commands').mockResolvedValue({ items: [] });
     const row = { id: 'a', title: 'Untitled chat', messages: 1, current: false,
@@ -92,7 +93,7 @@ it('finishes restoring a tab before a newly selected chat can change its binding
       return switchResponse(sessionHistory(id));
     });
     vi.spyOn(api, 'health').mockResolvedValue({ status: 'ok', version: 'test', provider: 'spark', model: 'test',
-      busy: false, active_turn_id: null, static_ready: true, single_client: false });
+      busy: false, active_turn_id: null, attachment_policy: testAttachmentPolicy, static_ready: true, single_client: false });
     vi.spyOn(api, 'listSessions').mockResolvedValue({ items: [] });
     vi.spyOn(api, 'commands').mockResolvedValue({ items: [] });
     vi.spyOn(api, 'history').mockImplementation(async id => ({ session_id: id, title: id, items: [],
@@ -335,7 +336,7 @@ it('reattaches to the active turn when the page opens and then reloads saved his
   const finished = deferred<void>();
   vi.spyOn(api, 'health').mockResolvedValue({
     status: 'ok', version: 'test', provider: 'test', model: 'test', busy: true,
-    active_turn_id: 42, static_ready: true, single_client: false,
+    active_turn_id: 42, attachment_policy: testAttachmentPolicy, static_ready: true, single_client: false,
   });
   vi.spyOn(api, 'commands').mockResolvedValue({ items: [] });
   vi.spyOn(api, 'listSessions').mockResolvedValue({ items: [] });
@@ -373,7 +374,7 @@ it('reattaches to the active turn when the page opens and then reloads saved his
 it('loads saved history if the active reply finishes between the health and queue requests', async () => {
   vi.spyOn(api, 'health').mockResolvedValue({
     status: 'ok', version: 'test', provider: 'test', model: 'test', busy: true,
-    active_turn_id: 42, static_ready: true, single_client: false,
+    active_turn_id: 42, attachment_policy: testAttachmentPolicy, static_ready: true, single_client: false,
   });
   vi.spyOn(api, 'commands').mockResolvedValue({ items: [] });
   vi.spyOn(api, 'listSessions').mockResolvedValue({ items: [] });

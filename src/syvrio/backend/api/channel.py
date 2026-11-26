@@ -191,11 +191,13 @@ class APIChannel(ResidentChannel):
     def list_sessions(
         self, limit: int = 100, *, archived: bool = False, offset: int = 0
     ) -> SessionListResponse:
-        # 先读取任务，即使列举期间刚发布标题，也能在结束时刷新。
-        pending = set() if archived else self._background.pending_titles()
-        rows = self._sessions.list(
-            max(1, min(limit, 500)), with_tokens=False, archived=archived, offset=offset
-        )
+        with self._service.work.read():
+            rows = self._sessions.list(
+                max(1, min(limit, 500)), with_tokens=False, archived=archived, offset=offset
+            )
+            pending = (
+                set() if archived else self._background.pending_titles([row["id"] for row in rows])
+            )
         current = self._conversation.current_id
         return SessionListResponse(
             items=[

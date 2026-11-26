@@ -35,7 +35,16 @@ export interface StreamEvent {
   ok?: boolean | null;
 }
 
+export interface AttachmentPolicy {
+  extensions: string[];
+  max_files: number;
+  max_file_bytes: number;
+  max_batch_bytes: number;
+  max_name_length: number;
+}
+
 export interface HealthResponse {
+  attachment_policy: AttachmentPolicy;
   status: string;
   version: string;
   provider: string;

@@ -79,7 +79,7 @@ uv run python scripts/build_web.py --wheel dist/*.whl  # 校验实际 wheel 内�
 
 | 方法 | 路径 | 作用 |
 | --- | --- | --- |
-| GET | `/api/health` | 版本、供应商与模型、生成状态、活动轮次、静态资源状态 |
+| GET | `/api/health` | 版本、供应商与模型、生成状态、活动轮次、静态资源状态，以及 Web/TUI 选文件时使用的附件格式、数量和大小限制 |
 | GET | `/api/context-usage?session_id=<id>` | 会话上下文估算、配置上限与压缩阈值；省略 ID 表示空白草稿 |
 | GET | `/api/sessions?limit=100` | 会话列表 |
 | POST | `/api/sessions` | 回到新对话首页（返回 `draft=true`、`session_id=null`，不写文件；首条消息才创建会话） |

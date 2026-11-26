@@ -217,7 +217,8 @@ class SessionStore(SessionQuery):
         if kind == "title" and data.get("title") and data.get("source") != "llm":
             db.execute("UPDATE sessions SET title=? WHERE id=?", (data["title"], key))
         elif kind == "title":
-            title = self.load(key, include_reasoning=False).saved_title()
+            pair = self._first_title_exchange(db, key)
+            title = self._saved_title(db, key, pair[1]["id"] if pair else None)
             db.execute("UPDATE sessions SET title=? WHERE id=?", (title, key))
         elif kind == "undo":
             projected = self.load(key, include_reasoning=False)
@@ -232,6 +233,15 @@ class SessionStore(SessionQuery):
                     key,
                 ),
             )
+
+    def append_generated_title(
+        self, session_id: str, record: dict, live_session: Session | None
+    ) -> None:
+        if live_session is not None:
+            self.append(live_session, record)
+        else:
+            with transaction(self.paths) as db:
+                self._append_events(db, session_id, (record,))
 
     def append(self, session, record):
         with transaction(self.paths) as db:
