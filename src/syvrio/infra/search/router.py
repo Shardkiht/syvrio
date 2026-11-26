@@ -583,7 +583,7 @@ class SearchRouter:
         else:
             hint = "未找到相关结果。"
         if any(failure.kind == "auth" for failure in failures):
-            hint += " 存在鉴权失败：请检查对应厂商的 API Key 环境变量。"
+            hint += " 存在鉴权失败：请在 syvrio setup 中检查该厂商保存的 API Key。"
         if any(failure.kind == "budget_exhausted" for failure in failures):
             hint += " 已达到单次搜索的请求次数上限。"
         if any(
@@ -632,26 +632,6 @@ class SearchRouter:
             self.cache.set(cache_key, results, name, ttl=FRESHNESS_TTL, **metadata)
         else:
             self.cache.set(cache_key, results, name, **metadata)
-
-    def _exhausted(self, failures: list[SearchFailure]) -> SearchOutcome:
-        if (
-            failures
-            and all(
-                failure.kind in ("timeout", "network", "rate_limit", "unavailable", "bad_response")
-                for failure in failures
-            )
-            and not any(
-                "未注册" in failure.detail or "预算" in failure.detail for failure in failures
-            )
-        ):
-            hint = "所有搜索引擎均失败。"
-        else:
-            hint = "未找到相关结果。"
-        if any(
-            "open-websearch" in failure.detail or "daemon" in failure.detail for failure in failures
-        ):
-            hint += " 请确认 open-websearch 已启动：npx open-websearch@latest serve"
-        return SearchOutcome(failed=failures, hint=hint)
 
     def _engine_slots(self, default_engines: tuple[str, ...]) -> tuple[tuple[str, ...], ...]:
         """自动搜索的引擎尝试序列；显式指定引擎时不进入本方法（保持用户语义）。"""

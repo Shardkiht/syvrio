@@ -270,7 +270,11 @@ class ContextManager:
             self.input_budget - base_tokens - history_tokens,
         )
         messages = system + summary + history_messages + references + current
-        used = tool_tokens + self._request_tokens(messages, next_turn=not current)
+        # 摘要是单独的系统消息，不改变其余消息的思考重放规则。
+        if compacted_records:
+            used = tool_tokens + self._request_tokens(messages, next_turn=not current)
+        else:
+            used = base_tokens + history_tokens + estimate_messages_tokens(summary)
         self.check_input_budget(used, tool_tokens)
         return ContextPlan(
             messages=messages,

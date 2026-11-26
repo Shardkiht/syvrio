@@ -139,7 +139,7 @@ def setup(
         f"上下文：{result['context_window']} · 思考档位：{result['thinking_selection'] or '默认'}"
     )
     if result["key_saved"]:
-        console.print(f"[bold]API Key 已保存到系统凭据[/]（环境变量 {result['api_key_env']} 优先）")
+        console.print("[bold]API Key 已保存到系统凭据[/]")
     elif result["keyring_error"]:
         console.print(f"[#b8b8b8]{result['keyring_error']}[/]")
     if result["checked"]:

@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { CommandInfo, CommandResponse } from '../../types';
 import {
-  commandMessage,
   isCommandLine,
   panelFor,
   resultPanelFor,
@@ -98,15 +97,16 @@ describe('option panels', () => {
   });
 
   it('gives explicit feedback for unsupported, unknown, busy and errors', () => {
-    expect(commandMessage(result({ status: 'unsupported', command: 'import' })))
-      .toContain('not available on the Web');
-    expect(commandMessage(result({ status: 'unknown', command: 'nope', message: 'Invalid command.' })))
-      .toBe('Invalid command.');
-    expect(commandMessage(result({ status: 'busy' }))).toContain('Busy');
-    expect(commandMessage(result({ status: 'confirm_required' })))
-      .toContain('Confirmation required');
-    expect(commandMessage(result({ status: 'error', message: 'failed' })))
-      .toContain('failed');
+    expect(resultPanelFor(result({ status: 'unsupported', command: 'import' })))
+      .toMatchObject({ title: '/import is not available on the Web', feedback: 'notice' });
+    expect(resultPanelFor(result({ status: 'unknown', command: 'nope', message: 'Invalid command.' })))
+      .toEqual({ title: 'Invalid command.', message: '', feedback: 'notice' });
+    expect(resultPanelFor(result({ status: 'busy' })))
+      .toMatchObject({ title: 'Busy', feedback: 'notice', actions: [{ line: '/status' }] });
+    expect(resultPanelFor(result({ status: 'confirm_required' })))
+      .toMatchObject({ title: 'Confirmation required', feedback: 'notice' });
+    expect(resultPanelFor(result({ status: 'error', message: 'failed' })))
+      .toMatchObject({ title: '/status failed', message: 'failed', feedback: 'error' });
   });
 });
 
@@ -125,7 +125,7 @@ it('keeps the published profile intact and displays its generation time locally'
 
 it('localizes absolute timestamps in the Web Git status command', () => {
   const stamp = '2026-11-11T01:05:03+00:00';
-  const message = commandMessage(result({
+  const { message } = resultPanelFor(result({
     command: 'git',
     intent: 'git_status',
     message: 'initialized: True\nlast_push_at: ' + stamp,

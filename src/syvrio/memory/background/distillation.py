@@ -115,12 +115,12 @@ def process(
             return True
         if busy(session.id) or stop.is_set():
             return False
-        version = service.store.fingerprint()
-        already = [
-            fact.as_recall().model_dump(exclude_none=True)
-            for fact in service.current_facts()
-            if fact.source_session_id == session.id and fact.source_message_id == source["id"]
-        ]
+        snapshot = service.store.snapshot()
+    already = [
+        fact.as_recall().model_dump(exclude_none=True)
+        for fact in snapshot.records
+        if fact.source_session_id == session.id and fact.source_message_id == source["id"]
+    ]
     proposed: list[MemoryDraft] = []
     text = source["content"]
     settings = replace(
@@ -173,6 +173,7 @@ def process(
                         break
                 else:
                     proposed.append(draft)
+    known = {normalize_text(fact.text) for fact in snapshot.records} if proposed else set()
     with vault_transaction(service.paths) as tx:
         latest_job = read_job(path)
         if not latest_job:
@@ -180,9 +181,8 @@ def process(
         current, message = _first(sessions, latest_job)
         if not message or source != message or stop.is_set() or busy(session.id):
             return False
-        if service.store.fingerprint() != version:
+        if service.store.snapshot().revision != snapshot.revision:
             return False
-        known = {normalize_text(fact.text) for fact in service.current_facts()}
         for draft in proposed:
             key = normalize_text(draft.text)
             if key not in known:

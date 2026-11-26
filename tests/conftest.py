@@ -106,8 +106,10 @@ def isolate_llm_credentials(monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "user-data"))
     monkeypatch.delenv("SYVRIO_CREDENTIALS_DIR", raising=False)
     fake = types.ModuleType("keyring")
-    fake.get_password = lambda service, name: None
-    fake.set_password = lambda service, name, value: None
+    keys = {}
+    fake.get_password = lambda service, name: keys.get(name)
+    fake.set_password = lambda service, name, value: keys.__setitem__(name, value)
+    fake.delete_password = lambda service, name: keys.pop(name)
     monkeypatch.setitem(sys.modules, "keyring", fake)
     for name in (
         "DEEPSEEK_API_KEY",
@@ -119,6 +121,7 @@ def isolate_llm_credentials(monkeypatch, tmp_path):
         "SPARK_API_KEY",
     ):
         monkeypatch.delenv(name, raising=False)
+    return keys
 
 
 @pytest.fixture

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import sys
 import types
 from pathlib import Path
 
@@ -29,17 +28,14 @@ _SEARCH_EXTERNALS = {"baidu_search", "tavily", "exa", "you", "volcengine"}
 _FETCH_EXTERNALS = {"tavily", "exa", "you", "volcengine"}
 
 
-def _install_keys_and_empty_keyring(monkeypatch):
-
-    fake = types.ModuleType("keyring")
-    fake.get_password = lambda service, name: None
-    monkeypatch.setitem(sys.modules, "keyring", fake)
+@pytest.fixture
+def provider_keys(isolate_llm_credentials):
     for name in _SEARCH_EXTERNALS:
-        monkeypatch.setenv(PROVIDERS[name].key_env, KEY)
+        isolate_llm_credentials[PROVIDERS[name].key_env] = KEY
+    return isolate_llm_credentials
 
 
-def test_all_five_search_providers_register_with_keys(monkeypatch):
-    _install_keys_and_empty_keyring(monkeypatch)
+def test_all_five_search_providers_register_with_keys(provider_keys):
     config = SearchConfig(providers=["open_websearch", *_SEARCH_EXTERNALS])
     registry = build_registry(config)
     assert _SEARCH_EXTERNALS <= set(registry)
@@ -48,8 +44,7 @@ def test_all_five_search_providers_register_with_keys(monkeypatch):
     assert "search" in registry["exa"].capabilities
 
 
-def test_all_four_fetch_providers_register_with_keys(monkeypatch):
-    _install_keys_and_empty_keyring(monkeypatch)
+def test_all_four_fetch_providers_register_with_keys(provider_keys):
     config = SearchConfig()
     registry = build_fetch_registry(
         FetchConfig(providers=["open_websearch", *_FETCH_EXTERNALS]), config
@@ -58,8 +53,7 @@ def test_all_four_fetch_providers_register_with_keys(monkeypatch):
     assert "fetch" in registry["open_websearch"].capabilities
 
 
-def test_search_and_fetch_orders_are_independent(monkeypatch):
-    _install_keys_and_empty_keyring(monkeypatch)
+def test_search_and_fetch_orders_are_independent(provider_keys):
     search_config = SearchConfig(providers=["tavily", "exa"])
     fetch_config = FetchConfig(providers=["volcengine"])
     assert set(build_registry(search_config)) == {"tavily", "exa"}
@@ -67,8 +61,7 @@ def test_search_and_fetch_orders_are_independent(monkeypatch):
 
 
 def test_unkeyed_provider_never_registers_or_fires(monkeypatch):
-    _install_keys_and_empty_keyring(monkeypatch)
-    monkeypatch.delenv("TAVILY_API_KEY")
+    monkeypatch.setenv("TAVILY_API_KEY", KEY)
     search_config = SearchConfig(providers=["open_websearch", "tavily"])
     assert "tavily" not in build_registry(search_config)
 
@@ -111,9 +104,8 @@ def _load_smoke_module():
     return module
 
 
-def test_smoke_script_dry_run_lists_rows_without_network(monkeypatch, tmp_path, capsys):
+def test_smoke_script_dry_run_lists_rows_without_network(provider_keys, tmp_path, capsys):
     module = _load_smoke_module()
-    _install_keys_and_empty_keyring(monkeypatch)
     config = Config(
         vault=Path(tmp_path),
         llm=LLMConfig(),
@@ -130,9 +122,8 @@ def test_smoke_script_dry_run_lists_rows_without_network(monkeypatch, tmp_path, 
     assert report["rows"][0]["would_register"] is True
 
 
-def test_smoke_script_live_uses_injected_fake(monkeypatch, tmp_path, capsys):
+def test_smoke_script_live_uses_injected_fake(tmp_path, capsys):
     module = _load_smoke_module()
-    _install_keys_and_empty_keyring(monkeypatch)
 
     class FakeSearchProvider:
         name = "tavily"
@@ -183,8 +174,7 @@ def test_fetch_smoke_dry_optional_key_and_one_live_call(
     key_env,
 ):
     module = _load_smoke_module()
-    _install_keys_and_empty_keyring(monkeypatch)
-    monkeypatch.delenv(key_env, raising=False)
+    monkeypatch.setenv(key_env, KEY)
     config = Config(vault=tmp_path, fetch=FetchConfig(providers=[name]))
     args = ["--provider", name, "--operation", "fetch"]
     assert module.main(args, config=config) == 0

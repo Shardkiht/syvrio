@@ -67,13 +67,13 @@ def test_spark_preset_and_configuration_roundtrip(tmp_path):
 
 
 @pytest.mark.parametrize("mode", ["", "enabled", "auto", "disabled"])
-def test_spark_chat_parameters_match_maas_contract(monkeypatch, mode):
+def test_spark_chat_parameters_match_maas_contract(monkeypatch, mode, isolate_llm_credentials):
     from types import SimpleNamespace
 
     from syvrio.infra.llm import client
 
     calls = []
-    monkeypatch.setenv("SPARK_API_KEY", "synthetic-key")
+    isolate_llm_credentials["SPARK_API_KEY"] = "synthetic-key"
     fake = SimpleNamespace(completion=lambda **kwargs: calls.append(kwargs) or "response")
     monkeypatch.setattr(client, "_litellm", lambda: fake)
     preset = next(item for item in PRESETS if item.key == "spark")
@@ -111,13 +111,13 @@ def test_spark_chat_parameters_match_maas_contract(monkeypatch, mode):
     assert "fallbacks" not in sent
 
 
-def test_spark_streaming_preserves_deltas_and_usage(monkeypatch):
+def test_spark_streaming_preserves_deltas_and_usage(monkeypatch, isolate_llm_credentials):
     from types import SimpleNamespace
 
     from syvrio.infra.llm import client
 
     calls = []
-    monkeypatch.setenv("SPARK_API_KEY", "synthetic-key")
+    isolate_llm_credentials["SPARK_API_KEY"] = "synthetic-key"
     chunks = [
         {"choices": [{"delta": {"content": "合成"}}]},
         {
@@ -369,22 +369,46 @@ def test_search_auto_start_defaults_match_example(tmp_path):
     assert load_config(tmp_path / "config.toml").search.auto_start is True
 
 
-def test_local_provider_without_key_reaches_backend(monkeypatch):
-    import pytest
+@pytest.mark.parametrize("provider", ["openai", "ollama"])
+def test_model_requests_never_use_environment_credentials(
+    monkeypatch, isolate_llm_credentials, provider
+):
+    from syvrio.infra.llm import client
 
-    from syvrio.infra.llm.client import LiteLLMChatModel
+    monkeypatch.setenv("OPENAI_API_KEY", "environment-only")
+    config = LLMConfig(provider=provider, api_key_env="OPENAI_API_KEY")
+    received = []
 
-    model = LiteLLMChatModel(LLMConfig(provider="ollama", api_key_env="MISSING_LOCAL_KEY"))
-    called = []
+    def completion(**kwargs):
+        received.append(kwargs["api_key"])
+        if kwargs.get("stream"):
+            return iter([])
+        return types.SimpleNamespace(choices=[types.SimpleNamespace(message={"content": "ok"})])
 
-    def fake_complete(*args, **kwargs):
-        called.append(True)
-        raise RuntimeError("backend reached")
+    def embedding(**kwargs):
+        received.append(kwargs["api_key"])
+        return {"data": [{"embedding": [0.1]}]}
 
-    monkeypatch.setattr("syvrio.infra.llm.client.complete", fake_complete)
-    with pytest.raises(RuntimeError, match="backend reached"):
-        model.chat([], [])
-    assert called
+    monkeypatch.setattr(
+        client,
+        "_litellm",
+        lambda: types.SimpleNamespace(completion=completion, embedding=embedding),
+    )
+    model = client.LiteLLMChatModel(config)
+    requests = [
+        lambda: model.chat([], []),
+        lambda: model.chat([], [], on_delta=lambda _: None),
+        lambda: client.embed_texts(config, ["example"]),
+    ]
+    if provider == "openai":
+        for request in requests:
+            with pytest.raises(client.ChatModelError, match="API key"):
+                request()
+        assert not received
+        isolate_llm_credentials["OPENAI_API_KEY"] = "stored"
+    for request in requests:
+        request()
+    assert received == ["stored" if provider == "openai" else "local"] * len(requests)
 
 
 def test_search_config_roundtrip(tmp_path):
@@ -441,16 +465,12 @@ def test_resolve_config_path_env_wins_over_cwd(tmp_path, monkeypatch):
     assert resolve_config_path(None) == env_path
 
 
-def test_env_key_takes_precedence_over_keyring(monkeypatch):
-    fake = types.ModuleType("keyring")
-    fake.get_password = lambda service, name: "from-keyring"
-    monkeypatch.setitem(sys.modules, "keyring", fake)
+def test_model_key_uses_only_credentials(monkeypatch, isolate_llm_credentials):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "from-env")
-
-    assert LLMConfig(api_key_env="DEEPSEEK_API_KEY").api_key() == "from-env"
-
-    monkeypatch.delenv("DEEPSEEK_API_KEY")
-    assert LLMConfig(api_key_env="DEEPSEEK_API_KEY").api_key() == "from-keyring"
+    llm = LLMConfig(api_key_env="DEEPSEEK_API_KEY")
+    assert llm.api_key() is None
+    isolate_llm_credentials["DEEPSEEK_API_KEY"] = "from-keyring"
+    assert llm.api_key() == "from-keyring"
 
 
 def test_provider_presets_cover_domestic_providers():
@@ -523,7 +543,9 @@ def test_cached_provider_models_reads_cache_only(monkeypatch):
 
 
 @pytest.mark.parametrize("before_first", [True, False])
-def test_cancellable_transport_closes_without_waiting_for_tokens(monkeypatch, before_first):
+def test_cancellable_transport_closes_without_waiting_for_tokens(
+    monkeypatch, before_first, isolate_llm_credentials
+):
     import asyncio
     from threading import Event
     from types import SimpleNamespace
@@ -552,7 +574,7 @@ def test_cancellable_transport_closes_without_waiting_for_tokens(monkeypatch, be
 
     fake = SimpleNamespace(acompletion=completion, completion_cost=lambda **kw: 0)
     monkeypatch.setattr(client, "_litellm", lambda: fake)
-    monkeypatch.setenv("SPARK_API_KEY", "synthetic-key")
+    isolate_llm_credentials["SPARK_API_KEY"] = "synthetic-key"
     config = LLMConfig(provider="spark", model="spark-x2.6", api_key_env="SPARK_API_KEY")
     deltas = []
     with pytest.raises(client.GenerationCancelled):
@@ -561,7 +583,9 @@ def test_cancellable_transport_closes_without_waiting_for_tokens(monkeypatch, be
     assert deltas == ([] if before_first else ["partial"])
 
 
-def test_cancellable_transport_normal_completion_and_tool_fragments(monkeypatch):
+def test_cancellable_transport_normal_completion_and_tool_fragments(
+    monkeypatch, isolate_llm_credentials
+):
     from threading import Event
     from types import SimpleNamespace
 
@@ -610,7 +634,7 @@ def test_cancellable_transport_normal_completion_and_tool_fragments(monkeypatch)
         "_litellm",
         lambda: SimpleNamespace(acompletion=completion, completion_cost=lambda **kw: 0),
     )
-    monkeypatch.setenv("SPARK_API_KEY", "synthetic-key")
+    isolate_llm_credentials["SPARK_API_KEY"] = "synthetic-key"
     config = LLMConfig(provider="spark", model="spark-x2.6", api_key_env="SPARK_API_KEY")
     model = client.LiteLLMChatModel(config)
     for _ in range(2):
@@ -624,7 +648,9 @@ def test_cancellable_transport_normal_completion_and_tool_fragments(monkeypatch)
     assert all("stream_options" not in call for call in sent)
 
 
-def test_cancellable_stream_with_installed_litellm_mock_transport(monkeypatch):
+def test_cancellable_stream_with_installed_litellm_mock_transport(
+    monkeypatch, isolate_llm_credentials
+):
     from threading import Event
 
     from syvrio.infra.llm import client
@@ -636,7 +662,7 @@ def test_cancellable_stream_with_installed_litellm_mock_transport(monkeypatch):
         return await original(**kwargs, mock_response="Synthetic response")
 
     monkeypatch.setattr(litellm, "acompletion", local_completion)
-    monkeypatch.setenv("OPENAI_API_KEY", "synthetic-key")
+    isolate_llm_credentials["OPENAI_API_KEY"] = "synthetic-key"
     model = client.LiteLLMChatModel(
         LLMConfig(provider="openai", model="gpt-4o-mini", api_key_env="OPENAI_API_KEY")
     )
@@ -653,7 +679,7 @@ def test_cancellable_stream_with_installed_litellm_mock_transport(monkeypatch):
 
 
 @pytest.mark.parametrize("outcome", ["done", "cancel", "error", "timeout", "shared"])
-def test_stream_respects_litellm_transport_ownership(monkeypatch, outcome):
+def test_stream_respects_litellm_transport_ownership(monkeypatch, outcome, isolate_llm_credentials):
     import asyncio
     from threading import Event
     from types import SimpleNamespace
@@ -704,7 +730,7 @@ def test_stream_respects_litellm_transport_ownership(monkeypatch, outcome):
         acompletion=completion, aclient_session=transport if outcome == "shared" else None
     )
     monkeypatch.setattr(client, "_litellm", lambda: fake)
-    monkeypatch.setenv("SYVRIO_TEST_STREAM_KEY", "synthetic")
+    isolate_llm_credentials["SYVRIO_TEST_STREAM_KEY"] = "synthetic"
     model = client.LiteLLMChatModel(
         LLMConfig(provider="openai", model="gpt-4o-mini", api_key_env="SYVRIO_TEST_STREAM_KEY")
     )
@@ -730,7 +756,9 @@ def test_stream_respects_litellm_transport_ownership(monkeypatch, outcome):
 
 
 @pytest.mark.parametrize("scenario", ["done", "retry", "error", "timeout", "cancel"])
-def test_single_model_stream_releases_real_aiohttp_session(monkeypatch, scenario):
+def test_single_model_stream_releases_real_aiohttp_session(
+    monkeypatch, scenario, isolate_llm_credentials
+):
     import json
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     from threading import Event, Thread
@@ -783,7 +811,7 @@ def test_single_model_stream_releases_real_aiohttp_session(monkeypatch, scenario
 
     monkeypatch.setattr(AsyncHTTPHandler, "create_aiohttp_transport", track)
     monkeypatch.setattr(AsyncHTTPHandler, "should_use_aiohttp_transport", lambda: True)
-    monkeypatch.setenv("SYVRIO_TEST_STREAM_KEY", "synthetic")
+    isolate_llm_credentials["SYVRIO_TEST_STREAM_KEY"] = "synthetic"
     with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
         server_thread = Thread(target=server.serve_forever, daemon=True)
         server_thread.start()
@@ -955,9 +983,7 @@ def test_llm_setup_discovers_models_using_the_entered_workspace_and_key(
     assert "synthetic-key" not in path.read_text(encoding="utf-8")
 
 
-def test_setup_uses_environment_key_for_preview_connection_and_credentials(
-    tmp_path, monkeypatch, capsys
-):
+def test_setup_uses_only_entered_or_saved_credentials(tmp_path, monkeypatch, capsys):
     from syvrio.app import setup as wizard
     from syvrio.backend.setup import SetupSession
 
@@ -972,35 +998,29 @@ def test_setup_uses_environment_key_for_preview_connection_and_credentials(
     model = "spark-synthetic"
     endpoint = "https://fixture.invalid/v1"
 
-    def models(source, **kwargs):
-        keys.append(kwargs["api_key"])
-        return [model]
-
-    def levels(source, **kwargs):
-        keys.append(kwargs["api_key"])
-        return ("auto",)
+    def catalog(source, timeout, api_key):
+        keys.append(api_key)
+        return {model: ("auto",)}
 
     def complete(source, *args, **kwargs):
         keys.append(source.api_key())
 
-    monkeypatch.setattr("syvrio.infra.llm.fetch_provider_models", models)
-    monkeypatch.setattr("syvrio.infra.llm.reasoning_values", levels)
+    monkeypatch.setattr("syvrio.infra.llm.client._fetch_provider_models_uncached", catalog)
     monkeypatch.setattr("syvrio.infra.llm.model_metadata", lambda _: {})
     monkeypatch.setattr("syvrio.infra.llm.complete", complete)
     setup = SetupSession(Config(vault=vault), path)
-    setup.model_list("spark", endpoint, env_name, "synthetic-ignored")
-    setup.model_limits("spark", endpoint, env_name, model, "synthetic-ignored")
-    assert not setup.set_key(env_name, "synthetic-ignored")
-    assert not setup.remove_key(env_name)
+    assert setup.set_key(env_name, "synthetic-updated")
+    setup.model_list("spark", endpoint, env_name, "synthetic-preview")
+    setup.model_limits("spark", endpoint, env_name, model, "synthetic-preview")
 
-    # 环境变量提供密钥时跳过密码输入，仍可确认使用实际凭据进行连接测试。
-    _script_answers(monkeypatch, ["llm", preset, endpoint, model, "auto", 50000, True, False])
+    _script_answers(monkeypatch, ["llm", preset, endpoint, "", model, "auto", 50000, True, False])
     result = wizard.run_setup(path)
     assert not result["key_saved"] and result["checked"]
-    output = capsys.readouterr().out
-    assert env_name in output and "synthetic-environment" not in output
-    assert previous == {env_name: "synthetic-stored"}
-    assert keys == ["synthetic-environment"] * 5
+    assert "synthetic-environment" not in capsys.readouterr().out
+    assert previous == {env_name: "synthetic-updated"}
+    assert keys == ["synthetic-preview", "synthetic-updated", "synthetic-updated"]
+    assert setup.remove_key(env_name)
+    assert not setup.has_key(env_name)
 
 
 def test_mcp_fetch_can_be_removed_but_not_reenabled(tmp_path, monkeypatch):
@@ -1061,7 +1081,7 @@ def test_search_setup_saves_key_and_enables_search_and_fetch(tmp_path, monkeypat
     )
     result = providers_module.run_setup(config_path)
 
-    # save/read 走同一个假 keyring：保存后立即可读，env 变量未设置。
+    # 保存后可直接从同一凭据库读取。
     assert store == {"TAVILY_API_KEY": "sk-tavily-placeholder"}
     assert result["search_providers"] == ["open_websearch", "tavily"]
     assert result["fetch_providers"] == ["open_websearch", "tavily"]
@@ -1160,7 +1180,7 @@ def test_search_setup_refuses_enable_without_key(tmp_path, monkeypatch):
     result = providers_module.run_setup(config_path)
 
     assert result["search_providers"] == ["open_websearch"]
-    assert any("未检测到有效 Key" in message for message in result["messages"])
+    assert any("未在凭据库中找到 API Key" in message for message in result["messages"])
 
 
 def test_search_setup_updates_existing_key(tmp_path, monkeypatch):
@@ -1328,7 +1348,7 @@ def test_search_setup_uses_exa_monthly_default(tmp_path, monkeypatch):
     assert (limit.daily, limit.monthly) == (0, 1000)
 
 
-def test_baidu_menu_only_offers_search(monkeypatch, tmp_path):
+def test_baidu_menu_only_offers_search(monkeypatch, tmp_path, isolate_llm_credentials):
     import questionary
 
     from syvrio.app import setup as module
@@ -1341,7 +1361,7 @@ def test_baidu_menu_only_offers_search(monkeypatch, tmp_path):
         return "baidu_search" if len(menus) == 1 else "back"
 
     monkeypatch.setattr(module, "_select", select)
-    monkeypatch.setenv("BAIDU_SEARCH_API_KEY", "synthetic-key")
+    isolate_llm_credentials["BAIDU_SEARCH_API_KEY"] = "synthetic-key"
     monkeypatch.setattr(
         questionary, "password", lambda *a, **kw: type("Answer", (), {"ask": lambda self: ""})()
     )

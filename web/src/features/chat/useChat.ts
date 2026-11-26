@@ -173,6 +173,7 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
     return () => clearTimeout(timer);
   }, [compaction]);
 
+  const toggleChat = useCallback((id: string) => update(prev => toggleSegment(prev, id)), [update]);
   const onHistoryRefresh = useCallback(() => setHistoryRevision(value => value + 1), []);
   const { preview, startPreview, finishPreview, togglePreview, switchHistory, remember, forget, loadSelectionHistory,
     reloadHistory, committedKey, blankDraftId, loadingHistory } =
@@ -874,7 +875,7 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
     handleEscape,
     focusSignal,
     focusComposer,
-    toggle: preview ? togglePreview : (segmentId: string) => update((prev) => toggleSegment(prev, segmentId)),
+    toggle: preview ? togglePreview : toggleChat,
     dismissError: () => update((prev) => ({ ...prev, error: null })),
   };
 }

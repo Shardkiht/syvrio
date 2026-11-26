@@ -1,9 +1,15 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
+import * as markdown from 'react-markdown';
 import { api } from '../../api/client';
 import { initialChatState, loadHistory, toggleSegment } from './chat';
 import type { ChatMessage } from './chat';
 import { MessageList } from './MessageList';
+
+vi.mock('react-markdown', async load => {
+  const original = await load<typeof import('react-markdown')>();
+  return { ...original, default: vi.fn(original.default) };
+});
 
 const messages: ChatMessage[] = [
   { id: 'u1', role: 'user', content: 'question' },
@@ -12,6 +18,26 @@ const messages: ChatMessage[] = [
     segments: [{ kind: 'text', id: 'c1', content: 'latest answer' }],
   },
 ];
+
+it('parses only changed Markdown when the last assistant receives a delta', () => {
+  const parse = vi.mocked(markdown.default);
+  try {
+    const onToggle = vi.fn();
+    const saved: ChatMessage = { id: 'history', role: 'assistant', streaming: false, interrupted: false,
+      segments: [{ id: 'saved', kind: 'text', content: 'saved' }] };
+    const view = (text: string) => <MessageList messages={[saved, {
+      id: 'live', role: 'assistant', streaming: true, interrupted: false,
+      segments: [{ id: 'before-tool', kind: 'text', content: 'earlier segment' }, { id: 'answer', kind: 'text', content: text }],
+    }]} sessionId="s" onToggle={onToggle} />;
+    const { rerender } = render(view('part'));
+    parse.mockClear();
+    rerender(view('part two'));
+    expect(parse.mock.calls.map(([props]) => props.children)).toEqual(['part two']);
+    expect(screen.getByText('part two')).toBeTruthy();
+  } finally {
+    parse.mockClear();
+  }
+});
 
 function measureList() {
   const list = screen.getByTestId('message-list');

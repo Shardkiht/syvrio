@@ -57,10 +57,6 @@ class SyvrioPaths:
         object.__setattr__(self, "vault_dir", self.vault_dir.expanduser().resolve())
 
     @property
-    def config_dir(self) -> Path:
-        return self.config_file.parent if self.config_file else syvrio_home()
-
-    @property
     def memories_dir(self) -> Path:
         return self.vault_dir / "memories"
 

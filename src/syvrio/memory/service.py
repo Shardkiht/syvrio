@@ -608,7 +608,7 @@ class MemoryService:
         if not (period or location or emotion or original_query):
             if exact := self.current_field(query, snapshot=snapshot):
                 return [exact]
-        entries = {entry.id: entry for entry in snapshot.records}
+        entries = snapshot.by_id
         depth = max(len(entries), limit)
         hits = self.retriever.search(query, depth, snapshot=snapshot)
         if original_query and original_query != query:

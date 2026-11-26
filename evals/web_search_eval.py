@@ -635,22 +635,6 @@ CASES: tuple[Case, ...] = (
 # ---------- mock 传输 ----------
 
 
-class PoolTransport:
-    """按 engines 参数返回固定候选池中对应引擎的结果；记录每次请求。"""
-
-    def __init__(self, pool: tuple[PoolItem, ...], latency: float = 0.001):
-        self.requests: list[tuple[str, tuple[str, ...], int]] = []
-        self.latency = latency
-
-    def search(self, query: str, limit: int, engines=None) -> list[dict]:
-        self.requests.append((query, tuple(engines or ()), limit))
-        time.sleep(self.latency)
-        return []
-
-    def fetch(self, url: str, max_chars: int) -> dict:
-        raise NotImplementedError
-
-
 class PoolProvider:
     """围绕固定候选池的假 provider：engines 过滤 + limit 截断，模拟真实上游。"""
 

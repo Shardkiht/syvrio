@@ -8,6 +8,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Callable
 
+from ..observability.diagnostics import record_once
 from .base import SearchFailure, SearchResult
 
 CACHE_VERSION = 2
@@ -141,14 +142,16 @@ class SearchCache:
                 tmp = self.path.with_name(self.path.name + ".tmp")
                 tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
                 os.replace(tmp, self.path)
-            except OSError:
-                # 缓存写失败不影响搜索结果；下次直接重新请求。
-                return
+            except OSError as exc:
+                record_once("degraded.web_search_cache", exc)
 
     def _load(self) -> dict:
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+        except FileNotFoundError:
+            return {"version": CACHE_VERSION, "entries": {}}
+        except (OSError, ValueError) as exc:
+            record_once("degraded.web_search_cache", exc)
             return {"version": CACHE_VERSION, "entries": {}}
         if not isinstance(data, dict) or data.get("version") != CACHE_VERSION:
             # v1 没有验证元数据；整体失效，避免把未知状态猜成完成。

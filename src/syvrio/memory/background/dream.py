@@ -9,7 +9,7 @@ import time
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
-from threading import Event
+from threading import Event, Lock
 
 from ...infra.llm.client import effective_context_window
 from ...infra.llm.tokens import estimate_tokens
@@ -108,11 +108,13 @@ class Dream:
         self.paths = service.paths
         self.path = job_path(self.paths, "dream", "job")
         self.metadata = job_path(self.paths, "dream", "profile")
+        self._active_lock = Lock()
         self._active_request: tuple[str, int, int] | None = None
 
     def status(self, *, live: bool = False) -> dict:
         with vault_transaction(self.paths):
             job = read_job(self.path) or {"state": "idle"}
+        with self._active_lock:
             if (
                 live
                 and job["state"] == "queued"
@@ -125,7 +127,7 @@ class Dream:
     def _generate(self, job, config, prompt, payload, schema):
         # 只有预留该请求的常驻服务可以将其报告为运行中。
         request = (job["id"], job["generation"], job["requests"])
-        with self.service.write_lock:
+        with self._active_lock:
             self._active_request = request
         try:
             options = (
@@ -135,7 +137,7 @@ class Dream:
             )
             return ask(config, prompt, payload, schema, **options)
         finally:
-            with self.service.write_lock:
+            with self._active_lock:
                 if self._active_request == request:
                     self._active_request = None
 

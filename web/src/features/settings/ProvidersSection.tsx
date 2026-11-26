@@ -3,26 +3,19 @@ import { api } from '../../api/client';
 import type { ProviderAction, ProviderActionRequest, ProviderInfo } from '../../types';
 import { FeedbackMessage, type ActionFeedback } from '../../shared/ActionFeedback';
 
-type EditorAction = ProviderAction | 'model';
-type Editor = { key: string; action: EditorAction };
+type Editor = { key: string; action: ProviderAction };
 type ProviderFeedback = ActionFeedback & { target: string };
 
 const editorLabels = {
   set_key: { field: 'API key', submit: 'Save', pending: 'Saving key…' },
   update_key: { field: 'API key', submit: 'Save', pending: 'Saving key…' },
   set_endpoint: { field: 'Base URL', submit: 'Save', pending: 'Saving Base URL…' },
-  model: { field: 'model ID', submit: 'Apply model', pending: 'Applying model…' },
-  remove: { field: '', submit: 'Remove permanently', pending: 'Removing provider…' },
+  remove_key: { field: '', submit: 'Remove key', pending: 'Removing API key…' },
 };
 
-async function submitProviderEdit(provider: string, action: EditorAction, value: string) {
-  if (action === 'model') {
-    const result = await api.runCommand({ line: `/model ${provider}/${value}`, session_id: null, confirmed: false });
-    if (result.status !== 'ok') throw new Error(result.message);
-    return result.message;
-  }
+async function submitProviderEdit(provider: string, action: ProviderAction, value: string) {
   const body: ProviderActionRequest = { action };
-  if (action === 'remove') body.confirmed = true;
+  if (action === 'remove_key') body.confirmed = true;
   else if (action === 'set_endpoint') body.endpoint = value;
   else body.api_key = value;
   const result = await api.providerAction(provider, body);
@@ -79,7 +72,7 @@ export function ProvidersSection({ onChanged, refreshControl }: {
     setValue('');
   }
 
-  function openEditor(provider: ProviderInfo, action: EditorAction, button: HTMLButtonElement) {
+  function openEditor(provider: ProviderInfo, action: ProviderAction, button: HTMLButtonElement) {
     setFeedback(null);
     if (editor?.key === provider.key && editor.action === action) {
       closeEditor();
@@ -90,12 +83,16 @@ export function ProvidersSection({ onChanged, refreshControl }: {
     setEditor({ key: provider.key, action });
   }
 
-  async function apply(provider: ProviderInfo, action: EditorAction) {
-    if (busy || (action !== 'remove' && !value.trim())) return;
+  async function apply(provider: ProviderInfo, action: ProviderAction) {
+    if (busy || (action !== 'remove_key' && !value.trim())) return;
     const target = provider.key;
     setFeedback({ target, kind: 'pending', message: editorLabels[action].pending });
     try {
       const message = await submitProviderEdit(target, action, value.trim());
+      if (action === 'remove_key') {
+        // 密钥删除后原按钮会消失，将焦点还给同一行的密钥编辑按钮。
+        opener.current = opener.current?.parentElement?.querySelector('button') ?? null;
+      }
       await load();
       closeEditor();
       setFeedback({ target, kind: 'success', message });
@@ -109,8 +106,7 @@ export function ProvidersSection({ onChanged, refreshControl }: {
     <div className="settings-section" data-testid="providers-section">
       <div className="settings-section-title">Providers</div>
       <p className="settings-hint">
-        The backend stores API keys using your operating system’s credential protection.
-        Removing a provider deletes its saved key.
+        API keys are saved in the system credential store.
       </p>
       {refreshControl}
       <div className="providers-list" data-testid="providers-list">
@@ -120,12 +116,11 @@ export function ProvidersSection({ onChanged, refreshControl }: {
         {providers.map((provider) => {
           const action = editor?.key === provider.key ? editor.action : null;
           const editorId = `provider-editor-${provider.key}`;
-          const actions: [EditorAction, string][] = [
+          const actions: [ProviderAction, string][] = [
             provider.configured ? ['update_key', 'Update key'] : ['set_key', 'Add key'],
             ['set_endpoint', 'Base URL'],
           ];
-          if (provider.configured || provider.current) actions.push(['model', 'Use model ID']);
-          actions.push(['remove', 'Remove']);
+          if (provider.can_remove_key) actions.push(['remove_key', 'Remove API key']);
           const keyField = action === 'set_key' || action === 'update_key';
           return (
             <div className="provider-row" key={provider.key} data-testid={`provider-${provider.key}`}>
@@ -137,19 +132,22 @@ export function ProvidersSection({ onChanged, refreshControl }: {
               <div className="provider-buttons">
                 {actions.map(([choice, label]) => (
                   <button key={choice === 'update_key' ? 'set_key' : choice} type="button"
-                    className={choice === 'remove' ? 'danger' : undefined} disabled={busy}
+                    className={choice === 'remove_key' ? 'danger' : undefined} disabled={busy}
                     aria-expanded={action === choice} aria-controls={action === choice ? editorId : undefined}
                     onClick={(event) => openEditor(provider, choice, event.currentTarget)}>
                     {label}
                   </button>
                 ))}
               </div>
+              {provider.configured && !provider.can_remove_key && (
+                <p className="settings-hint">Switch to a model that uses a different API key before removing this one.</p>
+              )}
               {action && (
                 <form key={action} id={editorId} className="provider-form provider-editor"
-                  role={action === 'remove' ? 'alertdialog' : undefined}
-                  aria-label={action === 'remove' ? `Remove ${provider.label}` : `Edit ${provider.label}`}
-                  aria-describedby={action === 'remove' ? `${editorId}-warning` : undefined}
-                  data-testid={action === 'remove' ? 'provider-remove' : 'provider-form'}
+                  role={action === 'remove_key' ? 'alertdialog' : undefined}
+                  aria-label={action === 'remove_key' ? `Remove API key for ${provider.label}` : `Edit ${provider.label}`}
+                  aria-describedby={action === 'remove_key' ? `${editorId}-warning` : undefined}
+                  data-testid={action === 'remove_key' ? 'provider-remove-key' : 'provider-form'}
                   onKeyDown={(event) => {
                     if (event.key !== 'Escape' || event.nativeEvent.isComposing) return;
                     event.preventDefault();
@@ -157,22 +155,21 @@ export function ProvidersSection({ onChanged, refreshControl }: {
                     if (!busy) { closeEditor(); setFeedback(null); }
                   }}
                   onSubmit={(event) => { event.preventDefault(); void apply(provider, action); }}>
-                  {action === 'remove' ? (
-                    <div id={`${editorId}-warning`}>Remove {provider.label}? Its saved API key will be deleted.</div>
+                  {action === 'remove_key' ? (
+                    <div id={`${editorId}-warning`}>Remove the saved API key for {provider.label}?</div>
                   ) : (
                     <label>
                       {provider.label} {editorLabels[action].field}
                       <input autoFocus type={keyField ? 'password' : 'text'}
                         value={value} readOnly={busy} autoComplete="off" spellCheck={false}
-                        data-testid={action === 'model' ? 'custom-model' : 'provider-value'}
                         onChange={(event) => setValue(event.target.value)} />
                     </label>
                   )}
                   <div className="confirm-actions">
-                    <button type="button" autoFocus={action === 'remove'} disabled={busy}
+                    <button type="button" autoFocus={action === 'remove_key'} disabled={busy}
                       onClick={() => { closeEditor(); setFeedback(null); }}>Cancel</button>
-                    <button type="submit" className={action === 'remove' ? 'danger' : undefined}
-                      disabled={action !== 'remove' && !value.trim()} aria-disabled={busy || (action !== 'remove' && !value.trim())}>
+                    <button type="submit" className={action === 'remove_key' ? 'danger' : undefined}
+                      disabled={action !== 'remove_key' && !value.trim()} aria-disabled={busy || (action !== 'remove_key' && !value.trim())}>
                       {busy ? editorLabels[action].pending : editorLabels[action].submit}
                     </button>
                   </div>

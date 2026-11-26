@@ -224,12 +224,9 @@ def _provider_state(setup: SetupSession, name: str) -> str:
     return f"（{'/'.join(marks)}已启用）" if marks else ""
 
 
-def _prompt_api_key(setup: SetupSession, env_name: str, prompt: str) -> str | None:
+def _prompt_api_key(prompt: str) -> str | None:
     import questionary
 
-    if setup.key_from_environment(env_name):
-        _console().print(f"当前使用环境变量 {env_name} 中的 API Key。修改密钥请更新环境变量。")
-        return ""
     value = ask(questionary.password(prompt))
     return value.strip() if value is not None else None
 
@@ -268,15 +265,13 @@ def _configure_search_provider(setup: SetupSession, messages: list[str]) -> None
         else:
             state = "已配置" if current_key else "未配置"
         api_key = _prompt_api_key(
-            setup, env_name, f"{SEARCH_PROVIDER_LABELS[name]} API Key（当前{state}；留空保持不变）"
+            f"{SEARCH_PROVIDER_LABELS[name]} API Key（当前{state}；留空保持不变）"
         )
         if api_key:
             if setup.set_key(env_name, api_key):
-                messages.append(f"{name} 的 API Key 已保存到系统凭据（环境变量 {env_name} 优先）。")
+                messages.append(f"{name} 的 API Key 已保存到系统凭据。")
             else:
-                messages.append(
-                    f"系统凭据存储不可用，{name} 的 Key 未保存明文，请改用环境变量 {env_name}。"
-                )
+                messages.append(f"{name} 的 API Key 保存失败，请检查系统凭据库是否可用后重试。")
     while True:
         search_on = name in setup.sources("search")
         fetch_on = name in setup.sources("fetch")
@@ -291,10 +286,7 @@ def _configure_search_provider(setup: SetupSession, messages: list[str]) -> None
                 ),
                 *(
                     [questionary.Choice("清除 API Key（恢复匿名）", value="clear_key")]
-                    if env_name
-                    and name in ANONYMOUS_SEARCH_PROVIDERS
-                    and not setup.key_from_environment(env_name)
-                    and setup.has_key(env_name)
+                    if env_name and name in ANONYMOUS_SEARCH_PROVIDERS and setup.has_key(env_name)
                     else []
                 ),
                 questionary.Choice("返回上级", value="back"),
@@ -399,7 +391,7 @@ def _run_llm_setup(setup: SetupSession) -> dict:
     provider = preset.key
     base_url = ask(questionary.text("Base URL", default=setup.default_url(preset)))
     env_name = (
-        ask(questionary.text("API Key 环境变量名", default=current["api_key_env"]))
+        ask(questionary.text("API Key 凭据条目名", default=current["api_key_env"]))
         if provider == "custom"
         else preset.api_key_env
     )
@@ -415,7 +407,7 @@ def _run_llm_setup(setup: SetupSession) -> dict:
             if base_url is None:
                 raise KeyboardInterrupt from None
     env_name = env_name.strip()
-    api_key = _prompt_api_key(setup, env_name, "API Key（不会写入配置文件；留空使用已配置的密钥）")
+    api_key = _prompt_api_key("API Key（留空使用凭据库中的密钥）")
     if api_key is None:
         raise KeyboardInterrupt
     current_model = current["model"] if current["provider"] == provider else ""
@@ -436,7 +428,7 @@ def _run_llm_setup(setup: SetupSession) -> dict:
     if api_key:
         key_saved = setup.set_key(env_name, api_key)
         if not key_saved:
-            keyring_error = "系统凭据存储不可用，请改用环境变量。"
+            keyring_error = "API Key 保存失败，请检查系统凭据库是否可用后重试。"
 
     setup.save_model(provider, base_url, env_name, model, selected, context_window)
 

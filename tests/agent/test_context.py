@@ -11,6 +11,101 @@ from syvrio.infra.session import SessionStore, new_message_id, transcript
 pytestmark = pytest.mark.agent
 
 
+@pytest.mark.parametrize("summary", ["", "此前已保存的摘要"])
+def test_unchanged_request_is_counted_once(tmp_path, monkeypatch, summary):
+    store = SessionStore(tmp_path / "vault")
+    session = build_session(store, repeat=1)
+    manager = ContextManager(ChatConfig(context_window=32768), FakeSummarizer(), store)
+    if summary:
+        store.append(
+            session,
+            {
+                "type": "summary",
+                "content": summary,
+                "covered_records": 1,
+                "records": 1,
+                "distilled_ids": [],
+                "tokens": 8,
+            },
+        )
+    counted = []
+    count = manager._request_tokens
+
+    def capture(messages, **options):
+        counted.append(messages)
+        return count(messages, **options)
+
+    monkeypatch.setattr(manager, "_request_tokens", capture)
+    plan = manager.prepare(session, "系统", "继续", tool_tokens=17, memory_context="参考")
+    assert len(counted) == 1
+    assert plan.estimated_tokens == 17 + count(plan.messages)
+
+
+@pytest.mark.parametrize("offline", (False, True))
+def test_long_text_token_counts_match_the_serial_wire_format(monkeypatch, offline):
+    from concurrent.futures import ThreadPoolExecutor
+
+    import tiktoken
+
+    from syvrio.infra.llm import tokens
+
+    # 固定小词表让原生分词和离线退化都能验证，不需要下载编码表。
+    encoding = (
+        None
+        if offline
+        else tiktoken.Encoding(
+            name="fixture",
+            pat_str=r"(?s).",
+            mergeable_ranks={bytes([i]): i for i in range(256)},
+            special_tokens={"<|endoftext|>": 256},
+        )
+    )
+    monkeypatch.setattr(tokens, "_ENCODING", encoding or False)
+    calls = []
+    dispatch = tokens._TOKEN_POOL.map
+
+    def observe(fn, batches):
+        parts = list(batches)
+        calls.append(len(parts))
+        return dispatch(fn, parts)
+
+    monkeypatch.setattr(tokens._TOKEN_POOL, "map", observe)
+    special = "<|endoftext|>你好🌙e\u0301\ud800" * 100
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA=="}},
+                {"type": "text", "text": special},
+            ],
+        },
+        {
+            "role": "assistant",
+            "content": None,
+            "reasoning_content": "想一想",
+            "tool_calls": [{"function": {"name": "search", "arguments": '{"q":"你好"}'}}],
+        },
+        {"role": "tool", "content": "结果"},
+    ]
+    parts = (special, "想一想", "search", '{"q":"你好"}', "结果")
+    single = (
+        4 * len(messages)
+        + 1024
+        + sum(
+            len(encoding.encode(part, disallowed_special=()))
+            if encoding
+            else tokens.estimate_tokens(part)
+            for part in parts
+        )
+    )
+    assert tokens.estimate_messages_tokens(messages) == single
+    assert calls == []
+    with ThreadPoolExecutor(max_workers=3) as readers:
+        results = readers.map(tokens.estimate_messages_tokens, [messages * 40] * 3)
+        assert list(results) == [single * 40] * 3
+    assert calls == ([4] * 3 if encoding else [])
+
+
 class FakeSummarizer:
     def __init__(self):
         self.calls = []

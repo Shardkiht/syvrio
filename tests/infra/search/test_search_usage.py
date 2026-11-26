@@ -443,6 +443,33 @@ def test_concurrent_instances_cannot_exceed_limit(tmp_path):
     assert instances[0].status("exa")["monthly"]["used"] == 7
 
 
+def test_unchanged_quota_operations_do_not_write(tmp_path, monkeypatch):
+    from datetime import datetime
+
+    path = tmp_path / "usage.json"
+    now = [datetime(2025, 1, 15, 12).timestamp()]
+    limiter = UsageLimiter({}, path, clock=lambda: now[0])
+    limiter.resume("exa")
+    assert not path.exists()
+    charged = limiter.acquire("exa")
+    assert charged is not None
+    limiter.pause("exa", "balance")
+    saved = path.read_bytes()
+    with monkeypatch.context() as patch:
+        patch.setattr(limiter, "_save", lambda: pytest.fail("unchanged quota was written"))
+        limiter.pause("exa", "balance")
+        limiter.resume("another-provider")
+        now[0] = datetime(2025, 2, 15, 12).timestamp()
+        limiter.release(charged)
+        assert charged.refunded and path.read_bytes() == saved
+    limiter.pause("exa", "updated")
+    assert (
+        UsageLimiter({}, path, clock=lambda: now[0]).status("exa")["paused"]["reason"] == "updated"
+    )
+    limiter.resume("exa")
+    assert not UsageLimiter({}, path, clock=lambda: now[0]).status("exa")["paused"]
+
+
 def test_pause_restart_expiry_and_manual_resume(tmp_path):
     now = [1000.0]
     path = tmp_path / "usage.json"

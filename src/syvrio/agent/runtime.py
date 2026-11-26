@@ -153,7 +153,7 @@ class AgentRuntime:
         self.session: Session | None = None
         self.last_plan = None
         self.last_plan_session: str | None = None
-        self._meter_tools: tuple[tuple[dict, dict], int] | None = None
+        self._meter_tools: tuple[tuple[dict, dict, int], int] | None = None
         self._closed = False
         # 请求进行中的会话与被延迟打关闭标记的会话（切换不阻塞生成）。
         self._active_ask: Session | None = None
@@ -723,9 +723,9 @@ class AgentRuntime:
             cached = self._meter_tools = settings, estimate_tool_tokens(tools.schemas())
         return cached[1]
 
-    def _tool_settings(self) -> tuple[dict, dict]:
+    def _tool_settings(self) -> tuple[dict, dict, int]:
         config = self.service.config
-        return asdict(config.search), asdict(config.fetch)
+        return asdict(config.search), asdict(config.fetch), config.retrieval.default_limit
 
     def rename(self, title: str) -> None:
         rename_session(self.sessions, self.current, title)

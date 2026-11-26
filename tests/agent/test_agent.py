@@ -1299,6 +1299,12 @@ def test_usage_meter_reuses_tool_cost_until_settings_change(tmp_path, monkeypatc
     assert runtime.estimate_usage(session) == smaller
     assert len(builds) == 2
 
+    runtime.service.config.retrieval.default_limit = 123456789
+    updated = runtime.estimate_usage(session)
+    assert updated != smaller
+    assert runtime.estimate_usage(session) == updated
+    assert len(builds) == 3
+
 
 @pytest.mark.parametrize(
     ("turns", "above_threshold"), [(1, 0), (1, 1), (2, 0)], ids=["at", "above", "all-turns"]

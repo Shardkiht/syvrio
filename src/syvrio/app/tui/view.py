@@ -5,7 +5,7 @@ from __future__ import annotations
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.events import MouseDown, MouseUp
-from textual.widgets import Button, Input, ListView, Markdown, Static
+from textual.widgets import Button, Input, ListView, Static
 
 from ...backend.client_contracts import SLASH_SUBCOMMANDS, parse_command, slash_matches
 from .input import BarInput
@@ -205,12 +205,6 @@ class ChatViewMixin:
     def add_card(self, text: str, title: str | None = None) -> None:
         body = f"{title}\n{text}" if title else text
         self._chat().mount(Static(body, classes="card", markup=False))
-        self._scroll_end()
-
-    def add_markdown_card(self, markdown: str, title: str | None = None) -> None:
-        if title:
-            self._chat().mount(Static(title, classes="who-ai"))
-        self._chat().mount(Markdown(markdown, classes="reply"))
         self._scroll_end()
 
     def on_input_changed(self, event: Input.Changed) -> None:

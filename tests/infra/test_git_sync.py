@@ -412,12 +412,14 @@ def test_symlinked_vault_path_is_recognized(tmp_path):
     assert reopened.store.find(fact.id).text == fact.text
 
 
-def test_vault_inside_parent_repository_is_not_reused(tmp_path):
+@pytest.mark.parametrize("create_directory", [True, False])
+def test_vault_inside_parent_repository_is_not_reused(tmp_path, create_directory):
     parent = tmp_path / "parent"
     parent.mkdir()
     _git("init", cwd=parent)
-    vault = parent / "vault"
-    vault.mkdir()
+    vault = parent / "nested" / "vault"
+    if create_directory:
+        vault.mkdir(parents=True)
     service, git = make_uninitialized_services(vault)
 
     assert not git.repo.is_repo

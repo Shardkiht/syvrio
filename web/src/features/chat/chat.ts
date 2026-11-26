@@ -299,7 +299,7 @@ export function toggleSegment(state: ChatState, segmentId: string): ChatState {
   return {
     ...state,
     messages: state.messages.map((message) => {
-      if (message.role !== 'assistant') return message;
+      if (message.role !== 'assistant' || !message.segments.some(segment => segment.id === segmentId)) return message;
       return {
         ...message,
         segments: message.segments.map((segment) => {

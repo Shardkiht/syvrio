@@ -186,7 +186,6 @@ function commandHeading(result: CommandResponse): string {
     ok: `/${result.command}`,
     client: `/${result.command}`,
     unsupported: `/${result.command} is not available on the Web`,
-    unknown: result.message,
     busy: 'Busy',
     confirm_required: 'Confirmation required',
     error: `/${result.command} failed`,
@@ -194,29 +193,16 @@ function commandHeading(result: CommandResponse): string {
   return heading[result.status] ?? result.status;
 }
 
-function commandBody(result: CommandResponse): string {
-  if (result.status === 'unknown') return '';
-  let message = result.message;
-  if (result.intent === 'profile') {
-    const status = profileStatus(result.data);
-    if (status) message = status + '\n\n' + message;
-  }
-  const timestamps = result.intent === 'git_status' ? result.data?.timestamps : null;
-  if (timestamps && typeof timestamps === 'object') {
-    message = message.split('\n').map((line) => {
-      const key = line.split(': ', 1)[0];
-      const stamp: unknown = Object.hasOwn(timestamps, key)
-        ? (timestamps as Record<string, unknown>)[key]
-        : null;
-      return typeof stamp === 'string' ? key + ': ' + localTimestamp(stamp) : line;
-    }).join('\n');
-  }
-  return message;
-}
-
-export function commandMessage(result: CommandResponse): string {
-  const message = commandBody(result);
-  return message ? commandHeading(result) + '\n' + message : commandHeading(result);
+function gitStatusMessage(result: CommandResponse): string {
+  const timestamps = result.data?.timestamps;
+  if (!timestamps || typeof timestamps !== 'object') return result.message;
+  return result.message.split('\n').map((line) => {
+    const key = line.split(': ', 1)[0];
+    const stamp: unknown = Object.hasOwn(timestamps, key)
+      ? (timestamps as Record<string, unknown>)[key]
+      : null;
+    return typeof stamp === 'string' ? key + ': ' + localTimestamp(stamp) : line;
+  }).join('\n');
 }
 
 const GROUP_FIELDS: Record<'status' | 'git_status', [string, [string, string][]][]> = {
@@ -323,7 +309,7 @@ export function resultPanelFor(result: CommandResponse): ResultPanel {
   const success = result.status === 'ok' || result.status === 'client';
   const panel: ResultPanel = {
     title: success && Object.hasOwn(RESULT_TITLES, result.intent) ? RESULT_TITLES[result.intent] : commandHeading(result),
-    message: result.intent === 'git_status' ? commandBody(result) : result.message,
+    message: result.intent === 'git_status' ? gitStatusMessage(result) : result.message,
     feedback: success ? 'success' : result.status === 'error' ? 'error' : 'notice',
   };
   if (!success) {

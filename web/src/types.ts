@@ -82,6 +82,7 @@ export interface SessionDeletionPreview {
 }
 
 export interface ProviderInfo {
+  can_remove_key: boolean;
   key: string;
   label: string;
   configured: boolean;
@@ -98,7 +99,7 @@ export interface ModelSearchResponse {
   unavailable_providers: string[];
 }
 
-export type ProviderAction = 'set_key' | 'update_key' | 'set_endpoint' | 'remove';
+export type ProviderAction = 'set_key' | 'update_key' | 'set_endpoint' | 'remove_key';
 
 export interface ProviderActionRequest {
   action: ProviderAction;
@@ -167,10 +168,6 @@ export interface HistoryResponse {
   summary: string | null;
   has_earlier: boolean;
   current: boolean;
-}
-
-export interface ApiErrorResponse {
-  error: { code: string; message: string };
 }
 
 export interface ChatRequest {

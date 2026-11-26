@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { ImagePreview, isPreviewImage } from './AttachmentImage';
 import { api, attachmentUrl } from '../../api/client';
 import type { ChatMessage, Segment } from './chat';
@@ -101,8 +101,36 @@ function ToolGroup({
   );
 }
 
+const UserRow = memo(function UserRow({ message, sessionId, archived, children }: {
+  message: Extract<ChatMessage, { role: 'user' }>;
+  sessionId: string | null;
+  archived: boolean;
+  children?: ReactNode;
+}) {
+  return (
+    <div className="turn user" data-testid="user-message">
+      <div className="bubble">{message.content}</div>
+      {sessionId && !!message.attachments?.length && (
+        <ul className="message-attachments" aria-label="Message attachments">
+          {message.attachments.map(file => {
+            const messageId = message.savedId || message.id;
+            return <li key={file.id}>
+              {isPreviewImage(file.media_type) && <ImagePreview name={file.name}
+                src={attachmentUrl(sessionId, messageId, file.id, archived, true)} />}
+              <a download={file.name} href={attachmentUrl(sessionId, messageId, file.id, archived)}>
+                {file.name}
+              </a>
+            </li>;
+          })}
+        </ul>
+      )}
+      {children}
+    </div>
+  );
+});
+
 /** 压缩后的历史保持折叠，命令输出仍用普通消息行展示。 */
-function InfoLine({ message }: { message: InfoMessage }) {
+const InfoLine = memo(function InfoLine({ message }: { message: InfoMessage }) {
   const [open, setOpen] = useState(false);
   if (!message.folded) return <div className="info-line">{message.content}</div>;
   return (
@@ -117,12 +145,23 @@ function InfoLine({ message }: { message: InfoMessage }) {
       {message.content}
     </Collapsible>
   );
-}
+});
 
-function SegmentView({ segment, onToggle }: { segment: Segment; onToggle: () => void }) {
+const AssistantRow = memo(function AssistantRow({ message, onToggle }: {
+  message: Extract<ChatMessage, { role: 'assistant' }>;
+  onToggle: (id: string) => void;
+}) {
+  return (
+    <div className="turn assistant" data-testid="assistant-message">
+      {renderSegments(message.segments, onToggle)}
+      {message.interrupted && <div className="stopped">Stopped</div>}
+    </div>
+  );
+});
+
+function SegmentView({ segment, onToggle }: { segment: Exclude<Segment, ToolSegment>; onToggle: () => void }) {
   if (segment.kind === 'thinking') return <Thinking segment={segment} onToggle={onToggle} />;
   if (segment.kind === 'text') return <Markdown text={segment.content} />;
-  if (segment.kind === 'tool') return <ToolView segment={segment} onToggle={onToggle} />;
   return <div className="event-line">{segment.text}</div>;
 }
 
@@ -363,41 +402,17 @@ export function MessageList({
               </picture>
             </h1>
           )}
-          {messages.map((message) => {
+          {messages.map(message => {
             if (message.role === 'user') {
-              return (
-                <div className="turn user" key={message.id} data-testid="user-message">
-                  <div className="bubble">{message.content}</div>
-                  {sessionId && !!message.attachments?.length && (
-                    <ul className="message-attachments" aria-label="Message attachments">
-                      {message.attachments.map(file => {
-                        const messageId = message.savedId || message.id;
-                        return <li key={file.id}>
-                          {isPreviewImage(file.media_type) && <ImagePreview name={file.name}
-                            src={attachmentUrl(sessionId, messageId, file.id, archived, true)} />}
-                          <a download={file.name} href={attachmentUrl(sessionId, messageId, file.id, archived)}>
-                            {file.name}
-                          </a>
-                        </li>;
-                      })}
-                    </ul>
-                  )}
-                  {message === latestUser && message.savedId && sessionId && onMessageAction && (
-                    <MessageActions key={sessionId + '/' + message.savedId} sessionId={sessionId}
-                      messageId={message.savedId} undoing={undoing} onAction={onMessageAction} onEdit={onEdit} />
-                  )}
-                </div>
-              );
+              return <UserRow key={message.id} message={message} sessionId={sessionId} archived={archived}>
+                {message === latestUser && message.savedId && sessionId && onMessageAction && (
+                  <MessageActions key={sessionId + '/' + message.savedId} sessionId={sessionId}
+                    messageId={message.savedId} undoing={undoing} onAction={onMessageAction} onEdit={onEdit} />
+                )}
+              </UserRow>;
             }
-            if (message.role === 'info') {
-              return <InfoLine key={message.id} message={message} />;
-            }
-            return (
-              <div className="turn assistant" key={message.id} data-testid="assistant-message">
-                {renderSegments(message.segments, onToggle)}
-                {message.interrupted && <div className="stopped">Stopped</div>}
-              </div>
-            );
+            if (message.role === 'assistant') return <AssistantRow key={message.id} message={message} onToggle={onToggle} />;
+            return <InfoLine key={message.id} message={message} />;
           })}
         </div>
       </div>
