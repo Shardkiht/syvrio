@@ -1019,7 +1019,10 @@ describe('Slash commands and shortcuts', () => {
     render(<App />);
     await ready();
     const panel = within(screen.getByTestId('sidebar'));
-    expect(panel.getByRole('searchbox', { name: 'Search chats' })).not.toBe(document.activeElement);
+    const toggle = panel.getByRole('button', { name: 'Search chats' });
+    expect(panel.queryByRole('searchbox')).toBeNull();
+    fireEvent.click(toggle);
+    expect(panel.getByRole('searchbox')).toBe(document.activeElement);
     fireEvent.change(panel.getByRole('searchbox'), { target: { value: 'locker' } });
     const result = await panel.findByRole('button', { name: /Earlier chat.*locker.*B-417/ });
     expect(screen.queryByRole('dialog')).toBeNull();
@@ -1030,9 +1033,13 @@ describe('Slash commands and shortcuts', () => {
     expect(panel.getByRole<HTMLInputElement>('searchbox').value).toBe('locker');
     expect(panel.getByRole('button', { name: /Earlier chat.*locker.*B-417/ })).toBe(result);
     fireEvent.keyDown(result, { key: 'Escape' });
-    expect(panel.getByRole<HTMLInputElement>('searchbox').value).toBe('');
+    expect(panel.queryByRole('searchbox')).toBeNull();
     expect(panel.getByTestId('session-s-1').closest('[hidden]')).toBeNull();
-    expect(document.activeElement).toBe(panel.getByRole('searchbox'));
+    expect(document.activeElement).toBe(toggle);
+    fireEvent.click(toggle);
+    expect(panel.getByRole<HTMLInputElement>('searchbox').value).toBe('');
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
   });
 
   it('selects a pending candidate once, edits it, and refreshes after confirmed writes', async () => {

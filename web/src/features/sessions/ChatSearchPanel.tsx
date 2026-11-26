@@ -1,8 +1,7 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { api } from '../../api/client';
 import { usePanelRead } from '../commands/usePanelRead';
 import { isComposing } from '../../shared/shortcuts';
-import { SearchIcon } from '../../shared/Icons';
 import './chat-search.css';
 
 function Highlight({ text, query }: { text: string; query: string }) {
@@ -35,38 +34,86 @@ function Matches({ query, onSelect }: { query: string; onSelect: (sessionId: str
   </>;
 }
 
-export function ChatSearchPanel({ children, onOpen }: { children: ReactNode; onOpen: (id: string) => void }) {
-  const [draft, setDraft] = useState('');
+export function useChatSearch() {
+  const [draft, setDraft] = useState<string | null>(null);
   const [query, setQuery] = useState('');
   const [composing, setComposing] = useState(false);
+  const trigger = useRef<HTMLButtonElement>(null);
   const input = useRef<HTMLInputElement>(null);
-  const keyword = draft.trim();
-  const showResults = !!query && query === keyword && !composing;
+  const matches = useRef<HTMLDivElement>(null);
+  const expanded = draft !== null;
+  const keyword = draft?.trim() ?? '';
+
+  useLayoutEffect(() => {
+    if (expanded) input.current?.focus();
+  }, [expanded]);
   useEffect(() => {
     if (!keyword || keyword === query || composing) return;
     const timer = window.setTimeout(() => setQuery(keyword), 300);
     return () => window.clearTimeout(timer);
   }, [keyword, query, composing]);
-  function clearSearch() {
-    setDraft('');
+
+  const close = useCallback(() => {
+    setDraft(null);
     setQuery('');
+    setComposing(false);
+  }, []);
+
+  useEffect(() => {
+    if (!expanded) return;
+    function dismissOutside(event: MouseEvent) {
+      const target = event.target;
+      if (!(target instanceof Node) || trigger.current?.contains(target)
+        || input.current?.form?.contains(target) || matches.current?.contains(target)) return;
+      close();
+    }
+    document.addEventListener('click', dismissOutside, true);
+    return () => document.removeEventListener('click', dismissOutside, true);
+  }, [expanded, close]);
+
+  function toggle() {
+    if (expanded) close();
+    else setDraft('');
   }
-  return <section className="sidebar-chat-search" aria-label="Chat history" onKeyDown={event => {
-    if (event.key !== 'Escape' || isComposing(event) || composing || !draft) return;
+  function onKeyDown(event: KeyboardEvent) {
+    if (!expanded || event.key !== 'Escape' || isComposing(event) || composing) return;
     event.preventDefault();
     event.stopPropagation();
-    clearSearch();
+    close();
+    trigger.current?.focus();
+  }
+  function clear() {
+    setDraft('');
+    setQuery('');
     input.current?.focus();
-  }}>
-    <form className="chat-search-field" onSubmit={event => { event.preventDefault(); if (!composing) setQuery(keyword); }}>
-      <SearchIcon size={18} />
-      <input ref={input} type="search" maxLength={160} aria-label="Search chats" placeholder="Search chats"
-        value={draft} onChange={event => setDraft(event.target.value)}
-        onCompositionStart={() => setComposing(true)} onCompositionEnd={() => setComposing(false)} />
-      {draft && <button type="button" className="icon-button" aria-label="Clear search"
-        onClick={() => { clearSearch(); input.current?.focus(); }}>×</button>}
-    </form>
-    <div className="chat-browse" hidden={!!keyword}>{children}</div>
-    {showResults && <Matches key={query} query={query} onSelect={onOpen} />}
+  }
+
+  return {
+    draft, setDraft, expanded, keyword, setComposing, input, trigger, matches, toggle, onKeyDown, clear,
+    submit: () => { if (!composing) setQuery(keyword); },
+    resultQuery: !composing && keyword === query ? query : '',
+  };
+}
+
+type SearchState = ReturnType<typeof useChatSearch>;
+
+export function ChatSearchField({ search }: { search: SearchState }) {
+  return <form id="sidebar-chat-search-field" className="chat-search-field" aria-hidden={!search.expanded}
+    onSubmit={event => { event.preventDefault(); search.submit(); }}>
+    <input ref={search.input} disabled={!search.expanded} type="search" maxLength={160} aria-label="Search chats"
+      placeholder="Search chats" value={search.draft ?? ''} onChange={event => search.setDraft(event.target.value)}
+      onCompositionStart={() => search.setComposing(true)} onCompositionEnd={() => search.setComposing(false)} />
+    {search.draft && <button type="button" className="icon-button" aria-label="Clear search" onClick={search.clear}>×</button>}
+  </form>;
+}
+
+export function ChatSearchPanel({ children, onOpen, search }: {
+  children: ReactNode; onOpen: (id: string) => void; search: SearchState;
+}) {
+  return <section className="sidebar-chat-search" aria-label="Chat history" onKeyDown={search.onKeyDown}>
+    <div className="chat-browse" hidden={!!search.keyword}>{children}</div>
+    {search.resultQuery && <div className="chat-search-matches" ref={search.matches}>
+      <Matches key={search.resultQuery} query={search.resultQuery} onSelect={onOpen} />
+    </div>}
   </section>;
 }

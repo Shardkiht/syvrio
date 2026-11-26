@@ -1,9 +1,16 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { api } from '../../api/client';
-import { ChatSearchPanel } from './ChatSearchPanel';
+import { Sidebar } from './Sidebar';
 
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
+
+function openSearch(onSelect = vi.fn()) {
+  render(<Sidebar sessions={[]} currentId={null} replyingSessionIds={new Set()} previewTitle={item => item.title}
+    open onNew={vi.fn()} onSelect={onSelect} onArchive={vi.fn()} onOpenArchive={vi.fn()} onClose={vi.fn()} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Search chats' }));
+  return screen.getByRole('searchbox');
+}
 
 it('waits for committed IME input, cancels the previous read and clears the results', async () => {
   vi.useFakeTimers();
@@ -11,8 +18,7 @@ it('waits for committed IME input, cancels the previous read and clears the resu
   let resolveFirst!: (value: Awaited<ReturnType<typeof api.searchChats>>) => void;
   search.mockImplementationOnce(() => new Promise(resolve => { resolveFirst = resolve; }))
     .mockResolvedValue({ results: [{ title: 'Current', session_id: 's', message_id: 'm', role: 'user', excerpt: '我是' }] });
-  render(<ChatSearchPanel onOpen={() => {}}>Recent chats</ChatSearchPanel>);
-  const input = screen.getByRole('searchbox');
+  const input = openSearch();
   fireEvent.compositionStart(input);
   fireEvent.change(input, { target: { value: 'wo' } });
   await act(async () => { await vi.advanceTimersByTimeAsync(400); });
@@ -32,6 +38,26 @@ it('waits for committed IME input, cancels the previous read and clears the resu
   expect(document.activeElement).toBe(input);
 });
 
+it('dismisses on an outside click without taking focus or leaving a pending search', async () => {
+  vi.useFakeTimers();
+  const search = vi.spyOn(api, 'searchChats');
+  render(<button type="button">Outside</button>);
+  const input = openSearch();
+  fireEvent.click(input);
+  fireEvent.change(input, { target: { value: 'draft' } });
+  const outside = screen.getByRole('button', { name: 'Outside' });
+  outside.focus();
+  fireEvent.click(outside);
+  expect(screen.queryByRole('searchbox')).toBeNull();
+  expect(document.activeElement).toBe(outside);
+  await act(async () => { await vi.advanceTimersByTimeAsync(350); });
+  expect(search).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Search chats' }));
+  expect(screen.getByRole<HTMLInputElement>('searchbox').value).toBe('');
+  fireEvent.click(screen.getByRole('button', { name: 'New chat' }));
+  expect(screen.queryByRole('searchbox')).toBeNull();
+});
+
 it.each(['empty', 'unavailable'])('retries a search with no displayed results (%s)', async kind => {
   const search = vi.spyOn(api, 'searchChats');
   if (kind === 'empty') search.mockResolvedValueOnce({ results: [] });
@@ -41,8 +67,7 @@ it.each(['empty', 'unavailable'])('retries a search with no displayed results (%
     finish = () => resolve({ results: [{ title: '[a]', session_id: 's', role: 'title', message_id: '', excerpt: '[a]' }] });
   }));
   const onOpen = vi.fn();
-  render(<ChatSearchPanel onOpen={onOpen}>Recent chats</ChatSearchPanel>);
-  const input = screen.getByRole('searchbox');
+  const input = openSearch(onOpen);
   fireEvent.change(input, { target: { value: '[a]' } });
   fireEvent.submit(input.closest('form')!);
   expect(await screen.findByText('No results to display.')).toBeTruthy();

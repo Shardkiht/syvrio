@@ -140,7 +140,7 @@ Each deployment stores its conversations, facts, candidates, inferences, publish
 
 Git operates in `Vault/export/` on Markdown and JSONL rendered from a single committed database snapshot. Rolled-back changes never appear in the export. For a complete backup run `syvrio backup DEST --config CONFIG`. Restore into a new directory with `syvrio restore DEST NEW_VAULT`. Chat search and distillation indexes are created together with a new database. For a fresh installation, use an empty Vault and a dedicated Runtime. [Storage and recovery](docs/storage.md)
 
-In the Web sidebar, click a title or message search result to open its conversation. The sidebar keeps the query and results until you clear the search.
+In the Web sidebar, use the magnifying glass beside the logo to search, then click a title or message result to open its conversation. Selecting a result keeps the query. Click outside the search or press Esc to close it and return to the conversation list.
 
 ## Configuration and Git
 

@@ -2,13 +2,31 @@
   display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0;
 }
 .sidebar-chat-search { gap: 8px; }
+.chat-search-matches { display: contents; }
 .chat-search-notice, .chat-search-result-head {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
 }
-.chat-search-field > svg, .chat-search-field .icon-button { flex: none; }
+.sidebar-head { gap: 2px; }
+.sidebar-brand-search {
+  display: grid; align-items: center; flex: 1; min-width: 0; min-height: 40px; margin-inline-end: 4px;
+}
+.sidebar-brand-search > * { grid-area: 1 / 1; }
+.sidebar-head .brand-mark { transition: opacity .15s ease; }
+.sidebar-head[data-search-open="true"] .brand-mark { opacity: 0; visibility: hidden; }
+.sidebar-head .chat-search-field {
+  min-width: 0; opacity: 0; visibility: hidden; transform: scaleX(.96); transform-origin: right;
+  transition: opacity .15s ease, transform .15s ease, visibility 0s .15s, border-color .15s ease;
+}
+.sidebar-head[data-search-open="true"] .chat-search-field {
+  opacity: 1; visibility: visible; transform: none; transition-delay: 0s;
+}
+.sidebar-head > .icon-button { flex: none; }
+.sidebar-search-toggle[aria-expanded="true"] { background: var(--accent-soft); color: var(--accent); }
+.chat-search-field .icon-button { flex: none; width: 24px; height: 28px; }
 .chat-search-field {
   flex: none; display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 3px 5px 3px 10px;
-  color: var(--muted); border: 1px solid var(--border-strong); border-radius: 10px; background: var(--panel);
+  color: var(--muted); border: 1px solid var(--border); border-radius: 10px;
+  background: color-mix(in srgb, var(--panel) 55%, var(--panel-2));
 }
 .chat-search-field:has(input:focus) { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
 .chat-search-field input {
@@ -42,6 +60,17 @@
 }
 .sidebar-chat-search mark { color: var(--text); background: var(--accent-soft); border-radius: 2px; font-weight: 600; }
 @media (max-width: 767px) {
+  .sidebar-head {
+    display: grid; grid-template-columns: 1fr auto auto; grid-template-rows: 44px 0;
+    row-gap: 0; transition: grid-template-rows .15s ease, row-gap .15s ease;
+  }
+  .sidebar-head[data-search-open="true"] { grid-template-rows: 44px 44px; row-gap: 4px; }
+  .sidebar-brand-search { display: contents; }
+  .sidebar-brand-search .brand-mark { grid-area: 1 / 1; }
+  .sidebar-head[data-search-open="true"] .brand-mark { opacity: 1; visibility: visible; }
+  .sidebar-brand-search .chat-search-field { grid-area: 2 / 1 / 3 / -1; }
+  .sidebar-search-toggle { grid-area: 1 / 2; }
+  .sidebar-close { grid-area: 1 / 3; }
   .chat-search-field { min-height: 44px; }
   .chat-search-field input { font-size: 16px; }
 }
