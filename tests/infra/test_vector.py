@@ -87,6 +87,50 @@ def test_incremental_sync_embeds_only_new_entries(tmp_path):
     assert len(embedder.passages) == 3
 
 
+def test_query_embedding_does_not_hold_index_lock(tmp_path):
+    store = seeded_store(tmp_path)
+    simultaneous = Barrier(3)
+
+    class ParallelEmbedder(FakeEmbedder):
+        def embed_query(self, text):
+            simultaneous.wait(timeout=5)
+            return super().embed_query(text)
+
+    retriever = VectorRetriever(store, ParallelEmbedder(GROUPS), cache_dir=store.paths.index_dir)
+    retriever.sync()
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        results = list(pool.map(retriever.search, ["咖啡"] * 3))
+    assert all(hits and hits[0].topic == "memories/general/preferences.md" for hits in results)
+
+
+def test_repeated_embedding_input_reuses_vectors_across_topics_and_restarts(tmp_path):
+    store = MemoryStore(tmp_path)
+    first = store.append("preferences", "咖啡")
+    second = store.append("drinks", "咖啡")
+    embedder = FakeEmbedder(GROUPS)
+    retriever = VectorRetriever(store, embedder, cache_dir=store.paths.index_dir)
+    assert {hit.id for hit in retriever.search("咖啡")} == {first.id, second.id}
+    assert embedder.passages == ["咖啡"]
+
+    third = store.append("notes", "咖啡")
+    fresh = FakeEmbedder(GROUPS)
+    reopened = VectorRetriever(store, fresh, cache_dir=store.paths.index_dir)
+    assert {hit.id for hit in reopened.search("咖啡")} == {first.id, second.id, third.id}
+    assert fresh.passages == []
+
+
+def test_unavailable_vector_cache_directory_preserves_results(tmp_path):
+    store = seeded_store(tmp_path)
+    blocked = tmp_path / "blocked-cache"
+    blocked.write_text("unavailable", encoding="utf-8")
+    retriever = VectorRetriever(store, FakeEmbedder(GROUPS), cache_dir=blocked)
+    assert retriever.search("住房")[0].topic == "memories/general/housing.md"
+    store.append("career", "后端工作")
+    assert retriever.search("工作")[0].topic == "memories/general/career.md"
+    assert len(retriever.embedder.passages) == 3
+    assert not retriever.degraded
+
+
 def test_concurrent_queries_share_one_complete_vector_index(tmp_path):
     store = seeded_store(tmp_path)
     embedder = FakeEmbedder(GROUPS)
@@ -522,7 +566,7 @@ def test_build_retriever_hybrid_when_local_available(tmp_path, monkeypatch):
     assert isinstance(retriever.vector.embedder.model_id, str)
 
 
-def test_build_retriever_api_backend(tmp_path, monkeypatch):
+def test_build_retriever_api_backend(tmp_path, monkeypatch, isolate_llm_credentials):
     config = Config(
         vault=tmp_path,
         retrieval=RetrievalConfig(
@@ -532,11 +576,12 @@ def test_build_retriever_api_backend(tmp_path, monkeypatch):
             ),
         ),
     )
-    monkeypatch.setenv("TEST_EMBED_KEY", "test-key")
+    monkeypatch.setenv("TEST_EMBED_KEY", "ignored-environment-key")
+    isolate_llm_credentials["TEST_EMBED_KEY"] = "test-key"
     retriever, mode = service_module.build_retriever(config, MemoryStore(tmp_path))
     assert mode == "hybrid"
 
-    monkeypatch.delenv("TEST_EMBED_KEY")
+    del isolate_llm_credentials["TEST_EMBED_KEY"]
     retriever, mode = service_module.build_retriever(config, MemoryStore(tmp_path))
     assert isinstance(retriever, KeywordRetriever)
     assert mode == "hybrid-fallback-keyword"

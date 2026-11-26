@@ -409,31 +409,17 @@ class PickScreen(ModalScreen):
             )
             self.query_one(".pick-hint", Static).update(hint)
 
-    def update_options(self, options: list[tuple]) -> None:
-        self._options = list(options)
-        self._apply_filter(
-            self.query_one("#pick-search", Input).value if self._searchable else "", preserve=True
-        )
-
     def _filtered_options(self, needle: str) -> list[tuple]:
         return [option for option in self._options if needle in option[0].lower()]
 
-    def _apply_filter(self, value: str, preserve: bool = False) -> None:
+    def _apply_filter(self, value: str) -> None:
         needle = value.strip().lower()
         options = self._filtered_options(needle)
         listing = self.query_one("#pick-list", ListView)
-        previous, previous_index = listing.highlighted_child, listing.index
         listing.clear()
         listing.extend(self._items(options))
         if options:
-            index = 0
-            if preserve and previous is not None:
-                # 后台刷新不打断键盘导航：按值找回高亮项，找不到再按原位置收敛。
-                index = next(
-                    (i for i, option in enumerate(options) if option[1] == previous.value),
-                    min(previous_index or 0, len(options) - 1),
-                )
-            listing.index = index
+            listing.index = 0
 
     def on_input_changed(self, event: Input.Changed) -> None:
         if self._searchable:
@@ -473,14 +459,13 @@ class ModelPickerScreen(PickScreen):
     BINDINGS = [
         Binding("ctrl+p", "providers", "Manage providers", priority=True),
         Binding("ctrl+r", "refresh_models", "Refresh models", priority=True),
-        Binding("ctrl+n", "custom_model", "Custom model", priority=True),
     ]
 
     def on_mount(self) -> None:
         super().on_mount()
         self.query_one(".pick-hint", Static).update(
             "Type to search · ↑↓ select · Enter to confirm · Esc to cancel\n"
-            "Ctrl+P providers · Ctrl+R refresh · Ctrl+N custom model"
+            "Ctrl+P providers · Ctrl+R refresh"
         )
 
     def _filtered_options(self, needle: str) -> list[tuple]:
@@ -496,9 +481,6 @@ class ModelPickerScreen(PickScreen):
 
     def action_refresh_models(self) -> None:
         self._finish(("__refresh__", ""))
-
-    def action_custom_model(self) -> None:
-        self._finish(("__custom__", ""))
 
 
 class NewSessionButton(Static):

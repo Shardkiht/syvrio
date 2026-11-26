@@ -13,7 +13,7 @@ from ..application.command_catalog import (
 from ..infra.config import WebShareConfig as WebShareConfig
 from ..infra.storage.documents import SUPPORTED_SUFFIXES
 from ..infra.storage.paths import SESSION_ID_RE
-from ..infra.vault.sync import SyncResult, SyncStage
+from ..infra.vault.sync import SyncResult
 from ..memory.models import Entry, Inference, MemoryContext, MemoryDraft, PendingItem, RecallEntry
 from .updates.contracts import ProgressCallback, UpdateProgress
 
@@ -42,5 +42,4 @@ __all__ = [
     "RecallEntry",
     "UploadedImportDocument",
     "SyncResult",
-    "SyncStage",
 ]

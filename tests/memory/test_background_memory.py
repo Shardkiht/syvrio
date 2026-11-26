@@ -188,6 +188,26 @@ def test_distillation_rolls_back_facts_if_cursor_write_fails(service, monkeypatc
     assert not owner.sessions.load(session.id).undistilled_messages()
 
 
+def test_distillation_discards_drafts_when_memories_change_during_generation(service, monkeypatch):
+    owner = BackgroundMemory(service)
+    session = owner.sessions.create()
+    message(owner.sessions, session, "source", "我种薄荷")
+    owner.request_distillation(session.id)
+    path = job_path(service.paths, "distillation", session.id)
+
+    def extract(*_args, **_kwargs):
+        service.note("我种番茄", topic="garden")
+        return distillation.Result(memories=[MemoryDraft(topic="garden", text="我种薄荷")])
+
+    monkeypatch.setattr(distillation, "ask", extract)
+    assert not distillation.process(service, owner.sessions, path, lambda _: False, Event())
+    assert [fact.text for fact in service.current_facts()] == ["我种番茄"]
+    assert [row["id"] for row in owner.sessions.load(session.id).undistilled_messages()] == [
+        "source"
+    ]
+    assert read_job(path)["through"] == "source"
+
+
 def test_distilling_revoked_user_message_cannot_publish(service, monkeypatch):
     owner = BackgroundMemory(service)
     session = owner.sessions.create()

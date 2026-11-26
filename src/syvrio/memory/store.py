@@ -4,12 +4,13 @@ import hashlib
 import json
 import re
 import secrets
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import cached_property
 from itertools import count
 from pathlib import Path
+from types import MappingProxyType
 
 from ..infra.storage.files import safe_component
 from ..infra.storage.paths import SyvrioPaths, vault_paths
@@ -92,6 +93,10 @@ class MemorySnapshot:
         # 在调用方使用快照时才解析，分词、向量化和解析都不延长 Vault 写锁。
         documents = (parse_document(raw, topic, topic) for topic, raw in self.sources)
         return tuple(_entries_from(documents, include_inactive=False))
+
+    @cached_property
+    def by_id(self) -> Mapping[str, Entry]:
+        return MappingProxyType({entry.id: entry for entry in self.records})
 
 
 class MemoryStore:

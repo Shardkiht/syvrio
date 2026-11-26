@@ -157,6 +157,7 @@ class UsageLimiter:
                 return
             self._load()
             entry = self._entry(reservation.provider)
+            changed = False
             for period, charged_window in (
                 ("daily", reservation.daily),
                 ("monthly", reservation.monthly),
@@ -164,13 +165,18 @@ class UsageLimiter:
                 counter = entry[period]
                 if counter["window"] == charged_window and counter["count"] > 0:
                     counter["count"] -= 1
-            self._save()
+                    changed = True
+            if changed:
+                self._save()
             reservation.refunded = True
 
     def pause(self, provider: str, reason: str, resume_at: float | None = None) -> None:
         with self._lock:
             self._load()
-            self._entry(provider)["paused"] = {"reason": reason, "resume_at": resume_at}
+            pause = {"reason": reason, "resume_at": resume_at}
+            if self._counts.get(provider, {}).get("paused") == pause:
+                return
+            self._entry(provider)["paused"] = pause
             self._save()
 
     def note_error(self, provider: str, error) -> None:
@@ -180,5 +186,7 @@ class UsageLimiter:
     def resume(self, provider: str) -> None:
         with self._lock:
             self._load()
+            if "paused" not in self._counts.get(provider, {}):
+                return
             self._entry(provider).pop("paused", None)
             self._save()

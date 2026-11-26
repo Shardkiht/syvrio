@@ -386,6 +386,7 @@ class APIChannel(ResidentChannel):
                     key=option.key,
                     label=option.label,
                     configured=option.configured,
+                    can_remove_key=option.can_remove_key,
                     current=option.current,
                     endpoint=settings.provider_endpoint(option.key),
                 )
@@ -402,18 +403,18 @@ class APIChannel(ResidentChannel):
             self.scheduling.operation("provider", require_idle=body.action != "set_endpoint"),
             self.scheduling.settings_lock,
         ):
-            if body.action == "remove":
+            if body.action == "remove_key":
                 if not body.confirmed:
                     raise APIError(
                         "confirm_required",
-                        "Removing a provider deletes its saved API key. Confirm first.",
+                        "Confirm deletion of the saved API key.",
                         409,
                     )
-                result = settings.remove_provider(provider)
+                result = settings.remove_provider_key(provider)
             elif body.action == "set_endpoint":
                 result = settings.set_provider_endpoint(provider, body.endpoint)
             elif body.action == "set_key":
-                result = settings.configure_provider(provider, body.api_key)
+                result = settings.set_provider_key(provider, body.api_key)
             elif body.action == "update_key":
                 result = settings.update_provider_key(provider, body.api_key)
             else:

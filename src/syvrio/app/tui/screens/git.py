@@ -13,7 +13,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Button, Static
 
-from ....backend.client_contracts import SyncResult, SyncStage
+from ....backend.client_contracts import SyncResult
 from ....infra.time import format_local_timestamp
 
 
@@ -82,35 +82,6 @@ def status_text(status: dict | None) -> str:
     return "\n".join(lines)
 
 
-def _stage_line(stage: SyncStage) -> str:
-    labels = {
-        "waiting": "Waiting",
-        "running": "Running",
-        "done": "Done",
-        "skipped": "Skipped",
-        "failed": "Failed",
-    }
-    colors = {
-        "waiting": "#818181",
-        "running": "#6cb6ff",
-        "done": "#8fb98f",
-        "skipped": "#818181",
-        "failed": "#c98b8b",
-    }
-    label = labels.get(stage.state, stage.state.title())
-    return f"[{colors.get(stage.state, '#818181')}][{label}][/]    {escape(stage.name)}"
-
-
-def progress_text(stages: list[SyncStage]) -> str:
-    lines = ["Git Synchronization", ""]
-    lines.extend(_stage_line(stage) for stage in stages)
-    lines.append("")
-    lines.append(
-        "[#818181]Git operations run in the background; closing this screen does not cancel them.[/]"
-    )
-    return "\n".join(lines)
-
-
 def result_text(result: SyncResult, status: dict | None) -> str:
     heading = {
         "success": "Synchronization Completed",
@@ -147,7 +118,6 @@ class GitScreen(ModalScreen):
     def __init__(self, status: dict | None = None) -> None:
         super().__init__()
         self._status = status
-        self._stages: list[SyncStage] = []
         self._result: SyncResult | None = None
         self._syncing = False
 
@@ -159,18 +129,7 @@ class GitScreen(ModalScreen):
             yield Static("Ctrl+S  Synchronize", id="git-action")
             yield Static("Esc     Close", classes="pick-hint")
 
-    def apply_status(self, status: dict) -> None:
-        self._status = status
-        self._refresh_display()
-
     def set_syncing(self) -> None:
-        self._syncing = True
-        self._stages = []
-        self._result = None
-        self._refresh_display()
-
-    def update_progress(self, stages: list[SyncStage]) -> None:
-        self._stages = stages
         self._syncing = True
         self._result = None
         self._refresh_display()
@@ -203,7 +162,11 @@ class GitScreen(ModalScreen):
         except Exception:
             return
         if self._syncing:
-            content = progress_text(self._stages)
+            content = (
+                "Git Synchronization\n\n"
+                "[#818181]Git operations run in the background; "
+                "closing this screen does not cancel them.[/]"
+            )
         elif self._result is not None:
             content = result_text(self._result, self._status) + "\n\n" + status_text(self._status)
         else:

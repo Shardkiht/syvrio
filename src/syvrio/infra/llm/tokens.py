@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 import re
+from concurrent.futures import ThreadPoolExecutor
+
+# 全部会话共享上限；执行器只在首次收到长对话后创建工作线程。
+_TOKEN_WORKERS = 4
+_TOKEN_POOL = ThreadPoolExecutor(max_workers=_TOKEN_WORKERS, thread_name_prefix="syvrio-tokens")
 
 CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\u3040-\u30ff\uac00-\ud7af]")
 _ENCODING = None
@@ -29,33 +34,41 @@ def estimate_tokens(text: str) -> int:
     encoding = _encoding()
     if encoding is not None:
         try:
-            return len(encoding.encode(text, disallowed_special=()))
+            return len(encoding.encode_ordinary(text))
         except Exception:
             pass
     cjk = len(CJK_RE.findall(text))
     return int(cjk + (len(text) - cjk) / 4) + 1
 
 
+def _count_parts(parts: list[str]) -> int:
+    return sum(map(estimate_tokens, parts))
+
+
 def estimate_messages_tokens(messages: list[dict]) -> int:
-    total = 0
+    total = 4 * len(messages)
+    parts: list[str] = []
     for message in messages:
-        total += 4
         content = message.get("content")
         if isinstance(content, list):
-            # 单独估算图片块，避免将传输用的 Base64 编码计入图片用量。
-            total += sum(
-                1024 if part.get("type") == "image_url" else estimate_tokens(part.get("text", ""))
-                for part in content
-            )
-        else:
-            total += estimate_tokens(str(content or ""))
+            # 图片块单独计费，传输用的 Base64 编码不参与文本分词。
+            for part in content:
+                if part.get("type") == "image_url":
+                    total += 1024
+                elif text := part.get("text"):
+                    parts.append(text)
+        elif content:
+            parts.append(str(content))
         if reasoning := message.get("reasoning_content"):
-            total += estimate_tokens(reasoning)
+            parts.append(reasoning)
         for call in message.get("tool_calls") or []:
             function = call.get("function", {})
-            total += estimate_tokens(str(function.get("name", "")))
-            total += estimate_tokens(str(function.get("arguments", "")))
-    return total
+            parts.extend((str(function.get("name", "")), str(function.get("arguments", ""))))
+    # 原生分词器可并行。各字段仍独立编码，避免拼接文本改变词元边界。
+    if len(parts) >= 64 and sum(map(len, parts)) >= 65_536 and _encoding():
+        batches = (parts[index::_TOKEN_WORKERS] for index in range(_TOKEN_WORKERS))
+        return total + sum(_TOKEN_POOL.map(_count_parts, batches))
+    return total + _count_parts(parts)
 
 
 def truncate_to_tokens(text: str, max_tokens: int) -> str:

@@ -61,27 +61,16 @@ def test_registry_without_new_providers_keeps_old_behavior(monkeypatch):
     assert set(registry) == {"open_websearch"}
 
 
-def _install_empty_keyring(monkeypatch) -> None:
-    # registry 现在会回退读系统凭据；测试必须隔离本机 keyring。
-    import sys
-    import types
-
-    fake = types.ModuleType("keyring")
-    fake.get_password = lambda service, name: None
-    monkeypatch.setitem(sys.modules, "keyring", fake)
-
-
 def test_registry_skips_external_provider_without_api_key(monkeypatch):
-    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
-    _install_empty_keyring(monkeypatch)
+    monkeypatch.setenv("TAVILY_API_KEY", KEY)
     config = SearchConfig()
     config.providers = ["open_websearch", "tavily"]
     registry = build_registry(config)
     assert set(registry) == {"open_websearch"}
 
 
-def test_registry_registers_external_provider_with_api_key(monkeypatch):
-    monkeypatch.setenv("TAVILY_API_KEY", KEY)
+def test_registry_registers_external_provider_with_api_key(isolate_llm_credentials):
+    isolate_llm_credentials["TAVILY_API_KEY"] = KEY
     config = SearchConfig()
     config.providers = ["tavily"]
     registry = build_registry(config)
@@ -663,17 +652,16 @@ def test_tavily_fetch_429_maps_to_rate_limit():
     assert caught.value.kind == ProviderErrorKind.RATE_LIMIT
 
 
-def test_fetch_registry_registers_tavily_with_api_key(monkeypatch):
+def test_fetch_registry_registers_tavily_with_api_key(isolate_llm_credentials):
     from syvrio.infra.config import FetchConfig
     from syvrio.infra.search.fetch_router import build_fetch_registry
 
-    monkeypatch.setenv("TAVILY_API_KEY", KEY)
+    isolate_llm_credentials["TAVILY_API_KEY"] = KEY
     registry = build_fetch_registry(FetchConfig(providers=["tavily"]), SearchConfig())
     assert "tavily" in registry
     assert "fetch" in registry["tavily"].capabilities
 
-    monkeypatch.delenv("TAVILY_API_KEY")
-    _install_empty_keyring(monkeypatch)
+    del isolate_llm_credentials["TAVILY_API_KEY"]
     registry = build_fetch_registry(FetchConfig(providers=["tavily"]), SearchConfig())
     assert "tavily" not in registry
 

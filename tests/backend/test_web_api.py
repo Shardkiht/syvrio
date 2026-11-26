@@ -1995,7 +1995,9 @@ def wait_for_distillation(backend, session):
 
 
 @pytest.mark.parametrize("outcome", ["generated", "renamed", "undone", "failure"])
-def test_background_title_and_manual_rename_across_views(client, backend, monkeypatch, outcome):
+def test_background_title_and_manual_rename_across_views(
+    client, backend, monkeypatch, isolate_llm_credentials, outcome
+):
     from uuid import uuid4
 
     from syvrio.memory.background import titles
@@ -2020,7 +2022,7 @@ def test_background_title_and_manual_rename_across_views(client, backend, monkey
         finally:
             finished.set()
 
-    monkeypatch.setenv(backend._service.config.llm.api_key_env, "synthetic")
+    isolate_llm_credentials[backend._service.config.llm.api_key_env] = "synthetic"
     monkeypatch.setattr(titles, "ask", ask)
     monkeypatch.setattr(titles, "process", run_job)
     backend._runtime.model = FakeModel([AssistantTurn(content=answer, reasoning_content="private")])

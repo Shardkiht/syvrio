@@ -10,13 +10,14 @@ import pytest
 from syvrio.agent.context import ContextManager, records_to_messages
 from syvrio.infra.config import ChatConfig, LLMConfig
 from syvrio.infra.llm import client
+from syvrio.infra.security.credentials import save_api_key
 from tests.agent.test_agent import FakeSummarizer, build_runtime
 
 pytestmark = pytest.mark.agent
 
 
-def _model(monkeypatch, provider="deepseek", **kwargs):
-    monkeypatch.setenv("SYVRIO_TEST_REASONING_KEY", "synthetic-test-only")
+def _model(provider="deepseek", **kwargs):
+    assert save_api_key("SYVRIO_TEST_REASONING_KEY", "synthetic-test-only")
     return client.LiteLLMChatModel(
         LLMConfig(
             provider=provider,
@@ -53,7 +54,7 @@ class _Stream:
 
 
 def test_nonstream_reasoning_and_opaque_fields_are_separate(monkeypatch):
-    model = _model(monkeypatch)
+    model = _model()
     requests = []
     message = {
         "content": "visible answer",
@@ -79,7 +80,7 @@ def test_nonstream_reasoning_and_opaque_fields_are_separate(monkeypatch):
 
 
 def test_stream_multi_tool_reasoning_survives_session_reload(tmp_path, monkeypatch):
-    model = _model(monkeypatch)
+    model = _model()
     requests = []
     streams = [
         _Stream(
@@ -172,7 +173,7 @@ def test_stream_multi_tool_reasoning_survives_session_reload(tmp_path, monkeypat
     ],
 )
 def test_reasoning_replay_respects_route_and_turn(monkeypatch, provider, model_id, base, expected):
-    model = _model(monkeypatch, provider, model=model_id, base_url=base)
+    model = _model(provider, model=model_id, base_url=base)
     origin = client._reasoning_route(model.config)[0] or "different-model-or-endpoint"
     messages = [
         {
@@ -222,7 +223,7 @@ def test_history_budget_matches_wire_after_switch_and_tool_calls(tmp_path, monke
         "spark": "https://example.test/v1",
     }
     model_id = {"deepseek": "deepseek-v4-flash", "qianwen": "glm-5.3", "spark": "spark-x2.6"}
-    model = _model(monkeypatch, provider, model=model_id[provider], base_url=base[provider])
+    model = _model(provider, model=model_id[provider], base_url=base[provider])
     runtime, _ = build_runtime(tmp_path, model)
     runtime.config.auto_recall = 0
     session = runtime.ensure_session()
@@ -274,7 +275,6 @@ def test_history_budget_matches_wire_after_switch_and_tool_calls(tmp_path, monke
 
 def test_qianwen_max_preserves_reasoning_for_follow_up_without_tools(monkeypatch):
     model = _model(
-        monkeypatch,
         "qianwen",
         model="qwen4-max",
         base_url="https://maas.qianwenaiapi.com/compatible-mode/v1",
@@ -332,7 +332,7 @@ def test_installed_adapter_keeps_reasoning_in_request_body(adapter, model):
 
 @pytest.mark.parametrize("cancelled", [True, False])
 def test_incomplete_reasoning_never_replays_as_protocol(tmp_path, monkeypatch, cancelled):
-    model = _model(monkeypatch)
+    model = _model()
     token = Event()
     stream = _Stream(
         [
@@ -366,7 +366,7 @@ def test_incomplete_reasoning_never_replays_as_protocol(tmp_path, monkeypatch, c
 def test_compaction_summarizes_tool_turns_without_disclosing_private_reasoning(
     tmp_path, monkeypatch
 ):
-    runtime, _ = build_runtime(tmp_path, _model(monkeypatch))
+    runtime, _ = build_runtime(tmp_path, _model())
     store = runtime.sessions
     session = store.create()
     store.append(

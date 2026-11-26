@@ -331,13 +331,6 @@ class ResidentCommands:
             self._run_request(self._providers())
         elif provider == "__refresh__":
             self._submit_command("/model refresh")
-        elif provider == "__custom__":
-            self.push_screen(
-                TextInputScreen(
-                    "Model",
-                    on_result=lambda value: value and self._submit_command("/model " + value),
-                )
-            )
         else:
             self._submit_command(f"/model {provider}/{model}")
 
@@ -355,9 +348,9 @@ class ResidentCommands:
         def choose(action):
             if not action:
                 return
-            if action == "remove":
+            if action == "remove_key":
                 self._confirm(
-                    "Remove the saved provider credentials?",
+                    f"Remove the saved API key for {provider['label']}?",
                     lambda: self._run_request(self._provider_write(provider, action, "")),
                 )
                 return
@@ -372,21 +365,22 @@ class ResidentCommands:
                 )
             )
 
-        self.push_screen(
-            PickScreen(
-                provider["label"],
-                [
-                    ("Set API key", "set_key"),
-                    ("Change endpoint", "set_endpoint"),
-                    ("Remove credentials", "remove"),
-                ],
-                choose,
-            )
-        )
+        actions = [
+            ("Update API key", "update_key")
+            if provider["configured"]
+            else ("Add API key", "set_key"),
+            ("Change endpoint", "set_endpoint"),
+        ]
+        detail = None
+        if provider["can_remove_key"]:
+            actions.append(("Remove API key", "remove_key"))
+        elif provider["configured"]:
+            detail = "Switch to a model that uses a different API key before removing this one."
+        self.push_screen(PickScreen(provider["label"], actions, choose, detail=detail))
 
     async def _provider_write(self, provider, action, text):
-        data = {"action": action, "confirmed": action == "remove"}
-        if action != "remove":
+        data = {"action": action, "confirmed": action == "remove_key"}
+        if action != "remove_key":
             data["endpoint" if action == "set_endpoint" else "api_key"] = text
         result = await self._request(
             "POST", "/api/settings/providers/" + quote(provider["key"], safe=""), json=data

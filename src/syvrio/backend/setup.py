@@ -23,7 +23,7 @@ from ..infra.llm.providers import provider_base_url as provider_base_url
 from ..infra.search.providers.catalog import PROVIDERS, supports_fetch
 from ..infra.search.providers.searxng import normalize_base_url
 from ..infra.search.usage import UsageLimiter
-from ..infra.security.credentials import delete_api_key, environment_key, save_api_key
+from ..infra.security.credentials import delete_api_key, save_api_key
 from .maintenance import configured_maintenance, prepare_vault_runtime
 
 SEARCH_PROVIDER_LABELS = {name: spec.label for name, spec in PROVIDERS.items()}
@@ -66,9 +66,6 @@ class SetupSession:
 
     def has_key(self, name: str) -> bool:
         return bool(read_api_key(name))
-
-    def key_from_environment(self, name: str) -> bool:
-        return bool(environment_key(name))
 
     def set_key(self, name: str, value: str) -> bool:
         return save_api_key(name, value)
@@ -140,7 +137,7 @@ class SetupSession:
         env = SEARCH_KEY_ENVS.get(name)
         available = not env or self.has_key(env)
         if not available and name not in ANONYMOUS_SEARCH_PROVIDERS:
-            return f"{name} 未检测到有效 Key（环境变量或系统凭据），无法启用。"
+            return f"{name} 未在凭据库中找到 API Key，无法启用。"
         names.append(name)
         default = default_usage_limits().get(name)
         if env and default:
@@ -182,9 +179,7 @@ class SetupSession:
         source = self._model(provider, base_url, env_name)
         from ..infra.llm import fetch_provider_models
 
-        return fetch_provider_models(
-            source, refresh=True, api_key=read_api_key(source.api_key_env, proposed=key) or None
-        )
+        return fetch_provider_models(source, refresh=True, api_key=key.strip() or None)
 
     def model_limits(self, provider: str, base_url: str, env_name: str, model: str, key: str):
         source = self._model(provider, base_url, env_name, model)
@@ -198,9 +193,7 @@ class SetupSession:
             maximum = None
         return (
             maximum,
-            reasoning_values(
-                source, api_key=read_api_key(source.api_key_env, proposed=key) or None
-            ),
+            reasoning_values(source, api_key=key.strip() or None),
             source.spark_thinking if source.is_spark else source.reasoning_effort,
             context_window_options(maximum),
         )

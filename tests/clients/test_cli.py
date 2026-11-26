@@ -321,7 +321,7 @@ def test_import_without_api_key_reports_hint(tmp_path, monkeypatch):
     result = invoke(["import", str(source), "--config", str(config)])
 
     assert result.exit_code == 1
-    assert "DEEPSEEK_API_KEY" in result.output
+    assert "syvrio setup" in result.output
 
 
 @pytest.mark.parametrize("suffix", [".md", ".txt", ".jsonl"])

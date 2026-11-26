@@ -3,7 +3,7 @@ from __future__ import annotations
 import calendar
 import re
 import secrets
-from datetime import date, datetime
+from datetime import date
 from pathlib import PurePosixPath
 from typing import Literal
 
@@ -128,17 +128,6 @@ class RecallEntry(MemoryDraft):
     status: MemoryStatus = "active"
 
 
-class MemoryEntry(RecallEntry):
-    recorded_at: datetime
-
-    @field_validator("recorded_at")
-    @classmethod
-    def aware_timestamp(cls, value: datetime) -> datetime:
-        if value.utcoffset() is None:
-            raise ValueError("recorded_at needs an explicit UTC offset.")
-        return value
-
-
 class MemoryUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: str = Field(min_length=1)
@@ -227,15 +216,6 @@ class ProfileSummaryResponse(BaseModel):
         if not value.strip():
             raise ValueError("画像摘要不能为空。")
         return value.strip()
-
-
-class ProfileItem(BaseModel):
-    id: str
-    text: str
-    kind: Literal["fact", "inference"]
-    source_ids: list[str]
-    status: str
-    updated_at: str
 
 
 class PendingItem(MemoryDraft):
@@ -330,11 +310,6 @@ class Entry(BaseModel):
             topic = PurePosixPath(topic.removeprefix("memories/")).with_suffix("").as_posix()
         return RecallEntry(
             id=self.id, status=self.status, topic=topic, text=self.text, context=self.context
-        )
-
-    def as_memory(self) -> MemoryEntry:
-        return MemoryEntry(
-            **self.as_recall().model_dump(), recorded_at=parse_timestamp(self.timestamp)
         )
 
     @property

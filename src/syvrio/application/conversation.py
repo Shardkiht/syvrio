@@ -74,7 +74,6 @@ class ConversationUseCases:
         self.sessions = sessions
         self._background_job = background_job
         self._lock = RLock()
-        self._navigation_busy = False
         self._ask_user_message_id: str | None = None
         self.active_turn: ConversationTurn | None = None
         self._cancel: Event | None = None
@@ -86,20 +85,9 @@ class ConversationUseCases:
         self._undo_expected_message_id: str | None = None
         self.queue: list[QueuedLine] = []
         self.queue_paused_after_undo = False
-        self.pending_new = False
-        self.pending_switch: str | None = None
-        self.pending_command: QueuedLine | None = None
         self.scheduling = ConversationScheduler(self, self._lock, registry, settings_lock)
 
     # ---------- 状态查询 ----------
-
-    @property
-    def busy(self) -> bool:
-        return self._navigation_busy or self.ask_active
-
-    @property
-    def navigation_busy(self) -> bool:
-        return self._navigation_busy
 
     @property
     def ask_active(self) -> bool:
@@ -177,14 +165,6 @@ class ConversationUseCases:
                 self.queue_paused_after_undo,
             )
 
-    # ---------- 导航状态 ----------
-
-    def begin_navigation(self) -> None:
-        self._navigation_busy = True
-
-    def end_navigation(self) -> None:
-        self._navigation_busy = False
-
     # ---------- 提交路由 ----------
 
     def submit_during_ask(
@@ -225,18 +205,6 @@ class ConversationUseCases:
                     return self.queue.pop(index)
         return None
 
-    def purge_undo(self) -> tuple[int, bool]:
-        with self._lock:
-            kept = [item for item in self.queue if not self._is_undo(item.line)]
-            removed = len(self.queue) - len(kept)
-            self.queue[:] = kept
-            pending_removed = bool(
-                self.pending_command and self._is_undo(self.pending_command.line)
-            )
-            if pending_removed:
-                self.pending_command = None
-            return removed, pending_removed
-
     def pause_after_undo(self, restored: bool) -> None:
         with self._lock:
             self.queue_paused_after_undo = restored and bool(self.queue)
@@ -244,37 +212,6 @@ class ConversationUseCases:
     def resume_after_undo(self) -> None:
         with self._lock:
             self.queue_paused_after_undo = False
-
-    def set_pending_command(self, item: QueuedLine | None) -> None:
-        with self._lock:
-            self.pending_command = item
-
-    def take_pending_command(self) -> QueuedLine | None:
-        with self._lock:
-            item = self.pending_command
-            self.pending_command = None
-            return item
-
-    def request_new(self) -> None:
-        with self._lock:
-            self.pending_new = True
-            self.pending_switch = None
-
-    def request_switch(self, session_id: str) -> None:
-        with self._lock:
-            self.pending_switch = session_id
-            self.pending_new = False
-
-    def take_pending_navigation(self) -> tuple[str, str | None] | None:
-        with self._lock:
-            if self.pending_new:
-                self.pending_new = False
-                return ("new", None)
-            if self.pending_switch:
-                session_id = self.pending_switch
-                self.pending_switch = None
-                return ("switch", session_id)
-            return None
 
     @staticmethod
     def _is_undo(line: str) -> bool:
@@ -361,8 +298,9 @@ class ConversationUseCases:
             self._undo_expected_message_id = expected_message_id
             if self._cancel is not None:
                 self._cancel.set()
-        removed, pending_removed = self.purge_undo()
-        total = removed + (1 if pending_removed else 0)
+            kept = [item for item in self.queue if not self._is_undo(item.line)]
+            total = len(self.queue) - len(kept)
+            self.queue[:] = kept
         message = "Stopping generation and undoing this turn…"
         if total:
             message += f" Discarded {total} queued /undo."
@@ -590,10 +528,8 @@ class ConversationUseCases:
             rename_session(self.sessions, self.sessions.load(session_id), title)
 
     def archive_guard(self, session_id: str) -> tuple[bool, str | None]:
-        if (
-            (self.pending_command and self.pending_command.session_id == session_id)
-            or self.scheduling.session_busy(session_id)
-            or any(item.session_id == session_id for item in self.queue)
+        if self.scheduling.session_busy(session_id) or any(
+            item.session_id == session_id for item in self.queue
         ):
             return False, "Session is generating or has queued tasks; try again later."
         if self._background_job and (job := self._background_job(session_id)):
@@ -677,13 +613,6 @@ class ConversationUseCases:
 
     def session_exists(self, session_id: str) -> bool:
         return self.sessions.exists(session_id)
-
-    def session_available(self, session_id: str) -> bool:
-        try:
-            self.sessions.load(session_id)
-            return True
-        except Exception:
-            return False
 
     def reload_current_session(self, session_id: str) -> None:
         if self.runtime.has_session and self.runtime.current.id == session_id:

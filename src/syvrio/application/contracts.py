@@ -173,6 +173,7 @@ class ProviderOption:
     label: str
     configured: bool
     current: bool
+    can_remove_key: bool
 
 
 @dataclass

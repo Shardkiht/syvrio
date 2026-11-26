@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ntpath
 import os
 import re
 import stat
@@ -15,12 +16,18 @@ def file_version(stat: os.stat_result) -> FileVersion:
     return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stamp
 
 
+def _reserved(name: str) -> bool:
+    if hasattr(ntpath, "isreserved"):
+        return ntpath.isreserved(name)
+    return PureWindowsPath(name).is_reserved()
+
+
 def safe_component(name: str) -> bool:
     return bool(
         name
         and not name.startswith(".")
         and not name.endswith((".", " "))
-        and not PureWindowsPath(name).is_reserved()
+        and not _reserved(name)
         and re.search(r'[<>:"/\\|?*\x00-\x1f]', name) is None
     )
 

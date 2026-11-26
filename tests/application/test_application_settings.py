@@ -58,12 +58,14 @@ def test_model_options_only_show_discovered_models(tmp_path):
     assert {option.model for option in options} == {"deepseek-flash"}
 
 
-def test_qianwen_catalog_and_chat_use_dedicated_credentials_on_the_wire(tmp_path, monkeypatch):
+def test_qianwen_catalog_and_chat_use_dedicated_credentials_on_the_wire(
+    tmp_path, monkeypatch, isolate_llm_credentials
+):
     from syvrio.infra.llm.client import LiteLLMChatModel
 
     service, _, settings = build(tmp_path)
     service.config_path = tmp_path / "config.toml"
-    monkeypatch.setenv("QIANWEN_API_KEY", "synthetic-qianwen")
+    isolate_llm_credentials["QIANWEN_API_KEY"] = "synthetic-qianwen"
     model_id = "qwen3.8-max"
     bodies = []
     base = "https://maas.qianwenaiapi.com/compatible-mode/v1"
@@ -167,8 +169,8 @@ def test_qianwen_catalog_and_chat_use_dedicated_credentials_on_the_wire(tmp_path
     )
 
 
-def test_qianwen_config_does_not_reuse_another_provider_key(tmp_path, monkeypatch):
-    monkeypatch.setenv("DASHSCOPE_API_KEY", "synthetic-bailian")
+def test_qianwen_config_does_not_reuse_another_provider_key(tmp_path, isolate_llm_credentials):
+    isolate_llm_credentials["DASHSCOPE_API_KEY"] = "synthetic-bailian"
     path = tmp_path / "config.toml"
     path.with_name("models.toml").write_text(
         '[llm]\nprovider = "qianwen"\nmodel = "vendor/model"\n', encoding="utf-8"
@@ -196,13 +198,15 @@ def test_qianwen_glm_efforts_use_catalog_or_platform_defaults(monkeypatch):
     assert client.provider_reasoning_levels(config) is None
 
 
-def test_discover_models_for_inactive_provider_at_saved_endpoint(tmp_path, monkeypatch):
+def test_discover_models_for_inactive_provider_at_saved_endpoint(
+    tmp_path, monkeypatch, isolate_llm_credentials
+):
     from syvrio.infra.config import load_config
 
     service, runtime, settings = build(tmp_path)
     service.config_path = tmp_path / "config.toml"
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "synthetic-deepseek-key")
-    monkeypatch.setenv("DASHSCOPE_API_KEY", "synthetic-workspace-key")
+    isolate_llm_credentials["DEEPSEEK_API_KEY"] = "synthetic-deepseek-key"
+    isolate_llm_credentials["DASHSCOPE_API_KEY"] = "synthetic-workspace-key"
     endpoint = "https://workspace.example.invalid/compatible-mode/v1"
     assert settings.set_provider_endpoint("dashscope", endpoint).ok
     assert service.config.llm.provider == "deepseek" and runtime.reloads == 0
@@ -228,10 +232,10 @@ def test_discover_models_for_inactive_provider_at_saved_endpoint(tmp_path, monke
     assert service.config.llm.base_url == endpoint
 
 
-def test_provider_options_mark_configured_and_current(tmp_path, monkeypatch):
+def test_provider_options_mark_configured_and_current(tmp_path, isolate_llm_credentials):
     service, runtime, settings = build(tmp_path)
     preset = next(item for item in PRESETS if item.key == "spark")
-    monkeypatch.setenv(preset.api_key_env, "sk-synthetic")
+    isolate_llm_credentials[preset.api_key_env] = "sk-synthetic"
 
     options = settings.provider_options()
 
@@ -242,7 +246,9 @@ def test_provider_options_mark_configured_and_current(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("provider", ["custom", "spark"])
-def test_active_endpoint_is_used_by_chat_and_survives_restart(tmp_path, monkeypatch, provider):
+def test_active_endpoint_is_used_by_chat_and_survives_restart(
+    tmp_path, monkeypatch, isolate_llm_credentials, provider
+):
     from syvrio.infra.llm import LiteLLMChatModel
 
     service, runtime, settings = build(tmp_path)
@@ -250,7 +256,7 @@ def test_active_endpoint_is_used_by_chat_and_survives_restart(tmp_path, monkeypa
     old, new = "https://old.example.invalid/v1", "https://new.example.invalid/v1"
     config = LLMConfig(provider=provider, base_url=old, api_key_env="SYNTHETIC_ENDPOINT_TEST_KEY")
     service.config.llm = config
-    monkeypatch.setenv(config.api_key_env, "synthetic-key")
+    isolate_llm_credentials[config.api_key_env] = "synthetic-key"
     requests = []
 
     def completion(**request):
@@ -296,26 +302,22 @@ def test_update_provider_key_keyring_failure_is_reported(tmp_path, monkeypatch):
     assert "Could not save" in result.message
 
 
-def test_environment_key_takes_priority_and_remove_refuses(tmp_path, monkeypatch):
-    service, runtime, settings = build(tmp_path)
-    monkeypatch.setenv("SPARK_API_KEY", "sk-synthetic")
-
-    result = settings.remove_provider("spark")
-
-    assert result.ok is False
-    assert "provided by SPARK_API_KEY" in result.message
-
-
-@pytest.mark.parametrize("action", ["configure_provider", "update_provider_key"])
-def test_environment_key_cannot_be_shadowed_by_settings(tmp_path, monkeypatch, action):
+def test_provider_key_lifecycle_ignores_environment(tmp_path, monkeypatch, isolate_llm_credentials):
     _, _, settings = build(tmp_path)
     monkeypatch.setenv("SPARK_API_KEY", "synthetic-environment-value")
-    monkeypatch.setattr(settings_module, "save_api_key", lambda *_: pytest.fail("unexpected write"))
 
-    result = getattr(settings, action)("spark", "synthetic-new-value")
+    def spark():
+        return next(row for row in settings.provider_options() if row.key == "spark")
 
-    assert not result.ok and "provided by SPARK_API_KEY" in result.message
-    assert "synthetic" not in result.message
+    assert not spark().configured
+    assert settings.set_provider_key("spark", "first-saved-value").ok
+    assert spark().configured and spark().can_remove_key
+    assert settings.update_provider_key("spark", "updated-value").ok
+    assert isolate_llm_credentials["SPARK_API_KEY"] == "updated-value"
+    assert settings.remove_provider_key("spark").ok
+    assert not spark().configured and not spark().can_remove_key
+    assert "SPARK_API_KEY" not in isolate_llm_credentials
+    assert not settings.remove_provider_key("spark").ok
 
 
 def test_apply_model_reloads_runtime_and_persists(tmp_path):
@@ -375,12 +377,12 @@ def test_switch_model_preserves_chat_configuration(tmp_path, monkeypatch):
 
 
 def test_recent_models_survive_reload_and_prioritize_matching_catalog_entries(
-    tmp_path, monkeypatch
+    tmp_path, isolate_llm_credentials
 ):
     service, _, settings = build(tmp_path)
     service.config_path = tmp_path / "config.toml"
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "synthetic-key")
-    monkeypatch.setenv("DASHSCOPE_API_KEY", "synthetic-key")
+    isolate_llm_credentials["DEEPSEEK_API_KEY"] = "synthetic-key"
+    isolate_llm_credentials["DASHSCOPE_API_KEY"] = "synthetic-key"
     for model in ("oldest", "unlisted", "shared", "two", "three"):
         assert settings.apply_model("deepseek", model).ok
     assert settings.apply_model("dashscope", "shared").ok
@@ -469,7 +471,9 @@ def test_reasoning_options_follow_model_support(tmp_path, monkeypatch):
     assert settings.reasoning_options() == []
 
 
-def test_thinking_levels_use_provider_model_metadata_before_presets(tmp_path, monkeypatch):
+def test_thinking_levels_use_provider_model_metadata_before_presets(
+    tmp_path, monkeypatch, isolate_llm_credentials
+):
     service, runtime, settings = build(tmp_path)
     requests = []
     status = 200
@@ -511,7 +515,7 @@ def test_thinking_levels_use_provider_model_metadata_before_presets(tmp_path, mo
         worker = Thread(target=server.serve_forever, daemon=True)
         worker.start()
         try:
-            monkeypatch.setenv("SYVRIO_TEST_CATALOG_KEY", "fixture")
+            isolate_llm_credentials["SYVRIO_TEST_CATALOG_KEY"] = "fixture"
             llm = LLMConfig(
                 provider="custom",
                 model="deep-model",
@@ -672,7 +676,7 @@ def test_configure_provider_saves_key_without_guessing_model(tmp_path, monkeypat
     fake.set_password = lambda service_name, name, value: keys.__setitem__(name, value)
     monkeypatch.setitem(sys.modules, "keyring", fake)
 
-    result = settings.configure_provider("siliconflow", "sk-test")
+    result = settings.set_provider_key("siliconflow", "sk-test")
     assert result.ok
 
     assert "SiliconFlow" in result.message
@@ -701,10 +705,10 @@ def test_configure_provider_keeps_state_when_keyring_fails(tmp_path, monkeypatch
     fake.set_password = fail
     monkeypatch.setitem(sys.modules, "keyring", fake)
 
-    result = settings.configure_provider("siliconflow", "sk-test")
+    result = settings.set_provider_key("siliconflow", "sk-test")
     assert not result.ok
 
-    assert "Could not save" in result.message and "SILICONFLOW_API_KEY" in result.message
+    assert result.message == "Could not save the API key to system credentials."
     assert service.config.llm.provider == "deepseek"
     assert not config_path.exists()
 
@@ -729,40 +733,19 @@ def test_update_provider_key_keeps_current_model(tmp_path, monkeypatch):
     assert runtime.model_label.startswith("deepseek/")
 
 
-def test_remove_provider_deletes_saved_key(tmp_path, monkeypatch):
-    import sys
-    import types
-
+def test_provider_keys_respect_current_credential_name(tmp_path, isolate_llm_credentials):
     service, _, settings = build(tmp_path)
-    keys = {"SILICONFLOW_API_KEY": "sk-test"}
-    fake = types.ModuleType("keyring")
-    fake.get_password = lambda service_name, name: keys.get(name)
-    fake.delete_password = lambda service_name, name: keys.pop(name, None)
-    monkeypatch.setitem(sys.modules, "keyring", fake)
+    service.config.llm.api_key_env = "SPARK_API_KEY"
+    assert settings.update_provider_key("deepseek", "updated").ok
+    assert isolate_llm_credentials == {"SPARK_API_KEY": "updated"}
 
-    result = settings.remove_provider("siliconflow")
-    assert result.ok
-
-    assert "SiliconFlow provider removed" in result.message
-    assert "SILICONFLOW_API_KEY" not in keys
-    assert service.config.llm.provider == "deepseek"
-
-
-def test_remove_provider_rejects_current_provider(service):
-    result = SettingsUseCases(service, None).remove_provider("deepseek")
-    assert not result.ok
-
-    assert "current provider" in result.message
-    assert service.config.llm.provider == "deepseek"
-
-
-def test_remove_provider_defers_to_environment_key(monkeypatch, service):
-    monkeypatch.setenv("SILICONFLOW_API_KEY", "sk-env")
-
-    result = SettingsUseCases(service, None).remove_provider("siliconflow")
-    assert not result.ok
-
-    assert "provided by SILICONFLOW_API_KEY" in result.message
+    options = {row.key: row for row in settings.provider_options()}
+    for provider in ("deepseek", "spark"):
+        assert options[provider].configured
+        assert not options[provider].can_remove_key
+        result = settings.remove_provider_key(provider)
+        assert not result.ok and "current model" in result.message
+    assert service.config.llm.api_key() == "updated"
 
 
 def test_apply_reasoning_updates_config_hot(tmp_path, monkeypatch, service):

@@ -37,7 +37,7 @@ function installFetch(initialBudget = 100000) {
     }
     if (url === '/api/settings/providers') {
       return json({ items: [
-        { key: 'deepseek', label: 'DeepSeek', configured: true, current: true, endpoint: 'https://api.deepseek.com' },
+        { key: 'deepseek', label: 'DeepSeek', configured: true, current: true, can_remove_key: false, endpoint: 'https://api.deepseek.com' },
       ] });
     }
     if (url === '/api/settings/providers/deepseek') {
@@ -183,20 +183,24 @@ describe('settings panel', () => {
     );
     fireEvent.click(screen.getByTestId('settings-tab-providers'));
     await waitFor(() => expect(screen.getByTestId('provider-deepseek').textContent).toContain('DeepSeek'));
-    expect(screen.getByTestId('provider-deepseek').textContent).toContain('configured');
+    const row = within(screen.getByTestId('provider-deepseek'));
+    expect(row.getByText('configured')).toBeTruthy();
+    expect(row.queryByRole('button', { name: 'Remove API key' })).toBeNull();
+    expect(row.getByText(/different API key/)).toBeTruthy();
   });
 
   it('opens one editor in its own provider card, focuses it and cancels without writing', async () => {
     installFetch();
     vi.spyOn(api, 'providers').mockResolvedValue({ items: [
-      { key: 'first', label: 'First', endpoint: 'https://first.invalid/v1', current: true, configured: true },
-      { key: 'second', label: 'Second', endpoint: 'https://second.invalid/v1', current: false, configured: false },
+      { key: 'first', label: 'First', endpoint: 'https://first.invalid/v1', current: false, configured: true, can_remove_key: true },
+      { key: 'second', label: 'Second', endpoint: 'https://second.invalid/v1', current: false, configured: false, can_remove_key: false },
     ] });
     const write = vi.spyOn(api, 'providerAction');
     const close = vi.fn();
     render(<SettingsPanel health={HEALTH} theme="auto" onTheme={() => {}} onClose={close} onChanged={() => {}} initialSection="providers" />);
     const first = within(await screen.findByTestId('provider-first'));
     const second = within(screen.getByTestId('provider-second'));
+    expect(second.queryByRole('button', { name: 'Remove API key' })).toBeNull();
     const add = second.getByRole('button', { name: 'Add key' });
     fireEvent.click(add);
     const input = second.getByLabelText('Second API key') as HTMLInputElement;
@@ -213,9 +217,9 @@ describe('settings panel', () => {
     fireEvent.keyDown(url, { key: 'Escape' });
     expect(document.activeElement).toBe(endpoint);
     expect(close).not.toHaveBeenCalled();
-    const remove = first.getByRole('button', { name: 'Remove' });
+    const remove = first.getByRole('button', { name: 'Remove API key' });
     fireEvent.click(remove);
-    const cancel = within(first.getByRole('alertdialog', { name: 'Remove First' })).getByText('Cancel');
+    const cancel = within(first.getByRole('alertdialog', { name: 'Remove API key for First' })).getByText('Cancel');
     expect(document.activeElement).toBe(cancel);
     fireEvent.click(cancel);
     expect(document.activeElement).toBe(remove);
@@ -224,7 +228,7 @@ describe('settings panel', () => {
 
   it('retains a rejected key for retry, then reports the saved result on the same card', async () => {
     installFetch();
-    const provider = { key: 'qianwen', label: 'Qianwen', endpoint: 'https://example.invalid/v1', current: false, configured: false };
+    const provider = { key: 'qianwen', label: 'Qianwen', endpoint: 'https://example.invalid/v1', current: false, configured: false, can_remove_key: false };
     const list = vi.spyOn(api, 'providers').mockResolvedValue({ items: [provider] });
     const pending = deferred<ActionResponse>();
     const write = vi.spyOn(api, 'providerAction').mockReturnValueOnce(pending.promise)
@@ -243,7 +247,7 @@ describe('settings panel', () => {
     expect((await row.findByRole('alert')).textContent).toBe('Credential store is unavailable.');
     expect(input.value).toBe('synthetic-value');
     expect(changed).not.toHaveBeenCalled();
-    list.mockResolvedValue({ items: [{ ...provider, configured: true }] });
+    list.mockResolvedValue({ items: [{ ...provider, configured: true, can_remove_key: true }] });
     fireEvent.click(row.getByRole('button', { name: 'Save' }));
     expect(await row.findByText('Key saved.')).toBeTruthy();
     expect(write).toHaveBeenLastCalledWith('qianwen', { action: 'set_key', api_key: 'synthetic-value' });
@@ -251,23 +255,33 @@ describe('settings panel', () => {
     expect(document.activeElement).toBe(row.getByRole('button', { name: 'Update key' }));
     expect(screen.queryByText('synthetic-value')).toBeNull();
     expect(changed).toHaveBeenCalledTimes(1);
-    fireEvent.click(row.getByRole('button', { name: 'Use model ID' }));
-    fireEvent.change(row.getByLabelText('Qianwen model ID'), { target: { value: 'qwen3.8-max' } });
-    fireEvent.click(row.getByRole('button', { name: 'Apply model' }));
-    expect(await row.findByText('applied /model qianwen/qwen3.8-max')).toBeTruthy();
+    expect(row.getAllByRole('button').map(button => button.textContent))
+      .toEqual(['Update key', 'Base URL', 'Remove API key']);
   });
 
-  it('sends removal only on confirmation and keeps a declined removal in its card', async () => {
+  it('removes only the confirmed key, keeps the provider and restores focus after a retry', async () => {
     installFetch();
-    const write = vi.spyOn(api, 'providerAction').mockResolvedValue({ ok: false, message: 'Switch models first.', refresh_health: false });
+    const provider = { key: 'first', label: 'First', endpoint: 'https://first.invalid/v1', current: false, configured: true, can_remove_key: true };
+    const shared = { ...provider, key: 'shared', label: 'Shared', can_remove_key: false };
+    const list = vi.spyOn(api, 'providers').mockResolvedValue({ items: [provider, shared] });
+    const write = vi.spyOn(api, 'providerAction')
+      .mockResolvedValueOnce({ ok: false, message: 'Credential store unavailable.', refresh_health: false })
+      .mockResolvedValueOnce({ ok: true, message: 'API key removed.', refresh_health: true });
     render(<SettingsPanel health={HEALTH} theme="auto" onTheme={() => {}} onClose={() => {}} onChanged={() => {}} initialSection="providers" />);
-    const row = within(await screen.findByTestId('provider-deepseek'));
-    fireEvent.click(row.getByRole('button', { name: 'Remove' }));
+    const row = within(await screen.findByTestId('provider-first'));
+    expect(within(screen.getByTestId('provider-shared')).queryByRole('button', { name: 'Remove API key' })).toBeNull();
+    fireEvent.click(row.getByRole('button', { name: 'Remove API key' }));
     expect(write).not.toHaveBeenCalled();
-    fireEvent.click(row.getByRole('button', { name: 'Remove permanently' }));
-    expect((await row.findByRole('alert')).textContent).toBe('Switch models first.');
-    expect(write).toHaveBeenCalledWith('deepseek', { action: 'remove', confirmed: true });
-    expect(row.getByRole('alertdialog')).toBeTruthy();
+    const dialog = within(row.getByRole('alertdialog', { name: 'Remove API key for First' }));
+    fireEvent.click(dialog.getByRole('button', { name: 'Remove key' }));
+    expect((await row.findByRole('alert')).textContent).toBe('Credential store unavailable.');
+    expect(write).toHaveBeenCalledWith('first', { action: 'remove_key', confirmed: true });
+    list.mockResolvedValue({ items: [{ ...provider, configured: false, can_remove_key: false }, shared] });
+    fireEvent.click(dialog.getByRole('button', { name: 'Remove key' }));
+    expect(await row.findByText('no key')).toBeTruthy();
+    expect(row.queryByRole('alertdialog')).toBeNull();
+    expect(row.queryByRole('button', { name: 'Remove API key' })).toBeNull();
+    expect(document.activeElement).toBe(row.getByRole('button', { name: 'Add key' }));
   });
 
   it('shares refresh progress across tabs, prevents repeat requests and confirms unchanged results', async () => {

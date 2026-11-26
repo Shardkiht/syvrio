@@ -1641,7 +1641,6 @@ button.fold-summary:hover {
 .provider-form button[aria-disabled="true"], .provider-form button:disabled, .provider-buttons button:disabled { opacity: .55; }
 .provider-row > .action-feedback, .provider-editor { margin-top: 8px; }
 .provider-form {
-  border-top: 1px solid var(--border);
   padding-top: 10px;
   display: flex;
   flex-direction: column;

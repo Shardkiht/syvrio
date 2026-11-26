@@ -191,10 +191,6 @@ export const api = {
     }),
 };
 
-/**
- * 通过 Fetch API 发起 POST 并读取 SSE，按空行分帧。
- * TextDecoder 使用 stream:true，确保跨分块的 UTF-8 多字节字符仍能完整解码。
- */
 export interface TurnReceipt {
   turn_id: number;
   history_only?: boolean;
@@ -212,7 +208,7 @@ export interface QueueState {
   revision: number;
 }
 
-function postMessage(body: ChatRequest, files: readonly File[], receipt: boolean, signal?: AbortSignal, replace?: string, editId?: string) {
+export async function submitChat(body: ChatRequest, files: readonly File[] = [], replace?: string, editId?: string): Promise<TurnReceipt> {
   const form = files.length ? new FormData() : null;
   if (form) {
     form.append('message', body.message);
@@ -221,17 +217,12 @@ function postMessage(body: ChatRequest, files: readonly File[], receipt: boolean
     for (const file of files) form.append('files', file);
   }
   const path = form ? '/api/chat/attachments' : '/api/chat';
-  const query = new URLSearchParams();
-  if (receipt) query.set('receipt', '1');
+  const query = new URLSearchParams({ receipt: '1' });
   if (replace) query.set('replace', replace);
-  return fetchChecked(path + (query.size ? '?' + query : ''), {
+  const response = await fetchChecked(path + '?' + query, {
     method: 'POST', headers: { ...(form ? {} : jsonHeaders), ...(editId ? { 'X-Syvrio-Edit': editId } : {}) },
-    body: form ?? JSON.stringify(body), signal,
+    body: form ?? JSON.stringify(body),
   });
-}
-
-export async function submitChat(body: ChatRequest, files: readonly File[] = [], replace?: string, editId?: string): Promise<TurnReceipt> {
-  const response = await postMessage(body, files, true, undefined, replace, editId);
   if (!response.ok) throw await readError(response);
   try {
     return await response.json();
@@ -250,12 +241,7 @@ export async function replayTurn(turn: number, after: number, onEvent: (event: S
   return consumeStream(await fetchChecked(`/api/chat/turns/${turn}?after=${after}`, { signal }), onEvent);
 }
 
-export async function streamChat(
-  body: ChatRequest, onEvent: (event: StreamEvent) => void, signal?: AbortSignal, files: readonly File[] = [],
-) {
-  return consumeStream(await postMessage(body, files, false, signal), onEvent);
-}
-
+/** 按空行解析 SSE 帧，增量解码跨分块的 UTF-8 字符。 */
 async function consumeStream(response: Response, onEvent: (event: StreamEvent) => void) {
   if (!response.ok) throw await readError(response);
   if (!response.body) throw new Error('Streaming is unavailable in this browser.');
