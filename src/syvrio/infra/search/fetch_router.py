@@ -15,13 +15,13 @@ from .base import (
     FetchQuery,
     FetchResult,
     ProviderError,
-    ProviderErrorKind,
     SearchFailure,
     assert_public_fetch_url,
+    exhausted_providers,
 )
+from .pauses import ProviderPauses, paused_failure, provider_failure
 from .providers.catalog import OPEN_WEBSEARCH, PROVIDERS, supports_fetch
 from .providers.open_websearch import OpenWebSearchProvider
-from .usage import UsageLimiter
 
 
 class FetchProvider(Protocol):
@@ -39,12 +39,11 @@ class FetchRouter:
         registry: dict[str, FetchProvider] | None = None,
         *,
         order: list[str] | None = None,
-        usage_limiter: UsageLimiter | None = None,
+        provider_pauses: ProviderPauses | None = None,
     ):
         self.registry = dict(registry or {})
         self.order = list(dict.fromkeys(order or list(self.registry)))
-        # 与搜索共用同一厂商计数池；None 表示未启用额度限制。
-        self.usage_limiter = usage_limiter
+        self.provider_pauses = provider_pauses
 
     @property
     def supports_fetch(self) -> bool:
@@ -61,33 +60,19 @@ class FetchRouter:
             provider = self.registry.get(name)
             if provider is None or "fetch" not in provider.capabilities:
                 continue
-            reservation = None
-            if self.usage_limiter is not None:
-                # 达到厂商上限即跳过该 provider，继续回退下一家。
-                reservation = self.usage_limiter.acquire(name)
-                if reservation is None:
-                    failures.append(
-                        SearchFailure(
-                            name,
-                            ProviderErrorKind.QUOTA.value,
-                            self.usage_limiter.reason(name),
-                        )
-                    )
-                    continue
+            failure = paused_failure(name, self.provider_pauses)
+            if failure:
+                failures.append(failure)
+                continue
             try:
                 result = provider.fetch(FetchQuery(text, max_chars))
             except ProviderError as exc:
-                if self.usage_limiter is not None and reservation is not None:
-                    # 抓取没拿到正文就不算一次有效调用，退回预扣的次数。
-                    self.usage_limiter.release(reservation)
-                    self.usage_limiter.note_error(name, exc)
-                failures.append(SearchFailure.from_error(exc))
+                failures.append(provider_failure(name, exc, self.provider_pauses))
                 continue
             except Exception as exc:
-                if self.usage_limiter is not None and reservation is not None:
-                    self.usage_limiter.release(reservation)
                 failures.append(SearchFailure(name, "unavailable", str(exc)))
                 continue
+            result.provider = name
             if result.final_url and result.final_url != text:
                 # 外部服务未必披露跳转链；拒绝已知的非公网最终地址。
                 assert_public_fetch_url(result.final_url, "重定向后的抓取地址")
@@ -95,6 +80,7 @@ class FetchRouter:
                 not result.truncated
                 or (max_chars is not None and 0 < max_chars <= len(result.content))
             ):
+                result.quota_exhausted = exhausted_providers(failures)
                 return result
             # 服务仅返回部分内容时继续抓取；若最终都不完整，优先保留正文，其次比较长度。
             if best_partial is None or (result.content_kind == "page", len(result.content)) > (
@@ -102,12 +88,15 @@ class FetchRouter:
                 len(best_partial.content),
             ):
                 best_partial = result
+        exhausted = exhausted_providers(failures)
         if best_partial is not None:
+            best_partial.quota_exhausted = exhausted
             return best_partial
         if failures:
             detail = "；".join(f"{item.provider}: {item.detail}" for item in failures)
             # 这里失败的是抓取而不是搜索；provider 标明 fetch，避免上层误判。
-            raise ProviderError("fetch", "unavailable", detail)
+            kind = "quota" if all(item.kind == "quota" for item in failures) else "unavailable"
+            raise ProviderError("fetch", kind, detail, quota_exhausted=exhausted)
         raise ProviderError("fetch", "unavailable", "没有支持网页抓取的 provider")
 
 
@@ -173,13 +162,13 @@ def build_fetch_router(
     search_config: SearchConfig,
     vault: Path | SyvrioPaths | None = None,
 ) -> FetchRouter:
-    limiter = None
+    pauses = None
     if vault is not None:
         paths = vault if isinstance(vault, SyvrioPaths) else vault_paths(vault)
         paths.validate()
-        limiter = UsageLimiter(search_config.usage_limits, paths.state_dir / "usage.json")
+        pauses = ProviderPauses(paths)
     return FetchRouter(
         build_fetch_registry(fetch_config, search_config),
         order=fetch_config.providers,
-        usage_limiter=limiter,
+        provider_pauses=pauses,
     )

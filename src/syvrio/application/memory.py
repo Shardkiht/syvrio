@@ -7,6 +7,7 @@ from pathlib import Path
 
 from ..infra.storage.documents import DocumentError, read_document
 from ..memory.extractor import split_chunks
+from ..memory.models import MemoryCorrection, MemoryDraft
 from ..memory.service import MemoryService
 from .contracts import (
     ImportChunkProgress,
@@ -28,10 +29,10 @@ class MemoryUseCases:
         return PendingSnapshot(list(self.service.pending()))
 
     def pending_count(self) -> int:
-        return len(self.service.pending())
+        return self.service.queue.count()
 
     def pending_item(self, item_id: str):
-        return next((item for item in self.service.pending() if item.id == item_id), None)
+        return self.service.queue.get(item_id)
 
     def pending_evidence(self, item_id: str) -> dict:
         item = self.pending_item(item_id)
@@ -62,10 +63,12 @@ class MemoryUseCases:
 
     def load_inference_review(self, *, include_sources: bool = True) -> InferenceReview:
         items = self.service.list_inferences()
-        source_ids = (
-            {key for item in items for key in item.source_ids} if include_sources else set()
+        versions = (
+            {pair for item in items for pair in item.source_versions.items()}
+            if include_sources
+            else set()
         )
-        return InferenceReview(items, self._source_texts(source_ids))
+        return InferenceReview(items, self.service.store.version_texts(versions))
 
     def review_inference(
         self, item_id: str, action: str, text: str | None = None, *, include_sources: bool = True
@@ -88,13 +91,7 @@ class MemoryUseCases:
         )
 
     def _source_texts(self, source_ids: set[str]) -> dict[str, str]:
-        if not source_ids:
-            return {}
-        return {
-            entry.id: entry.text
-            for entry in self.service.store.entries(include_inactive=True)
-            if entry.id in source_ids
-        }
+        return self.service.store.source_texts(source_ids)
 
     # 主题
 
@@ -106,6 +103,24 @@ class MemoryUseCases:
 
     def topic_entries(self, topic: str):
         return self.service.topic_entries(topic)
+
+    def browse_memories(self, topic: str, query: str, after: str, limit: int) -> dict:
+        return self.service.store.browse_page(topic, query, after, limit)
+
+    def add_memory(self, topic: str, text: str, request_id: str):
+        return self.service.memorize(
+            MemoryDraft(topic=topic, text=text), entry_id=f"mem-{request_id}"
+        )
+
+    def edit_memory(self, entry_id: str, text: str, expected_revision: int):
+        return self.service.correct(
+            entry_id, MemoryCorrection(text=text, expected_revision=expected_revision)
+        )
+
+    def inference_sources(self, item_id: str) -> list[dict]:
+        with self.service.work.read():
+            references = self.service.inferences.source_references(item_id)
+            return self.service.store.compare_versions(references)
 
     # 导入
 

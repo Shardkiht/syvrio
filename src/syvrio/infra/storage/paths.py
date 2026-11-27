@@ -11,9 +11,6 @@ from .files import atomic_write
 
 SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 
-TURN_UNDO_DIR = "turn-undo"
-TRANSACTION_FILENAME = "vault-transaction.json"
-
 
 class RuntimeBindingError(SyvrioError, ValueError):
     """无法确定 Runtime 属于当前 Vault，或其中仍有不同布局的待处理记录。"""
@@ -46,6 +43,11 @@ def _comparison_path(path: PurePath) -> PurePath:
     return path
 
 
+def same_storage_path(first: PurePath, second: PurePath) -> bool:
+    """比较物理路径，只接受 Windows 为同一盘符或 UNC 路径提供的等价写法。"""
+    return first == second or _comparison_path(first) == _comparison_path(second)
+
+
 @dataclass(frozen=True, slots=True)
 class SyvrioPaths:
     vault_dir: Path
@@ -57,44 +59,16 @@ class SyvrioPaths:
         object.__setattr__(self, "vault_dir", self.vault_dir.expanduser().resolve())
 
     @property
-    def memories_dir(self) -> Path:
-        return self.vault_dir / "memories"
-
-    @property
-    def sessions_dir(self) -> Path:
-        return self.vault_dir / "sessions"
-
-    @property
-    def archived_dir(self) -> Path:
-        return self.vault_dir / "archived"
-
-    @property
-    def archived_sessions_dir(self) -> Path:
-        return self.archived_dir / "sessions"
-
-    @property
     def attachments_dir(self) -> Path:
         return self.vault_dir.resolve() / "attachments"
 
     @property
-    def records_dir(self) -> Path:
-        return self.vault_dir / "records" / "memory"
-
-    @property
-    def index_dir(self) -> Path:
-        return self.runtime_dir / "indexes"
-
-    @property
     def cache_dir(self) -> Path:
-        return self.runtime_dir / "cache"
+        return self.runtime_dir.resolve() / "cache"
 
     @property
     def state_dir(self) -> Path:
         return self.runtime_dir / "state"
-
-    @property
-    def jobs_dir(self) -> Path:
-        return self.runtime_dir / "jobs"
 
     @property
     def lock_dir(self) -> Path:
@@ -105,8 +79,6 @@ class SyvrioPaths:
         return self.runtime_dir / "logs"
 
     def validate(self) -> None:
-        if _comparison_path(self.archived_dir.resolve()) != _comparison_path(self.archived_dir):
-            raise ValueError("Vault archive directory cannot be redirected")
         runtime = self.runtime_dir.resolve()
         runtime_key = _comparison_path(runtime)
         vault_key = _comparison_path(self.vault_dir.resolve())
@@ -117,16 +89,14 @@ class SyvrioPaths:
             for parent in (runtime, *runtime.parents)
         ):
             raise ValueError("Runtime cannot be placed inside a Git working tree")
+        for directory in (self.attachments_dir, self.vault_dir / "export"):
+            if not same_storage_path(directory.resolve(), directory):
+                raise ValueError("Vault storage directories cannot be redirected.")
         for directory in (
-            self.index_dir,
             self.cache_dir,
             self.state_dir,
-            self.jobs_dir,
             self.lock_dir,
             self.log_dir,
-            self.cache_dir / "profile",
-            self.cache_dir / "search",
-            self.jobs_dir / "background-memory",
         ):
             if directory.is_symlink() or not _comparison_path(directory.resolve()).is_relative_to(
                 runtime_key
@@ -157,45 +127,13 @@ class SyvrioPaths:
                 and Path(saved["vault"]).is_absolute()
             ):
                 raise RuntimeBindingError("Invalid Runtime binding. Restore the matching marker.")
-            if _comparison_path(Path(saved["vault"])) != _comparison_path(self.vault_dir):
+            if not same_storage_path(Path(saved["vault"]), self.vault_dir):
                 raise RuntimeBindingError(
                     "Runtime belongs to a different Vault. Use its matching Runtime."
                 )
 
         if saved is not None:
             return
-        # 首次配置可能已经写入锁、日志和供应商用量，这些内容不由具体 Vault 拥有。
-        files = (
-            self.index_dir / "vectors.npz",
-            self.cache_dir / "profile" / "profile-summary.json",
-            self.state_dir / "fingerprints.json",
-            self.state_dir / "reflection.json",
-            self.state_dir / "git-sync.json",
-            self.jobs_dir / TRANSACTION_FILENAME,
-            self.jobs_dir / "upgrade-0.7-background.json",
-        )
-        roots = (
-            self.runtime_dir / TURN_UNDO_DIR,
-            self.runtime_dir / "session-reasoning",
-            self.state_dir / "chat-receipts",
-        )
-        has_jobs = any(
-            next(self.jobs_dir.glob(pattern), None) is not None
-            for pattern in (
-                "background-memory/*/*.json",
-                "background-memory/*/*/*.json",
-                "vault-transactions/*.json",
-                "session-deletions/*.json",
-            )
-        )
-        if (
-            has_jobs
-            or any(path.exists() for path in files)
-            or any(root.is_dir() and next(root.iterdir(), None) is not None for root in roots)
-        ):
-            raise RuntimeBindingError(
-                "Missing Runtime binding. Restore the marker paired with these files."
-            )
         atomic_write(
             marker, json.dumps({"version": 2, "vault": str(self.vault_dir)}).encode("utf-8")
         )

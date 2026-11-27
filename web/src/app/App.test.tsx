@@ -1,3 +1,4 @@
+import { testAttachmentPolicy } from '../test/attachmentPolicy';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
@@ -10,7 +11,7 @@ const encoder = new TextEncoder();
 
 const HEALTH = {
   status: 'ok', version: '0.4.0.dev0', provider: 'deepseek', model: 'deepseek-flash',
-  busy: false, active_turn_id: null, single_client: true, static_ready: true,
+  busy: false, active_turn_id: null, single_client: true, attachment_policy: testAttachmentPolicy, static_ready: true,
 };
 const SESSIONS = [{
   id: 's-1', title: 'Earlier chat', messages: 1,
@@ -1336,14 +1337,16 @@ describe('Slash commands and shortcuts', () => {
     expect(calls).not.toContain('POST /api/chat');
   });
 
-  it('reads a selected topic through the same command API and returns to the filtered list', async () => {
-    const topic = 'memories/garden/seed-notes.md';
+  it('opens a paged topic and returns to the filtered directory', async () => {
+    const topic = 'garden/seed-notes';
     const spy = spyCommands(({ line }) => commandResult({
       command: 'topics', intent: 'topics',
       data: line === '/topics' ? { topics: [{ topic, title: 'Seed notes', entries: 1 }] }
         : { topic: 'garden/seed-notes', entries: [{ id: 'mem-seed', status: 'active', text: 'Sow after frost.' }] },
     }));
-    installFetch(spy.overrides);
+    const calls = installFetch({ ...spy.overrides, '/api/memories': () => Response.json({
+      entries: [{ id: 'mem-seed', topic, revision: 1, text: 'Sow after frost.' }], next: null,
+    }) });
     render(<App />);
     await ready();
     send('/topics');
@@ -1354,7 +1357,8 @@ describe('Slash commands and shortcuts', () => {
     await within(dialog).findByText('Sow after frost.');
     fireEvent.click(within(dialog).getByRole('button', { name: /back|all topics/i }));
     expect(within(dialog).getByRole<HTMLInputElement>('searchbox').value).toBe('seed');
-    expect(spy.lines).toEqual(['/topics', `/topics ${topic}`]);
+    expect(spy.lines).toEqual(['/topics']);
+    expect(calls).toContain('GET /api/memories?topic=garden%2Fseed-notes&q=&after=');
   });
 
   it('selects suggestions with arrows and closes them with Escape', async () => {

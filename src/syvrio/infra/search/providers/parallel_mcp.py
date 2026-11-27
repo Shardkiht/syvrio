@@ -55,23 +55,11 @@ class ParallelMcpProvider:
             "objective": objective,
             "search_queries": [query.query],
         }
-        try:
-            result = _run_async(lambda: self._call(arguments, headers, timeout))
-        except ProviderError:
-            raise
-        except Exception as exc:
-            raise _translate_error(exc) from exc
-        if getattr(result, "is_error", False):
-            raise ProviderError(NAME, ProviderErrorKind.BAD_RESPONSE, "MCP 工具返回错误")
+        result = _request_tool(self._client_factory, headers, timeout, "web_search", arguments)
         items = _extract_results(result)
         if items is None:
             raise ProviderError(NAME, ProviderErrorKind.BAD_RESPONSE, "无法解析 MCP 搜索响应")
         return _map_results(items, min(MAX_RESULTS, max(1, query.limit)))
-
-    async def _call(
-        self, arguments: dict[str, Any], headers: dict[str, str], timeout: float
-    ) -> Any:
-        return await _call_tool(self._client_factory, headers, timeout, "web_search", arguments)
 
 
 class ParallelMcpFetchProvider:
@@ -90,37 +78,13 @@ class ParallelMcpFetchProvider:
 
     def fetch(self, query: FetchQuery) -> FetchResult:
         headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
-        try:
-            result = _run_async(
-                lambda: _call_tool(
-                    self._client_factory,
-                    headers,
-                    self._timeout,
-                    "web_fetch",
-                    {"urls": [query.url], "full_content": True},
-                    raise_on_error=False,
-                )
-            )
-        except ProviderError:
-            raise
-        except Exception as exc:
-            raise _fetch_error(exc) from None
-        if getattr(result, "is_error", False):
-            # 工具可能在 HTTP 200 响应中报告错误。对已知上游错误分类，
-            # 避免将任意工具文本写入诊断日志。
-            for item in getattr(result, "content", None) or ():
-                text = getattr(item, "text", "")
-                if not isinstance(text, str):
-                    continue
-                error = _fetch_error(RuntimeError(text))
-                if error.kind in (
-                    ProviderErrorKind.AUTH,
-                    ProviderErrorKind.QUOTA,
-                    ProviderErrorKind.RATE_LIMIT,
-                    ProviderErrorKind.UNAVAILABLE,
-                ):
-                    raise error
-            raise ProviderError(NAME, ProviderErrorKind.BAD_RESPONSE, "MCP web_fetch 工具返回错误")
+        result = _request_tool(
+            self._client_factory,
+            headers,
+            self._timeout,
+            "web_fetch",
+            {"urls": [query.url], "full_content": True},
+        )
         items = _extract_results(result)
         if items is None:
             raise ProviderError(NAME, ProviderErrorKind.BAD_RESPONSE, "无法解析 MCP 抓取响应")
@@ -140,9 +104,31 @@ class ParallelMcpFetchProvider:
         )
 
 
-async def _call_tool(factory, headers, timeout, tool, arguments, **kwargs):
-    async with factory(dict(headers), timeout) as client:
-        return await client.call_tool(tool, arguments, timeout=timeout, **kwargs)
+def _request_tool(
+    factory: ClientFactory, headers: dict, timeout: float, tool: str, arguments: dict
+):
+    async def call():
+        async with factory(dict(headers), timeout) as client:
+            return await client.call_tool(tool, arguments, timeout=timeout, raise_on_error=False)
+
+    try:
+        result = _run_async(call)
+    except Exception as exc:
+        # 传输错误可能夹带凭据或请求正文，只向外传递经过分类的错误。
+        raise _translate_error(exc) from None
+    if getattr(result, "is_error", False):
+        error = _reported_error(getattr(result, "structured_content", None))
+        if error:
+            raise error
+        for block in getattr(result, "content", None) or ():
+            text = getattr(block, "text", None)
+            if isinstance(text, str):
+                payload = _load_json_text(text)
+                error = _reported_error(payload if payload is not None else text)
+                if error:
+                    raise error
+        raise ProviderError(NAME, ProviderErrorKind.BAD_RESPONSE, "MCP 工具返回错误")
+    return result
 
 
 def _default_client(headers: dict[str, str], timeout: float, url: str = MCP_URL):
@@ -155,28 +141,6 @@ def _default_client(headers: dict[str, str], timeout: float, url: str = MCP_URL)
 
 def _fetch_client(headers: dict[str, str], timeout: float):
     return _default_client(headers, timeout, FETCH_MCP_URL)
-
-
-def _fetch_error(exc: Exception) -> ProviderError:
-    error = _translate_error(exc)
-    # FastMCP 可能在协商时包装传输异常。检查底层原因和 SDK 的 JSON-RPC 错误码，
-    # 避免转发原始错误消息。
-    if error.kind == ProviderErrorKind.NETWORK:
-        cause = exc.__cause__
-        if isinstance(cause, Exception):
-            inner = _fetch_error(cause)
-            if inner.kind != ProviderErrorKind.NETWORK:
-                return inner
-        code = getattr(exc, "code", getattr(getattr(exc, "error", None), "code", None))
-        if code == -32001 or "timed out" in str(exc).lower():
-            return ProviderError(NAME, ProviderErrorKind.TIMEOUT, "MCP 请求超时")
-        if code in (-32600, -32601, -32602, -32603, -32700):
-            return ProviderError(NAME, ProviderErrorKind.BAD_RESPONSE, "MCP web_fetch RPC 响应错误")
-    if error.kind == ProviderErrorKind.QUOTA:
-        return ProviderError(
-            NAME, error.kind, error.detail, pause_reason="official_quota_exhausted"
-        )
-    return error
 
 
 def _run_async(coroutine_factory: Callable[[], Any]) -> Any:
@@ -284,39 +248,77 @@ def _excerpt(value: Any) -> str:
     return "\n\n".join(parts)
 
 
+def _http_error(status: int) -> ProviderError:
+    if status == 402:
+        return ProviderError(
+            NAME, ProviderErrorKind.QUOTA, "HTTP 402", pause_reason="official_quota_exhausted"
+        )
+    if status in (401, 403):
+        kind = ProviderErrorKind.AUTH
+    elif status == 429:
+        kind = ProviderErrorKind.RATE_LIMIT
+    elif 500 <= status < 600:
+        kind = ProviderErrorKind.UNAVAILABLE
+    else:
+        kind = ProviderErrorKind.BAD_RESPONSE
+    return ProviderError(NAME, kind, f"HTTP {status}")
+
+
+def _reported_error(value: object) -> ProviderError | None:
+    # 只读工具级错误信封。网页结果、按 URL 报错的条目和引文都由目标站点控制。
+    if isinstance(value, dict):
+        if any(key in value for key in ("results", "errors", "url", "final_url")):
+            return None
+        for field in ("status_code", "status", "code", "type", "error", "message", "detail"):
+            if field in value and (error := _reported_error(value[field])):
+                return error
+        return None
+    if isinstance(value, int) and 400 <= value <= 599:
+        return _http_error(value)
+    if not isinstance(value, str):
+        return None
+    text = value.strip().lower()
+    status = re.match(r"^(?:error:\s*)?(?:http(?:/\d(?:\.\d)?)?\s+)?([45]\d{2})(?=$|[\s:.-])", text)
+    if status:
+        return _http_error(int(status[1]))
+    if re.match(
+        r"^(?:error:\s*)?(?:(?:your|the) (?:account|organization) has )?insufficient[ _-]+credits\b",
+        text,
+    ):
+        return ProviderError(
+            NAME,
+            ProviderErrorKind.QUOTA,
+            "Insufficient credits",
+            pause_reason="official_quota_exhausted",
+        )
+    if text.startswith("unauthorized"):
+        return ProviderError(NAME, ProviderErrorKind.AUTH, "MCP 认证失败")
+    if text.startswith(("rate limit", "rate_limit")):
+        return ProviderError(NAME, ProviderErrorKind.RATE_LIMIT, "MCP 请求被限流")
+    return None
+
+
 def _translate_error(exc: Exception) -> ProviderError:
     from fastmcp.exceptions import AuthorizationError, InsufficientScopeError
 
     if isinstance(exc, (AuthorizationError, InsufficientScopeError)):
         return ProviderError(NAME, ProviderErrorKind.AUTH, "MCP 认证失败")
-    if isinstance(exc, (TimeoutError, asyncio.TimeoutError, httpx.TimeoutException)):
+    if isinstance(exc, (TimeoutError, httpx.TimeoutException)):
         return ProviderError(NAME, ProviderErrorKind.TIMEOUT, "MCP 请求超时")
-    status = _status_code(exc)
-    if status in (401, 403):
-        return ProviderError(NAME, ProviderErrorKind.AUTH, f"HTTP {status}")
-    if status == 402:
-        return ProviderError(NAME, ProviderErrorKind.QUOTA, "HTTP 402")
-    if status == 429:
-        return ProviderError(NAME, ProviderErrorKind.RATE_LIMIT, "HTTP 429")
-    if status is not None and status >= 500:
-        return ProviderError(NAME, ProviderErrorKind.UNAVAILABLE, f"HTTP {status}")
-    if status is not None:
-        return ProviderError(NAME, ProviderErrorKind.BAD_RESPONSE, f"HTTP {status}")
-    text = str(exc).lower()
-    if "401" in text or "403" in text or "unauthorized" in text:
-        return ProviderError(NAME, ProviderErrorKind.AUTH, "MCP 认证失败")
-    if "429" in text or "rate limit" in text:
-        return ProviderError(NAME, ProviderErrorKind.RATE_LIMIT, "MCP 请求被限流")
-    return ProviderError(NAME, ProviderErrorKind.NETWORK, type(exc).__name__)
-
-
-def _status_code(exc: Exception) -> int | None:
-    response = getattr(exc, "response", None)
-    status = getattr(response, "status_code", None)
+    status = getattr(getattr(exc, "response", None), "status_code", None) or getattr(
+        exc, "status_code", None
+    )
     if isinstance(status, int):
-        return status
-    status = getattr(exc, "status_code", None)
-    if isinstance(status, int):
-        return status
-    match = re.search(r"\b(401|402|403|429|5\d\d)\b", str(exc))
-    return int(match.group(1)) if match else None
+        return _http_error(status)
+    if isinstance(exc.__cause__, Exception) and exc.__cause__ is not exc:
+        cause = _translate_error(exc.__cause__)
+        if cause.kind != ProviderErrorKind.NETWORK:
+            return cause
+    if error := _reported_error(str(exc)):
+        return error
+    code = getattr(exc, "code", getattr(getattr(exc, "error", None), "code", None))
+    if code == -32001 or "timed out" in str(exc).lower():
+        return ProviderError(NAME, ProviderErrorKind.TIMEOUT, "MCP 请求超时")
+    if code in (-32600, -32601, -32602, -32603, -32700):
+        return ProviderError(NAME, ProviderErrorKind.BAD_RESPONSE, "MCP RPC 响应错误")
+    return ProviderError(NAME, ProviderErrorKind.NETWORK, "MCP 连接失败")

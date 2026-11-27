@@ -1,16 +1,13 @@
 import { useLayoutEffect, useRef, useState } from 'react';
 import { usePanelRead } from './usePanelRead';
-import type { TopicDocument, TopicListItem } from './commands';
+import type { TopicListItem } from './commands';
+import { MemoryEntries } from './MemoryEntries';
 import { CommandDialog, moveOption } from './CommandUI';
 import { ArrowUpIcon, FileIcon, SearchIcon } from '../../shared/Icons';
 import './topics.css';
 
-function logicalPath(topic: string) {
-  return topic.replace(/^memories\//, '').replace(/\.md$/, '');
-}
-
 function topicLabels(topic: string, title?: string) {
-  const path = logicalPath(topic);
+  const path = topic;
   const slash = path.lastIndexOf('/');
   return {
     path,
@@ -35,50 +32,16 @@ function ReadError({ label, detail, retry }: { label: string; detail: string; re
   );
 }
 
-function TopicReader({ topic, title, initial, readTopic }: {
-  topic: string;
-  title?: string;
-  initial?: TopicDocument;
-  readTopic: (topic: string) => Promise<TopicDocument>;
-}) {
-  const { value: doc, error, retry } = usePanelRead(initial, () => readTopic(topic));
-  const labels = topicLabels(doc?.topic ?? topic, title);
-  return (
-    <>
-      <header className="topics-reader-head">
-        <h2>{labels.title}</h2>
-        <div className="topics-byline" aria-live="polite" aria-atomic="true">
-          {labels.category && <span>{labels.category}</span>}
-          {doc && <span>{entryCount(doc.entries.length)}</span>}
-        </div>
-      </header>
-      <div className="topics-scroll topics-reader-body" role="region" aria-label="Topic entries" tabIndex={0}>
-        {error !== null ? <ReadError label="Couldn’t load this topic." detail={error} retry={retry} />
-          : !doc ? <p className="topics-notice" role="status">Loading entries…</p>
-          : !doc.entries.length ? <p className="topics-notice" role="status">No entries in this topic.</p>
-          : <ul className="topics-entries">
-            {doc.entries.map((entry) => (
-              <li key={entry.id}>
-                {entry.status && entry.status !== 'active' && <small>{entry.status}</small>}
-                <p>{entry.text}</p>
-              </li>
-            ))}
-          </ul>}
-      </div>
-    </>
-  );
-}
-
-export function TopicBrowser({ initialTopics, initialDocument, readTopics, readTopic, onClose }: {
+export function TopicBrowser({ initialTopics, initialTopic, readTopics, onClose }: {
   initialTopics?: TopicListItem[];
-  initialDocument?: TopicDocument;
+  initialTopic?: string;
   readTopics: () => Promise<TopicListItem[]>;
-  readTopic: (topic: string) => Promise<TopicDocument>;
   onClose: () => void;
 }) {
-  const [directoryOpened, setDirectoryOpened] = useState(!initialDocument);
-  const { value: topics, error, retry } = usePanelRead(initialTopics, readTopics, directoryOpened);
-  const [selected, setSelected] = useState(initialDocument?.topic ?? null);
+  const [directoryOpened, setDirectoryOpened] = useState(initialTopic === undefined);
+  const [dirty, setDirty] = useState(false);
+  const { value: topics, error, retry } = usePanelRead(dirty ? undefined : initialTopics, readTopics, directoryOpened);
+  const [selected, setSelected] = useState<string | null>(initialTopic ?? null);
   const [filter, setFilter] = useState('');
   const back = useRef<HTMLButtonElement>(null);
   const list = useRef<HTMLDivElement>(null);
@@ -105,7 +68,7 @@ export function TopicBrowser({ initialTopics, initialDocument, readTopics, readT
     matches++;
   }
   const selectedRow = selected === null ? undefined
-    : topics?.find((row) => logicalPath(row.topic) === logicalPath(selected));
+    : topics?.find((row) => row.topic === selected);
   const closeButton = <button type="button" className="icon-button topics-close" aria-label="Close topics"
     title="Close topics" onClick={onClose}>×</button>;
 
@@ -124,6 +87,7 @@ export function TopicBrowser({ initialTopics, initialDocument, readTopics, readT
           </div>
           {closeButton}
         </header>
+        <div className="memory-actions"><button onClick={() => setSelected('')}>All memories</button></div>
         {topics && topics.length > 0 && (
           <label className="review-search topics-search">
             <SearchIcon size={16} />
@@ -169,9 +133,8 @@ export function TopicBrowser({ initialTopics, initialDocument, readTopics, readT
             onClick={() => { setDirectoryOpened(true); setSelected(null); }}><ArrowUpIcon size={16} />Topics</button>
           {closeButton}
         </div>
-        <TopicReader key={selected} topic={selected} title={selectedRow?.title} readTopic={readTopic}
-          initial={initialDocument && logicalPath(selected) === logicalPath(initialDocument.topic)
-            ? initialDocument : undefined} />
+        <header className="topics-reader-head"><h2>{selected ? topicLabels(selected, selectedRow?.title).title : 'All memories'}</h2></header>
+        <MemoryEntries key={selected} topic={selected} onChanged={() => { setDirty(true); retry(); }} />
       </div>}
     </CommandDialog>
   );

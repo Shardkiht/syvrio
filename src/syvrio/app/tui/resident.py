@@ -18,6 +18,7 @@ from textual.events import Mount, Unmount
 from textual.widgets import Collapsible, Input, ListView, Static
 
 from ...backend.client import ResidentClient
+from ...backend.client_contracts import AttachmentPolicy
 from ...infra.time import format_local_timestamp
 from .commands import ResidentCommands
 from .input import BarInput
@@ -112,6 +113,7 @@ class ResidentChatApp(ResidentCommands, ChatViewMixin, App):
         self._stream_buffer = ""
         self._revision: int | None = None
         self._finished_stream = False
+        self._attachment_policy: AttachmentPolicy | None = None
         self._uploads: dict[str | None, tuple[Path, ...]] = {}
         self._drafts: dict[str | None, str] = {}
         self._undo_drafts: dict[str, list[str]] = {}
@@ -175,6 +177,9 @@ class ResidentChatApp(ResidentCommands, ChatViewMixin, App):
                     else:
                         self._bind(state["session_id"], keep_input=archived)
                         version = self._version
+                self._attachment_policy = AttachmentPolicy.model_validate(
+                    health["attachment_policy"]
+                )
                 self._model_status.update(f"{health['provider']}/{health['model']}")
                 if listing["items"] != self._sessions:
                     self._sessions = listing["items"]
@@ -356,13 +361,21 @@ class ResidentChatApp(ResidentCommands, ChatViewMixin, App):
             self.query_one("#status", Static).update(text)
         self._scroll_end()
 
-    def action_attach_files(self):
-        def selected(paths):
-            if paths:
-                self._uploads[self.sid] = paths
+    def action_attach_files(self) -> None:
+        if self._attachment_policy is None:
+            self.notify("Connect to the backend before attaching files.", severity="warning")
+            return
+        view = self._submission_view
+
+        def selected(paths: tuple[Path, ...] | None) -> None:
+            if paths and (view is self._submission_view or view.session_id is not None):
+                self._uploads[view.session_id] = paths
                 self.notify(" · ".join(path.name for path in paths))
 
-        self.push_screen(AttachmentScreen(), selected)
+        self.push_screen(
+            AttachmentScreen(self._attachment_policy, self._uploads.get(view.session_id, ())),
+            selected,
+        )
 
     def on_input_submitted(self, event: Input.Submitted):
         if event.input.id != "input":

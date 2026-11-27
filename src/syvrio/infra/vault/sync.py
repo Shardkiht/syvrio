@@ -1,6 +1,6 @@
 """Vault Git 同步：Commit/Push 解耦、每日调度判断与本地执行状态。
 
-状态写入 `runtime/state/git-sync.json`，只记录本机实际执行结果；
+状态写入数据库 `git_sync` 表，只记录本机实际执行结果；
 Git 不保存 Push 时间，因此“最近成功 Push”只来自这里的成功记录。
 """
 
@@ -8,19 +8,19 @@ from __future__ import annotations
 
 import contextlib
 import json
-import os
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta
-from pathlib import Path
 from typing import Callable
 
 from ..config import Config
-from ..storage.locking import LockTimeout, git_operation_lock, vault_write_lock
+from ..storage.database import encode, transaction
+from ..storage.locking import LockTimeout, git_operation_lock
 from ..storage.paths import SyvrioPaths
 from ..system.gitops import GitError
 from ..time import parse_timestamp, serialize_timestamp, utc_now
 from .commit_summary import summarize_diff
+from .export import ExportSnapshot, publish_export
 from .git import VaultGitRepo, ensure_vault_gitignore
 
 STAGE_CHECK = "Checking working tree"
@@ -68,27 +68,38 @@ class GitSyncService:
     def __init__(self, config: Config, paths: SyvrioPaths) -> None:
         self.config = config
         self.paths = paths
-        self.repo = VaultGitRepo(paths.vault_dir)
+        paths.validate()
+        self.repo = VaultGitRepo(paths.vault_dir / "export")
+        self._export: ExportSnapshot | None = None
         self._running = threading.Lock()
         self._git_lock = git_operation_lock(paths)
-        self._vault_lock = vault_write_lock(paths)
+
+    def _publish_export(self, *, check_only: bool = False) -> None:
+        self._export = publish_export(
+            self.paths, self.repo.path, self._export if check_only else None
+        )
 
     def ensure_ignore_rules(self) -> None:
-        with self._git_lock, self._vault_lock:
+        with self._git_lock:
             if (self.repo.path / ".git").exists() and self.repo.is_repo:
                 ensure_vault_gitignore(self.repo.path)
 
     def initialize(self, prepare_files: Callable[[], None]) -> dict:
-        with self._git_lock, self._vault_lock:
+        with self._git_lock:
             created = self.repo.ensure_init()
             prepare_files()
+            self._publish_export()
             ensure_vault_gitignore(self.repo.path)
             self.repo.stage_all_checked()
             commit_hash = self.repo.commit("memory: 初始化记忆库")
-        return {"vault": str(self.repo.path), "git_created": created, "commit": commit_hash}
+        return {"vault": str(self.paths.vault_dir), "git_created": created, "commit": commit_hash}
 
     def is_dirty(self) -> bool:
-        return self.repo.is_repo and self.repo.has_changes()
+        with self._git_lock:
+            if not self.repo.is_repo:
+                return False
+            self._publish_export(check_only=True)
+            return self.repo.has_changes()
 
     def history(self, limit: int = 10) -> list[dict]:
         return self.repo.history(limit)
@@ -96,9 +107,9 @@ class GitSyncService:
     def commit_pending_changes(self) -> str | None:
         """启动检查用：自动提交 vault 未保存变更（不 push、不调 LLM 生成总结）。"""
         with self._git_lock:
-            with self._vault_lock:
-                self.repo.ensure_init()
-                self.repo.stage_all_checked()
+            self.repo.ensure_init()
+            self._publish_export()
+            self.repo.stage_all_checked()
             return self.repo.commit("memory: 自动提交未保存变更（启动检查）")
 
     def commit(self, push: bool | None = None) -> dict:
@@ -106,13 +117,13 @@ class GitSyncService:
             return self._commit_locked(push)
 
     def _commit_locked(self, push: bool | None) -> dict:
-        with self._vault_lock:
-            self.repo.ensure_init()
-            self.repo.stage_all_checked()
-            staged = self.repo.has_staged()
-            if staged:
-                stat = self.repo.staged_stat()
-                diff = self.repo.staged_diff()
+        self.repo.ensure_init()
+        self._publish_export()
+        self.repo.stage_all_checked()
+        staged = self.repo.has_staged()
+        if staged:
+            stat = self.repo.staged_stat()
+            diff = self.repo.staged_diff()
         should_push = self.config.auto_push if push is None else push
         if not staged:
             result = {
@@ -170,38 +181,24 @@ class GitSyncService:
     def running(self) -> bool:
         return self._running.locked()
 
-    @property
-    def state_path(self) -> Path:
-        return self.paths.state_dir / "git-sync.json"
+    def _read_state(self):
+        with transaction(self.paths, write=False) as db:
+            row = db.execute("SELECT state FROM git_sync WHERE singleton=1").fetchone()
+            return json.loads(row[0]) if row else {}
 
-    def _read_state(self) -> dict:
-        try:
-            data = json.loads(self.state_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return {}
-        if not isinstance(data, dict):
-            return {}
-        for key in ("last_commit_at", "last_push_at", "last_sync_at", "retry_after"):
-            if (value := data.get(key)) is not None:
-                try:
-                    data[key] = serialize_timestamp(parse_timestamp(value))
-                except ValueError as exc:
-                    raise ValueError(f"Invalid Git sync timestamp: {key}") from exc
-        return data
-
-    def _write_state(self, state: dict) -> None:
-        self.state_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.state_path.with_name(self.state_path.name + ".tmp")
-        tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(tmp, self.state_path)
+    def _update_state(self, changes: dict) -> None:
+        with transaction(self.paths) as db:
+            row = db.execute("SELECT state FROM git_sync WHERE singleton=1").fetchone()
+            state = json.loads(row[0]) if row else {}
+            state.update(changes)
+            db.execute("INSERT OR REPLACE INTO git_sync VALUES(1,?)", (encode(state),))
 
     def record_push_success(self, now: datetime | None = None) -> None:
         """CLI 等入口实际 push 成功后记录时间；不能从 Commit 时间推断。"""
-        state = self._read_state()
-        state["version"] = 1
+        state = {"version": 1}
         state["last_push_at"] = serialize_timestamp((now or utc_now()).replace(microsecond=0))
         try:
-            self._write_state(state)
+            self._update_state(state)
         except OSError as exc:
             # 推送已成功，时间戳丢失只会多触发一次同步。
             # 如果状态文件持续无法写入，仍需报告。
@@ -258,6 +255,16 @@ class GitSyncService:
         now = now or _now()
         state = self._read_state()
         initialized = self.repo.is_repo
+        if initialized and not self.running:
+            try:
+                self._git_lock.acquire(timeout=0)
+            except LockTimeout:
+                pass
+            else:
+                try:
+                    self._publish_export(check_only=True)
+                finally:
+                    self._git_lock.release()
         branch = self.repo.branch() if initialized else None
         upstream = self.repo.upstream() if initialized else None
         configured_remote = self.repo.remote_name() if initialized else None
@@ -363,46 +370,36 @@ class GitSyncService:
         commit_hash: str | None = None
         modified = 0
         try:
-            try:
-                self._vault_lock.acquire(timeout=30.0)
-            except LockTimeout:
+            self._publish_export()
+            modified = self.repo.modified_count()
+            sensitive = self.repo.sensitive_paths()
+            if sensitive:
                 emit(STAGE_CHECK, "failed")
                 skip_remaining()
-                result.error = "The memory vault is busy; try again later."
-                result.error_kind = "vault_busy"
+                result.error = (
+                    "Refusing to commit sensitive paths: "
+                    + ", ".join(sensitive[:5])
+                    + ". Move them outside the vault or add them to .gitignore."
+                )
+                result.error_kind = "sensitive"
                 self._record_state(result, now, commit_at=None)
                 return result
-            try:
-                modified = self.repo.modified_count()
-                sensitive = self.repo.sensitive_paths()
-                if sensitive:
-                    emit(STAGE_CHECK, "failed")
-                    skip_remaining()
-                    result.error = (
-                        "Refusing to commit sensitive paths: "
-                        + ", ".join(sensitive[:5])
-                        + ". Move them outside the vault or add them to .gitignore."
-                    )
-                    result.error_kind = "sensitive"
-                    self._record_state(result, now, commit_at=None)
-                    return result
-                emit(STAGE_CHECK, "done")
-                if modified:
-                    emit(STAGE_COMMIT, "running")
-                    with self.repo.stage_checked():
-                        commit_hash = self.repo.commit(self._commit_message(trigger, now))
-                    result.committed = commit_hash is not None
-                    result.commit_hash = commit_hash
-                    emit(STAGE_COMMIT, "done" if result.committed else "skipped")
-                else:
-                    emit(STAGE_COMMIT, "skipped")
-            finally:
-                self._vault_lock.release()
-        except GitError as exc:
+            emit(STAGE_CHECK, "done")
+            if modified:
+                emit(STAGE_COMMIT, "running")
+                with self.repo.stage_checked():
+                    commit_hash = self.repo.commit(self._commit_message(trigger, now))
+                result.committed = commit_hash is not None
+                result.commit_hash = commit_hash
+                emit(STAGE_COMMIT, "done" if result.committed else "skipped")
+            else:
+                emit(STAGE_COMMIT, "skipped")
+
+        except (GitError, OSError, ValueError) as exc:
             emit(STAGE_COMMIT, "failed")
             skip_remaining()
             result.error = str(exc)
-            result.error_kind = exc.kind if exc.kind != "other" else "git"
+            result.error_kind = getattr(exc, "kind", "git")
             self._record_state(result, now, commit_at=None)
             return result
 
@@ -498,8 +495,7 @@ class GitSyncService:
         *,
         commit_at: str | None,
     ) -> None:
-        state = self._read_state()
-        state["version"] = 1
+        state = {"version": 1}
         state["last_sync_at"] = serialize_timestamp(now.replace(microsecond=0))
         state["last_sync_trigger"] = result.trigger
         state["last_result"] = result.status
@@ -530,7 +526,7 @@ class GitSyncService:
         elif result.status == "success":
             state["retry_after"] = None
         try:
-            self._write_state(state)
+            self._update_state(state)
         except OSError:
             # 状态文件不可写不能影响已完成或已失败的 Git 操作。
             pass

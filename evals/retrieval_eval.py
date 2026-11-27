@@ -102,7 +102,7 @@ def _run(root: Path, *, keyword_only: bool) -> dict:
             config.retrieval.default_limit = limit
             try:
                 if limit not in tool_registries:
-                    tool_registries[limit] = build_tools(service, session)
+                    tool_registries[limit] = build_tools(service, session, config=config)
                 result = tool_search(tool_registries[limit], query, frozen_text)
                 check()
                 return result

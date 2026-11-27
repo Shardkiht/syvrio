@@ -18,10 +18,10 @@ from syvrio.infra.errors import SyvrioError
 from syvrio.infra.llm.client import ChatModelError
 from syvrio.infra.observability.diagnostics import record_once
 from syvrio.infra.search.base import ProviderError
+from syvrio.infra.storage.database import DatabaseError
 from syvrio.infra.storage.documents import DocumentError
 from syvrio.infra.system.gitops import GitError
 from syvrio.memory.extractor import ExtractorError
-from syvrio.memory.schema import SchemaError
 
 pytestmark = pytest.mark.config
 
@@ -31,7 +31,7 @@ CASES = [
     (DocumentError, ValueError),
     (ExtractorError, RuntimeError),
     (GitError, RuntimeError),
-    (SchemaError, ValueError),
+    (DatabaseError, ValueError),
     (UpdateError, ValueError),
     (ProviderError, Exception),
 ]

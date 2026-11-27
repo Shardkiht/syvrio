@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from pathlib import Path
 from typing import Protocol
 
 from pydantic import BaseModel, Field
@@ -23,18 +22,6 @@ class SearchRecord(Protocol):
     def timestamp(self) -> str: ...
 
     @property
-    def source_path(self) -> str: ...
-
-    @property
-    def line(self) -> int: ...
-
-    @property
-    def end_line(self) -> int: ...
-
-    @property
-    def raw_markdown(self) -> str: ...
-
-    @property
     def index_text(self) -> str: ...
 
     @property
@@ -42,10 +29,10 @@ class SearchRecord(Protocol):
 
 
 class RecordSnapshot[Record: SearchRecord](Protocol):
-    """一次读取的内容与递增版本号始终对应。"""
+    """已提交的快照携带递增版本；事务内的私有视图没有可共享的版本。"""
 
     @property
-    def revision(self) -> int: ...
+    def revision(self) -> int | None: ...
 
     @property
     def records(self) -> Sequence[Record]: ...
@@ -54,16 +41,9 @@ class RecordSnapshot[Record: SearchRecord](Protocol):
 class RecordSource[Record: SearchRecord](Protocol):
     def snapshot(self) -> RecordSnapshot[Record]: ...
 
-    def topic_path(self, topic: str) -> Path: ...
-
 
 class SearchHit(BaseModel):
     id: str = ""
-    file: str = ""
-    line: int = 0
-    end_line: int = 0
-    source_path: str = ""
-    raw_markdown: str = ""
     index_text: str = ""
     text: str
     topic: str
@@ -74,16 +54,9 @@ class SearchHit(BaseModel):
     matched_field: str = Field(default="", exclude=True)
 
     @classmethod
-    def from_record(
-        cls, record: SearchRecord, file: Path, score: float, matched_field: str = ""
-    ) -> SearchHit:
+    def from_record(cls, record: SearchRecord, score: float, matched_field: str = "") -> SearchHit:
         return cls(
             id=record.id,
-            file=str(file),
-            source_path=record.source_path,
-            line=record.line,
-            end_line=record.end_line,
-            raw_markdown=record.raw_markdown,
             index_text=record.index_text,
             text=record.text,
             topic=record.topic,

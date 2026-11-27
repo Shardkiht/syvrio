@@ -118,3 +118,10 @@
   .result-field-button { min-height: 30px; padding-inline: 8px; }
   .result-sheet .result-actions button { min-height: 42px; }
 }
+
+.inference-sources { padding-inline-start: 0; list-style: none; }
+.inference-sources li { border-top: 1px solid var(--border); padding: 8px 0; overflow-wrap: anywhere; }
+.inference-sources strong { display: block; }
+.source-comparison { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr)); gap: 8px; }
+.source-fact { white-space: pre-wrap; }
+.source-fact pre { white-space: pre-wrap; overflow-wrap: anywhere; }

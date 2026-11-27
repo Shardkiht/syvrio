@@ -5,7 +5,7 @@ import threading
 from collections import OrderedDict
 
 from ..agent.evidence import RecallContext
-from ..memory.models import MemoryDraft
+from ..memory.models import MemoryCorrection, MemoryDraft
 
 
 class MCPWrites:
@@ -16,14 +16,17 @@ class MCPWrites:
 
     def apply(self, view: str, action: str, arguments: dict, review_token: str | None = None):
         service = self.service
-        draft = MemoryDraft.model_validate(arguments["draft"]) if "draft" in arguments else None
+        draft_type = MemoryCorrection if action == "correct" else MemoryDraft
+        draft = draft_type.model_validate(arguments["draft"]) if "draft" in arguments else None
         entry_id = arguments.get("entry_id")
         if action not in {"memorize", "correct", "transition", "deprecate", "create_pending"}:
             raise ValueError("Unknown memory operation.")
-        if draft:
+        if isinstance(draft, MemoryDraft):
             service.validate_draft(draft)
-        query = draft.text if draft else ""
-        if entry_id:
+        query = (draft.text or "") if draft else ""
+        if isinstance(draft, MemoryCorrection):
+            query = service.preview_correction(entry_id, draft).recall_query
+        elif entry_id:
             previous = service.require_entry(entry_id, include_deprecated=action == "deprecate")
             query = f"{previous.text} {query}".strip()
         if not query:

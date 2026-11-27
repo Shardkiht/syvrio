@@ -1,11 +1,11 @@
 import { useEffect, useLayoutEffect, useRef, useState, type MutableRefObject, type RefObject, type KeyboardEvent } from 'react';
 import { canOpenDuringSelection, isCommandLine, suggestionsFor, type Suggestion } from '../commands/commands';
 import { isComposing } from '../../shared/shortcuts';
-import type { CommandInfo, CompactionPhase, ContextUsage } from '../../types';
+import type { AttachmentPolicy, CommandInfo, CompactionPhase, ContextUsage } from '../../types';
 import { ContextMeter, type MeterReading } from './ContextMeter';
 import { CommandSuggestions } from '../commands/CommandUI';
 import { SurfacePresence } from '../../shared/SurfacePresence';
-import { attachmentTypes, clipboardFiles, uniqueDraftFiles } from './draftAttachments';
+import { clipboardFiles, uniqueDraftFiles } from './draftAttachments';
 import { DraftAttachmentIcon } from './AttachmentImage';
 import { PlusIcon, SendIcon, StopIcon } from '../../shared/Icons';
 
@@ -25,6 +25,7 @@ export function Composer({
   meterReading,
   compaction = null,
   pickerRef,
+  attachmentPolicy,
   openFiles,
   onSend,
   onInsert,
@@ -48,6 +49,7 @@ export function Composer({
   contextUsage?: ContextUsage | null;
   meterReading?: MutableRefObject<MeterReading | null>;
   compaction?: CompactionPhase | null;
+  attachmentPolicy?: AttachmentPolicy;
   pickerRef?: RefObject<HTMLInputElement>;
   openFiles?: () => void;
   onSend: (text: string, files?: File[]) => void;
@@ -150,6 +152,10 @@ export function Composer({
 
   const addFiles = async (selection: File[]) => {
     if (deferredSend.current || !selection.length) return;
+    if (!attachmentPolicy) {
+      setFileError('Connect to the backend before attaching files.');
+      return;
+    }
     pendingSelections.current.push(selection);
     if (comparingFiles.current) return;
     comparingFiles.current = true;
@@ -157,7 +163,7 @@ export function Composer({
     try {
       for (let next = pendingSelections.current.shift(); next; next = pendingSelections.current.shift()) {
         try {
-          const result = uniqueDraftFiles([...draft, ...next]);
+          const result = uniqueDraftFiles([...draft, ...next], attachmentPolicy);
           if (Array.isArray(result)) draft = result;
           else {
             setCheckingFiles(true);
@@ -354,8 +360,8 @@ export function Composer({
             suggestions={suggestions} index={index} onPick={applyCompletion} />}
         </SurfacePresence>
         <div className="composer-card">
-          <input ref={picker} type="file" multiple hidden disabled={waitingToSend || checkingFiles} aria-label="Select attachments"
-            accept={attachmentTypes}
+          <input ref={picker} type="file" multiple hidden disabled={!attachmentPolicy || waitingToSend || checkingFiles} aria-label="Select attachments"
+            accept={attachmentPolicy?.extensions.join(',')}
             onChange={event => {
               const selection = Array.from(event.target.files ?? []);
               event.target.value = '';
@@ -380,7 +386,7 @@ export function Composer({
           {commandHint && <div className="confirm-message" role="status">{commandHint}</div>}
           <div className="composer-bar">
             <button type="button" className="icon-button composer-attach"
-              disabled={waitingToSend || checkingFiles} aria-label="Attach files" title="Attach files" onClick={openFiles ?? (() => picker.current?.click())}>
+              disabled={!attachmentPolicy || waitingToSend || checkingFiles} aria-label="Attach files" title="Attach files" onClick={openFiles ?? (() => picker.current?.click())}>
               <PlusIcon size={18} />
             </button>
             <div className="composer-actions">

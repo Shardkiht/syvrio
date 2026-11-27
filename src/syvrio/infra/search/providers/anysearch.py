@@ -21,6 +21,26 @@ NAME = "anysearch"
 DEFAULT_BASE_URL = "https://api.anysearch.com/v1"
 
 
+def _request(
+    client: JsonApiClient,
+    path: str,
+    body: dict,
+    headers: dict[str, str],
+    timeout: float | None = None,
+) -> dict:
+    try:
+        response = client.post_json(path, body, headers, timeout)
+    except ProviderError as exc:
+        # 匿名额度耗尽时响应可能含自动生成的账号和密钥，只转发状态码。
+        parts = exc.detail.split(maxsplit=2)
+        detail = "AnySearch 请求失败"
+        if len(parts) >= 2 and parts[0] == "HTTP" and parts[1].isascii() and parts[1].isdigit():
+            detail = f"HTTP {parts[1]}"
+        pause = "official_quota_exhausted" if exc.kind == ProviderErrorKind.QUOTA else ""
+        raise ProviderError(NAME, exc.kind, detail, pause_reason=pause) from None
+    return client.parse_json(response)
+
+
 class AnySearchProvider:
     name = NAME
     capabilities = {"search"}
@@ -47,13 +67,13 @@ class AnySearchProvider:
             "language": self._language,
         }
         headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
-        response = self._client.post_json(
+        payload = _request(
+            self._client,
             "/search",
             body,
             headers,
             timeout=self._client.effective_timeout(query.timeout),
         )
-        payload = self._client.parse_json(response)
         code = payload.get("code")
         if code is not None and str(code) != "0":
             raise ProviderError(
@@ -90,20 +110,7 @@ class AnySearchFetchProvider:
 
     def fetch(self, query: FetchQuery) -> FetchResult:
         headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
-        try:
-            response = self._client.post_json("/extract", {"url": query.url}, headers)
-        except ProviderError as exc:
-            # HTTP 402 响应的错误信息可能包含生成的凭据。
-            # 避免转发服务器的错误文本或错误码字段。
-            parts = exc.detail.split(maxsplit=2)
-            detail = "抓取 API 请求失败"
-            if len(parts) >= 2 and parts[0] == "HTTP":
-                code = parts[1]
-                if code.isascii() and code.isdecimal() and len(code) == 3:
-                    detail = f"HTTP {code}"
-            pause = "official_quota_exhausted" if exc.kind == ProviderErrorKind.QUOTA else ""
-            raise ProviderError(NAME, exc.kind, detail, pause_reason=pause) from None
-        payload = self._client.parse_json(response)
+        payload = _request(self._client, "/extract", {"url": query.url}, headers)
         data = payload.get("data")
         if payload.get("code") != 0 or not isinstance(data, dict):
             raise ProviderError(NAME, ProviderErrorKind.BAD_RESPONSE, "Extract 响应结构异常")

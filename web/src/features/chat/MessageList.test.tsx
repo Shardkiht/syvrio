@@ -95,6 +95,34 @@ it.each([false, true])('loads the full persisted tool result only when expanded 
   read.mockRestore();
 });
 
+it.each([false, true])('loads earlier pages in order after a retry (archived=%s)', async archived => {
+  const history = (cursor: number | null, id: string) => ({
+    session_id: 's-paged', title: '', current: !archived, summary: null,
+    has_earlier: cursor !== null, earlier_cursor: cursor,
+    items: [{ id, role: 'user' as const, content: id, at: '', tool_calls: [], reasoning: null, tool_name: null, tool_ok: null, interrupted: false }],
+  });
+  const oldest = 'first page';
+  const latest = 'last page';
+  const read = vi.spyOn(api, 'earlierHistory')
+    .mockRejectedValueOnce(new Error('Try again'))
+    .mockResolvedValueOnce(history(100, 'middle page'))
+    .mockResolvedValueOnce(history(null, oldest));
+  const state = loadHistory(initialChatState, history(200, latest), archived);
+  render(<MessageList archived={archived} sessionId="s-paged" messages={state.messages} onToggle={() => {}} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Load earlier messages' }));
+  expect((await screen.findByRole('alert')).textContent).toBe('Try again');
+  fireEvent.click(screen.getByRole('button', { name: 'Load earlier messages' }));
+  await screen.findByText('middle page');
+  fireEvent.click(screen.getByRole('button', { name: 'Load earlier messages' }));
+  await screen.findByText(oldest);
+  expect(read.mock.calls.map(args => args.slice(0, 3))).toEqual([
+    ['s-paged', 200, archived], ['s-paged', 200, archived], ['s-paged', 100, archived],
+  ]);
+  expect(screen.getAllByTestId('user-message').map(node => node.textContent)).toEqual([oldest, 'middle page', latest]);
+  expect(screen.queryByRole('button', { name: 'Load earlier messages' })).toBeNull();
+  read.mockRestore();
+});
+
 describe('conversation entry motion', () => {
   function select(version: number, session: string | null, entries: ChatMessage[], loading = false) {
     return <MessageList selectionVersion={version} sessionId={session} messages={entries}

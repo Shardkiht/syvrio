@@ -28,19 +28,19 @@ from ..infra.retrieval import (
 )
 from ..infra.security.secrets import contains_secret
 from ..infra.session.query import SessionQuery
-from ..infra.storage.locking import vault_write_lock
-from ..infra.storage.transaction import vault_transaction
+from ..infra.storage.work import VaultWork
 from ..infra.time import utc_timestamp
 from .audit import AuditLog
 from .background.jobs import enqueue_context_fill
 from .extractor import ImportExtractor
-from .inference import InferenceStore, source_fingerprint
+from .inference import InferenceStore, source_version
 from .models import (
     Candidate,
     Entry,
     Inference,
     InferenceKind,
     MemoryContext,
+    MemoryCorrection,
     MemoryDraft,
     MemoryUpdate,
     PendingItem,
@@ -49,7 +49,6 @@ from .models import (
 )
 from .queue import PendingQueue
 from .reflection import ProfileReader
-from .schema import parse_document
 from .store import (
     STATUS_ACTIVE,
     STATUS_DEPRECATED,
@@ -87,7 +86,7 @@ def build_retriever(config: Config, store: MemoryStore) -> tuple[Retriever, str]
     embedder = _build_embedder(config.retrieval)
     if embedder is None:
         return keyword, f"{method}-fallback-keyword"
-    vector = VectorRetriever(store, embedder, cache_dir=store.paths.index_dir)
+    vector = VectorRetriever(store, embedder, paths=store.paths, current_revision=store.revision)
     if method == "vector":
         return vector, "vector"
     return HybridRetriever(keyword, vector), "hybrid"
@@ -115,6 +114,12 @@ def pending_view(item: PendingItem) -> dict:
     return item.model_dump(exclude={"created_at", "session_id", "message_id"}, exclude_none=True)
 
 
+@dataclass(frozen=True, slots=True)
+class CorrectionPreview:
+    draft: MemoryDraft
+    recall_query: str
+
+
 class MemoryTargetError(SyvrioError, ValueError):
     """目标记忆不存在或当前状态不允许本次操作。"""
 
@@ -130,12 +135,7 @@ class MemoryService:
         self.config = config
         self.paths = config.paths(config_path)
         self.paths.validate()
-        if (self.paths.vault_dir / ".syvrio").exists() or any(
-            self.paths.sessions_dir.glob("*.jsonl")
-        ):
-            raise ValueError(
-                "Unsupported Vault layout. Expected separate Vault and Runtime directories and sessions/YYYY/MM/."
-            )
+        self.work = VaultWork(self.paths)
         self.store = MemoryStore(self.paths)
         self.session_query = SessionQuery(self.paths)
         self.queue = PendingQueue(self.paths)
@@ -148,15 +148,10 @@ class MemoryService:
             self.retriever, self.retrieval_mode = build_retriever(config, self.store)
         # 热更新（切模型/上下文）写回配置的路径：记住加载来源，避免写错文件或被读回旧值。
         self.config_path = config_path
-        # 后台补沉淀与前台对话可能并发写 vault：所有变更操作在这把锁内串行。
-        # 组合写入流程可安全复用公开服务方法，调用方不再绕过接口调用私有实现。
-        # 锁同时通过文件锁覆盖 CLI/TUI/MCP 多个进程，进程崩溃后由内核释放。
-        self.write_lock = vault_write_lock(self.paths)
         self.profile = ProfileReader(self.paths)
 
     def initialize_files(self) -> None:
         self.store.ensure()
-        self.paths.records_dir.mkdir(parents=True, exist_ok=True)
 
     def add(
         self,
@@ -184,7 +179,7 @@ class MemoryService:
             raise ValueError("Provide a memory draft or at least one update.")
         if len({change.id for change in changes}) != len(changes):
             raise ValueError("Combine updates for the same memory ID.")
-        with vault_transaction(self.paths):
+        with self.work.write():
             source = self._source_fields(session_id, message_id)
             result = []
             if draft is not None:
@@ -195,9 +190,7 @@ class MemoryService:
                     identity = [
                         session_id,
                         message_id,
-                        self.store.topic_path(draft.topic)
-                        .relative_to(self.paths.memories_dir)
-                        .as_posix(),
+                        self.store.topic_name(draft.topic),
                         draft.model_dump(exclude={"topic"}, exclude_none=True),
                         supersedes,
                     ]
@@ -213,13 +206,12 @@ class MemoryService:
                         entry_id=entry_id,
                         supersedes=supersedes,
                     )
-                    self.audit.write("add", memory_id=new.id)
                 else:
                     if (
                         existing.text != draft.text
                         or existing.context != draft.context
-                        or self.store.topic_path(existing.topic)
-                        != self.store.topic_path(draft.topic)
+                        or self.store.topic_name(existing.topic)
+                        != self.store.topic_name(draft.topic)
                         or existing.source_session_id != session_id
                         or existing.source_message_id != message_id
                         or existing.supersedes != supersedes
@@ -230,17 +222,11 @@ class MemoryService:
             for change in changes:
                 if change.context and contains_secret(change.context.model_dump_json()):
                     raise ValueError("Credentials cannot be stored in memory context.")
-                old = self.store.find(change.id)
-                if old is None:
-                    raise KeyError(f"Memory not found: {change.id}")
-                updated = self.store.update(change.id, context=change.context, status=change.status)
-                if updated.context != old.context or updated.status != old.status:
-                    self.audit.write("update", memory_id=updated.id)
-                result.append(updated)
+                result.append(self.store.save_revision(change.id, change))
             return result
 
     def validate_draft(self, draft: MemoryDraft) -> None:
-        self.store.topic_path(draft.topic)
+        self.store.topic_name(draft.topic)
         if contains_secret(draft.model_dump_json(exclude_none=True)):
             raise ValueError("检测到凭据，已拦截写入。")
 
@@ -255,18 +241,25 @@ class MemoryService:
     def memorize(self, draft: MemoryDraft, **source) -> Entry:
         return self.add(draft, **source)
 
-    def correct(self, entry_id: str, draft: MemoryDraft, **source) -> Entry:
-        with vault_transaction(self.paths):
+    def preview_correction(
+        self, entry_id: str, draft: MemoryCorrection | MemoryDraft
+    ) -> CorrectionPreview:
+        with self.work.read():
             old = self.require_entry(entry_id)
-            draft = MemoryDraft.model_validate(draft)
-            if draft.text == old.text:
-                raise ValueError("A correction requires a changed fact.")
-            return self.apply(
-                draft,
-                [MemoryUpdate(id=entry_id, status=STATUS_DEPRECATED)],
-                supersedes=entry_id,
-                **source,
-            )[0]
+            patch = MemoryCorrection.model_validate(draft.model_dump(exclude_unset=True))
+            if patch.expected_revision is not None and patch.expected_revision != old.revision:
+                raise MemoryTargetError("The memory changed. Refresh before correcting it.")
+            merged = patch.apply_to(old)
+            self.validate_draft(merged)
+            query = f"{old.text} {patch.text}" if patch.text else old.text
+            return CorrectionPreview(merged, query)
+
+    def correct(self, entry_id: str, draft: MemoryCorrection | MemoryDraft, **source) -> Entry:
+        with self.work.write():
+            # 审核和落盘之间允许并发修改，在写事务内重新核对目标和合并结果。
+            preview = self.preview_correction(entry_id, draft)
+            origin = self._source_fields(source.get("session_id"), source.get("message_id"))
+            return self.store.save_revision(entry_id, preview.draft, source=origin)
 
     def transition(
         self,
@@ -276,7 +269,7 @@ class MemoryService:
         previous_valid_to: str | None = None,
         **source,
     ) -> Entry:
-        with vault_transaction(self.paths):
+        with self.work.write():
             self.require_entry(entry_id)
             changes = []
             if previous_valid_to is not None:
@@ -313,31 +306,11 @@ class MemoryService:
         )
         if contains_secret(item.question):
             raise ValueError("Credentials cannot be stored in a pending question.")
-        with vault_transaction(self.paths):
+        with self.work.write():
             self._source_fields(session_id, message_id)
             if any(self.store.find(key) is None for key in item.related_ids):
                 raise ValueError("Pending references must identify existing memories.")
-            for existing in self.queue.all():
-                if (
-                    existing.text,
-                    existing.topic,
-                    existing.context,
-                    existing.question,
-                    set(existing.related_ids),
-                    existing.session_id,
-                    existing.message_id,
-                ) == (
-                    item.text,
-                    item.topic,
-                    item.context,
-                    item.question,
-                    set(item.related_ids),
-                    item.session_id,
-                    item.message_id,
-                ):
-                    return existing
-            self.queue.add(item)
-        return item
+            return self.queue.add_unique(item)
 
     def prepare_import(
         self, text: str, extractor=None, *, llm_config: LLMConfig | None = None
@@ -380,7 +353,7 @@ class MemoryService:
         session_id: str | None = None,
         message_id: str | None = None,
     ) -> MemorizeResult:
-        with vault_transaction(self.paths):
+        with self.work.read() if dry_run else self.work.write():
             if self.evidence_version(include_pending=True) != version:
                 raise ValueError("Memory changed after document review. Request fresh evidence.")
             return self._import_candidates(candidates, dry_run, session_id, message_id)
@@ -435,9 +408,7 @@ class MemoryService:
                         text=draft.text,
                         topic=draft.topic,
                         timestamp=utc_timestamp(),
-                        metadata={"context": draft.context.model_dump_json()}
-                        if draft.context
-                        else {},
+                        context=draft.context,
                     )
                     if dry_run
                     else self.add(draft, session_id=session_id, message_id=message_id)
@@ -446,57 +417,24 @@ class MemoryService:
             existing.add(identity)
         return result
 
+    def dream_version(self) -> tuple[int, ...]:
+        return self.store.revisions("inferences", "memories")
+
     def evidence_version(self, *, include_pending: bool = False) -> tuple:
-        with self.write_lock:
-            facts = self.store.fingerprint()
-            if not include_pending:
-                return (facts,)
-            pending = tuple(item.model_dump_json() for item in self.queue.all())
-            return facts, pending
+        return (
+            self.store.revisions("memories", "candidates")
+            if include_pending
+            else self.store.revisions("memories")
+        )
 
-    def memory_references(
-        self, ids: set[str], restored: dict[Path, bytes | None]
-    ) -> dict[str, set[str]]:
-        """找出恢复文件之后仍然存在、且指向这些文件内容的结构化引用。
-
-        应在 Vault 写锁内调用，已弃用的记录也保留其来源。
-        """
-        result: dict[str, set[str]] = {key: set() for key in ids}
-        surviving = [
-            item
-            for item in self.inferences.all()
-            if self.inferences.path_for(item.kind, item.id) not in restored
-        ]
-        for path, payload in restored.items():
-            if payload and path.is_relative_to(self.inferences.root):
-                surviving.append(self.inferences.decode(path, payload))
-        for inference in surviving:
-            for key in ids.intersection(inference.source_ids):
-                result[key].add(f"inference:{inference.id}")
-        pending_path = self.queue.pending_path
-        if pending_path in restored:
-            pending = self.queue.decode(restored[pending_path] or b"")
-        else:
-            pending = self.queue.all()
-        for item in pending:
-            for key in ids.intersection(item.related_ids):
-                result[key].add(f"pending:{item.id}")
-        entries = [
-            entry
-            for entry in self.store.entries(include_inactive=True)
-            if self.paths.vault_dir / entry.source_path not in restored
-        ]
-        for path, original in restored.items():
-            if path != pending_path and path.is_relative_to(self.paths.memories_dir) and original:
-                relative = path.relative_to(self.paths.vault_dir).as_posix()
-                document = parse_document(original.decode("utf-8"), relative, relative)
-                entries.extend(record.entry for record in document.records)
-        for entry in entries:
-            if entry.supersedes in result:
-                result[entry.supersedes].add(f"memory:{entry.id}")
-        return result
-
-    def propose_inference(self, text: str, source_ids: list[str], kind: InferenceKind) -> Inference:
+    def propose_inference(
+        self,
+        text: str,
+        source_ids: list[str],
+        kind: InferenceKind,
+        *,
+        evidence_commit: int | None = None,
+    ) -> Inference:
         text = text.strip()
         if not text or contains_secret(text) or contains_secret(kind):
             raise ValueError("Inference text and kind must be nonempty and free of credentials.")
@@ -509,14 +447,20 @@ class MemoryService:
             created_at=stamp,
             updated_at=stamp,
         )
-        with vault_transaction(self.paths):
-            for key in item.source_ids:
-                self.require_entry(key)
+        with self.work.write():
+            if evidence_commit is None:
+                for key in item.source_ids:
+                    self.require_entry(key)
+                evidence_commit = self.store.evidence_commit()
+            versions = self.store.evidence_sources(item.source_ids, evidence_commit)
+            if set(versions) != set(item.source_ids):
+                raise ValueError("Unknown source memory in the selected revision.")
+            item.source_versions = versions
             for record in self.inferences.all():
-                if (record.kind, normalize_text(record.text), record.source_ids) == (
+                if (record.kind, normalize_text(record.text), record.source_versions) == (
                     item.kind,
                     normalize_text(item.text),
-                    item.source_ids,
+                    versions,
                 ):
                     return record
             self.inferences.add(item)
@@ -530,7 +474,7 @@ class MemoryService:
     ) -> Inference:
         if action not in {"confirm", "reject", "correct"}:
             raise ValueError("操作须为 confirm、reject 或 correct。")
-        with vault_transaction(self.paths):
+        with self.work.write():
             old = next((item for item in self.inferences.all() if item.id == inference_id), None)
             if old is None:
                 raise KeyError("推断不存在。")
@@ -585,7 +529,7 @@ class MemoryService:
             or (context.valid_to and date_bounds(context.valid_to)[1] < today)
         ):
             return None
-        return entry.as_recall()
+        return entry.as_recall(context)
 
     def recall(
         self,
@@ -624,15 +568,16 @@ class MemoryService:
             entry = entries.get(hit.id)
             if entry is None:
                 continue
+            context = entry.context
             if (period or location or emotion) and not matches_context(
-                entry.context,
+                context,
                 period.start if period else None,
                 period.end if period else None,
                 location,
                 emotion,
             ):
                 continue
-            results.append(entry.as_recall())
+            results.append(entry.as_recall(context))
             if len(results) == limit:
                 break
         return results
@@ -641,12 +586,7 @@ class MemoryService:
         return self.store.entries()
 
     def read_topic(self, topic: str) -> dict:
-        with vault_transaction(self.paths):
-            wanted = self.store.topic_path(topic)
-            if not wanted.is_file():
-                raise KeyError(f"主题不存在：{topic}")
-            matches = self.store.entries(wanted.relative_to(self.paths.vault_dir).as_posix())
-            logical = wanted.relative_to(self.paths.memories_dir).with_suffix("").as_posix()
+        logical, matches = self.store.read_topic(topic)
         return {
             "topic": logical,
             "entries": [entry.as_recall().model_dump(exclude_none=True) for entry in matches],
@@ -657,7 +597,7 @@ class MemoryService:
 
     def approve(self, item_id: str, text_override: str | None = None) -> Entry:
         entry_id = "mem-" + hashlib.sha256(("pending:" + item_id).encode("utf-8")).hexdigest()[:24]
-        with vault_transaction(self.paths):
+        with self.work.write():
             item = self.queue.get(item_id)
             if item is None:
                 entry = self.store.find(entry_id)
@@ -676,11 +616,11 @@ class MemoryService:
             )
             self.queue.resolve(item_id, "approved")
             if edited:
-                enqueue_context_fill(self.paths, entry.id, source_fingerprint(entry))
+                enqueue_context_fill(self.paths, entry.id, source_version(entry))
             return entry
 
     def reject(self, item_id: str) -> PendingItem:
-        with vault_transaction(self.paths):
+        with self.work.write():
             item = self.queue.resolve(item_id, "rejected")
             if item is None:
                 raise KeyError(f"待确认项不存在：{item_id}")
@@ -690,15 +630,7 @@ class MemoryService:
         return [topic.model_dump() for topic in self.store.topics()]
 
     def memory_referencing_session(self, session_id: str) -> str | None:
-        with self.write_lock:
-            return next(
-                (
-                    entry.id
-                    for entry in self.store.entries(include_inactive=True)
-                    if entry.source_session_id == session_id
-                ),
-                None,
-            )
+        return self.store.first_source_reference(session_id)
 
     def _source_fields(self, session_id: str | None, message_id: str | None) -> dict[str, str]:
         if not session_id and not message_id:
@@ -713,16 +645,19 @@ class MemoryService:
             ) from exc
         return {"session_id": session_id, "message_id": message_id}
 
-    def read_memory_source(self, memory_id: str) -> dict:
+    def read_memory_source(self, memory_id: str, commit_id: int | None = None) -> dict:
         if not isinstance(memory_id, str) or not re.fullmatch(
             r"[A-Za-z0-9][A-Za-z0-9_.:-]*", memory_id
         ):
             raise ValueError("Invalid memory ID.")
-        with self.write_lock:
-            entry = self.store.find(memory_id)
-            if entry is None:
-                raise KeyError("Memory not found.")
-            session_id, message_id = entry.source_session_id, entry.source_message_id
+        with self.work.read():
+            if commit_id is None:
+                entry = self.store.find(memory_id)
+                if entry is None:
+                    raise KeyError("Memory not found.")
+                session_id, message_id = entry.source_session_id, entry.source_message_id
+            else:
+                session_id, message_id = self.store.version_origin(memory_id, commit_id)
             if not session_id and not message_id:
                 return {
                     "status": "no_session_source",
@@ -743,9 +678,7 @@ class MemoryService:
     def status(self) -> dict:
         return {
             "vault": str(self.config.vault),
-            "topics": len(self.store.topics()),
-            "entries": len(self.store.entries()),
-            "pending": len(self.pending()),
+            **self.store.counts(),
             "retrieval": self.retrieval_mode,
         }
 

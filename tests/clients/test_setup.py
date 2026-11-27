@@ -1074,7 +1074,7 @@ def test_search_setup_saves_key_and_enables_search_and_fetch(tmp_path, monkeypat
             "tavily",
             "sk-tavily-placeholder",  # password 输入
             "search",  # 启用 Search
-            "fetch",  # 启用 Fetch（上限已设置，不再询问）
+            "fetch",  # 启用 Fetch
             "back",
             "done",
         ],
@@ -1110,9 +1110,6 @@ def test_search_setup_enables_optional_provider_anonymously(tmp_path, monkeypatc
     assert any("匿名模式" in message for message in result["messages"])
     data = tomllib.loads(config_path.read_text(encoding="utf-8"))
     assert data["search"]["providers"] == ["open_websearch", "anysearch"]
-    assert "anysearch" not in data["search"].get("usage_limits", {})
-    limit = load_config(config_path).search.usage_limits["anysearch"]
-    assert (limit.daily, limit.monthly) == (20, 0)
 
 
 def test_search_setup_configures_searxng_without_key(tmp_path, monkeypatch):
@@ -1141,9 +1138,6 @@ def test_search_setup_configures_searxng_without_key(tmp_path, monkeypatch):
     assert result["search_providers"] == ["open_websearch", "searxng"]
     data = tomllib.loads(config_path.read_text(encoding="utf-8"))
     assert data["search"]["searxng_base_url"] == "http://127.0.0.1:9999"
-    assert "searxng" not in data["search"].get("usage_limits", {})
-    limit = load_config(config_path).search.usage_limits["searxng"]
-    assert (limit.daily, limit.monthly) == (0, 0)
     assert any("SearXNG 实例地址" in message for message in result["messages"])
 
 
@@ -1280,74 +1274,6 @@ def test_llm_setup_can_enter_a_model_manually_when_api_discovery_is_unavailable(
     assert result["key_saved"] is False
 
 
-def test_search_setup_can_edit_daily_and_monthly_limits(tmp_path, monkeypatch):
-    """启用官方厂商时询问每日上限；留空回退默认 20。"""
-    import tomllib
-
-    from syvrio.app import setup as providers_module
-
-    config_path = tmp_path / "syvrio.toml"
-    config_path.write_text("[search]\n", encoding="utf-8")
-    _install_fake_keyring(monkeypatch, {"TAVILY_API_KEY": "k"})
-    _script_answers(
-        monkeypatch,
-        [
-            "search",
-            "providers",
-            "tavily",
-            "",  # 不更新 Key
-            "search",
-            "back",
-            "usage",
-            "tavily",
-            "daily",
-            "7",
-            "tavily",
-            "monthly",
-            "900",
-            None,
-            "done",
-        ],
-    )
-
-    result = providers_module.run_setup(config_path)
-
-    assert result["search_providers"] == ["open_websearch", "tavily"]
-    data = tomllib.loads(config_path.read_text(encoding="utf-8"))
-    assert data["search"]["usage_limits"]["tavily"] == {
-        "daily": 7,
-        "monthly": 900,
-    }
-
-
-def test_search_setup_uses_exa_monthly_default(tmp_path, monkeypatch):
-    from syvrio.app import setup as providers_module
-
-    config_path = tmp_path / "syvrio.toml"
-    config_path.write_text("[search]\n", encoding="utf-8")
-    _install_fake_keyring(monkeypatch, {"EXA_API_KEY": "k"})
-    _script_answers(
-        monkeypatch,
-        [
-            "search",
-            "providers",
-            "exa",
-            "",
-            "search",
-            "back",
-            "done",
-        ],
-    )
-
-    providers_module.run_setup(config_path)
-    import tomllib
-
-    data = tomllib.loads(config_path.read_text(encoding="utf-8"))
-    assert "exa" not in data["search"].get("usage_limits", {})
-    limit = load_config(config_path).search.usage_limits["exa"]
-    assert (limit.daily, limit.monthly) == (0, 1000)
-
-
 def test_baidu_menu_only_offers_search(monkeypatch, tmp_path, isolate_llm_credentials):
     import questionary
 
@@ -1372,44 +1298,33 @@ def test_baidu_menu_only_offers_search(monkeypatch, tmp_path, isolate_llm_creden
     assert "search" in menus[1] and "fetch" not in menus[1]
 
 
-def test_usage_menu_zero_reset_and_resume(tmp_path, monkeypatch, capsys):
+def test_search_pause_menu_lists_only_paused_providers_and_resumes(tmp_path, monkeypatch, capsys):
     from syvrio.app import setup as module
-    from syvrio.infra.config import Config, load_config
-    from syvrio.infra.search.usage import UsageLimiter
+    from syvrio.infra.config import Config
+    from syvrio.infra.search.base import ProviderError
+    from syvrio.infra.search.pauses import ProviderPauses
 
     config = Config(vault=tmp_path / "vault")
-    limiter = UsageLimiter(config.search.usage_limits, config.paths().state_dir / "usage.json")
-    limiter.record("exa")
-    limiter.pause("exa", "NO_MORE_CREDITS")
     path = tmp_path / "config.toml"
-    _script_answers(
-        monkeypatch,
-        [
-            "usage",
-            "exa",
-            "monthly",
-            "0",
-            "exa",
-            "resume",
-            "tavily",
-            "daily",
-            "7",
-            "tavily",
-            "defaults",
-            None,
-            "done",
-        ],
+    pauses = ProviderPauses(config.paths(path))
+    pauses.note_error(
+        "exa", ProviderError("exa", "quota", "Quota exhausted", pause_reason="balance")
     )
-    module.run_search_setup(module.SetupSession(config, path))
-    loaded = load_config(path)
-    assert loaded.search.usage_limits["exa"].monthly == 0
-    assert (
-        loaded.search.usage_limits["tavily"].daily,
-        loaded.search.usage_limits["tavily"].monthly,
-    ) == (0, 800)
-    state = UsageLimiter(
-        loaded.search.usage_limits, config.paths().state_dir / "usage.json"
-    ).status("exa")
-    assert not state["paused"] and state["monthly"]["used"] == 1
-    output = capsys.readouterr().out
-    assert "NO_MORE_CREDITS" in output and "不限" in output
+    menus = []
+    choices_to_make = iter(["", "exa"])
+
+    def choose(title, choices):
+        menus.append([(choice.title, choice.value) for choice in choices])
+        return next(choices_to_make)
+
+    monkeypatch.setattr(module, "_select", choose)
+    setup = module.SetupSession(config, path)
+    module._manage_search_pauses(setup)
+    assert set(pauses.active()) == {"exa"}
+    module._manage_search_pauses(setup)
+
+    assert len(menus) == 2
+    assert [value for _, value in menus[0]] == ["exa", ""]
+    assert "balance" in menus[0][0][0]
+    assert not pauses.active()
+    assert "当前没有暂停的搜索厂商" in capsys.readouterr().out

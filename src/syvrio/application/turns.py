@@ -11,17 +11,16 @@ from collections import OrderedDict
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from itertools import count
-from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
+from weakref import WeakValueDictionary
 
 from pydantic import BaseModel
 
 from ..agent.runtime import ThinkingUpdate
-from ..infra.observability.diagnostics import record_event
 from ..infra.session.attachments import AttachmentBatch
 from ..infra.session.errors import ConversationError
-from ..infra.storage.files import atomic_write
+from ..infra.session.receipts import ReceiptStore
 from .contracts import TurnCallbacks, TurnResult, UndoOutcome
 
 _TURN_IDS = count(1)
@@ -163,7 +162,7 @@ class TurnRegistry:
 
     def __init__(self) -> None:
         self._instance = uuid4().hex
-        self._delivery_lock = threading.Lock()
+        self._delivery_locks: WeakValueDictionary[str, threading.Lock] = WeakValueDictionary()
         self._lock = threading.Lock()
         self._turns: OrderedDict[int, ConversationTurn] = OrderedDict()
 
@@ -193,9 +192,17 @@ class TurnRegistry:
                     return turn
             return None
 
+    def _delivery_lock(self, submission_id: str):
+        # 相同送达编号跨视图互斥；最后一个等待者退出后弱引用自动移除。
+        with self._lock:
+            lock = self._delivery_locks.get(submission_id)
+            if lock is None:
+                lock = self._delivery_locks[submission_id] = threading.Lock()
+            return lock
+
     def submit_once(
         self,
-        state_dir: Path,
+        receipts: ReceiptStore,
         submission_id: str,
         message: str,
         session_id: str | None,
@@ -207,48 +214,38 @@ class TurnRegistry:
         files = [(item.name, item.sha256) for item in attachments.files] if attachments else []
         payload = json.dumps([session_id, message.strip(), files], ensure_ascii=False).encode()
         signature = hashlib.sha256(payload).hexdigest()
-        path = state_dir / "chat-receipts" / submission_id[:2] / submission_id[2:]
-        with self._delivery_lock:
-            try:
-                stored = json.loads(path.read_bytes())
-            except FileNotFoundError:
-                stored = None
+        with self._delivery_lock(submission_id):
+            stored = receipts.reserve(submission_id, signature, self._instance)
             if stored is not None:
-                if stored["signature"] != signature:
+                if stored.request_digest != signature:
                     raise ConversationError(
                         "submission_conflict", "This delivery ID belongs to another message."
                     )
-                if stored.get("instance") != self._instance or "turn_id" not in stored:
+                if stored.instance != self._instance or stored.turn_id is None:
                     raise ConversationError(
                         "delivery_unknown",
                         "Delivery is uncertain after a backend interruption. Check the conversation before sending again.",
                     )
                 if attachments:
                     attachments.discard()
-                sid = stored["session_id"]
-                turn = self.get(stored["turn_id"], sid)
+                sid = stored.session_id
+                turn = self.get(stored.turn_id, sid)
                 if turn:
                     return turn.receipt()
                 return {
                     "session_id": sid,
-                    "turn_id": stored["turn_id"],
+                    "turn_id": stored.turn_id,
                     "text": message,
                     "history_only": True,
                 }
 
             # 分发前先预留，以免回执丢失后重复启动同一回合。
-            record = {"signature": signature, "instance": self._instance}
-            atomic_write(path, json.dumps(record).encode())
             try:
                 turn = submit()
             except ConversationError:
-                path.unlink()
+                receipts.release(submission_id)
                 raise
-            record.update(session_id=turn.session_id, turn_id=turn.turn_id)
-            try:
-                atomic_write(path, json.dumps(record).encode())
-            except OSError as exc:
-                record_event("web.submission_receipt_failed", exc)
+            receipts.complete(submission_id, turn.session_id, turn.turn_id)
             return turn.receipt()
 
 

@@ -9,11 +9,6 @@
 # [git]
 # auto_sync = false
 #
-# 同一厂商的搜索和网页抓取共用额度。每日、每月可单独覆盖，0 表示该周期不限。
-# [search.usage_limits.tavily]
-# daily = 5
-# monthly = 100
-#
 # 可选的 ngrok 分享配置，使用 GitHub 身份验证，仅用于 syvrio web share。
 # [web_share]
 # domain = "demo.ngrok-free.dev"

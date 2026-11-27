@@ -10,14 +10,18 @@ from pydantic import BaseModel, ConfigDict, Field
 from ..infra.config import DEFAULTS
 from ..infra.session.model import Session
 from ..memory.extractor import grounded_context
-from ..memory.models import MemoryContext, MemoryDraft, TimeRange
+from ..memory.models import MemoryContext, MemoryCorrection, MemoryDraft, TimeRange
 from ..memory.service import MemoryService, pending_view
-from .evidence import RecallContext, emotion_sources
+from .evidence import ProposalDecision, ProposalError, RecallContext, emotion_sources
 from .registry import ToolOutcome, ToolRegistry, ToolSpec
 
 
 class Arguments(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True, strict=True)
+
+
+class ResolveProposals(Arguments):
+    decisions: list[ProposalDecision] = Field(min_length=1)
 
 
 class Recall(Arguments):
@@ -34,6 +38,9 @@ class Topic(Arguments):
 
 class Source(Arguments):
     memory_id: str = Field(min_length=1)
+    commit_id: int | None = Field(
+        default=None, ge=1, description="需要核对历史来源时提供该版本的提交号。"
+    )
 
 
 class ChatSearch(Arguments):
@@ -45,11 +52,12 @@ class Target(Arguments):
     entry_id: str = Field(min_length=1)
 
 
-class Replacement(MemoryDraft):
+class Correction(MemoryCorrection):
     entry_id: str = Field(min_length=1)
 
 
-class Transition(Replacement):
+class Transition(MemoryDraft):
+    entry_id: str = Field(min_length=1)
     previous_valid_to: str | None = None
 
 
@@ -77,7 +85,7 @@ def _schema(model: type[BaseModel]) -> dict:
 def register_memory_tools(
     tools: ToolRegistry,
     service: MemoryService,
-    session: Session,
+    get_session: Callable[[], Session],
     evidence: RecallContext,
     timeout: float,
 ) -> None:
@@ -122,14 +130,16 @@ def register_memory_tools(
         "search_chats",
         "按一个关键词或连续原文片段搜索其他未归档会话的标题和对话正文。返回原文片段、角色和来源 ID；没有命中时可换词。",
         ChatSearch,
-        lambda r: service.session_query.search_chats(r.query, r.limit, exclude_session=session.id),
+        lambda r: service.session_query.search_chats(
+            r.query, r.limit, exclude_session=get_session().id
+        ),
     )
     register("read_topic", "按主题读取全部有效事实。", Topic, lambda r: service.read_topic(r.topic))
     register(
         "read_memory_source",
         "按事实 ID 查阅一条原始用户消息，作为只读证据。",
         Source,
-        lambda r: service.read_memory_source(r.memory_id),
+        lambda r: service.read_memory_source(r.memory_id, r.commit_id),
     )
     register(
         "review_pending",
@@ -139,14 +149,34 @@ def register_memory_tools(
     )
 
     def mutate(name: str, request: BaseModel) -> dict:
-        payload = request.model_dump(exclude_none=True)
+        payload = (
+            request.model_dump(exclude_unset=True)
+            if name == "correct"
+            else request.model_dump(exclude_none=True)
+        )
         target = payload.get("entry_id")
+        session = get_session()
         message_id = session.last_user_message_id()
         if not message_id:
             raise ValueError("A chat write requires an original user message.")
         source = {"session_id": session.id, "message_id": message_id}
         draft = None
-        if "text" in payload:
+        if name == "correct":
+            patch = {k: v for k, v in payload.items() if k != "entry_id"}
+            updates = patch.get("context") or {}
+            if isinstance(updates.get("emotion"), dict):
+                sources = emotion_sources(session, message_id)
+                quoted = {
+                    k: v
+                    for k, v in updates["emotion"].items()
+                    if v is None or any(v in source for source in sources)
+                }
+                if quoted:
+                    updates["emotion"] = quoted
+                else:
+                    updates.pop("emotion")
+            draft = MemoryCorrection.model_validate(patch)
+        elif "text" in payload:
             draft = MemoryDraft.model_validate(
                 {key: value for key, value in payload.items() if key in MemoryDraft.model_fields}
             )
@@ -158,18 +188,32 @@ def register_memory_tools(
                     payload.pop("context", None)
                 else:
                     payload["context"] = grounded.model_dump(exclude_none=True)
-        query = draft.text if draft else target
-        if target:
-            entry = service.require_entry(target, include_deprecated=name == "deprecate")
-            query = f"{entry.text} {draft.text}" if draft else entry.text
+
+        def query() -> str:
+            if isinstance(draft, MemoryCorrection):
+                return service.preview_correction(target, draft).recall_query
+            if target:
+                entry = service.require_entry(target, include_deprecated=name == "deprecate")
+                return f"{entry.text} {draft.text}" if draft and draft.text else entry.text
+            return draft.text
+
         boundary = payload.get("previous_valid_to")
         if boundary is not None:
             MemoryContext(valid_to=boundary)
 
-        def write() -> dict:
-            if name == "create_pending":
+        new_fact = name in {"memorize", "create_pending"}
+
+        def write(decision: ProposalDecision) -> dict:
+            if decision.decision == "pending":
+                if not new_fact:
+                    raise ProposalError("Only a new fact can be queued. Submit a candidate draft.")
+                question = decision.question or payload.get("question")
+                if not question:
+                    raise ProposalError(
+                        "Include a question for the user with the pending decision."
+                    )
                 item = service.create_pending(
-                    draft, request.question, request.related_ids, **source
+                    draft, question, payload.get("related_ids", []), **source
                 )
                 return {"pending": pending_view(item)}
             if name == "deprecate":
@@ -182,13 +226,13 @@ def register_memory_tools(
                 entry = service.memorize(draft, **source)
             return {"memory": entry.as_recall().model_dump(exclude_none=True)}
 
-        return evidence.run(
+        return evidence.propose(
             name,
             payload,
             query,
             write,
             target_id=target,
-            include_pending=name == "create_pending",
+            include_pending=new_fact,
             related_ids=tuple(payload.get("related_ids", [])),
         )
 
@@ -198,7 +242,11 @@ def register_memory_tools(
             MemoryDraft,
             "新增用户明确陈述的事实。按已知情况填写 text、topic 和 context。",
         ),
-        ("correct", Replacement, "旧事实原本错误，创建正确事实并将旧 ID 标为弃用。"),
+        (
+            "correct",
+            Correction,
+            "更正同一 ID 的错误事实，仅传要修改的字段；保留修正前的版本和来源。",
+        ),
         (
             "transition",
             Transition,
@@ -213,3 +261,11 @@ def register_memory_tools(
     ]
     for name, model, description in mutations:
         register(name, description, model, lambda req, op=name: mutate(op, req), write=True)
+
+    register(
+        "resolve_memory_proposals",
+        "审阅检索结果后按 proposal_id 集中裁决。memory 执行正式操作，pending 为新增事实留待审问题，skip 跳过。可安全重试。",
+        ResolveProposals,
+        lambda request: evidence.resolve(request.decisions),
+        write=True,
+    )

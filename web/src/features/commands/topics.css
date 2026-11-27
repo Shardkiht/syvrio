@@ -11,6 +11,21 @@
 }
 
 .topics-view[hidden] { display: none; }
+.memory-actions, .memory-pages, .memory-notice { padding: 6px 20px; }
+.memory-pages, .memory-editor > div { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.memory-pages { justify-content: space-between; border-top: 1px solid var(--border); }
+.memory-actions button, .memory-pages button, .memory-editor button, .topics-entries button {
+  color: var(--text); background: var(--panel-2); border: 1px solid var(--border);
+  padding: 5px 12px; border-radius: var(--radius-sm); min-height: 36px;
+}
+.memory-editor { display: grid; gap: 8px; padding: 10px 0; }
+.memory-editor label { display: grid; gap: 4px; }
+.memory-editor textarea, .memory-editor input {
+  width: 100%; box-sizing: border-box; padding: 8px; font: inherit; color: var(--text);
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--radius-sm);
+}
+.memory-editor p { flex-basis: 100%; }
+.memory-notice { color: var(--muted); }
 .topics-view h2,
 .topics-view h3,
 .topics-view p,

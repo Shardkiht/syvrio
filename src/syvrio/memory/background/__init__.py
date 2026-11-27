@@ -2,23 +2,29 @@
 
 from __future__ import annotations
 
-import sys
 import threading
 import time
 from collections.abc import Callable
-from pathlib import Path
+from contextlib import AbstractContextManager, nullcontext
 
 from ...infra.observability.diagnostics import record_event
 from ...infra.session import Session, SessionStore
-from ...infra.storage.transaction import vault_transaction
+from ...infra.storage.database import transaction
 from . import context_fill, distillation, titles
 from .dream import Dream
-from .jobs import encode_job, job_directory, read_job
+from .jobs import JobKey, list_jobs, pending_title_ids, read_job, save_job
 from .schedule import DreamSchedule
 
 
 class BackgroundMemory:
-    def __init__(self, service, session_busy: Callable[[str], bool] | None = None):
+    def __init__(
+        self,
+        service,
+        session_busy: Callable[[str], bool] | None = None,
+        *,
+        work: Callable[[], AbstractContextManager[bool]] = lambda: nullcontext(True),
+    ):
+        self._work_slot = work
         self.service = service
         self.sessions = SessionStore(service.paths)
         self.busy = session_busy or (lambda session_id: False)
@@ -35,7 +41,7 @@ class BackgroundMemory:
         self._working_sessions: dict[str, str] = {}
 
     def session_job(self, session_id: str) -> str | None:
-        with self.service.write_lock:
+        with transaction(self.service.paths):
             return next(
                 (lane for lane, sid in self._working_sessions.items() if sid == session_id), None
             )
@@ -82,16 +88,8 @@ class BackgroundMemory:
         titles.request(self.sessions, session_id)
         self._signals["title"].set()
 
-    def pending_titles(self) -> set[str]:
-        folder = job_directory(self.service.paths, "title")
-        pending = set()
-        for path in folder.glob("*.json"):
-            try:
-                if job := read_job(path):
-                    pending.add(job["id"])
-            except (OSError, ValueError, KeyError, TypeError) as exc:
-                record_event("session.title_failed", exc)
-        return pending
+    def pending_titles(self, session_ids: list[str]) -> set[str]:
+        return pending_title_ids(self.service.paths, session_ids)
 
     def dream_status(self) -> dict:
         status = self.dream.status(live=True)
@@ -118,11 +116,11 @@ class BackgroundMemory:
         }
 
     def _discover(self, stop: threading.Event) -> None:
-        for session in self.sessions.unconsolidated(limit=sys.maxsize):
+        for session_id in self.sessions.pending_sessions():
             if stop.is_set():
                 return
             try:
-                self.request_distillation(session.id, session.last_user_message_id())
+                self.request_distillation(session_id)
             except (OSError, ValueError, KeyError, TypeError) as exc:
                 record_event("catchup.failed", exc)
 
@@ -134,21 +132,31 @@ class BackgroundMemory:
             progressed = False
             try:
                 if discover:
-                    self._discover(stop)
-                    discover = False
+                    with self._work_slot() as admitted:
+                        if admitted:
+                            self._discover(stop)
+                            discover = False
                 if lane == "dream":
-                    self.schedule.tick()
+                    if (
+                        self.service.config.chat.auto_reflect
+                        and (self.schedule.next_at() or 0) <= time.time()
+                    ):
+                        with self._work_slot() as admitted:
+                            if admitted:
+                                self.schedule.tick()
                     if self.dream.due() and not stop.is_set():
-                        job = self.dream.status()
-                        try:
-                            self.dream.step(stop)
-                        except Exception as exc:
-                            if not stop.is_set():
-                                self.dream.failed(exc, job["id"], job["generation"])
-                                record_event("reflection.failed", exc)
-                        progressed = True
+                        with self._work_slot() as admitted:
+                            if admitted:
+                                job = self.dream.status()
+                                try:
+                                    self.dream.step(stop)
+                                except Exception as exc:
+                                    if not stop.is_set():
+                                        self.dream.failed(exc, job["id"], job["generation"])
+                                        record_event("reflection.failed", exc)
+                                progressed = True
                 else:
-                    for path in sorted(job_directory(self.service.paths, lane).glob("*.json")):
+                    for path in list_jobs(self.service.paths, lane):
                         if stop.is_set():
                             break
                         try:
@@ -160,8 +168,12 @@ class BackgroundMemory:
             if not progressed and not stop.is_set():
                 signal.wait(2.0)
 
-    def _step_job(self, lane: str, path: Path, stop: threading.Event) -> bool:
-        with vault_transaction(self.service.paths) as tx:
+    def _step_job(self, lane: str, path: JobKey, stop: threading.Event) -> bool:
+        with self._work_slot() as admitted:
+            return self._run_job(lane, path, stop) if admitted else False
+
+    def _run_job(self, lane: str, path: JobKey, stop: threading.Event) -> bool:
+        with transaction(self.service.paths):
             job = read_job(path)
             if not job or job.get("retry_at", 0) > time.time():
                 return False
@@ -173,7 +185,7 @@ class BackgroundMemory:
             if session_id:
                 # 后台任务只打开活动会话，查找任务和证据时均跳过归档。
                 if not self.sessions.exists(session_id):
-                    tx.write(path, None)
+                    save_job(path, None)
                     return True
                 self._working_sessions[lane] = session_id
         try:
@@ -187,15 +199,15 @@ class BackgroundMemory:
             record_event("catchup.failed", exc)
             if stop.is_set():
                 return False
-            with vault_transaction(self.service.paths) as tx:
+            with transaction(self.service.paths):
                 if read_job(path) == job:
                     failures = job.get("failures", 0) + 1
                     job.update(
                         failures=failures,
                         retry_at=time.time() + min(3600, 5 * 2 ** min(10, failures - 1)),
                     )
-                    tx.write(path, encode_job(job))
+                    save_job(path, job)
             return False
         finally:
-            with self.service.write_lock:
+            with transaction(self.service.paths):
                 self._working_sessions.pop(lane, None)

@@ -36,7 +36,7 @@ export type ChatMessage =
       interrupted: boolean;
       at?: string;
     }
-  | { id: string; role: 'info'; content: string; at?: string; folded?: boolean; title?: string };
+  | { id: string; role: 'info'; content: string; at?: string; earlierCursor?: number; folded?: boolean; title?: string };
 
 export interface ChatState {
   messages: ChatMessage[];
@@ -330,8 +330,8 @@ export function loadHistory(state: ChatState, history: HistoryResponse, archived
       : undefined,
   });
   const messages: ChatMessage[] = [];
-  if (history.has_earlier) {
-    messages.push({ id: nextId('i'), role: 'info', content: '更早的记录已省略' });
+  if (history.earlier_cursor != null) {
+    messages.push({ id: nextId('i'), role: 'info', content: '', earlierCursor: history.earlier_cursor });
   }
   if (history.summary) {
     messages.push({

@@ -11,10 +11,19 @@ from ..application.command_catalog import (
     slash_matches,
 )
 from ..infra.config import WebShareConfig as WebShareConfig
+from ..infra.session.attachment_policy import AttachmentPolicy
 from ..infra.storage.documents import SUPPORTED_SUFFIXES
 from ..infra.storage.paths import SESSION_ID_RE
 from ..infra.vault.sync import SyncResult
-from ..memory.models import Entry, Inference, MemoryContext, MemoryDraft, PendingItem, RecallEntry
+from ..memory.models import (
+    Entry,
+    Inference,
+    MemoryContext,
+    MemoryCorrection,
+    MemoryDraft,
+    PendingItem,
+    RecallEntry,
+)
 from .updates.contracts import ProgressCallback, UpdateProgress
 
 
@@ -31,12 +40,14 @@ __all__ = [
     "parse_command",
     "slash_matches",
     "SUPPORTED_SUFFIXES",
+    "AttachmentPolicy",
     "SESSION_ID_RE",
     "ProgressCallback",
     "UpdateProgress",
     "Entry",
     "Inference",
     "MemoryContext",
+    "MemoryCorrection",
     "MemoryDraft",
     "PendingItem",
     "RecallEntry",

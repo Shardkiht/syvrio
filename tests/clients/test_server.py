@@ -78,3 +78,54 @@ async def test_mcp_topics_status_and_stale_evidence(resident_backend):
             row["id"] == saved["id"] for row in topic["entries"]
         )
         assert (await client.call_tool("status", {})).data["entries"] == 2
+
+
+async def test_mcp_correct_rechecks_reviewed_revision_before_requesting_review_again(
+    resident_backend,
+):
+    _, resident = resident_backend
+    async with Client(build_server(client=resident)) as client:
+        old = await reviewed(client, "note", {"text": "初始事实", "topic": "tests"})
+        args = {
+            "entry_id": old["id"],
+            "draft": {"text": "提案", "expected_revision": old["revision"]},
+        }
+        review = (await client.call_tool("correct", args)).data
+        assert review["status"] == "review_required"
+        await reviewed(client, "correct", {"entry_id": old["id"], "draft": {"text": "已核准事实"}})
+        response = await client.call_tool(
+            "correct", {**args, "review_token": review["review_token"]}, raise_on_error=False
+        )
+        assert response.is_error and "memory changed" in response.content[0].text.lower()
+
+
+async def test_mcp_search_reports_quota_even_when_fallback_succeeds(resident_backend, monkeypatch):
+    from unittest.mock import Mock
+
+    from syvrio.infra.search.base import ProviderError, SearchResult
+    from syvrio.infra.search.pauses import ProviderPauses
+    from syvrio.infra.search.router import SearchRouter
+
+    owner, resident = resident_backend
+    owner._service.config.search.enabled = True
+    exhausted = Mock(capabilities={"search"})
+    exhausted.search.side_effect = ProviderError(
+        "exa", "quota", "NO_MORE_CREDITS", pause_reason="NO_MORE_CREDITS"
+    )
+    backup = Mock(capabilities={"search"}, last_partial_failures=[])
+    backup.search.return_value = [SearchResult("Synthetic report", "https://example.com", "Report")]
+    router = SearchRouter(
+        {"exa": exhausted, "backup": backup}, provider_pauses=ProviderPauses(owner._service.paths)
+    )
+    monkeypatch.setattr("syvrio.backend.operations.build_search_router", lambda *_: router)
+    async with Client(build_server(client=resident)) as client:
+        tools = await client.list_tools()
+        assert (
+            "quota_exhausted" in next(tool for tool in tools if tool.name == "search").description
+        )
+        result = (await client.call_tool("search", {"query": "Synthetic report"})).data
+        assert result["quota_exhausted"] == ["exa"] and result["provider"] == "backup"
+        strict = {"query": "Synthetic report", "providers": ["exa"], "strategy": "strict"}
+        failed = (await client.call_tool("search", strict)).data
+        assert failed["quota_exhausted"] == ["exa"] and failed["results"] == []
+        assert failed["failed"][0]["kind"] == "quota"

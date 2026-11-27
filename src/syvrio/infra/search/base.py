@@ -200,10 +200,12 @@ class ProviderError(SyvrioError, Exception):
         code: str = "",
         pause_reason: str = "",
         resume_at: float | None = None,
+        quota_exhausted: list[str] | None = None,
     ):
         self.code = code
         self.pause_reason = pause_reason
         self.resume_at = resume_at
+        self.quota_exhausted = quota_exhausted or []
         self.provider = provider
         self.kind = kind if isinstance(kind, ProviderErrorKind) else ProviderErrorKind(kind)
         self.detail = detail
@@ -271,6 +273,8 @@ class FetchResult:
     truncated: bool = False
     site_name: str = ""
     content_kind: Literal["page", "excerpts"] = "page"
+    provider: str = ""
+    quota_exhausted: list[str] = field(default_factory=list)
 
 
 def truncate_fetch_content(content: str, max_chars: int | None) -> tuple[str, bool]:
@@ -362,6 +366,10 @@ class SearchFailure:
         return {"provider": self.provider, "kind": self.kind, "detail": self.detail}
 
 
+def exhausted_providers(failures: Sequence[SearchFailure]) -> list[str]:
+    return list(dict.fromkeys(item.provider for item in failures if item.kind == "quota"))
+
+
 @dataclass(slots=True)
 class SearchOutcome:
     results: list[SearchResult] = field(default_factory=list)
@@ -393,6 +401,7 @@ class SearchOutcome:
             "strategy": self.strategy,
             "verification": self.verification,
             "failed": [failure.to_dict() for failure in self.failed],
+            "quota_exhausted": exhausted_providers(self.failed),
         }
         if self.hint:
             payload["hint"] = self.hint

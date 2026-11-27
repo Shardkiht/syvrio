@@ -20,17 +20,16 @@ from syvrio.agent.tools import build_tools
 from syvrio.infra.config import Config, EmbeddingConfig, LLMConfig, RetrievalConfig, SearchConfig
 from syvrio.infra.llm import AssistantTurn
 from syvrio.infra.session import SessionStore
-from syvrio.memory.schema import Core, render_record
 from syvrio.memory.service import MemoryService
 
 if __package__:
     from .retrieval_fixture import MODEL, evidence_ids, guard_vector, tool_search
     from .retrieval_metrics import LIMITS
-    from .sandbox import eval_environment
+    from .sandbox import eval_environment, seed_topic
 else:
     from retrieval_fixture import MODEL, evidence_ids, guard_vector, tool_search
     from retrieval_metrics import LIMITS
-    from sandbox import eval_environment
+    from sandbox import eval_environment, seed_topic
 
 DATA = Path(__file__).with_name("data") / "conversation_recall_cases.json"
 
@@ -131,16 +130,7 @@ def evaluate(method: str = "keyword") -> dict:
     with TemporaryDirectory(prefix="syvrio-conversation-eval-") as folder:
         root = Path(folder)
         with eval_environment(root) as vault, ExitStack() as observers:
-            topic = vault / "memories" / "general" / "samples.md"
-            topic.parent.mkdir(parents=True)
-            records = [
-                render_record(
-                    Core(id=ident, status="active", text=text),
-                    extensions=[("recorded_at", "2024-01-01T00:00:00Z")],
-                )
-                for ident, text in corpus["facts"].items()
-            ]
-            topic.write_text("# 合成样品\n\n" + "\n".join(records), encoding="utf-8")
+            seed_topic(vault, "samples", corpus["facts"].items(), "合成样品")
             config = Config(
                 vault=vault,
                 runtime=str(root / "runtime"),
@@ -185,7 +175,7 @@ def evaluate(method: str = "keyword") -> dict:
                 for limit in LIMITS:
                     # 调用工具时省略 limit，以检验配置的默认值。
                     with patch.object(config.retrieval, "default_limit", limit):
-                        tools = build_tools(service, runtime.current)
+                        tools = build_tools(service, runtime.current, config=config)
                         result = tool_search(tools, case["query"], corpus["facts"])
                     row[f"explicit_{limit}"] = evidence_score(case, result.ids)
                 rows.append(row)

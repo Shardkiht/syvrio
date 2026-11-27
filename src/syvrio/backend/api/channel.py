@@ -8,9 +8,10 @@ from ... import __version__
 from ...application.turns import ConversationTurn
 from ...infra.errors import SyvrioError
 from ...infra.observability.diagnostics import record_event
-from ...infra.session import SESSION_ID_RE, Session
+from ...infra.session import SESSION_ID_RE
 from ...infra.session.attachments import AttachmentBatch
 from ...infra.session.errors import ConversationError, SessionDeletionChanged, SessionProtectedError
+from ...infra.session.query import HistoryWindow
 from ..channel import ResidentChannel
 from ..ownership import BackendLease
 from .models import (
@@ -102,15 +103,19 @@ class APIChannel(ResidentChannel):
         if session_id is not None:
             self._validate_session_id(session_id)
             current = self._runtime.session
-            if current is not None and current.id == session_id:
+            if (
+                current is not None
+                and current.id == session_id
+                and self._conversation.ask_in_flight == session_id
+            ):
                 # 从快照估算，因为活动回合可能同时追加记录。
                 session = replace(current, records=list(current.records))
+                used = self._conversation.estimate_usage(session)
             else:
                 try:
-                    session = self._sessions.read_snapshot(session_id).session
+                    used = self._conversation.estimate_saved_usage(session_id)
                 except KeyError as exc:
                     raise APIError("not_found", "Session not found.", 404) from exc
-            used = self._conversation.estimate_usage(session)
         limits = self._conversation.context_limits(session_id)
         return ContextUsageResponse(
             session_id=session_id,
@@ -186,11 +191,13 @@ class APIChannel(ResidentChannel):
     def list_sessions(
         self, limit: int = 100, *, archived: bool = False, offset: int = 0
     ) -> SessionListResponse:
-        # 先读取任务，即使列举期间刚发布标题，也能在结束时刷新。
-        pending = set() if archived else self._background.pending_titles()
-        rows = self._sessions.list(
-            max(1, min(limit, 500)), with_tokens=False, archived=archived, offset=offset
-        )
+        with self._service.work.read():
+            rows = self._sessions.list(
+                max(1, min(limit, 500)), with_tokens=False, archived=archived, offset=offset
+            )
+            pending = (
+                set() if archived else self._background.pending_titles([row["id"] for row in rows])
+            )
         current = self._conversation.current_id
         return SessionListResponse(
             items=[
@@ -209,40 +216,42 @@ class APIChannel(ResidentChannel):
         )
 
     def history(
-        self, session_id: str, limit: int = HISTORY_ITEM_LIMIT, *, archived: bool = False
+        self,
+        session_id: str,
+        limit: int = HISTORY_ITEM_LIMIT,
+        *,
+        archived: bool = False,
+        before_seq: int | None = None,
     ) -> HistoryResponse:
-        session = self._read_history_session(session_id, archived)
-        return self.project_history(
-            session, current=self._conversation.current_id == session.id, limit=limit
-        )
-
-    def tool_result(self, session_id: str, record_id: str, *, archived: bool = False) -> str:
-        session = self._read_history_session(session_id, archived)
-        for record in session.active_records():
-            if record.get("type") == "tool" and record.get("id") == record_id:
-                return str(record.get("content") or "")
-        raise APIError("not_found", "This tool result is no longer available.", 404)
-
-    def _read_history_session(self, session_id: str, archived: bool) -> Session:
         self._validate_session_id(session_id)
         try:
-            if archived:
-                return self._sessions.load(session_id, archived=True)
-            return self._sessions.read_snapshot(session_id).session
+            page = self._sessions.history_window(
+                session_id,
+                max(1, min(limit, HISTORY_ITEM_LIMIT)),
+                archived=archived,
+                before_seq=before_seq,
+                tool_preview=TOOL_CONTENT_LIMIT,
+            )
         except KeyError as exc:
             raise APIError("session_not_found", "Session not found.", 404) from exc
         except (ValueError, OSError) as exc:
             record_event("web.history_unreadable", exc)
             raise APIError("session_unreadable", "Session history could not be read.", 500) from exc
+        return self.project_history(page, current=self._conversation.current_id == session_id)
+
+    def tool_result(self, session_id: str, record_id: str, *, archived: bool = False) -> str:
+        self._validate_session_id(session_id)
+        try:
+            content = self._sessions.tool_content(session_id, record_id, archived=archived)
+        except KeyError as exc:
+            raise APIError("session_not_found", "Session not found.", 404) from exc
+        if content is None:
+            raise APIError("not_found", "This tool result is no longer available.", 404)
+        return content
 
     @staticmethod
-    def project_history(
-        session: Session, *, current: bool, limit: int = HISTORY_ITEM_LIMIT
-    ) -> HistoryResponse:
-        records = session.active_records(include_failures=True)
-        bounded = max(1, min(limit, HISTORY_ITEM_LIMIT))
-        has_earlier = len(records) > bounded
-        visible = records[-bounded:] if has_earlier else records
+    def project_history(session: HistoryWindow, *, current: bool) -> HistoryResponse:
+        visible = session.records
         items: list[HistoryItem] = []
         for record in visible:
             role = record.get("type")
@@ -286,12 +295,13 @@ class APIChannel(ResidentChannel):
             elif role == "tool":
                 content = str(record.get("content") or "")
                 # 无稳定 ID 的旧记录无法单独取回全文，直接随历史返回。
-                truncated = bool(base["id"]) and len(content) > TOOL_CONTENT_LIMIT
+                length = record.get("tool_content_length", len(content))
+                truncated = bool(base["id"]) and length > TOOL_CONTENT_LIMIT
                 items.append(
                     HistoryItem(
                         role="tool",
                         content=content[:TOOL_CONTENT_LIMIT] if truncated else content,
-                        tool_content_length=len(content),
+                        tool_content_length=length,
                         tool_content_truncated=truncated,
                         tool_call_id=record.get("tool_call_id"),
                         tool_name=str(record.get("name") or ""),
@@ -313,10 +323,11 @@ class APIChannel(ResidentChannel):
                 )
         return HistoryResponse(
             session_id=session.id,
-            title=session.title(),
+            title=session.title,
             items=items,
-            summary=session.summary_text() or None,
-            has_earlier=has_earlier,
+            summary=session.summary or None,
+            has_earlier=session.earlier_cursor is not None,
+            earlier_cursor=session.earlier_cursor,
             current=current,
         )
 
@@ -328,8 +339,10 @@ class APIChannel(ResidentChannel):
 
     def switch_session(self, session_id: str) -> SwitchSessionResponse:
         self._validate_session_id(session_id)
-        session = self.conversation.navigate(session_id).session
-        return SwitchSessionResponse(session_id=session.id, title=session.title())
+        self.conversation.browse(session_id)
+        return SwitchSessionResponse(
+            session_id=session_id, title=self._sessions.session_title(session_id)
+        )
 
     def deletion_preview(self, session_id: str) -> SessionDeletionPreview:
         self._validate_session_id(session_id)

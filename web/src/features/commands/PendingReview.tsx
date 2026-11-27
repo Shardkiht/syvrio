@@ -3,6 +3,7 @@ import type { PendingAction, ReviewPanel } from './commands';
 import { CommandDialog, moveOption } from './CommandUI';
 import { SearchIcon } from '../../shared/Icons';
 import { api } from '../../api/client';
+import type { SourceVersion } from '../../types';
 import { usePanelRead } from './usePanelRead';
 import { formatLocalTimestamp } from '../../shared/time';
 
@@ -29,11 +30,39 @@ function EvidenceDetails({ id }: { id: string }) {
   </>;
 }
 
-function CandidateEvidence({ id }: { id: string }) {
+function SourceFact({ value }: { value: SourceVersion }) {
+  return <div className="source-fact">
+    <small>{value.topic} · {value.status} · v{value.commit}</small>
+    <p>{value.text}</p>
+    {value.context && <details><summary>Context</summary><pre>{JSON.stringify(value.context, null, 2)}</pre></details>}
+  </div>;
+}
+
+function SourceComparison({ id }: { id: string }) {
+  const { value, error, retry } = usePanelRead(undefined, signal => api.inferenceSources(id, signal));
+  if (error) return <div role="alert">{error} <button onClick={retry}>Retry</button></div>;
+  if (!value) return <p role="status">Loading sources…</p>;
+  if (!value.sources.length) return <p>No sources recorded.</p>;
+  return <ul className="inference-sources">{value.sources.map(source => {
+    const unchanged = source.cited && source.current && source.cited.commit === source.current.commit;
+    return <li key={source.id}>
+      <small>{source.id}</small>
+      {unchanged && source.current ? <><strong>Unchanged source</strong><SourceFact value={source.current} /></>
+        : <div className="source-comparison">
+          <section><strong>When cited</strong>{source.cited ? <SourceFact value={source.cited} />
+            : <p>{source.cited_commit == null ? 'Version was not recorded.' : 'Cited version unavailable.'}</p>}</section>
+          <section><strong>Current</strong>{source.current ? <SourceFact value={source.current} />
+            : <p>Current memory unavailable.</p>}</section>
+        </div>}
+    </li>;
+  })}</ul>;
+}
+
+function CandidateEvidence({ id, inference }: { id: string; inference: boolean }) {
   const [open, setOpen] = useState(false);
   return <details className="candidate-evidence" onToggle={event => setOpen(event.currentTarget.open)}>
-    <summary tabIndex={0}>View evidence</summary>
-    {open && <EvidenceDetails id={id} />}
+    <summary tabIndex={0}>{inference ? 'Compare sources' : 'View evidence'}</summary>
+    {open && (inference ? <SourceComparison id={id} /> : <EvidenceDetails id={id} />)}
   </details>;
 }
 
@@ -205,7 +234,7 @@ export function PendingReview({
                       value={draft} readOnly={busy || action !== null}
                       onChange={(event) => setDraft(event.target.value)} />
                   )}
-                  {pending && <CandidateEvidence key={selected.id} id={selected.id} />}
+                  <CandidateEvidence key={selected.id} id={selected.id} inference={!pending} />
                 </>
               ) : <p className="pending-meta">Select an item to review.</p>}
             </div>}

@@ -26,6 +26,9 @@ demo_vault/
 sessions/
 !web/src/features/sessions/
 vault/
+syvrio.sqlite3
+syvrio.sqlite3-wal
+syvrio.sqlite3-shm
 !src/syvrio/infra/vault/
 web/node_modules/
 src/syvrio/app/web/static/
