@@ -163,6 +163,8 @@ def build_server(client: ResidentClient | None = None) -> FastMCP:
             providers 是推荐优先尝试的已启用 Provider 顺序；strategy=auto 时
             质量达标即停、不足则继续回退，compare 尽量完成至少两家交叉验证，
             strict 只调用 providers 指定的来源且不接受空列表。
+            quota_exhausted 列出本次额度耗尽的服务商，即使其他来源返回结果，也要在下一条
+            回复中简短告知用户并继续回答。没有取得结果时请说明失败原因。
             结果保留 URL、来源与实际引擎；官方公告、媒体报道、个人爆料和推测
             需结合来源与可信日期区分，日期缺失或来源不明时不要当作已确认事实。"""
             return svc.call(

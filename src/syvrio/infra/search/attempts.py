@@ -15,7 +15,7 @@ from .base import (
     SearchQuery,
     SearchResult,
 )
-from .usage import UsageLimiter
+from .pauses import ProviderPauses, paused_failure, provider_failure
 
 MAX_IN_FLIGHT = 4
 HEDGE_DELAY = 0.25
@@ -33,15 +33,13 @@ class SearchAttempt:
 
 
 def _request(
-    attempt: SearchAttempt, timeout: float, limiter: UsageLimiter | None
+    attempt: SearchAttempt, timeout: float, pauses: ProviderPauses | None
 ) -> tuple[list[SearchResult], list[SearchFailure], bool]:
     try:
         results = attempt.provider.search(replace(attempt.query, timeout=timeout))
         return results, list(getattr(attempt.provider, "last_partial_failures", ()) or ()), True
     except ProviderError as exc:
-        if limiter is not None:
-            limiter.note_error(attempt.name, exc)
-        return [], [SearchFailure.from_error(exc)], False
+        return [], [provider_failure(attempt.name, exc, pauses)], False
     except Exception as exc:
         return [], [SearchFailure(attempt.name, "unavailable", str(exc))], False
 
@@ -52,13 +50,13 @@ class SearchRun:
         attempts: list[SearchAttempt],
         timeout: float,
         max_requests: int,
-        limiter: UsageLimiter | None,
+        pauses: ProviderPauses | None,
         failures: list[SearchFailure],
     ) -> None:
         self.pending = attempts
         self.deadline = time.perf_counter() + timeout
         self.max_requests = max_requests
-        self.limiter = limiter
+        self.pauses = pauses
         self.failures = failures
         self.attempted: list[str] = []
         self.timed_out = False
@@ -109,17 +107,14 @@ class SearchRun:
                         self.pending.insert(index, attempt)
                         break
                     try:
-                        if self.limiter is not None and not self.limiter.acquire(attempt.name):
-                            self.failures.append(
-                                SearchFailure(
-                                    attempt.name, "quota", self.limiter.reason(attempt.name)
-                                )
-                            )
+                        failure = paused_failure(attempt.name, self.pauses)
+                        if failure:
+                            self.failures.append(failure)
                             self.skip_provider(attempt.name)
                             _SLOTS.release()
                             continue
                         future = _POOL.submit(
-                            _request, attempt, round(max(remaining, 0.05), 3), self.limiter
+                            _request, attempt, round(max(remaining, 0.05), 3), self.pauses
                         )
                     except BaseException:
                         _SLOTS.release()
@@ -154,17 +149,24 @@ class SearchRun:
                 if not done:
                     continue
                 self.timed_out = time.perf_counter() >= self.deadline
+                # 同批已结束请求的错误先全部收集，避免较早返回的成功结果遮住额度告警。
+                completed = []
                 for future in [item for item in active if item in done]:
                     attempt = active.pop(future)
                     results, failures, ok = future.result()
                     self.failures.extend(failures)
                     if not ok:
-                        self.pending[:] = [
-                            item
-                            for item in self.pending
-                            if (item.name, item.engine_slot) != (attempt.name, attempt.engine_slot)
-                        ]
-                    yield attempt, results
+                        if any(f.kind == "quota" for f in failures):
+                            self.skip_provider(attempt.name)
+                        else:
+                            self.pending[:] = [
+                                item
+                                for item in self.pending
+                                if (item.name, item.engine_slot)
+                                != (attempt.name, attempt.engine_slot)
+                            ]
+                    completed.append((attempt, results))
+                yield from completed
                 if self.timed_out:
                     self.failures.append(
                         SearchFailure(last_name, "timeout", "搜索总超时预算已用尽")

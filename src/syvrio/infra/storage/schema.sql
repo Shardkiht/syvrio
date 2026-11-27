@@ -176,11 +176,10 @@ CREATE TABLE file_cleanup (
     PRIMARY KEY(kind, object_id)
 );
 
-CREATE TABLE search_usage (
+CREATE TABLE provider_pauses (
     provider TEXT PRIMARY KEY,
-    daily_window TEXT, daily_units INTEGER NOT NULL DEFAULT 0 CHECK(daily_units>=0),
-    monthly_window TEXT, monthly_units INTEGER NOT NULL DEFAULT 0 CHECK(monthly_units>=0),
-    pause_reason TEXT, resume_at REAL
+    reason TEXT NOT NULL,
+    resume_at REAL
 );
 
 CREATE TABLE git_sync (

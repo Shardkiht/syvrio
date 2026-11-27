@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 
@@ -141,63 +142,24 @@ def run_setup(config_path: Path | None = None) -> dict:
         return _run_llm_setup(setup)
 
 
-def _manage_usage(setup: SetupSession) -> None:
+def _manage_search_pauses(setup: SetupSession) -> None:
     import questionary
 
-    while True:
-        for name, default, effective, state in setup.usage_rows():
-
-            def display(value):
-                return str(value) if value else "不限"
-
-            def remaining(value):
-                return "不限" if value is None else str(value)
-
-            _console().print(
-                f"{name}: 默认 daily={display(default.daily)}, monthly={display(default.monthly)}; "
-                f"生效 daily={display(effective.daily)}, monthly={display(effective.monthly)}; "
-                f"已使用/剩余 daily={state['daily']['used']}/{remaining(state['daily']['remaining'])}, "
-                f"monthly={state['monthly']['used']}/{remaining(state['monthly']['remaining'])}; "
-                f"官方暂停={state['paused'] or '无'}"
-            )
-        name = _select(
-            "额度管理：选择厂商（本地请求次数不是厂商余额）",
-            [
-                *[
-                    questionary.Choice(label, value=name)
-                    for name, label in SEARCH_PROVIDER_LABELS.items()
-                ],
-                questionary.Choice("返回", value=None),
-            ],
-        )
-        if name is None:
+    while paused := setup.paused_search_providers():
+        choices = []
+        for name, pause in paused.items():
+            label = SEARCH_PROVIDER_LABELS.get(name, name)
+            detail = pause.reason
+            if pause.resume_at is not None:
+                local = datetime.fromtimestamp(pause.resume_at).astimezone()
+                detail += f" · {local:%Y-%m-%d %H:%M} 自动恢复"
+            choices.append(questionary.Choice(f"{label} · {detail}", value=name))
+        choices.append(questionary.Choice("返回", value=""))
+        name = _select("选择要解除暂停的搜索厂商", choices)
+        if not name:
             return
-        action = _select(
-            "额度操作",
-            [
-                questionary.Choice("修改每日上限（0 不限）", value="daily"),
-                questionary.Choice("修改每月上限（0 不限）", value="monthly"),
-                questionary.Choice("恢复默认上限", value="defaults"),
-                questionary.Choice("解除官方暂停（不清空计数）", value="resume"),
-                questionary.Choice("返回", value=None),
-            ],
-        )
-        if action is None:
-            continue
-        if action in ("daily", "monthly"):
-            raw = ask(questionary.text("请求次数上限（非负整数，0 不限）"))
-            if raw is None:
-                continue
-            try:
-                value = int(str(raw).strip())
-                if value < 0:
-                    raise ValueError
-            except ValueError:
-                _console().print("请输入非负整数。")
-                continue
-            setup.change_usage(name, action, value)
-        else:
-            setup.change_usage(name, action)
+        setup.resume_search_provider(name)
+    _console().print("当前没有暂停的搜索厂商。")
 
 
 def _select(message: str, choices: list):
@@ -344,7 +306,7 @@ def run_search_setup(setup: SetupSession) -> dict:
             "搜索与网页抓取配置",
             [
                 questionary.Choice("选择厂商：配置 Key / 启用停用", value="providers"),
-                questionary.Choice("调用额度与官方暂停管理", value="usage"),
+                questionary.Choice("查看与解除搜索厂商暂停", value="pauses"),
                 questionary.Choice("调整 Search 优先级", value="search_order"),
                 questionary.Choice("调整 Fetch 优先级", value="fetch_order"),
                 questionary.Choice("保存并返回", value="done"),
@@ -354,8 +316,8 @@ def run_search_setup(setup: SetupSession) -> dict:
             break
         if action == "providers":
             _configure_search_provider(setup, messages)
-        elif action == "usage":
-            _manage_usage(setup)
+        elif action == "pauses":
+            _manage_search_pauses(setup)
         elif action == "search_order":
             _adjust_order(setup, "search", "Search")
         elif action == "fetch_order":

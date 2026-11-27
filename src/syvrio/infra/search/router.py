@@ -6,7 +6,6 @@ from collections.abc import Sequence
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 from ..config import SearchConfig, read_api_key
 from ..storage.paths import SyvrioPaths, vault_paths
@@ -22,6 +21,7 @@ from .base import (
     normalize_url,
 )
 from .cache import SearchCache
+from .pauses import ProviderPauses
 from .providers.catalog import OPEN_WEBSEARCH, PROVIDERS
 from .providers.open_websearch import OpenWebSearchProvider
 from .quality import (
@@ -228,15 +228,13 @@ def build_search_router(
     vault: Path | SyvrioPaths | None = None,
 ) -> "SearchRouter":
     cache = None
-    limiter = None
+    pauses = None
     if vault is not None:
         paths = vault if isinstance(vault, SyvrioPaths) else vault_paths(vault)
         paths.validate()
         if config.cache_ttl > 0:
             cache = SearchCache(paths, config.cache_ttl)
-        from .usage import UsageLimiter
-
-        limiter = UsageLimiter(config.usage_limits, paths)
+        pauses = ProviderPauses(paths)
     return SearchRouter(
         build_registry(config),
         order=config.providers,
@@ -247,7 +245,7 @@ def build_search_router(
         max_engines=config.max_engines,
         timeout_budget=config.timeout_budget,
         max_requests=config.max_requests,
-        usage_limiter=limiter,
+        provider_pauses=pauses,
     )
 
 
@@ -270,7 +268,7 @@ class SearchRouter:
         max_engines: int = 3,
         timeout_budget: float = 25.0,
         max_requests: int = 9,
-        usage_limiter: Any | None = None,
+        provider_pauses: ProviderPauses | None = None,
     ):
         self.registry = registry
         self.order = list(dict.fromkeys(order or list(registry)))
@@ -283,8 +281,7 @@ class SearchRouter:
         # 单次 search() 的跨 Provider 请求次数上限：默认 9 恰好容纳
         # 单 Provider 的最坏情况（3 个引擎槽位 × 原始查询 + 2 个变体）。
         self.max_requests = max(1, max_requests)
-        # 厂商调用上限（Search/Fetch 共池）；None 表示未启用额度限制。
-        self.usage_limiter = usage_limiter
+        self.provider_pauses = provider_pauses
 
     def search(self, query: SearchQuery) -> SearchOutcome:
         text = query.query.strip()
@@ -352,6 +349,8 @@ class SearchRouter:
         if self.cache is not None:
             cached = self.cache.get_record(cache_key)
             if cached is not None:
+                # 缓存命中没有调用上游，本轮不再报告历史额度告警。
+                cached_failures = [item for item in cached.failed if item.kind != "quota"]
                 results = cached.results
                 hint = "未找到相关结果。"
                 if results:
@@ -359,13 +358,13 @@ class SearchRouter:
                     if not any(has_core_hit(result, analysis) for result in results):
                         hint = "候补引擎未找到与查询核心词直接相关的结果，以下为各引擎返回的候选。"
                 if cached.strategy == "compare":
-                    hint = f"{hint} {self._compare_note(cached.verification, cached.contributors, cached.failed)}".strip()
+                    hint = f"{hint} {self._compare_note(cached.verification, cached.contributors, cached_failures)}".strip()
                 return SearchOutcome(
                     results=results,
                     provider=cached.provider,
                     cached=True,
                     hint=hint,
-                    failed=_dedupe_failures([*selection_failures, *cached.failed]),
+                    failed=_dedupe_failures([*selection_failures, *cached_failures]),
                     attempted=cached.attempted,
                     strategy=cached.strategy,
                     verification=cached.verification,
@@ -405,7 +404,7 @@ class SearchRouter:
             variants = []
 
         run = SearchRun(
-            attempts, self.timeout_budget, self.max_requests, self.usage_limiter, failures
+            attempts, self.timeout_budget, self.max_requests, self.provider_pauses, failures
         )
         successful: list[str] = []
         name_hint = names[-1] if names else ""

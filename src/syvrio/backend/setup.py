@@ -10,9 +10,7 @@ from pathlib import Path
 from ..infra.config import (
     Config,
     LLMConfig,
-    UsageLimit,
     context_window_options,
-    default_usage_limits,
     read_api_key,
     write_config,
 )
@@ -20,9 +18,9 @@ from ..infra.llm.providers import PRESETS as PRESETS
 from ..infra.llm.providers import ProviderPreset as ProviderPreset
 from ..infra.llm.providers import normalize_provider_url as normalize_provider_url
 from ..infra.llm.providers import provider_base_url as provider_base_url
+from ..infra.search.pauses import ProviderPause, ProviderPauses
 from ..infra.search.providers.catalog import PROVIDERS, supports_fetch
 from ..infra.search.providers.searxng import normalize_base_url
-from ..infra.search.usage import UsageLimiter
 from ..infra.security.credentials import delete_api_key, save_api_key
 from .maintenance import configured_maintenance, prepare_vault_runtime
 
@@ -78,30 +76,11 @@ class SetupSession:
         self._config.search.searxng_base_url = endpoint
         return endpoint
 
-    def usage(self) -> UsageLimiter:
-        return UsageLimiter(self._config.search.usage_limits, self._config.paths(self.path))
+    def paused_search_providers(self) -> dict[str, ProviderPause]:
+        return ProviderPauses(self._config.paths(self.path)).active()
 
-    def usage_rows(self):
-        limiter = self.usage()
-        for name, default in default_usage_limits().items():
-            yield (
-                name,
-                default,
-                self._config.search.usage_limits.get(name, default),
-                limiter.status(name),
-            )
-
-    def change_usage(self, name: str, action: str, value: int = 0) -> None:
-        defaults = default_usage_limits()
-        if action == "resume":
-            self.usage().resume(name)
-        elif action == "defaults":
-            self._config.search.usage_limits[name] = defaults[name]
-        elif action in ("daily", "monthly") and value >= 0:
-            old = self._config.search.usage_limits.get(name, defaults.get(name, UsageLimit()))
-            self._config.search.usage_limits[name] = replace(old, **{action: value})
-        else:
-            raise ValueError("请输入非负整数。")
+    def resume_search_provider(self, name: str) -> None:
+        ProviderPauses(self._config.paths(self.path)).resume(name)
 
     @property
     def search_endpoint(self) -> str:
@@ -137,9 +116,6 @@ class SetupSession:
         if not available and name not in ANONYMOUS_SEARCH_PROVIDERS:
             return f"{name} 未在凭据库中找到 API Key，无法启用。"
         names.append(name)
-        default = default_usage_limits().get(name)
-        if env and default:
-            self._config.search.usage_limits.setdefault(name, default)
         return "" if available else f"{name} 未配置 Key，将以匿名模式运行。"
 
     def move(self, capability: str, name: str, offset: int) -> None:

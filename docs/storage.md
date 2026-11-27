@@ -11,7 +11,7 @@
 | 会话 | `sessions` 保存会话信息。`session_events` 一行保存一条消息的正文、可选思考、工具预览和原文长度。历史分页按需读列。稳定消息 ID 用于定位引用；事件顺序、会话历史版本和归档标志入库。 |
 | 业务记录 | `audit` 为每次事实变更保存一条操作记录及变更详情。撤销成功后追加一条指向原操作的审计。事实写入时将变更内容存入 `audit.memory_change`。普通操作的同名详情保留在 `details`。Git 从同一个已提交快照读取公开审计和仍然生效的变更，新增操作名称无需调整导出。`undo_effects` 保存回合撤销依据，`receipts` 防止重复发送。 |
 | 后台与检索 | `jobs` 保存沉淀、Dream 和 Context 任务的检查点；`profile` 保存已发布结果。Dream 在排队时将 `revisions` 中 `evidence` 的提交号保存为 `evidence_commit`，两阶段均按该提交号读取事实、主题归档状态和推断版本。每批在短事务内一起提交结果与游标，重启后按同一版本恢复。模型请求发送前扣减预算，已发出但未提交结果的批次恢复时会重试。`revisions` 跟踪索引依赖的数据版本。 |
-| 搜索用量 | 主库的 `search_usage` 每个供应商一行，记录日月用量、统计窗口和暂停状态。搜索和网页抓取在同一事务里检查并预扣供应商额度。 |
+| 搜索供应商暂停 | 主库的 `provider_pauses` 按 `provider` 保存供应商返回的暂停原因（`reason`）和可选恢复时间（`resume_at`）。搜索和网页抓取都只读检查当前暂停状态，手动恢复时删除该供应商的记录。 |
 | 本机 Git 同步 | 主库的 `git_sync` 记录本机同步状态。恢复到新部署时清空此表。 |
 | 可重建缓存 | `Runtime/cache/vectors.sqlite3` 保存按模型、记忆 ID 和输入摘要核验的向量。`Runtime/cache/web-search.sqlite3` 保存有有效期的网页搜索结果。停服后可单独清理其中一个缓存库及其同名 WAL 附属文件，下次使用时会重新生成。 |
 | 附件 | `attachments` 每条引用保存会话、消息、文件名、大小、类型和哈希。相同原件共用 `attachments/objects/<前两位>/<sha256>`。发送中的引用计数留在常驻后端内存；发布前将哈希登记到 `file_cleanup`，用于失败和重启后的清理。 |
@@ -37,7 +37,7 @@ syvrio restore /backup/syvrio-01 /srv/syvrio/restored-vault
 syvrio verify-attachments --vault /srv/syvrio/restored-vault
 ```
 
-备份持有独占租约，使用 SQLite backup API 复制业务主库，与当前及归档会话引用的原件、可选 SOUL.md 和哈希清单一起发布。恢复检查清单、附件长度、SHA-256、SQLite 完整性和外键，全部通过后才发布目标目录。任务、游标、幂等记录、供应商日月计数和暂停期限随主库恢复。恢复后的部署重新记录 Git 同步状态。使用新的 Runtime 时，向量和网页搜索结果按需重新缓存。部署 TOML、凭据、Git 远端和服务启动设置需要分别管理。用独立 Runtime 启动恢复出的 Vault，后端会重新绑定并协调任务。
+备份持有独占租约，使用 SQLite backup API 复制业务主库，与当前及归档会话引用的原件、可选 SOUL.md 和哈希清单一起发布。恢复检查清单、附件长度、SHA-256、SQLite 完整性和外键，全部通过后才发布目标目录。任务、游标、幂等记录、供应商暂停记录随主库恢复。恢复后的部署重新记录 Git 同步状态。使用新的 Runtime 时，向量和网页搜索结果按需重新缓存。部署 TOML、凭据、Git 远端和服务启动设置需要分别管理。用独立 Runtime 启动恢复出的 Vault，后端会重新绑定并协调任务。
 
 ## 验证存储与客户端
 

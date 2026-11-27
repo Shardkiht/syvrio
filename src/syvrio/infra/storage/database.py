@@ -58,11 +58,11 @@ def _check_layout(db: sqlite3.Connection) -> None:
     # 只编译查询来核对当前读写需要的结构，不扫描聊天记录。
     try:
         db.execute("""SELECT e.distilled, e.reasoning, e.tool_preview, e.tool_length, s.ready,
-                        a.size, u.daily_units, u.resume_at, g.state,
+                        a.size, u.reason, u.resume_at, g.state,
                         v.reserved, m.commit_id, i.commit_id, tv.commit_id, l.memory_version,
                         log.reverts, log.memory_change, j.checkpoint, j.evidence_commit
                    FROM session_events e, search_signatures s, attachments a,
-                        search_usage u, git_sync g, revisions v, memory_versions m,
+                        provider_pauses u, git_sync g, revisions v, memory_versions m,
                         inference_versions i, topic_versions tv, inference_sources l,
                         audit log, jobs j LIMIT 0""")
     except sqlite3.OperationalError as exc:

@@ -176,32 +176,11 @@ class SearchConfig:
     # 自托管 SearXNG 实例；与 open-websearch 的 base_url 相互独立。
     searxng_base_url: str = DEFAULTS["search"]["searxng_base_url"]
     searxng_timeout: float = DEFAULTS["search"]["searxng_timeout"]
-    # 每厂商调用上限（Search/Fetch 共池）；键为 provider 名。
-    usage_limits: dict[str, UsageLimit] = field(default_factory=lambda: default_usage_limits())
 
 
 def read_api_key(name: str) -> str:
     """按条目名读取系统凭据库中的密钥。"""
     return (stored_key(name) or "").strip()
-
-
-@dataclass(slots=True)
-class UsageLimit:
-    daily: int = 0
-    monthly: int = 0
-
-
-DEFAULT_USAGE_LIMITS = {
-    name: (limit["daily"], limit["monthly"])
-    for name, limit in DEFAULTS["search"]["usage_limits"].items()
-}
-
-
-def default_usage_limits() -> dict[str, UsageLimit]:
-    return {
-        name: UsageLimit(daily=day, monthly=month)
-        for name, (day, month) in DEFAULT_USAGE_LIMITS.items()
-    }
 
 
 @dataclass(slots=True)
@@ -260,8 +239,8 @@ def default_vault_path() -> Path:
 
 
 def _validate_types(data: dict, defaults: dict, prefix: str = "") -> None:
-    # 厂商端点和用量策略允许使用动态供应商名，其余键由默认配置描述。
-    if prefix not in {"llm.provider_urls", "search.usage_limits"}:
+    # 自定义厂商端点允许动态名称，其余键由默认配置描述。
+    if prefix != "llm.provider_urls":
         for key in data.keys() - defaults.keys():
             name = f"{prefix}.{key}" if prefix else key
             raise ConfigError(f"未知配置字段 {name}。")
@@ -423,23 +402,6 @@ def _build(overrides: dict, defaults: dict, paths: ConfigFiles) -> Config:
         if key != "providers":
             values = list(dict.fromkeys(s.strip() for s in values))
         search[key] = values or defaults["search"][key]
-    limits = {}
-    for key, values in search["usage_limits"].items():
-        if not isinstance(values, dict):
-            raise ConfigError(
-                f"{paths.paths['config.toml']}: search.usage_limits.{key} must be a table"
-            )
-        if set(values) - {"daily", "monthly"}:
-            raise ConfigError(
-                f"{paths.paths['config.toml']}: search.usage_limits.{key} accepts only daily and monthly"
-            )
-        item = UsageLimit(**values)
-        if any(type(n) is not int or n < 0 for n in (item.daily, item.monthly)):
-            raise ConfigError(
-                f"{paths.paths['config.toml']}: search.usage_limits.{key} must use nonnegative integers"
-            )
-        limits[key] = item
-    search["usage_limits"] = limits
     config = Config(
         vault=Path(
             overrides.get("vault") or os.environ.get("SYVRIO_VAULT") or defaults["vault"]

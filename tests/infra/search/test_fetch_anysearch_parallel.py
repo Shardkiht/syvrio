@@ -11,9 +11,10 @@ import pytest
 from syvrio.infra.config import FetchConfig, SearchConfig
 from syvrio.infra.search.base import FetchQuery, ProviderError, ProviderErrorKind
 from syvrio.infra.search.fetch_router import FetchRouter, build_fetch_registry
+from syvrio.infra.search.pauses import ProviderPauses
 from syvrio.infra.search.providers.anysearch import AnySearchFetchProvider
 from syvrio.infra.search.providers.parallel_mcp import FETCH_MCP_URL, ParallelMcpFetchProvider
-from syvrio.infra.search.usage import UsageLimiter
+from syvrio.infra.storage.paths import vault_paths
 
 pytestmark = pytest.mark.search
 URL = "https://example.com"
@@ -353,7 +354,7 @@ def test_registry_preserves_order_and_keeps_keys_optional(monkeypatch):
     assert all("fetch" in instance.capabilities for instance in registry.values())
 
 
-def test_fetch_quota_fallback_shares_limiter_and_sanitizes_final_url(monkeypatch):
+def test_fetch_quota_pauses_provider_and_sanitizes_final_url(monkeypatch, tmp_path):
     monkeypatch.setattr(
         "socket.getaddrinfo", lambda *a, **k: [(2, 1, 6, "", ("93.184.216.34", 443))]
     )
@@ -371,21 +372,23 @@ def test_fetch_quota_fallback_shares_limiter_and_sanitizes_final_url(monkeypatch
             )
         )
 
-    limiter = UsageLimiter(SearchConfig().usage_limits)
+    pauses = ProviderPauses(vault_paths(tmp_path / "vault"))
     router = FetchRouter(
         {
             "anysearch": rest(quota),
             "parallel_mcp": ParallelMcpFetchProvider(client_factory=parallel),
         },
-        usage_limiter=limiter,
+        provider_pauses=pauses,
     )
     with pytest.raises(ValueError):
         router.fetch("http://127.0.0.1/")
     assert not attempts
-    assert router.fetch(URL).content == "fallback content"
-    assert router.fetch(URL).content == "fallback content"
+    for _ in range(2):
+        result = router.fetch(URL)
+        assert result.content == "fallback content"
+        assert result.quota_exhausted == ["anysearch"]
     assert attempts == ["anysearch", "parallel_mcp", "parallel_mcp"]
-    assert "official_quota_exhausted" in limiter.reason("anysearch")
+    assert pauses.get("anysearch").reason == "official_quota_exhausted"
 
     redirect = rest(
         lambda r: httpx.Response(

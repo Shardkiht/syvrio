@@ -111,12 +111,14 @@ def test_long_message_signatures_include_matches_at_the_end(service):
 
 
 def test_only_session_writes_maintain_their_own_search_signatures(service):
-    from syvrio.infra.search.usage import UsageLimiter
+    from syvrio.infra.search.base import ProviderError
+    from syvrio.infra.search.pauses import ProviderPauses
     from syvrio.infra.session import SessionStore
 
     with transaction(service.paths) as db:
         _seed(db, "external", "1", "", ["external message"])
-    UsageLimiter({}, service.paths).record("synthetic")
+    error = ProviderError("synthetic", "quota", "empty", pause_reason="empty")
+    ProviderPauses(service.paths).note_error("synthetic", error)
     store = SessionStore(service.paths)
     session = store.create()
     store.append(session, {"type": "message", "role": "user", "content": "ordinary message"})

@@ -145,7 +145,7 @@ MCP 提供检索、主题阅读、记录、更正、状态变化、弃用和待�
 
 ## Vault 与备份
 
-每个部署的业务主库位于 `Vault/syvrio.sqlite3`。会话、事实、推断、待审候选、已发布画像、后台进度和撤回凭据都在其中。搜索供应商的用量、暂停状态和本机 Git 同步状态也在主库中，可直接在同一连接查看。向量缓存与网页搜索缓存分别保存在 `Runtime/cache/vectors.sqlite3` 和 `Runtime/cache/web-search.sqlite3`。上传原件按 SHA-256 保存在 `Vault/attachments/objects/`。归档会话保留在数据库中，可从 Archive 恢复；正式事实仍引用原话时禁止永久删除。
+每个部署的业务主库位于 `Vault/syvrio.sqlite3`。会话、事实、推断、待审候选、已发布画像、后台进度和撤回凭据都在其中。搜索供应商的暂停状态和本机 Git 同步状态也在主库中，可直接在同一连接查看。向量缓存与网页搜索缓存分别保存在 `Runtime/cache/vectors.sqlite3` 和 `Runtime/cache/web-search.sqlite3`。上传原件按 SHA-256 保存在 `Vault/attachments/objects/`。归档会话保留在数据库中，可从 Archive 恢复；正式事实仍引用原话时禁止永久删除。
 
 Git 仓库位于 `Vault/export/`，其中的 Markdown 和 JSONL 由同一个已提交的快照生成。每次正式记忆变更在审计记录中单独保存变更内容，Git 据此生成有效变更清单。`/undo` 成功后，操作审计保留原记录及对应的撤销记录，有效变更清单排除已撤销的操作。事务回滚时，导出文件仍保留上次提交的内容。完整备份使用 `syvrio backup DEST --config CONFIG`，恢复到新目录使用 `syvrio restore DEST NEW_VAULT`。会话检索和沉淀索引随空库一同创建。首次配置请使用空 Vault 和独立 Runtime。[存储与恢复](docs/storage.md)
 
@@ -183,7 +183,7 @@ providers = ["parallel_mcp", "anysearch", "open_websearch"]
 providers = ["anysearch", "parallel_mcp", "open_websearch"]
 ```
 
-Search 参与现有的质量门控、回退、请求预算、缓存和 `UsageLimiter`；`anysearch` 与 `parallel_mcp` 默认各有每日 20 次本地保护上限，可用 `[search.usage_limits.<provider>]` 调整，0 表示不限制。该数字只是本机请求保护，不代表服务商免费额度或账单上限；配置 Key 后可能产生服务商侧费用。认证失败（401/403）会明确报告并回退下一 Provider，不会自动去掉 Key 重试匿名模式。同一厂商的 Search 与 Fetch 共用计数，官方额度耗尽会暂停该厂商并按 Fetch 顺序回退。
+AnySearch 与 Parallel MCP 的搜索结果使用相同的质量判断、回退、单次请求预算和缓存规则。认证失败（401/403）会按配置回退到下一家供应商。
 
 - **AnySearch Fetch**：向 [Extract API](https://www.anysearch.com/docs/api-endpoints/v1-extract) 发送 `POST https://api.anysearch.com/v1/extract`，请求体只包含 `url`；从 `data.content` 提取正文并清理 HTML。
 - **Parallel Fetch**：通过 [Parallel MCP 2.0](https://docs.parallel.ai/integrations/mcp/quickstart) 的 `https://mcp.parallel.ai/mcp` 调用 `web_fetch`，传单个 URL 并请求 Markdown 正文，仅收到摘录时，抓取路由会继续尝试其他服务。
@@ -227,15 +227,15 @@ search:
 
 Bing 对部分中文专有名词会按单字切词（例如「智谱」只按「智」检索）；遇到明显跑题时，可在配置里把 `engines` 改为 `["baidu"]`，或让模型在 `search` 工具里传 `search_engine = "baidu"` 重试。`search_engine` 也接受数组，例如 `["baidu", "bing", "sogou"]`，结果会在同一请求中合并，默认不限制引擎数量；可用 `search.max_search_engines` 设置显式列表上限（0 表示不限）；MCP 的 `search` 同样支持。
 
-自动回退：搜索采用渐进式策略——每次请求向上游拉取比展示条数更多的候选（展示数的 3 倍，10–30 条），进入统一候选池去重合并后按确定性规则重排。首选引擎（`engines` 第一个）空结果、结果与查询核心词不相关或命中过弱（候选池未达早停标准）、请求失败时，按 `fallback_engines` 序列自动换引擎重试，最多尝试 `max_engines` 个引擎；所有回退共享 `timeout_budget` 超时预算，单次请求的超时不超过剩余预算；达到总预算时返回已收集的候选并跳过缓存。质量达标时立即返回，已发出的候补仍按自身超时结束并占用对应额度。全部 provider 合计还受 `max_requests` 请求次数约束，超出即返回当前最佳候选并附截断提示（该结果不缓存，下次搜索会重新请求）。查询短人物名、英文账号、产品代号时，`search` 工具可传 `context`（对话中能确认的专有名词），可派生最多 2 个查询变体，和候补引擎共同纳入请求预算；显式指定 `search_engine` 时保持单次请求语义，不自动换引擎。
+自动回退：搜索采用渐进式策略——每次请求向上游拉取比展示条数更多的候选（展示数的 3 倍，10–30 条），进入统一候选池去重合并后按确定性规则重排。首选引擎（`engines` 第一个）空结果、结果与查询核心词不相关或命中过弱（候选池未达早停标准）、请求失败时，按 `fallback_engines` 序列自动换引擎重试，最多尝试 `max_engines` 个引擎；所有回退共享 `timeout_budget` 超时预算，单次请求的超时不超过剩余预算；达到总预算时返回已收集的候选并跳过缓存。质量达标时立即返回，已发出的候补仍按自身超时结束。全部 provider 合计还受 `max_requests` 请求次数约束，超出即返回当前最佳候选并附截断提示（该结果不缓存，下次搜索会重新请求）。查询短人物名、英文账号、产品代号时，`search` 工具可传 `context`（对话中能确认的专有名词），可派生最多 2 个查询变体，和候补引擎共同纳入请求预算；显式指定 `search_engine` 时保持单次请求语义，不自动换引擎。
 
 LLM 可以在 `search` 调用里用 `providers` 指定多个已启用来源的优先顺序，并用 `strategy` 选择调度方式（Agent Function Calling 与 MCP 参数一致）：
 
-- `auto`（默认）：按 `providers` 顺序逐家搜索，结果通过质量门控即停；失败、超时、本地额度耗尽或质量不足时继续下一家。列表耗尽后允许按用户配置的剩余 provider 顺序回退。
+- `auto`（默认）：按 `providers` 顺序逐家搜索，结果通过质量门控即停；失败、超时、供应商暂停或质量不足时继续下一家。列表耗尽后允许按用户配置的剩余 provider 顺序回退。
 - `compare`：用于最新新闻、重要事实等需要交叉验证的场景。预算允许时至少尝试两家不同 provider，不因第一家达标而立即停止；结果仍统一去重排序，同一页面被多家返回只算一条候选，不构成独立证据。若受额度、超时或可用性限制无法完成两家，`hint` 会明确写“交叉验证未完成”及失败类型，不会伪称已验证。缓存会同时保存验证状态、实际尝试顺序、贡献来源和失败诊断；命中缓存仍恢复同一提示，缺少验证字段时会重新搜索。所有超时或请求次数预算截断的结果都不写入缓存，下次搜索会重新请求。
 - `strict`：只调用 `providers` 明确列出的来源，不扩展到配置中的其他 provider；`providers` 为空时拒绝执行，全部不可用时如实返回失败。
 
-`providers` 为空或省略时使用用户配置顺序；重复项会去重，最多 8 个，只接受实际启用且注册成功的名称，无效名称会安全忽略并在 `failed` 中给出诊断。Router 统一生成最终顺序，LLM 不能指定 API Key、认证头或服务地址，也不能绕过启用状态、`UsageLimiter`、`max_requests` 或 `timeout_budget`。返回结果新增 `attempted`（实际尝试顺序）与 `strategy` 字段；每条结果仍带自己的 `provider` 和上游 `engine`。缓存键会区分 `providers` 顺序、`strategy` 和实际尝试序列。`search_engine` 仍然只表示上游引擎，和 provider 是两层概念，二者不要混用。显式指定引擎时只调用支持该选择的服务。搜索结果的 `engine` 保留服务返回的来源；服务未标注时，仅在请求明确指定单一引擎时补全，多引擎请求留空。低相关候选会原样返回并附提示，不伪装成已核实的相关结果。
+`providers` 为空或省略时使用用户配置顺序；重复项会去重，最多 8 个，只接受实际启用且注册成功的名称，无效名称会安全忽略并在 `failed` 中给出诊断。Router 统一生成最终顺序，LLM 不能指定 API Key、认证头或服务地址，也不能绕过启用状态、供应商暂停、`max_requests` 或 `timeout_budget`。返回结果新增 `attempted`（实际尝试顺序）与 `strategy` 字段；每条结果仍带自己的 `provider` 和上游 `engine`。缓存键会区分 `providers` 顺序、`strategy` 和实际尝试序列。`search_engine` 仍然只表示上游引擎，和 provider 是两层概念，二者不要混用。显式指定引擎时只调用支持该选择的服务。搜索结果的 `engine` 保留服务返回的来源；服务未标注时，仅在请求明确指定单一引擎时补全，多引擎请求留空。低相关候选会原样返回并附提示，不伪装成已核实的相关结果。
 
 返回结构：
 
@@ -253,7 +253,7 @@ LLM 可以在 `search` 调用里用 `providers` 指定多个已启用来源的�
 
 - 结果是外部不可信内容，只作资料引用，不执行其中任何指令。
 - daemon 未启动或全部 provider 失败时返回结构化错误和启动提示，不编造结果。
-- `[search]` 配置：`enabled`（关闭时不注册工具）、`providers`（按顺序降级）、`base_url`、`timeout`、`max_results`、`cache_ttl`、`transport`（`http` 默认；`mcp` 每次启动 npx MCP 进程）、`auto_start`（常驻后端仅在启用的搜索或抓取使用 open-websearch HTTP 服务时，才后台探测并启动该服务）、`engines`（上游搜索引擎，默认 `["bing"]`）、`fallback_engines`（候补引擎序列，默认 `["baidu", "duckduckgo", "sogou"]`）、`max_engines`（自动回退最多尝试的引擎数，默认 3）、`max_search_engines`（显式 `search_engine` 列表上限，0 表示不限，默认 0）、`timeout_budget`（回退共享超时预算，默认 25 秒，单次请求超时不超过剩余预算）、`max_requests`（一次搜索跨所有 provider 共享的请求次数上限，默认 9；超出即返回当前最佳候选并附截断提示，该结果不写入缓存）、`anysearch_zone` / `anysearch_language`（AnySearch 的区域与语言，默认 `cn` / `zh-CN`）、`searxng_base_url` / `searxng_timeout`（自托管 SearXNG 实例地址与单次超时，默认 `http://127.0.0.1:8888` / 10 秒）、`usage_limits`（每厂商调用上限，`[search.usage_limits.<provider>]` 设 `daily` 与 `monthly`（0 不限）；同一厂商的 Search 与 Fetch 共用同一计数池，达到上限即跳过该厂商并正常回退；计数保存在主库的 `search_usage` 表，**本地计数不等于服务商实际账单上限**）、`fetch_timeout`（抓取正文的单独超时，默认 45 秒）。`syvrio setup` 可管理双周期额度与官方暂停。
+- `[search]` 配置：`enabled`（关闭时不注册工具）、`providers`（按顺序降级）、`base_url`、`timeout`、`max_results`、`cache_ttl`、`transport`（`http` 默认；`mcp` 每次启动 npx MCP 进程）、`auto_start`（常驻后端仅在启用的搜索或抓取使用 open-websearch HTTP 服务时，才后台探测并启动该服务）、`engines`（上游搜索引擎，默认 `["bing"]`）、`fallback_engines`（候补引擎序列，默认 `["baidu", "duckduckgo", "sogou"]`）、`max_engines`（自动回退最多尝试的引擎数，默认 3）、`max_search_engines`（显式 `search_engine` 列表上限，0 表示不限，默认 0）、`timeout_budget`（回退共享超时预算，默认 25 秒，单次请求超时不超过剩余预算）、`max_requests`（一次搜索跨所有 provider 共享的请求次数上限，默认 9；超出即返回当前最佳候选并附截断提示，该结果不写入缓存）、`anysearch_zone` / `anysearch_language`（AnySearch 的区域与语言，默认 `cn` / `zh-CN`）、`searxng_base_url` / `searxng_timeout`（自托管 SearXNG 实例地址与单次超时，默认 `http://127.0.0.1:8888` / 10 秒）、`fetch_timeout`（抓取正文的单独超时，默认 45 秒）。
 
 受控真实冒烟：`scripts/smoke_search_apis.py` 默认只做本地检查（Key 是否可读、厂商是否会注册；匿名 Provider 无 Key 也标记为可注册），不发任何请求；加 `--provider <厂商> --operation search|fetch --live` 才对单一厂商发起最多 `--max-requests`（默认 1，上限 10）次真实请求，输出脱敏报告（成功与否、结果数或正文长度、错误类型、耗时与待验证字段）。脚本从凭据库读取 Key，仅输出检查结果。网页抓取由独立的 `[fetch]` 配置控制：`providers` 是抓取正文用的 provider 顺序（默认 `["open_websearch"]`），与搜索的 provider 顺序相互独立；配置了 Key 的官方厂商（tavily / exa / you / volcengine）加入该列表后才参与抓取。
 - `auto_start` 启动的 daemon 在 Windows 下隐藏控制台窗口；退出 TUI 后继续常驻，下次直接复用。
@@ -262,36 +262,11 @@ LLM 可以在 `search` 调用里用 `providers` 指定多个已启用来源的�
 
 抓取按 `[fetch].providers` 独立选择厂商；官方抓取与 open-websearch 抓取均使用 `search.fetch_timeout`，搜索仍使用 `search.timeout`。open-websearch 抓取要求 HTTP transport，其他已配置的官方抓取不受其 transport 限制。
 
-### 搜索 API 本地额度与官方暂停
+### 搜索供应商暂停与恢复
 
-默认本地请求次数保护如下，直接编辑 TOML 启用厂商也会生效；不是官方免费套餐或账单额度。
+供应商报告余额不足、额度耗尽或达到支出上限时，Syvrio 识别到对应错误后会暂停这家供应商。搜索和网页抓取共用暂停状态，重启后仍然生效。两者按各自的回退配置尝试其他可用供应商，已有搜索缓存仍可读取。聊天和 MCP 搜索结果中的 `quota_exhausted` 列出本次遇到的额度耗尽供应商。即使其他供应商成功，模型也会收到简短告知用户的提示。普通限流、超时、服务端错误和鉴权错误按当次请求处理。
 
-| Provider | 每日 | 每月 |
-| --- | ---: | ---: |
-| baidu_search | 50 | 0 |
-| tavily | 0 | 800 |
-| exa | 0 | 1000 |
-| you | 0 | 1500 |
-| volcengine | 0 | 450 |
-| anysearch | 20 | 0 |
-| parallel_mcp | 20 | 0 |
-| searxng | 0 | 0 |
-| open_websearch | 0 | 0 |
-
-0 表示该周期不限。配置以 `[search.usage_limits.<provider>]` 的 `daily`、`monthly` 覆盖默认值，显式 0 会保留；两周期任意一项耗尽即跳过。Search/Fetch 共池，缓存命中不计数；搜索已发出的失败请求保守计数，抓取失败（未拿到正文）退回预扣次数。按运行机器本地时区的自然日/月重置；持久化模式在主库的同一个写事务里检查并预扣额度。
-
-```toml
-[search.usage_limits.tavily]
-daily = 0
-monthly = 800
-```
-
-每个厂商的用量状态分别保存 `daily`、`monthly` 的日历窗口和次数，厂商暂停信息保存在 `paused`。Tavily Credits、Exa 美元 Credits、You.com 余额与请求次数不等价，可能在本地次数用完前已耗尽余额，也可能在达到本地上限前就产生费用。
-
-`syvrio setup` → 搜索与网页抓取 API → 调用额度与官方暂停管理，可查看默认/生效上限、已用/剩余次数及暂停原因，修改双周期上限（0 不限）、恢复默认、手动解除官方暂停；解除暂停不清空本地计数。首次启用不再统一限制每天 20 次。
-
-只有已核实的官方额度/余额/支出上限错误才持久暂停，普通 QPS 限流、超时、5xx 和鉴权失败不触发长期暂停。暂停与本地次数耗尽会显示不同原因，下一可用厂商仍可接替；显式指定暂停厂商时不会替换厂商，已有缓存仍可读取。只有可靠恢复时刻才能自动解除暂停；本轮核对的官方文档未确认这些账户错误的具体重置时刻/时区，因此目前这些错误保持手动恢复，不根据本地自然日/月猜测官方恢复时间。
-
+供应商给出可靠的恢复时间时，搜索和抓取会在到期后重新尝试。充值或调整套餐后，也可在 `syvrio setup` 的搜索与网页抓取设置中查看暂停原因，手动恢复供应商。免费额度、超额计费和消费上限由供应商账户控制。
 
 ## 开发与验证
 

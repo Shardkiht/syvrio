@@ -32,41 +32,5 @@ searxng_base_url = "http://127.0.0.1:8888"
 searxng_timeout = 10.0
 fetch_timeout = 45.0
 
-[search.usage_limits.baidu_search]
-daily = 50
-monthly = 0
-
-[search.usage_limits.tavily]
-daily = 0
-monthly = 800
-
-[search.usage_limits.exa]
-daily = 0
-monthly = 1000
-
-[search.usage_limits.you]
-daily = 0
-monthly = 1500
-
-[search.usage_limits.volcengine]
-daily = 0
-monthly = 450
-
-[search.usage_limits.open_websearch]
-daily = 0
-monthly = 0
-
-[search.usage_limits.anysearch]
-daily = 20
-monthly = 0
-
-[search.usage_limits.parallel_mcp]
-daily = 20
-monthly = 0
-
-[search.usage_limits.searxng]
-daily = 0
-monthly = 0
-
 [fetch]
 providers = ["open_websearch"]

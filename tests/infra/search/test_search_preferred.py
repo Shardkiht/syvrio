@@ -1,11 +1,11 @@
-"""LLM 首选 Provider 的离线回归：排序提示、回退、额度与缓存隔离。"""
+"""LLM 首选 Provider 的离线回归：排序提示、回退、供应商暂停与缓存隔离。"""
 
 from __future__ import annotations
 
 import pytest
 
 from syvrio.agent.tools import build_tools
-from syvrio.infra.config import ChatConfig, Config, LLMConfig, SearchConfig, UsageLimit
+from syvrio.infra.config import ChatConfig, Config, LLMConfig, SearchConfig
 from syvrio.infra.search.base import (
     ProviderError,
     ProviderErrorKind,
@@ -14,8 +14,8 @@ from syvrio.infra.search.base import (
     SearchResult,
 )
 from syvrio.infra.search.cache import SearchCache
+from syvrio.infra.search.pauses import ProviderPauses
 from syvrio.infra.search.router import SearchRouter, _dedupe_failures
-from syvrio.infra.search.usage import UsageLimiter
 from syvrio.infra.session import SessionStore
 from syvrio.infra.storage.paths import vault_paths
 from syvrio.memory.service import MemoryService
@@ -100,15 +100,15 @@ def test_unavailable_requested_provider_degrades_with_diagnostics():
     )
 
 
-def test_requested_provider_cannot_bypass_usage_limit():
+def test_requested_provider_cannot_bypass_official_pause(tmp_path):
     limited = _Provider("searxng", [_strong("searxng", "https://example.com/limited")])
     backup = _Provider("anysearch", [_strong("anysearch", "https://example.com/a")])
-    limiter = UsageLimiter({"searxng": UsageLimit(daily=1)}, clock=lambda: 0.0)
-    limiter.record("searxng")
+    pauses = ProviderPauses(vault_paths(tmp_path / "vault"))
+    pauses.note_error("searxng", ProviderError("searxng", "quota", "empty", pause_reason="empty"))
     router = SearchRouter(
         {"searxng": limited, "anysearch": backup},
         order=["anysearch", "searxng"],
-        usage_limiter=limiter,
+        provider_pauses=pauses,
     )
     outcome = router.search(SearchQuery("tibo", providers=("searxng",)))
     assert not limited.calls

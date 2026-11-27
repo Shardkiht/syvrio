@@ -26,6 +26,7 @@ _EVENTS = frozenset(
         "chat.failed",
         "chat.history_write_failed",
         "search.failed",
+        "search.quota_exhausted",
         "catchup.failed",
         "session.failed",
         "session.title_failed",
@@ -103,13 +104,14 @@ _FIELDS = frozenset(
         "cursor_x",
         "cursor_y",
         "elapsed_ms",
-        # 字符串状态用于记录触发 cli.failed 的 CLI 命令。
+        # 字符串仅用于对应事件的 CLI 命令或已知供应商名。
         "command",
+        "provider",
     }
 )
 # 仅列出的状态键可以保存字符串，其他允许的键只接受数值或布尔值，
 # 避免自由文本意外进入耗时诊断数据。
-_STR_FIELDS = frozenset({"command"})
+_STR_FIELDS = {"cli.failed": "command", "search.quota_exhausted": "provider"}
 _LATENCY_FIELDS = frozenset(
     {
         "turn",
@@ -141,7 +143,7 @@ class _QuietFileHandler(RotatingFileHandler):
         pass
 
 
-def start_diagnostics(path: Path) -> Path | None:
+def start_diagnostics(path: Path, *, latency_name: str = "latency.log") -> Path | None:
     """在 Runtime 内启动由后台处理且有队列上限的诊断记录。"""
     global _listener, _handler, _queue, _path
     with _lock:
@@ -154,7 +156,7 @@ def start_diagnostics(path: Path) -> Path | None:
                 path, maxBytes=2 * 1024 * 1024, backupCount=3, encoding="utf-8"
             )
             latency_handler = _QuietFileHandler(
-                path.with_name("latency.log"),
+                path.with_name(latency_name),
                 maxBytes=2 * 1024 * 1024,
                 backupCount=3,
                 encoding="utf-8",
@@ -242,8 +244,8 @@ def record_event(
                 for key, value in state.items()
                 if key in fields
                 and (
-                    (event == "cli.failed" and key in _STR_FIELDS and isinstance(value, str))
-                    or (key not in _STR_FIELDS and type(value) in (bool, int, float))
+                    (key == _STR_FIELDS.get(event) and isinstance(value, str))
+                    or (key not in _STR_FIELDS.values() and type(value) in (bool, int, float))
                 )
             },
         }
