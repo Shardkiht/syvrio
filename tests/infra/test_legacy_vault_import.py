@@ -77,9 +77,20 @@ def test_import_session_and_rollback(tmp_path, monkeypatch):
         with transaction(paths, write=False) as target:
             assert not target.execute("SELECT id FROM sessions").fetchall()
         data.inferences.clear()
+        data.logs[("memory-changes.jsonl", "example-digest", 1)] = {
+            "id": "example-memory",
+            "at": "2024-02-03T00:00:00+00:00",
+            "change": {"status": "deprecated"},
+        }
         assert transfer(data, paths)["sessions"] == 1
         assert not transfer(data, paths)
         with transaction(paths, write=False) as target:
+            imported = target.execute(
+                "SELECT at,details,memory_change FROM audit WHERE action='legacy_memory_change'"
+            ).fetchall()
+            assert len(imported) == 1 and imported[0]["at"] == "2024-02-03T00:00:00+00:00"
+            assert json.loads(imported[0]["details"]) == {"memory_id": "example-memory"}
+            assert json.loads(imported[0]["memory_change"]) == {"status": "deprecated"}
             assert tuple(target.execute("SELECT archived,started_at FROM sessions").fetchone()) == (
                 1,
                 "2024-02-02T17:02:03+00:00",
@@ -100,8 +111,10 @@ def test_import_session_and_rollback(tmp_path, monkeypatch):
             )
             assert target.execute("SELECT count(*) FROM attachments").fetchone()[0] == 1
             assert (
-                json.loads(target.execute("SELECT body FROM session_reasoning").fetchone()[0])[
-                    "text"
-                ]
+                json.loads(
+                    target.execute(
+                        "SELECT reasoning FROM session_events WHERE reasoning IS NOT NULL"
+                    ).fetchone()[0]
+                )["text"]
                 == "sample reasoning"
             )

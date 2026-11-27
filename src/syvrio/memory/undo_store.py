@@ -8,6 +8,8 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 
+from ..infra.storage import evidence_versions
+from ..infra.storage.audit import revert_memory_change
 from ..infra.storage.database import encode, transaction
 from ..infra.storage.paths import SyvrioPaths
 from .source_links import SOURCES_BY_OWNER, references
@@ -18,7 +20,7 @@ _KEYS = {
     "memories": "id",
     "inferences": "id",
     "candidates": "id",
-    "memory_changes": "seq",
+    "audit": "seq",
 }
 
 
@@ -75,6 +77,11 @@ class UndoBatch:
             effect.conflicted or image(self.db, effect.entity, effect.key) != effect.after
         )
 
+    def is_pinned(self, effect: UndoEffect) -> bool:
+        if effect.entity != "memories" or effect.before is not None:
+            return False
+        return evidence_versions.is_fact_pinned(self.db, effect.key)
+
     def has_new_references(self, effect: UndoEffect) -> bool:
         if effect.entity != "memories":
             return False
@@ -83,6 +90,10 @@ class UndoBatch:
 
     def restore(self, effect: UndoEffect) -> None:
         db, table, key = self.db, effect.entity, effect.key
+        if table == "audit":
+            revert_memory_change(db, effect.after)
+            return
+        evidence_versions.group_changes(db)
         before = effect.before.copy() if effect.before is not None else None
         if table == "topics":
             expected = effect.after
@@ -92,6 +103,8 @@ class UndoBatch:
             )
             return
         if before is None:
+            if table == "memories":
+                evidence_versions.forget_new_memory(db, key)
             db.execute(f"DELETE FROM {table} WHERE {_KEYS[table]}=?", (key,))
             return
         if "revision" in before:

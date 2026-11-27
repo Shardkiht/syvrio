@@ -6,15 +6,14 @@ import hashlib
 import json
 import secrets
 import time
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from collections.abc import Callable
 from dataclasses import replace
 from threading import Event, Lock
 
 from ...infra.llm.client import effective_context_window
 from ...infra.llm.tokens import estimate_tokens
 from ...infra.time import utc_timestamp
-from ..models import Inference, ProfileSummaryResponse, ReflectionResponse
+from ..models import ProfileSummaryResponse, ReflectionResponse
 from .jobs import job_key, read_job, save_job
 from .model import (
     MAX_DREAM_OUTPUT_TOKENS,
@@ -41,12 +40,12 @@ def _fingerprint(rows: list[dict]) -> str:
     return hashlib.sha256(data.encode("utf-8")).hexdigest()
 
 
-def _state(service):
-    facts = sorted(
-        (f.as_recall().model_dump(exclude_none=True) for f in service.current_facts()),
-        key=lambda row: row["id"],
-    )
-    inferences = service.list_inferences()
+def _state(service, commit=None):
+    with service.work.read():
+        if commit is None:
+            commit = service.store.evidence_commit()
+        facts = service.store.facts_at(commit)
+        inferences = service.inferences.all(at=commit)
     confirmed = sorted(
         (
             i.model_dump(include={"id", "text", "source_ids", "kind", "status"})
@@ -107,6 +106,7 @@ class Dream:
         self.paths = service.paths
         self.path = job_key(self.paths, "dream", "job")
         self._active_lock = Lock()
+        self._evidence_cache = None
         self._active_request: tuple[str, int, int] | None = None
 
     def status(self, *, live: bool = False) -> dict:
@@ -158,6 +158,7 @@ class Dream:
                     "cursor": [0, 0],
                     "requests": 0,
                     "proposed": 0,
+                    "evidence_commit": self.service.store.evidence_commit(),
                     "version": "",
                     "partial": "",
                 }
@@ -177,31 +178,12 @@ class Dream:
         job = self.status()
         return job["state"] == "queued" and job.get("retry_at", 0) <= time.time()
 
-    @contextmanager
-    def _publish_snapshot(
-        self,
-        job: dict,
-        version: str,
-        revision: tuple[int, ...],
-        existing: list[Inference],
-        stop: Event,
-    ) -> Iterator[list[Inference] | None]:
-        while True:
-            with self.service.work.write():
-                if stop.is_set() or read_job(self.path) != job:
-                    yield None
-                    return
-                if self.service.dream_version() == revision:
-                    yield existing
-                    return
-            # 待审核推断等变化不一定影响证据正文。释放写锁后读新快照，
-            # 再在写事务内核对，避免丢弃有效回答或遗漏刚新增的重复提议。
-            with self.service.work.read():
-                revision = self.service.dream_version()
-                _, _, existing, latest_version = _state(self.service)
-            if latest_version != version:
-                yield None
-                return
+    def _evidence(self, commit):
+        cached = self._evidence_cache
+        if cached is None or cached[0] != commit:
+            cached = (commit, _state(self.service, commit))
+            self._evidence_cache = cached
+        return cached[1]
 
     def step(self, stop: Event) -> None:
         """执行一次模型请求，随后原子地发布结果或保存检查点。"""
@@ -209,23 +191,15 @@ class Dream:
             checkpoint = read_job(self.path)
             if not checkpoint or checkpoint["state"] != "queued" or stop.is_set():
                 return
-            revision = self.service.dream_version()
-            facts, confirmed, existing, version = _state(self.service)
+        commit = checkpoint["evidence_commit"]
+        facts, confirmed, existing, version = self._evidence(commit)
         job = dict(checkpoint)
         # 规划和发送使用同一快照，即使用户在请求期间切换了模型。
         settings = self.service.config
         config = replace(settings, llm=replace(settings.llm), dream=replace(settings.dream))
         window = effective_context_window(config.llm, config.dream.context_window)
         model = config.llm.litellm_model()
-        if job["version"] != version:
-            job.pop("retry_output_tokens", None)
-            job.update(
-                version=version,
-                phase="profile",
-                batch=0,
-                cursor=[0, 0],
-                partial="",
-            )
+        job["version"] = version
         if job.get("model") != model:
             job.pop("retry_output_tokens", None)
             job.update(model=model, failures=0, retry_at=0)
@@ -250,13 +224,9 @@ class Dream:
             evidence, job["cursor"], prompt, payload, window - MESSAGE_OVERHEAD - reserve
         )
         request_payload = payload(rows)
-        # 只有检查点和证据仍匹配时，才为这批输入预留模型预算。
+        # 检查点仍归本次任务时才预留预算，证据提交号固定至整轮结束。
         with self.service.work.write():
-            if (
-                stop.is_set()
-                or read_job(self.path) != checkpoint
-                or self.service.dream_version() != revision
-            ):
+            if stop.is_set() or read_job(self.path) != checkpoint:
                 return
             if rows:
                 if job["remaining_requests"] == 0:
@@ -291,8 +261,8 @@ class Dream:
             )
             if any(not set(p.source_ids).issubset(ids) for p in proposals):
                 raise ValueError("Dream proposed evidence outside its source batch.")
-        with self._publish_snapshot(job, version, revision, existing, stop) as current_inferences:
-            if current_inferences is None:
+        with self.service.work.write():
+            if stop.is_set() or read_job(self.path) != job:
                 return
             job["batch"] += 1
             job["cursor"] = next_cursor
@@ -304,6 +274,7 @@ class Dream:
                         profile.strip(),
                         {
                             "version": version,
+                            "evidence_commit": commit,
                             "generated_at": utc_timestamp(),
                             "fact_count": len(facts),
                             "unique_count": len({f["text"] for f in facts}),
@@ -313,17 +284,18 @@ class Dream:
                     if not facts:
                         job["state"] = "completed"
             else:
-                known = {
-                    (i.text.strip().casefold(), frozenset(i.source_ids)) for i in current_inferences
-                }
-                for proposal in proposals:
-                    key = (proposal.text.strip().casefold(), frozenset(proposal.source_ids))
-                    if key not in known:
-                        self.service.propose_inference(
-                            proposal.text, proposal.source_ids, proposal.kind
+                if proposals:
+                    known = {item.id for item in self.service.list_inferences()}
+                    for proposal in proposals:
+                        saved = self.service.propose_inference(
+                            proposal.text,
+                            proposal.source_ids,
+                            proposal.kind,
+                            evidence_commit=commit,
                         )
-                        known.add(key)
-                        job["proposed"] += 1
+                        if saved.id not in known:
+                            known.add(saved.id)
+                            job["proposed"] += 1
                 if finished:
                     job["state"] = "completed"
             if not job["remaining_requests"] and job["state"] == "queued":

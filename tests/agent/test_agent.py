@@ -310,7 +310,7 @@ def test_turn_undo_restores_vault_files_after_resume(tmp_path, monkeypatch):
     runtime, service = build_runtime(tmp_path, model, max_steps=15)
     old = service.note("合成活动是读书", topic="activities")
     obsolete = service.note("合成计划是骑车", topic="plans")
-    before = rows(service.paths, "memory_changes")
+    before = rows(service.paths, "audit")
     source = tmp_path / "synthetic-input.txt"
     source.write_text("合成进口资料", encoding="utf-8")
     proposal = Candidate(text="合成进口资料", topic="imported")
@@ -332,19 +332,31 @@ def test_turn_undo_restores_vault_files_after_resume(tmp_path, monkeypatch):
     prompt = f'请处理合成样例并导入 "{source}"'
     runtime.ask(prompt)
     assert service.pending() and service.store.entries("imported")
-    assert (
-        service.store.find(old.id).status == service.store.find(obsolete.id).status == "deprecated"
-    )
+    assert service.store.find(old.id).text == "合成活动是绘画"
+    assert service.store.find(old.id).status == "active"
+    assert service.store.find(obsolete.id).status == "deprecated"
+    pre_undo = rows(service.paths, "audit")
+    tool_changes = [
+        event["seq"]
+        for event in pre_undo[len(before) :]
+        if event["action"] in {"add", "correct", "update"}
+    ]
+    assert len(tool_changes) == 4
     reopened = AgentRuntime(service, model, SessionStore(service.paths), config=service.config.chat)
     reopened.resume(runtime.current.id)
     assert reopened.undo() == prompt
-    assert rows(service.paths, "memory_changes") == before
+    audit = rows(service.paths, "audit")
+    assert audit[: len(pre_undo)] == pre_undo
+    assert (
+        sorted(row["reverts"] for row in audit if row["action"] == "undo_memory_change")
+        == tool_changes
+    )
     assert service.pending() == [] and "general/imported" not in {
         t.topic for t in service.store.topics()
     }
     assert [item.id for item in service.store.entries()] == [old.id, obsolete.id]
     assert source.read_text(encoding="utf-8") == "合成进口资料"
-    assert "undo_tool_writes" in str(rows(service.paths, "audit"))
+    assert any(row["action"] == "undo_tool_writes" for row in audit)
 
 
 def test_turn_undo_leaves_all_files_and_messages_when_a_file_changed(tmp_path):
@@ -371,7 +383,7 @@ def test_turn_undo_rejects_new_inference_source_without_partial_rollback(tmp_pat
     runtime.ask(args["text"])
     source = service.store.entries()[0]
     service.propose_inference("合成推断", [source.id], "samples")
-    names = ("session_events", "inferences", "memories", "audit", "memory_changes")
+    names = ("session_events", "inferences", "memories", "audit", "undo_effects")
     before = {n: rows(service.paths, n) for n in names}
     with pytest.raises(TurnUndoError):
         runtime.undo()
@@ -1729,3 +1741,27 @@ def test_startup_consolidation_excludes_archived_session(tmp_path, caplog, monke
     assert service.store.has_text("合成事实")
     assert not runtime.sessions.load(healthy.id).needs_consolidation()
     assert runtime.sessions.load(broken.id, archived=True).user_texts() == ["archived conversation"]
+
+
+def test_chat_correct_rejects_stale_revision_before_evidence_review(service):
+    from syvrio.agent.tools import build_tools
+    from syvrio.memory.models import MemoryCorrection
+
+    sessions = SessionStore(service.paths)
+    session = sessions.create()
+    sessions.append(session, {"type": "message", "role": "user", "content": "记忆修正"})
+    tools = build_tools(service, session, config=service.config)
+    old = service.note("初始事实", topic="tests")
+    current = service.correct(old.id, MemoryCorrection(text="已核准事实"))
+
+    result = tools.execute(
+        "correct",
+        {
+            "entry_id": old.id,
+            "text": "过期提案",
+            "expected_revision": old.revision,
+        },
+    )
+
+    assert not result.ok and "memory changed" in result.content.lower()
+    assert service.store.find(old.id) == current

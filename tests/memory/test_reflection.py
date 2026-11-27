@@ -251,30 +251,29 @@ def test_live_dream_status_only_marks_the_current_request_as_running(
         owner.stop()
 
 
-def test_late_provider_response_after_worker_stop_or_evidence_change_is_discarded(
-    service, monkeypatch
-):
+def test_frozen_input_accepts_concurrent_write_but_respects_worker_stop(service, monkeypatch):
     fact = add(service, "测试事实")
     engine = Dream(service)
     engine.request()
 
     def change(*args):
         service.apply(updates=[MemoryUpdate(id=fact.id, context=MemoryContext(location="杭州"))])
-        return args[-1](summary="过期画像")
+        assert "context" not in args[2]["evidence"][0]
+        return args[-1](summary="起点画像")
 
     monkeypatch.setattr(dream, "ask", change)
     engine.step(Event())
-    assert service.profile.read_text() == ""
+    assert service.profile.read_text() == "起点画像"
 
     stop = Event()
 
     def shut_down(*args):
         stop.set()
-        return args[-1](summary="Stopped before publication")
+        return args[-1](proposals=[])
 
     monkeypatch.setattr(dream, "ask", shut_down)
     engine.step(stop)
-    assert engine.status()["state"] == "queued" and not service.profile.read_text()
+    assert engine.status()["state"] == "queued" and service.profile.read_text() == "起点画像"
 
 
 def test_inference_failure_preserves_profile_and_resumes_same_batch(service, monkeypatch):
@@ -383,7 +382,7 @@ def test_model_switch_while_preparing_request_takes_effect_on_next_batch(service
     assert engine.status()["state"] == "completed"
 
 
-def test_evidence_version_rechecked_before_publishing_hypotheses(service, monkeypatch):
+def test_hypotheses_pin_sources_even_if_deprecated_during_generation(service, monkeypatch):
     fact = add(service, "旧事实")
     engine = Dream(service)
     engine.request()
@@ -396,7 +395,8 @@ def test_evidence_version_rechecked_before_publishing_hypotheses(service, monkey
 
     monkeypatch.setattr(dream, "ask", mutate)
     engine.step(Event())
-    assert not service.list_inferences()
+    (proposal,) = service.list_inferences()
+    assert proposal.source_versions == {fact.id: engine.status()["evidence_commit"]}
     assert service.profile.read_text().strip() == "成功画像"
 
 
@@ -740,7 +740,7 @@ def test_automatic_dream_retries_from_checkpoint_without_consuming_extra_request
     assert restarted.dream.status()["failures"] == 0
 
 
-def test_failed_model_call_and_stale_input_still_consume_budget(service, monkeypatch):
+def test_concurrent_update_does_not_reset_reserved_budget(service, monkeypatch):
     entry = add(service, "初始事实")
     engine = Dream(service)
     service.config.chat.default_budget = 1
@@ -748,13 +748,14 @@ def test_failed_model_call_and_stale_input_still_consume_budget(service, monkeyp
 
     def model_call(_, prompt, data, schema):
         service.apply(updates=[MemoryUpdate(id=entry.id, context=MemoryContext(location="新地点"))])
-        return schema(summary="已失效结果")
+        assert "context" not in data["evidence"][0]
+        return schema(summary="原始证据画像")
 
     monkeypatch.setattr(dream, "ask", model_call)
     engine.step(Event())
     assert engine.status()["requests"] == 1 and engine.status()["remaining_requests"] == 0
     engine.step(Event())
-    assert engine.status()["state"] == "paused" and not service.profile.read_text()
+    assert engine.status()["state"] == "paused" and service.profile.read_text() == "原始证据画像"
 
 
 def test_run_continues_failed_checkpoint_and_ignores_old_generation(service):

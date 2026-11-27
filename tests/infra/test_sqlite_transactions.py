@@ -78,7 +78,7 @@ def test_approve_failure_is_atomic_and_replay_is_idempotent(service):
         service.approve(item.id, "edited")
     assert service.pending() == [item] and service.current_facts() == []
     with transaction(service.paths) as db:
-        assert db.execute("SELECT count(*) FROM memory_changes").fetchone()[0] == 0
+        assert db.execute("SELECT count(*) FROM memory_versions").fetchone()[0] == 0
         assert db.execute("SELECT count(*) FROM audit WHERE action='add'").fetchone()[0] == 0
         db.execute("DROP TRIGGER fail_job")
     record = service.approve(item.id, "edited")
@@ -163,7 +163,7 @@ def test_backup_copies_archived_originals_and_rejects_tampering(service, tmp_pat
     from dataclasses import asdict
     from io import BytesIO
 
-    from syvrio.infra.session.attachment_objects import original_path, release, reserve
+    from syvrio.infra.session.attachment_objects import original_path
     from syvrio.infra.session.attachments import AttachmentBatch
 
     sessions = SessionStore(service.paths)
@@ -171,10 +171,7 @@ def test_backup_copies_archived_originals_and_rejects_tampering(service, tmp_pat
     batch = AttachmentBatch.stage(
         service.paths.attachments_dir, [("sample.txt", BytesIO(b"private original"))]
     )
-    token = batch.folder.name
-    reserve(service.paths, token, batch.files)
-    with transaction(service.paths):
-        batch.publish(service.paths)
+    with batch.sending(service.paths):
         sessions.append(
             chat,
             {
@@ -184,8 +181,6 @@ def test_backup_copies_archived_originals_and_rejects_tampering(service, tmp_pat
                 "attachments": [asdict(batch.files[0])],
             },
         )
-        release(service.paths, token)
-    batch.finish()
     sessions.set_archived(chat.id, True)
     backup = assemble(service.paths.vault_dir, tmp_path / "backup")
     restored = assemble(backup, tmp_path / "restored", restore=True)
@@ -229,7 +224,7 @@ def test_export_retries_complete_snapshot_without_private_state(service, tmp_pat
     )
     old = service.note("superseded spelling")
     corrected = service.correct(old.id, MemoryDraft(text="correct spelling", topic=old.topic))
-    assert service.store.find(old.id).status == "deprecated"
+    assert corrected.id == old.id and service.store.find(old.id).status == "active"
     rendered = render(service.paths)
     assert rendered == render(service.paths)
     public = "\n".join(rendered.values())
@@ -257,3 +252,61 @@ def test_export_retries_complete_snapshot_without_private_state(service, tmp_pat
     assert not any(
         name.endswith((".sqlite3", "-wal", "-shm")) for name in run("ls-files").splitlines()
     )
+
+
+def test_preparation_follows_nested_savepoints(service):
+    from syvrio.infra.storage.database import before_commit, on_commit
+    from syvrio.infra.storage.evidence_versions import current, group_changes
+
+    events = []
+    with transaction(service.paths) as db:
+        initial = current(db)
+        before_commit(lambda _: events.append("parent"))
+        with pytest.raises(RuntimeError), transaction(service.paths):
+            group_changes(db)
+            before_commit(lambda _: events.append("discarded"))
+            raise RuntimeError("rollback nested savepoint")
+        assert (
+            db.execute("SELECT reserved FROM revisions WHERE domain='evidence'").fetchone()[0]
+            is None
+        )
+        with transaction(service.paths):
+            group_changes(db)
+            before_commit(lambda _: events.append("child"))
+        service.note("one")
+        service.note("two")
+        assert current(db) == initial + 1
+        on_commit(lambda: events.append("committed"))
+        assert events == []
+
+    with transaction(service.paths, write=False) as db:
+        assert tuple(
+            db.execute("SELECT version,reserved FROM revisions WHERE domain='evidence'").fetchone()
+        ) == (initial + 1, None)
+    assert events == ["parent", "child", "committed"]
+
+
+def test_failed_preparation_rolls_back_evidence_and_publication(service):
+    from syvrio.infra.storage.database import before_commit, on_commit
+    from syvrio.infra.storage.evidence_versions import current
+
+    def fail(_):
+        raise ValueError("reject before commit")
+
+    published = []
+    with pytest.raises(ValueError, match="reject before commit"), transaction(service.paths) as db:
+        first_version = current(db)
+        entry = service.note("rejected")
+        on_commit(lambda: published.append(entry.id))
+        before_commit(fail)
+
+    with transaction(service.paths, write=False) as db:
+        assert current(db) == first_version
+        assert service.store.find(entry.id) is None
+        assert (
+            db.execute(
+                "SELECT count(*) FROM memory_versions WHERE memory_id=?", (entry.id,)
+            ).fetchone()[0]
+            == 0
+        )
+    assert published == []

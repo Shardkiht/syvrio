@@ -30,10 +30,16 @@ class SourceLinks:
 
     def restore(self, db: sqlite3.Connection, key: str, rows: list[dict]) -> None:
         db.execute(f"DELETE FROM {self.table} WHERE {self.owner_column}=?", (key,))
-        db.executemany(
-            f"INSERT INTO {self.table}({self.owner_column},position,memory_id) VALUES(?,?,?)",
-            [(key, row["position"], row["memory_id"]) for row in rows],
-        )
+        if self is INFERENCE_SOURCES:
+            db.executemany(
+                """INSERT INTO inference_sources(inference_id,position,memory_id,memory_version)
+                VALUES(?,?,?,?)""",
+                [(key, r["position"], r["memory_id"], r["memory_version"]) for r in rows],
+            )
+        else:
+            self.add(
+                db, key, [row["memory_id"] for row in sorted(rows, key=lambda r: r["position"])]
+            )
 
     def owners_query(self) -> str:
         owners = f"SELECT '{self.label}:'||link.{self.owner_column} FROM {self.table} link"

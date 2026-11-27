@@ -281,7 +281,7 @@ class InferenceScreen(ModalScreen):
             self.query_one("#inference-detail-text").update(item.text)
             lines = [f"Sources ({len(item.source_ids)})"]
             for source_id in item.source_ids:
-                text = self._sources.get(source_id, "")
+                text = self._sources.get(f"{source_id}@{item.source_versions.get(source_id)}", "")
                 lines.append(
                     f"· {_excerpt(text)}"
                     if text

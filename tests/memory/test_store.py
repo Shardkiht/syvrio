@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 import pytest
 
 from syvrio.infra.storage.database import transaction
-from syvrio.memory.models import MemoryContext
+from syvrio.memory.models import MemoryContext, MemoryUpdate
 from syvrio.memory.store import MemoryStore, slugify
 
 pytestmark = pytest.mark.memory
@@ -221,17 +221,20 @@ def test_only_actual_changes_log_new_values_and_keep_unmanaged_extensions(tmp_pa
         "personal/exhibit", "参展", context=MemoryContext(emotion={"event": "紧张"})
     )
     context = MemoryContext(emotion={"event": "紧张", "recollection": "开心"}, location="示例展厅")
-    store.update(entry.id, context=context, status="deprecated")
+    update = MemoryUpdate(id=entry.id, context=context, status="deprecated")
+    store.save_revision(entry.id, update)
     original = store.find(entry.id)
-    store.update(entry.id, context=context, status="deprecated")
+    store.save_revision(entry.id, update)
     assert store.find(entry.id) == original
     with pytest.raises(ValueError, match="already has a value"):
         store.fill_context(entry.id, MemoryContext(emotion={"event": "平静"}))
     assert store.find(entry.id) == original
     with transaction(store.paths, write=False) as db:
         history = [
-            dict(id=r[0], change=json.loads(r[1]))
-            for r in db.execute("SELECT memory_id,change FROM memory_changes ORDER BY seq")
+            {"id": json.loads(details)["memory_id"], "change": json.loads(change)}
+            for details, change in db.execute(
+                "SELECT details,memory_change FROM audit ORDER BY seq"
+            )
         ]
     assert history == [
         {"id": entry.id, "change": "created"},
@@ -252,7 +255,7 @@ def test_fill_range_validated_against_existing_partial_date(tmp_path):
         store.fill_context(entry.id, MemoryContext(valid_to="2024"))
     assert store.find(entry.id).context.valid_to is None
     with transaction(store.paths, write=False) as db:
-        assert db.execute("SELECT count(*) FROM memory_changes").fetchone()[0] == 1
+        assert db.execute("SELECT count(*) FROM audit").fetchone()[0] == 1
 
 
 @pytest.mark.parametrize(

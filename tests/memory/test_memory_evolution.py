@@ -208,7 +208,7 @@ def test_formal_mutations_require_no_inference_review_and_keep_audit(service, mo
         service.deprecate(source.id)
     elif action == "correct":
         corrected = service.correct(source.id, MemoryDraft(text="更正事实", topic="work"))
-        assert corrected.supersedes == source.id
+        assert corrected.id == source.id and corrected.revision > source.revision
     else:
         new = service.transition(
             source.id, MemoryDraft(text="新的事实", topic="work"), previous_valid_to="2026-10"
@@ -221,7 +221,8 @@ def test_formal_mutations_require_no_inference_review_and_keep_audit(service, mo
         service.list_inferences() == [confirmed] and rows(service.paths, "inferences") == original
     )
     audit = rows(service.paths, "audit")
-    assert audit[0]["action"] == "add" and audit[-1]["action"] == "update"
+    assert audit[0]["action"] == "add"
+    assert audit[-1]["action"] == ("correct" if action == "correct" else "update")
 
 
 @pytest.mark.parametrize("known_end", [True, False])

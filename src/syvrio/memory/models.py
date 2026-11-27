@@ -115,7 +115,41 @@ class MemoryDraft(BaseModel):
         return value
 
 
+class MemoryContextPatch(MemoryContext):
+    @model_validator(mode="after")
+    def validate_context(self) -> MemoryContextPatch:
+        # 局部清除情绪阶段时保留显式的空值，合并后再校验完整上下文。
+        return self
+
+
+class MemoryCorrection(BaseModel):
+    """未提交的字段保留原值，显式为空的上下文字段才清除。"""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    text: str | None = Field(default=None, min_length=1)
+    topic: str | None = Field(default=None, min_length=1)
+    context: MemoryContextPatch | None = None
+    expected_revision: int | None = Field(default=None, ge=1)
+
+    def apply_to(self, entry: Entry) -> MemoryDraft:
+        changes = self.model_dump(exclude_unset=True, exclude={"expected_revision"})
+        context = entry.context.model_dump(exclude_none=True) if entry.context else {}
+        if "context" in changes:
+            patch = changes.pop("context")
+            if patch is None:
+                context.clear()
+            else:
+                for key, value in patch.items():
+                    if key == "emotion" and isinstance(value, dict):
+                        value = {**(context.get(key) or {}), **value}
+                    context[key] = value
+        return MemoryDraft.model_validate(
+            {"text": entry.text, "topic": entry.topic, "context": context or None, **changes}
+        )
+
+
 class RecallEntry(MemoryDraft):
+    revision: int | None = None
     id: str = Field(min_length=1)
     status: MemoryStatus = "active"
 
@@ -133,6 +167,30 @@ class MemoryUpdate(BaseModel):
         ):
             raise ValueError("A memory update needs context or status.")
         return self
+
+    def merge_context(
+        self, current_context: MemoryContext | None
+    ) -> tuple[MemoryContext | None, dict]:
+        """只补充缺少的上下文，保留审计需要的新增字段。"""
+        fields = current_context.model_dump(exclude_none=True) if current_context else {}
+        incoming = self.context.model_dump(exclude_none=True) if self.context else {}
+        changes = {}
+        for key, value in incoming.items():
+            if key == "emotion":
+                current = fields.setdefault(key, {})
+                for k, v in value.items():
+                    if k in current and current[k] != v:
+                        raise ValueError("Context field already has a value.")
+                    if k not in current:
+                        changes.setdefault(key, {})[k] = v
+                        current[k] = v
+            elif key in fields and fields[key] != value:
+                raise ValueError(f"Context field {key} already has a value.")
+            elif key not in fields:
+                changes[key] = fields[key] = value
+        if not changes:
+            return current_context, {}
+        return MemoryContext.model_validate(fields), changes
 
 
 class Candidate(MemoryDraft):
@@ -159,6 +217,7 @@ class Inference(BaseModel):
     text: str = Field(min_length=1)
     kind: str = Field(min_length=1)
     source_ids: list[str] = Field(min_length=1)
+    source_versions: dict[str, int] = Field(default_factory=dict)
     created_at: str
     updated_at: str
     status: InferenceStatus = "hypothesis"
@@ -262,7 +321,12 @@ class Entry(BaseModel):
 
     def as_recall(self) -> RecallEntry:
         return RecallEntry(
-            id=self.id, status=self.status, topic=self.topic, text=self.text, context=self.context
+            id=self.id,
+            status=self.status,
+            topic=self.topic,
+            text=self.text,
+            context=self.context,
+            revision=self.revision,
         )
 
     @property

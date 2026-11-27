@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from ..infra.config import DEFAULTS
 from ..infra.session.model import Session
 from ..memory.extractor import grounded_context
-from ..memory.models import MemoryContext, MemoryDraft, TimeRange
+from ..memory.models import MemoryContext, MemoryCorrection, MemoryDraft, TimeRange
 from ..memory.service import MemoryService, pending_view
 from .evidence import RecallContext, emotion_sources
 from .registry import ToolOutcome, ToolRegistry, ToolSpec
@@ -34,6 +34,9 @@ class Topic(Arguments):
 
 class Source(Arguments):
     memory_id: str = Field(min_length=1)
+    commit_id: int | None = Field(
+        default=None, ge=1, description="需要核对历史来源时提供该版本的提交号。"
+    )
 
 
 class ChatSearch(Arguments):
@@ -45,11 +48,12 @@ class Target(Arguments):
     entry_id: str = Field(min_length=1)
 
 
-class Replacement(MemoryDraft):
+class Correction(MemoryCorrection):
     entry_id: str = Field(min_length=1)
 
 
-class Transition(Replacement):
+class Transition(MemoryDraft):
+    entry_id: str = Field(min_length=1)
     previous_valid_to: str | None = None
 
 
@@ -131,7 +135,7 @@ def register_memory_tools(
         "read_memory_source",
         "按事实 ID 查阅一条原始用户消息，作为只读证据。",
         Source,
-        lambda r: service.read_memory_source(r.memory_id),
+        lambda r: service.read_memory_source(r.memory_id, r.commit_id),
     )
     register(
         "review_pending",
@@ -141,7 +145,11 @@ def register_memory_tools(
     )
 
     def mutate(name: str, request: BaseModel) -> dict:
-        payload = request.model_dump(exclude_none=True)
+        payload = (
+            request.model_dump(exclude_unset=True)
+            if name == "correct"
+            else request.model_dump(exclude_none=True)
+        )
         target = payload.get("entry_id")
         session = get_session()
         message_id = session.last_user_message_id()
@@ -149,7 +157,22 @@ def register_memory_tools(
             raise ValueError("A chat write requires an original user message.")
         source = {"session_id": session.id, "message_id": message_id}
         draft = None
-        if "text" in payload:
+        if name == "correct":
+            patch = {k: v for k, v in payload.items() if k != "entry_id"}
+            updates = patch.get("context") or {}
+            if isinstance(updates.get("emotion"), dict):
+                sources = emotion_sources(session, message_id)
+                quoted = {
+                    k: v
+                    for k, v in updates["emotion"].items()
+                    if v is None or any(v in source for source in sources)
+                }
+                if quoted:
+                    updates["emotion"] = quoted
+                else:
+                    updates.pop("emotion")
+            draft = MemoryCorrection.model_validate(patch)
+        elif "text" in payload:
             draft = MemoryDraft.model_validate(
                 {key: value for key, value in payload.items() if key in MemoryDraft.model_fields}
             )
@@ -162,9 +185,11 @@ def register_memory_tools(
                 else:
                     payload["context"] = grounded.model_dump(exclude_none=True)
         query = draft.text if draft else target
-        if target:
+        if isinstance(draft, MemoryCorrection):
+            query = service.preview_correction(target, draft).recall_query
+        elif target:
             entry = service.require_entry(target, include_deprecated=name == "deprecate")
-            query = f"{entry.text} {draft.text}" if draft else entry.text
+            query = f"{entry.text} {draft.text}" if draft and draft.text else entry.text
         boundary = payload.get("previous_valid_to")
         if boundary is not None:
             MemoryContext(valid_to=boundary)
@@ -201,7 +226,11 @@ def register_memory_tools(
             MemoryDraft,
             "新增用户明确陈述的事实。按已知情况填写 text、topic 和 context。",
         ),
-        ("correct", Replacement, "旧事实原本错误，创建正确事实并将旧 ID 标为弃用。"),
+        (
+            "correct",
+            Correction,
+            "更正同一 ID 的错误事实，仅传要修改的字段；保留修正前的版本和来源。",
+        ),
         (
             "transition",
             Transition,

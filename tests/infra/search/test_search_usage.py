@@ -87,10 +87,15 @@ def test_monthly_window_counts_and_resets():
 def _persisted_usage(paths):
     result = {}
     with transaction(paths, write=False) as db:
-        for provider, period, window, count in db.execute("SELECT * FROM usage"):
-            result.setdefault(provider, {})[period] = {"window": window, "count": count}
-        for provider, reason, resume_at in db.execute("SELECT * FROM quota_pauses"):
-            result.setdefault(provider, {})["paused"] = {"reason": reason, "resume_at": resume_at}
+        for provider, day, used_day, month, used_month, reason, resume_at in db.execute(
+            "SELECT * FROM search_usage"
+        ):
+            result[provider] = {
+                "daily": {"window": day, "count": used_day},
+                "monthly": {"window": month, "count": used_month},
+            }
+            if reason is not None:
+                result[provider]["paused"] = {"reason": reason, "resume_at": resume_at}
     return result
 
 
@@ -141,7 +146,9 @@ def test_blocked_quota_persists_only_changed_rows(tmp_path):
         now[0] += 60
         assert limiter.acquire("exa") is None
         assert db.total_changes == before + 1
-        assert not db.execute("SELECT 1 FROM quota_pauses").fetchall()
+        assert not db.execute(
+            "SELECT 1 FROM search_usage WHERE pause_reason IS NOT NULL"
+        ).fetchall()
 
         before = db.total_changes
         now[0] += 86400
@@ -159,13 +166,11 @@ def test_usage_and_pause_follow_the_vault_transaction(tmp_path):
         limiter.record("exa")
         limiter.pause("exa", "quota exhausted")
         assert (
-            db.execute(
-                "SELECT units FROM usage WHERE provider='exa' AND period='daily'"
-            ).fetchone()[0]
+            db.execute("SELECT daily_units FROM search_usage WHERE provider='exa'").fetchone()[0]
             == 2
         )
         assert (
-            db.execute("SELECT reason FROM quota_pauses WHERE provider='exa'").fetchone()[0]
+            db.execute("SELECT pause_reason FROM search_usage WHERE provider='exa'").fetchone()[0]
             == "quota exhausted"
         )
         raise RuntimeError("abort")
@@ -605,3 +610,60 @@ def test_fetch_official_pause_blocks_future_search(tmp_path):
     other = SearchRouter({"exa": search}, usage_limiter=UsageLimiter({}, path))
     result = other.search(SearchQuery("synthetic"))
     assert not search.calls and "Official quota pause" in result.failed[0].detail
+
+
+@pytest.mark.parametrize("inside_savepoint", [False, True])
+def test_refunds_follow_rollback_and_retries(tmp_path, inside_savepoint):
+    from contextlib import nullcontext
+
+    paths = vault_paths(tmp_path / "vault")
+    limiter = UsageLimiter({}, paths)
+    keeper = limiter.acquire("exa")
+    charged = limiter.acquire("exa")
+    assert keeper and charged
+    with transaction(paths) if inside_savepoint else nullcontext():
+        with pytest.raises(RuntimeError), transaction(paths):
+            limiter.release(charged)
+            limiter.release(charged)
+            assert limiter.status("exa")["daily"]["used"] == 1
+            raise RuntimeError("cancel refund")
+        assert limiter.status("exa")["daily"]["used"] == 2
+        limiter.release(charged)
+        limiter.release(charged)
+
+        with pytest.raises(RuntimeError), transaction(paths):
+            abandoned = limiter.acquire("exa")
+            assert abandoned
+            raise RuntimeError("cancel charge")
+        limiter.release(abandoned)
+    restarted = UsageLimiter({}, paths)
+    assert (
+        restarted.status("exa")["daily"]["used"] == restarted.status("exa")["monthly"]["used"] == 1
+    )
+
+
+def test_calendar_rollover_during_pause_keeps_original_expiry(tmp_path):
+    from datetime import datetime
+
+    now = [datetime(2026, 1, 31, 23, 59).timestamp()]
+    paths = vault_paths(tmp_path / "vault")
+    limiter = UsageLimiter({}, paths, clock=lambda: now[0])
+    charged = limiter.acquire("exa")
+    assert charged
+    expiry = now[0] + 120
+    limiter.pause("exa", "quota", expiry)
+    now[0] += 60
+    restarted = UsageLimiter({}, paths, clock=lambda: now[0])
+    assert restarted.acquire("exa") is None
+    assert _persisted_usage(paths)["exa"] == {
+        "daily": {"window": "2026-02-01", "count": 0},
+        "monthly": {"window": "2026-02", "count": 0},
+        "paused": {"reason": "quota", "resume_at": expiry},
+    }
+    now[0] = expiry
+    assert restarted.acquire("exa") is not None
+    restarted.release(charged)
+    assert _persisted_usage(paths)["exa"] == {
+        "daily": {"window": "2026-02-01", "count": 1},
+        "monthly": {"window": "2026-02", "count": 1},
+    }

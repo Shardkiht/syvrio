@@ -7,7 +7,6 @@ import pytest
 from pydantic import ValidationError
 
 from syvrio.infra.storage.database import transaction
-from syvrio.memory.models import MemoryDraft
 from syvrio.memory.service import MemoryService
 
 pytestmark = pytest.mark.memory
@@ -64,7 +63,7 @@ def test_inference_kind_preserves_uncertainty(service, kind):
     assert service.propose_inference("可能期待下次展览", [source.id], kind).status == "hypothesis"
 
 
-@pytest.mark.parametrize("source_state", ["missing", "deprecated", "corrected", "inference"])
+@pytest.mark.parametrize("source_state", ["missing", "deprecated", "inference"])
 def test_inference_rejects_non_fact_or_inactive_sources(service, source_state):
     source = service.note("偏好纸质阅读", topic="preferences")
     source_id = source.id
@@ -72,8 +71,6 @@ def test_inference_rejects_non_fact_or_inactive_sources(service, source_state):
         source_id = "mem-missing"
     elif source_state == "deprecated":
         service.deprecate(source.id)
-    elif source_state == "corrected":
-        service.correct(source.id, MemoryDraft(topic=source.topic, text="偏好电子阅读"))
     else:
         source_id = service.propose_inference("似乎喜欢阅读", [source.id], kind="profile").id
 

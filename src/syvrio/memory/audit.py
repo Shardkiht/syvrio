@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ..infra.storage.database import encode, transaction
+from ..infra.storage.audit import append_audit
+from ..infra.storage.database import transaction
 from ..infra.storage.paths import SyvrioPaths, vault_paths
-from ..infra.time import utc_timestamp
 
 
 class AuditLog:
@@ -13,7 +13,4 @@ class AuditLog:
 
     def write(self, action: str, **fields) -> None:
         with transaction(self.paths) as db:
-            db.execute(
-                "INSERT INTO audit(at,action,details) VALUES(?,?,?)",
-                (utc_timestamp(), action, encode(fields)),
-            )
+            append_audit(db, action, fields)

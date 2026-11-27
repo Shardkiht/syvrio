@@ -16,12 +16,10 @@ def install(db: sqlite3.Connection) -> None:
         "inferences",
         "inference_sources",
         "profile",
-        "memory_changes",
         "audit",
         "sessions",
         "session_events",
         "attachments",
-        "attachment_objects",
     )
     # 会话计数、搜索索引、沉淀标记以及画像元信息都不会写入这些表的导出字段。
     exported_columns = {

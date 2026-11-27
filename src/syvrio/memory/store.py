@@ -10,11 +10,13 @@ from pathlib import Path
 from threading import Lock
 from types import MappingProxyType
 
+from ..infra.storage import evidence_versions
+from ..infra.storage.audit import append_audit
 from ..infra.storage.database import encode, transaction, transaction_mode
 from ..infra.storage.files import safe_component
 from ..infra.storage.paths import SyvrioPaths, vault_paths
 from ..infra.time import local_timestamp, serialize_timestamp, utc_now
-from .models import Entry, MemoryContext, RecallEntry, TopicInfo
+from .models import Entry, MemoryContext, MemoryDraft, MemoryUpdate, RecallEntry, TopicInfo
 from .undo_store import track
 
 SLUG_RE = re.compile(r"[^\w\u4e00-\u9fff-]+")
@@ -39,12 +41,15 @@ class RecallRecord:
     timestamp: str
     index_text: str
     context_json: str | None
+    revision: int = 0
 
     @classmethod
     def from_row(cls, row):
-        key, topic, text, stamp, raw = row
+        key, topic, text, stamp, raw, revision = row
         context = MemoryContext.model_validate_json(raw) if raw else None
-        return cls(key, topic, text, stamp, context.index_text(text) if context else text, raw)
+        return cls(
+            key, topic, text, stamp, context.index_text(text) if context else text, raw, revision
+        )
 
     @property
     def embedding_text(self) -> str:
@@ -56,7 +61,9 @@ class RecallRecord:
         return MemoryContext.model_validate_json(self.context_json) if self.context_json else None
 
     def as_recall(self, context: MemoryContext | None) -> RecallEntry:
-        return RecallEntry(id=self.id, topic=self.topic, text=self.text, context=context)
+        return RecallEntry(
+            id=self.id, topic=self.topic, text=self.text, context=context, revision=self.revision
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,7 +102,8 @@ class MemoryStore:
     def first_source_reference(self, session_id: str) -> str | None:
         with transaction(self.paths, write=False) as db:
             row = db.execute(
-                "SELECT id FROM memories WHERE session_id=? ORDER BY id LIMIT 1", (session_id,)
+                "SELECT memory_id FROM memory_versions WHERE session_id=? ORDER BY memory_id LIMIT 1",
+                (session_id,),
             ).fetchone()
             return row[0] if row else None
 
@@ -146,7 +154,7 @@ class MemoryStore:
             records = tuple(
                 RecallRecord.from_row(row)
                 for row in db.execute("""
-                    SELECT m.id,m.topic,m.text,m.recorded_at,m.context FROM memories m
+                    SELECT m.id,m.topic,m.text,m.recorded_at,m.context,m.revision FROM memories m
                     JOIN topics t ON t.name=m.topic WHERE t.archived=0 AND m.status='active'
                     ORDER BY m.topic,m.rowid
                 """)
@@ -164,12 +172,10 @@ class MemoryStore:
         return f"mem-{stamp:%Y%m%d-%H%M%S}-{secrets.token_hex(4)}"
 
     @staticmethod
-    def _change(db, entry_id, change):
-        seq = db.execute(
-            "INSERT INTO memory_changes(memory_id,change) VALUES(?,?) RETURNING seq",
-            (entry_id, encode(change)),
-        ).fetchone()[0]
-        track(db, "memory_changes", seq, before=None)
+    def _change(db, entry_id, action, change, revision, **origin):
+        details = {"memory_id": entry_id, "revision": revision, **origin}
+        seq = append_audit(db, action, details, memory_change=change)
+        track(db, "audit", seq, before=None)
 
     def append(
         self,
@@ -184,6 +190,7 @@ class MemoryStore:
         supersedes: str | None = None,
     ) -> Entry:
         with transaction(self.paths) as db:
+            evidence_versions.group_changes(db)
             stamp = when or utc_now()
             key = entry_id or self.new_entry_id(stamp)
             topic = self.topic_name(topic)
@@ -208,6 +215,7 @@ class MemoryStore:
             )
             if new_topic:
                 track(db, "topics", topic, before=None)
+            revision = self.revision() + 1
             db.execute(
                 """INSERT INTO memories(id,topic,status,text,recorded_at,context,supersedes,session_id,message_id,extensions,revision)
                 VALUES(?,?,'active',?,?,?,?,?,?,?,?)""",
@@ -223,11 +231,12 @@ class MemoryStore:
                     sid,
                     mid,
                     encode(fields),
-                    self.revision() + 1,
+                    revision,
                 ),
             )
             track(db, "memories", key, before=None)
-            self._change(db, key, "created")
+            origin = {"session_id": sid, "message_id": mid} if sid is not None else {}
+            self._change(db, key, "add", "created", revision, **origin)
             return self.find(key)
 
     def _entry(self, row):
@@ -291,65 +300,156 @@ class MemoryStore:
             ).fetchone()
             return self._entry(row) if row else None
 
-    def update(
-        self, entry_id: str, *, context: MemoryContext | None = None, status: str | None = None
+    def save_revision(
+        self,
+        entry_id: str,
+        change: MemoryDraft | MemoryUpdate,
+        *,
+        source: dict[str, str] | None = None,
     ) -> Entry:
-        if status is not None and status not in {STATUS_ACTIVE, STATUS_DEPRECATED}:
-            raise ValueError("Invalid memory status.")
+        """在同一事务保存新版本、当前事实、审计和撤销依据。"""
         with transaction(self.paths) as db:
-            old = self.find(entry_id)
-            if not old:
-                raise ValueError("Unknown memory id.")
-            fields = old.context.model_dump(exclude_none=True) if old.context else {}
-            incoming = context.model_dump(exclude_none=True) if context else {}
-            changes = {}
-            for key, value in incoming.items():
-                if key == "emotion":
-                    current = fields.setdefault(key, {})
-                    for k, v in value.items():
-                        if k in current and current[k] != v:
-                            raise ValueError("Context field already has a value.")
-                        if k not in current:
-                            changes.setdefault(key, {})[k] = v
-                            current[k] = v
-                elif key in fields and fields[key] != value:
-                    raise ValueError(f"Context field {key} already has a value.")
-                elif key not in fields:
-                    changes[key] = fields[key] = value
-            delta = {"context": changes} if changes else {}
-            if status and status != old.status:
-                delta["status"] = status
-            if delta:
-                before = dict(
-                    db.execute("SELECT * FROM memories WHERE id=?", (entry_id,)).fetchone()
-                )
-                ctx = MemoryContext.model_validate(fields) if fields else None
-                db.execute(
-                    "UPDATE memories SET status=?,context=?,revision=? WHERE id=?",
-                    (
-                        status or old.status,
-                        ctx.model_dump_json(exclude_none=True) if ctx else None,
-                        self.revision() + 1,
-                        entry_id,
-                    ),
-                )
-                db.execute(
-                    "UPDATE topics SET updated_at=? WHERE name=?",
-                    (serialize_timestamp(utc_now()), old.topic),
-                )
-                track(db, "memories", entry_id, before=before)
-                self._change(db, entry_id, delta)
+            row = db.execute(
+                """SELECT m.*, t.title FROM memories m JOIN topics t ON t.name=m.topic
+                   WHERE t.archived=0 AND m.id=?""",
+                (entry_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"Memory not found: {entry_id}")
+            old = self._entry(row)
+            if isinstance(change, MemoryUpdate):
+                if change.id != entry_id or source is not None:
+                    raise ValueError(
+                        "A supplemental update must match its target and preserve its source."
+                    )
+                context, additions = change.merge_context(old.context)
+                status = change.status or old.status
+                detail = {"context": additions} if additions else {}
+                if status != old.status:
+                    detail["status"] = status
+                if not detail:
+                    return old
+                text, topic = old.text, old.topic
+                sid, mid = row["session_id"], row["message_id"]
+                action = "update"
+            else:
+                text, topic, context = change.text, self.topic_name(change.topic), change.context
+                current = old.context.model_dump(exclude_none=True) if old.context else {}
+                incoming = context.model_dump(exclude_none=True) if context else {}
+                if (text, topic, incoming) == (old.text, old.topic, current):
+                    return old
+                status, action, detail = old.status, "correct", "corrected"
+                origin = source or {}
+                sid, mid = origin.get("session_id"), origin.get("message_id")
+
+            evidence_versions.group_changes(db)
+            now = serialize_timestamp(utc_now())
+            if topic != old.topic:
+                target = db.execute("SELECT archived FROM topics WHERE name=?", (topic,)).fetchone()
+                if target and target["archived"]:
+                    raise ValueError("Topic is archived.")
+                if target is None:
+                    db.execute(
+                        "INSERT INTO topics(name,title,updated_at) VALUES(?,?,?)",
+                        (topic, topic.split("/")[-1], now),
+                    )
+                    track(db, "topics", topic, before=None)
+            revision = self.revision() + 1
+            stored_context = context.model_dump(exclude_none=True) if context else {}
+            before = dict(row)
+            del before["title"]
+            db.execute(
+                """UPDATE memories SET text=?,topic=?,context=?,status=?,session_id=?,message_id=?,
+                   revision=? WHERE id=?""",
+                (
+                    text,
+                    topic,
+                    encode(stored_context) if stored_context else None,
+                    status,
+                    sid,
+                    mid,
+                    revision,
+                    entry_id,
+                ),
+            )
+            db.execute(
+                "UPDATE topics SET updated_at=? WHERE name IN (?,?)", (now, old.topic, topic)
+            )
+            track(db, "memories", entry_id, before=before)
+            self._change(db, entry_id, action, detail, revision, **(source or {}))
             return self.find(entry_id)
+
+    def evidence_commit(self) -> int:
+        with transaction(self.paths, write=False) as db:
+            return evidence_versions.current(db)
+
+    def facts_at(self, commit: int) -> list[dict]:
+        with transaction(self.paths, write=False) as db:
+            rows = evidence_versions.visible_facts(db, commit)
+            result = []
+            for row in rows:
+                fact = dict(row)
+                raw = fact.pop("context")
+                if raw:
+                    fact["context"] = json.loads(raw)
+                result.append(fact)
+            return result
+
+    def version_texts(self, versions: set[tuple[str, int]]) -> dict[str, str]:
+        if not versions:
+            return {}
+        with transaction(self.paths, write=False) as db:
+            return dict(
+                db.execute(
+                    """SELECT v.memory_id || '@' || v.commit_id,v.text
+                FROM json_each(?) wanted JOIN memory_versions v
+                ON v.memory_id=json_extract(wanted.value,'$[0]')
+                AND v.commit_id=json_extract(wanted.value,'$[1]')""",
+                    (encode(sorted(versions)),),
+                )
+            )
+
+    def evidence_sources(self, ids: list[str], commit: int) -> dict[str, int]:
+        with transaction(self.paths, write=False) as db:
+            return dict(
+                db.execute(
+                    """SELECT memory_id,max(commit_id) FROM memory_versions
+                WHERE memory_id IN (SELECT value FROM json_each(?)) AND commit_id<=?
+                GROUP BY memory_id""",
+                    (encode(ids), commit),
+                )
+            )
+
+    def version_origin(self, entry_id: str, commit: int):
+        with transaction(self.paths, write=False) as db:
+            row = db.execute(
+                """SELECT session_id,message_id FROM memory_versions
+                WHERE memory_id=? AND commit_id=?""",
+                (entry_id, commit),
+            ).fetchone()
+            if row is None:
+                raise KeyError("Memory version not found.")
+            return tuple(row)
+
+    def version_history(self, entry_id: str) -> list[dict]:
+        with transaction(self.paths, write=False) as db:
+            return [
+                dict(row)
+                for row in db.execute(
+                    "SELECT * FROM memory_versions WHERE memory_id=? ORDER BY commit_id",
+                    (entry_id,),
+                )
+            ]
 
     def set_status(self, entry_id, status):
         with transaction(self.paths):
             if not self.find(entry_id):
                 return False
-            self.update(entry_id, status=status)
+            self.save_revision(entry_id, MemoryUpdate(id=entry_id, status=status))
             return True
 
     def fill_context(self, entry_id, context):
-        return self.update(entry_id, context=context)
+        return self.save_revision(entry_id, MemoryUpdate(id=entry_id, context=context))
 
     def topics(self) -> list[TopicInfo]:
         with transaction(self.paths, write=False) as db:

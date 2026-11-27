@@ -93,12 +93,12 @@ def test_import_dry_run_and_duplicate_retry(tmp_path):
     result = svc.import_text("外部材料", dry_run=True, extractor=extractor)
     assert result.to_dict()["admitted"][0]["context"] == {"emotion": {"event": "紧张"}}
     assert [p.text for p in result.queued] == ["也许在附近"]
-    assert not svc.pending() and not svc.current_facts() and not rows(svc.paths, "memory_changes")
+    assert not svc.pending() and not svc.current_facts() and not rows(svc.paths, "audit")
     saved = svc.import_text("外部材料", extractor=extractor)
     again = svc.import_text("外部材料", extractor=extractor)
     assert again.duplicates == ["有过紧张的感受"] and not again.admitted
     assert again.queued == saved.queued and len(svc.pending()) == 1
-    assert len(rows(svc.paths, "memory_changes")) == 1
+    assert [event["action"] for event in rows(svc.paths, "audit")] == ["add"]
 
 
 def test_import_rejects_stale_evidence_across_call_and_retries_fresh(tmp_path):
@@ -135,7 +135,7 @@ def test_source_identity_is_idempotent_without_sharing_unrelated_messages(tmp_pa
     assert reopened.add(draft("另一条事实", "misc"), **one).id == generated.id
     independent = reopened.add(draft("另一条事实", "misc"), **two)
     assert independent.id != generated.id
-    assert len(rows(reopened.paths, "memory_changes")) == 3
+    assert [event["action"] for event in rows(reopened.paths, "audit")] == ["add"] * 3
 
 
 def test_queue_question_and_payload_cannot_store_credentials(tmp_path):
@@ -209,12 +209,12 @@ def test_approval_retries_and_never_changes_related_fact(tmp_path, override):
     assert order.context == (None if override else item.context)
     assert svc.store.find(old.id).status == "active" and svc.store.find(old.id).text == old.text
     assert not svc.pending() and not rejected(svc.queue)
-    before = rows(svc.paths, "memory_changes"), rows(svc.paths, "audit")
+    before = rows(svc.paths, "audit")
     assert svc.approve(item.id, text_override=override) == order
     with pytest.raises(ValueError):
         svc.approve(item.id, text_override="不同的重试正文")
-    assert (rows(svc.paths, "memory_changes"), rows(svc.paths, "audit")) == before
-    assert [line["action"] for line in before[1]] == ["add", "add"]
+    assert rows(svc.paths, "audit") == before
+    assert [line["action"] for line in before] == ["add", "add"]
 
 
 def test_review_keeps_deprecated_related_fact_and_archive_contains_original_only(tmp_path):
@@ -222,11 +222,11 @@ def test_review_keeps_deprecated_related_fact_and_archive_contains_original_only
     old = svc.note("先前事实")
     item = svc.create_pending(draft("待确认", location="示例展厅"), "这里指哪里？", [old.id])
     svc.deprecate(old.id)
-    before = rows(svc.paths, "audit"), rows(svc.paths, "memory_changes")
+    before = rows(svc.paths, "audit")
     assert svc.reject(item.id) == item
     assert rejected(svc.queue) == [item]
     assert not svc.pending() and svc.store.find(old.id).status == "deprecated"
-    assert (rows(svc.paths, "audit"), rows(svc.paths, "memory_changes")) == before
+    assert rows(svc.paths, "audit") == before
 
 
 @pytest.mark.parametrize("value", ["", "   ", "API key: demo-placeholder"])
@@ -237,7 +237,7 @@ def test_invalid_approval_keeps_original_and_all_files(tmp_path, value):
     with pytest.raises(ValueError):
         svc.approve(item.id, text_override=value)
     assert svc.pending() == [item] and svc.pending() == before
-    assert not svc.current_facts() and not rows(svc.paths, "memory_changes")
+    assert not svc.current_facts() and not rows(svc.paths, "audit")
 
 
 def test_commit_generates_fallback_summary_and_history(tmp_path):
@@ -285,7 +285,8 @@ def test_recall_and_read_topic_return_structured_active_facts(tmp_path):
         "topic": "general/preferences",
         "entries": [hit.model_dump(exclude_none=True)],
     }
-    assert set(result["entries"][0]) == {"id", "status", "text", "topic"}
+    assert set(result["entries"][0]) == {"id", "status", "text", "topic", "revision"}
+    assert hit.revision == wanted.revision
     topics = service.topics()
     assert len(topics) == 1 and topics[0]["entries"] == 1
     with pytest.raises((ValueError, KeyError)):
@@ -409,7 +410,7 @@ def test_approve_rejects_secret_from_manually_edited_candidate(tmp_path):
         ("approve", "audit"),
         ("approve", "resolve"),
         ("approve", "context_job"),
-        ("correct", "status"),
+        ("correct", "version"),
         ("correct", "audit"),
         ("transition", "status"),
         ("reject", "pending"),
@@ -434,7 +435,6 @@ def test_failed_multi_file_operations_restore_every_file_and_can_retry(
                 "candidates",
                 "candidate_related",
                 "audit",
-                "memory_changes",
                 "jobs",
             )
         }
@@ -455,15 +455,24 @@ def test_failed_multi_file_operations_restore_every_file_and_can_retry(
 
     before = snapshot()
     with monkeypatch.context() as patch:
-        if stage == "pending":
+        if stage == "audit":
+            with transaction(svc.paths) as db:
+                db.execute(
+                    "CREATE TRIGGER inject BEFORE INSERT ON audit BEGIN SELECT RAISE(ABORT, 'injected audit failure'); END"
+                )
+        elif stage == "version":
+            with transaction(svc.paths) as db:
+                db.execute(
+                    "CREATE TRIGGER inject BEFORE INSERT ON memory_versions BEGIN SELECT RAISE(ABORT, 'injected history failure'); END"
+                )
+        elif stage == "pending":
             with transaction(svc.paths) as db:
                 db.execute(
                     "CREATE TRIGGER inject BEFORE UPDATE ON candidates BEGIN SELECT RAISE(ABORT, 'injected disk error'); END"
                 )
         else:
             obj, name = {
-                "status": (svc.store, "update"),
-                "audit": (svc.audit, "write"),
+                "status": (svc.store, "save_revision"),
                 "resolve": (svc.queue, "resolve"),
                 "context_job": (service_module, "enqueue_context_fill"),
             }[stage]
@@ -483,5 +492,7 @@ def test_failed_multi_file_operations_restore_every_file_and_can_retry(
             svc.store.find(old.id).status == "active"
             and svc.store.find(old.id).context.valid_to == "2025"
         )
+    elif operation == "correct":
+        assert svc.store.find(old.id).text == "更正文" and svc.pending() == [pending]
     else:
         assert svc.store.find(old.id).status == "deprecated" and svc.pending() == [pending]

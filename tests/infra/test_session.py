@@ -565,9 +565,7 @@ def test_missing_private_reasoning_preserves_both_messages(tmp_path):
             },
         )
     with transaction(store.paths) as db:
-        db.execute(
-            "DELETE FROM session_reasoning WHERE event_id=(SELECT seq FROM session_events WHERE message_id='first')"
-        )
+        db.execute("UPDATE session_events SET reasoning=NULL WHERE message_id='first'")
     first, second = store.load(session.id).records[-2:]
     assert first["content"] == second["content"] == "visible"
     assert "reasoning" not in first

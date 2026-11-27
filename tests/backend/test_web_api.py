@@ -264,19 +264,18 @@ def test_gateway_preserves_attachment_if_range(resident_backend):
     session = sessions.create()
     data = b"synthetic attachment"
     batch = AttachmentBatch.stage(sessions.attachments_dir, [("notes.txt", BytesIO(data))])
-    batch.publish(sessions.paths)
-    item = batch.files[0]
-    sessions.append(
-        session,
-        {
-            "type": "message",
-            "role": "user",
-            "content": "notes",
-            "id": "m-file",
-            "attachments": [asdict(item)],
-        },
-    )
-    batch.finish()
+    with batch.sending(sessions.paths):
+        item = batch.files[0]
+        sessions.append(
+            session,
+            {
+                "type": "message",
+                "role": "user",
+                "content": "notes",
+                "id": "m-file",
+                "attachments": [asdict(item)],
+            },
+        )
     path = f"/api/sessions/{session.id}/messages/m-file/attachments/{item.id}"
     gateway = create_gateway(resident.base, "127.0.0.1")
     with TestClient(gateway, base_url=BASE_URL) as browser:
@@ -1567,7 +1566,7 @@ def test_conditional_switch_uses_committed_history_even_while_bound(client, back
     params["known_version"] = initial["history_version"]
     with transaction(store.paths) as db:
         db.execute(
-            "UPDATE session_reasoning SET body=? WHERE event_id=(SELECT seq FROM session_events WHERE session_id=? AND message_id='answer')",
+            "UPDATE session_events SET reasoning=? WHERE session_id=? AND message_id='answer'",
             ('{"text":"After"}', session.id),
         )
     changed = client.post(f"{url}/switch", params=params).json()
@@ -1681,7 +1680,7 @@ def test_history_and_switch_avoid_hydrating_runtime_across_views(
     assert reads == []
     with transaction(store.paths) as db:
         db.execute(
-            "UPDATE session_reasoning SET body=? WHERE event_id=(SELECT seq FROM session_events WHERE session_id=? AND message_id='answer')",
+            "UPDATE session_events SET reasoning=? WHERE session_id=? AND message_id='answer'",
             ('{"text":"Changed reasoning"}', session.id),
         )
     assert history()[0]["reasoning"]["text"] == "Changed reasoning"
@@ -2482,7 +2481,7 @@ def test_targeted_edit_from_another_view_and_after_receipt_eviction_is_stale(cli
 def test_edit_waits_for_the_user_record_before_returning_a_receipt(
     client, backend, monkeypatch, failure
 ):
-    from syvrio.infra.session.attachments import AttachmentBatch
+    from syvrio.infra.session import attachments
 
     first = client.post(
         "/api/chat/attachments?receipt=1",
@@ -2514,7 +2513,7 @@ def test_edit_waits_for_the_user_record_before_returning_a_receipt(
 
     with monkeypatch.context() as patch:
         if failure == "bind":
-            patch.setattr(AttachmentBatch, "publish", fail_bind)
+            patch.setattr(attachments, "publish", fail_bind)
         else:
             patch.setattr(store, "_insert", fail_write)
         response = client.post(path, data=fields, files=files)
@@ -2556,7 +2555,7 @@ def test_failed_edit_preserves_the_original_tool_writes(
         service.deprecate(affected.id)
     store = backend._sessions
     before = {
-        k: rows(service.paths, k) for k in ("memories", "memory_changes", "audit", "session_events")
+        k: rows(service.paths, k) for k in ("memories", "undo_effects", "audit", "session_events")
     }
     path = f"/api/chat?receipt=1&replace={target}"
     body = {"session_id": sid, "message": "replacement"}

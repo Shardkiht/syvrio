@@ -27,7 +27,7 @@ def test_waiting_dream_uses_read_only_transactions(service):
         owner.schedule.tick(101)
 
 
-def test_change_during_planning_keeps_budget_and_skips_stale_request(service, monkeypatch):
+def test_change_during_planning_uses_frozen_input_and_charges_one_request(service, monkeypatch):
     add(service, "First fact")
     engine = Dream(service)
     engine.request()
@@ -40,9 +40,17 @@ def test_change_during_planning_keeps_budget_and_skips_stale_request(service, mo
         return next_batch(*args)
 
     monkeypatch.setattr(dream, "_next_batch", plan)
-    monkeypatch.setattr(dream, "ask", lambda *args: pytest.fail("stale request sent"))
+
+    def ask(_, prompt, payload, schema):
+        assert [fact["text"] for fact in payload["evidence"]] == ["First fact"]
+        return schema(summary="First profile")
+
+    monkeypatch.setattr(dream, "ask", ask)
     engine.step(Event())
-    assert read_job(engine.path) == before
+    after = read_job(engine.path)
+    assert after["evidence_commit"] == before["evidence_commit"] < service.store.evidence_commit()
+    assert after["requests"] == before["requests"] + 1
+    assert service.profile.read_text() == "First profile"
 
 
 def test_new_pending_inference_during_generation_keeps_valid_profile(service, monkeypatch):

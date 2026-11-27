@@ -80,7 +80,7 @@ def assemble(source: Path, destination: Path, *, restore: bool = False):
         with closing(sqlite3.connect(out / name)) as db:
             hashes = {}
             for digest, size in db.execute(
-                "SELECT DISTINCT o.sha256,o.size FROM attachment_objects o JOIN attachments a USING(sha256) ORDER BY o.sha256"
+                "SELECT DISTINCT sha256,size FROM attachments ORDER BY sha256"
             ):
                 original = original_path(source / "attachments", digest)
                 rel = original.relative_to(source).as_posix()
@@ -93,15 +93,8 @@ def assemble(source: Path, destination: Path, *, restore: bool = False):
                 if hashes != {k: v for k, v in checksums.items() if k != name}:
                     raise ValueError("Backup file manifest differs from database references.")
                 with db:
-                    for table in (
-                        "git_sync",
-                        "file_cleanup",
-                        "attachment_reservations",
-                    ):
-                        db.execute(f"DELETE FROM {table}")
-                    db.execute(
-                        "DELETE FROM attachment_objects WHERE sha256 NOT IN (SELECT sha256 FROM attachments)"
-                    )
+                    db.execute("DELETE FROM git_sync")
+                    db.execute("DELETE FROM file_cleanup")
             db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         if not restore:
             hashes[name] = _digest(out / name)

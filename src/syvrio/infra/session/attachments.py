@@ -8,15 +8,17 @@ import logging
 import os
 import re
 from collections.abc import Callable, Iterable
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
+from stat import S_ISREG
 from typing import BinaryIO
 from uuid import uuid4
 
 from PIL import Image
 
 from ..storage.documents import DocumentError
-from .attachment_objects import original_path, publish
+from .attachment_objects import original_path, protect_upload, publish
 from .attachment_policy import ATTACHMENT_POLICY, IMAGE_TYPES
 
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}")
@@ -43,16 +45,30 @@ class Attachment:
             return original_path(root, self.sha256)
         return folder / self.filename
 
+    def available_path(self, root: Path, folder: Path) -> Path:
+        path = self.path(root, folder)
+        error = "Attachment is missing or changed. Restore the matching attachment archive."
+        if path.resolve() != path:
+            raise DocumentError(error)
+        try:
+            info = path.stat()
+        except OSError as exc:
+            raise DocumentError(error) from exc
+        if (
+            not S_ISREG(info.st_mode)
+            or not 0 < info.st_size == self.size <= ATTACHMENT_POLICY.max_file_bytes
+        ):
+            raise DocumentError(error)
+        return path
+
     def verify(
         self, root: Path, folder: Path, copy_to: Callable[[bytes], object] | None = None
     ) -> os.stat_result:
-        path = self.path(root, folder)
+        path = self.available_path(root, folder)
         unavailable = "Attachment is missing or changed. Restore the matching attachment archive."
-        if path.resolve() != path or not path.is_file():
-            raise DocumentError(unavailable)
         with path.open("rb") as source:
             stat = os.fstat(source.fileno())
-            if not 0 < stat.st_size == self.size <= ATTACHMENT_POLICY.max_file_bytes:
+            if stat.st_size != self.size:
                 raise DocumentError(unavailable)
             if copy_to is None:
                 digest = hashlib.file_digest(source, "sha256")
@@ -157,12 +173,23 @@ class AttachmentBatch:
             raise
         return cls(root, folder, tuple(files))
 
-    def publish(self, paths):
-        if self.folder != self.root:
-            for item in self.files:
-                publish(paths, item, self.folder / item.filename)
+    @contextmanager
+    def sending(self, paths):
+        try:
+            with protect_upload(paths, self.files):
+                for item in self.files:
+                    if self.folder == self.root:
+                        # 两次发送之间最后一条引用可能已删除，须在占用生效后再核对原件。
+                        item.available_path(self.root, self.root)
+                    else:
+                        publish(paths, item, self.folder / item.filename)
+                yield
+        except BaseException:
+            self.discard()
+            raise
+        self._finish()
 
-    def finish(self):
+    def _finish(self):
         try:
             self.discard()
         except OSError:

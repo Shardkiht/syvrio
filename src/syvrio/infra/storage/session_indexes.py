@@ -1,10 +1,11 @@
-"""会话文本检索和沉淀游标的 SQLite 投影。"""
+"""会话检索、工具预览和沉淀游标使用的 SQLite 索引与投影。"""
 
 from __future__ import annotations
 
 import sqlite3
 from itertools import pairwise
 
+TOOL_PREVIEW_SIZE = 300
 PENDING_USER = "active=1 AND kind='message' AND role='user' AND distilled=0"
 # SQLite 整数有符号。每组使用两个 63 位字，避免截断符号位。
 _BITS = 126
@@ -54,7 +55,25 @@ def index_message(db: sqlite3.Connection, event_id: int, text: str) -> None:
     )
 
 
+def _install_tool_previews(db: sqlite3.Connection) -> None:
+    # 普通消息入口已在插入时写入预览。外部 SQL 使用原生函数补全；
+    # 遇到 NUL 时 SQLite 会提前截断，留空使读取端按 Python 字符精确计算。
+    tool = "new.kind='tool' AND new.message_id IS NOT NULL"
+    can_preview = f"{tool} AND instr(coalesce(new.content,''),char(0))=0"
+    db.execute(f"""CREATE TRIGGER tool_preview_insert AFTER INSERT ON session_events
+        WHEN {can_preview} AND (new.tool_preview IS NULL OR new.tool_length IS NULL)
+        BEGIN UPDATE session_events SET tool_preview=substr(coalesce(new.content,''),1,{TOOL_PREVIEW_SIZE}),
+              tool_length=length(coalesce(new.content,'')) WHERE seq=new.seq; END""")
+    db.execute(f"""CREATE TRIGGER tool_content_changed AFTER UPDATE OF content,kind,message_id ON session_events
+        WHEN (new.kind='tool' OR old.kind='tool') AND
+             (old.content IS NOT new.content OR old.kind IS NOT new.kind OR old.message_id IS NOT new.message_id)
+        BEGIN UPDATE session_events SET
+            tool_preview=CASE WHEN {can_preview} THEN substr(coalesce(new.content,''),1,{TOOL_PREVIEW_SIZE}) END,
+            tool_length=CASE WHEN {can_preview} THEN length(coalesce(new.content,'')) END WHERE seq=new.seq; END""")
+
+
 def install(db: sqlite3.Connection) -> None:
+    _install_tool_previews(db)
     db.execute(f"CREATE INDEX pending_users ON session_events(session_id,seq) WHERE {PENDING_USER}")
     db.execute("""CREATE INDEX visible_history ON session_events(session_id,seq)
         WHERE active=1 AND kind IN ('message','assistant','tool','summary','turn_failed')""")

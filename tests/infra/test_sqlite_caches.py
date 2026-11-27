@@ -92,7 +92,7 @@ def test_backups_restore_vault_without_runtime_caches(tmp_path):
     with transaction(recovered, write=False) as db:
         assert db.execute("SELECT text FROM memories").fetchone()[0] == "synthetic"
         assert db.execute("SELECT count(*) FROM git_sync").fetchone()[0] == 0
-        assert db.execute("SELECT count(*) FROM usage").fetchone()[0] == 0
+        assert db.execute("SELECT count(*) FROM search_usage").fetchone()[0] == 0
         assert (
             db.execute(
                 "SELECT name FROM sqlite_schema WHERE name IN ('vectors','search_cache')"
@@ -115,21 +115,20 @@ def test_backup_includes_committed_usage_wal_and_pause(tmp_path):
     main = database_path(paths)
     with closing(sqlite3.connect(main)) as writer:
         writer.execute("PRAGMA wal_autocheckpoint=0")
-        writer.execute("INSERT INTO usage VALUES('demo','daily','2026-01-01',7)")
-        writer.execute("INSERT INTO quota_pauses VALUES('demo','exhausted',123)")
+        writer.execute(
+            "INSERT INTO search_usage(provider,daily_window,daily_units,pause_reason,resume_at) VALUES('demo','2026-01-01',7,'exhausted',123)"
+        )
         writer.commit()
         assert main.with_name(main.name + "-wal").stat().st_size > 0
         backup = assemble(paths.vault_dir, tmp_path / "backup")
     restore = assemble(backup, tmp_path / "restored", restore=True)
     with transaction(SyvrioPaths(restore, tmp_path / "fresh"), write=False) as db:
-        assert tuple(db.execute("SELECT * FROM usage").fetchone()) == (
+        assert tuple(db.execute("SELECT * FROM search_usage").fetchone()) == (
             "demo",
-            "daily",
             "2026-01-01",
             7,
-        )
-        assert tuple(db.execute("SELECT * FROM quota_pauses").fetchone()) == (
-            "demo",
+            None,
+            0,
             "exhausted",
             123,
         )
@@ -146,7 +145,7 @@ def test_restore_rejects_damaged_database_backup(tmp_path, damage):
         member.unlink()
     elif damage == "changed":
         with closing(sqlite3.connect(member)) as db:
-            db.execute("INSERT INTO quota_pauses VALUES('demo','changed',NULL)")
+            db.execute("INSERT INTO search_usage(provider,pause_reason) VALUES('demo','changed')")
             db.commit()
     else:
         manifest = backup / "manifest.json"

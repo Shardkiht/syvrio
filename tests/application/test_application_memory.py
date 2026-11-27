@@ -60,7 +60,7 @@ def test_inference_review_keeps_facts_separate(config):
 
     review = memory.load_inference_review()
     assert [entry.id for entry in review.items] == [item.id]
-    assert review.sources[source.id] == "合成事实"
+    assert review.sources[f"{source.id}@{item.source_versions[source.id]}"] == "合成事实"
 
     confirmed = memory.review_inference(item.id, "confirm")
     assert confirmed.updated_id == item.id

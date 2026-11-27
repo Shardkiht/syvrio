@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from ..infra.storage import evidence_versions
 from ..infra.storage.database import transaction
 from ..infra.storage.paths import SyvrioPaths, vault_paths
 from .models import Entry, Inference
-from .source_links import INFERENCE_SOURCES
 from .undo_store import image, track
 
 
@@ -17,18 +17,36 @@ class InferenceStore:
     def __init__(self, vault: Path | SyvrioPaths):
         self.paths = vault if isinstance(vault, SyvrioPaths) else vault_paths(vault)
 
-    def all(self):
+    def all(self, *, at: int | None = None):
         with transaction(self.paths, write=False) as db:
             links = {}
-            for source, key in db.execute(
-                "SELECT inference_id,memory_id FROM inference_sources ORDER BY inference_id,position"
+            versions = {}
+            for source, key, version in db.execute(
+                "SELECT inference_id,memory_id,memory_version FROM inference_sources ORDER BY inference_id,position"
             ):
                 links.setdefault(source, []).append(key)
-            return [
-                Inference(**dict(row), source_ids=links.get(row["id"], []))
-                for row in db.execute(
+                if version is not None:
+                    versions.setdefault(source, {})[key] = version
+            if at is None:
+                rows = db.execute(
                     "SELECT id,kind,status,text,created_at,updated_at FROM inferences ORDER BY kind,id"
                 )
+            else:
+                rows = db.execute(
+                    """SELECT v.inference_id AS id, v.kind, v.status, v.text,
+                    v.created_at, v.updated_at FROM inference_versions v
+                    WHERE v.commit_id=(SELECT max(h.commit_id) FROM inference_versions h
+                    WHERE h.inference_id=v.inference_id AND h.commit_id<=?)
+                    ORDER BY v.kind,v.inference_id""",
+                    (at,),
+                )
+            return [
+                Inference(
+                    **dict(row),
+                    source_ids=links.get(row["id"], []),
+                    source_versions=versions.get(row["id"], {}),
+                )
+                for row in rows
             ]
 
     def add(self, item):
@@ -41,6 +59,7 @@ class InferenceStore:
 
     def record(self, *items):
         with transaction(self.paths) as db:
+            evidence_versions.group_changes(db)
             seen = set()
             for item in items:
                 item = Inference.model_validate(item.model_dump())
@@ -54,7 +73,18 @@ class InferenceStore:
                         before["text"],
                         before["created_at"],
                         sorted(x["memory_id"] for x in before["_links"]),
-                    ) != (item.kind, item.text, item.created_at, item.source_ids):
+                        {
+                            x["memory_id"]: x["memory_version"]
+                            for x in before["_links"]
+                            if x["memory_version"] is not None
+                        },
+                    ) != (
+                        item.kind,
+                        item.text,
+                        item.created_at,
+                        item.source_ids,
+                        item.source_versions,
+                    ):
                         raise ValueError("Editing an inference's content requires a new id.")
                     if (item.status, item.updated_at) == (before["status"], before["updated_at"]):
                         continue
@@ -79,5 +109,12 @@ class InferenceStore:
                             item.updated_at,
                         ),
                     )
-                    INFERENCE_SOURCES.add(db, item.id, item.source_ids)
+                    db.executemany(
+                        """INSERT INTO inference_sources
+                        (inference_id,position,memory_id,memory_version) VALUES(?,?,?,?)""",
+                        [
+                            (item.id, i, key, item.source_versions.get(key))
+                            for i, key in enumerate(item.source_ids)
+                        ],
+                    )
                 track(db, "inferences", item.id, before=before)

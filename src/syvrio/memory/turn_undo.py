@@ -27,6 +27,10 @@ class TurnJournal:
                 raise TurnUndoError(
                     "Another operation changed an affected record. The turn was preserved."
                 )
+            if any(batch.is_pinned(effect) for effect in batch.effects):
+                raise TurnUndoError(
+                    "An unfinished background task still uses this memory. The turn was preserved."
+                )
             for effect in batch.effects:
                 batch.restore(effect)
             if any(batch.has_new_references(effect) for effect in batch.effects):

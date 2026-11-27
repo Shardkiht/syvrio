@@ -22,9 +22,12 @@ CREATE TABLE session_events (
     message_id TEXT,
     role TEXT,
     at TEXT NOT NULL,
-    content TEXT,
-    payload TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(payload)),
     distilled INTEGER NOT NULL DEFAULT 0,
+    tool_length INTEGER,
+    tool_preview TEXT,
+    payload TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(payload)),
+    reasoning TEXT CHECK(reasoning IS NULL OR json_valid(reasoning)),
+    content TEXT,
     UNIQUE(session_id, message_id)
 );
 CREATE INDEX events_by_session ON session_events(session_id,seq);
@@ -92,49 +95,37 @@ CREATE TABLE inference_sources (
     inference_id TEXT NOT NULL REFERENCES inferences ON DELETE CASCADE,
     memory_id TEXT NOT NULL REFERENCES memories DEFERRABLE INITIALLY DEFERRED,
     position INTEGER NOT NULL,
+    memory_version INTEGER,
+    FOREIGN KEY(memory_id,memory_version) REFERENCES memory_versions(memory_id,commit_id) DEFERRABLE INITIALLY DEFERRED,
     PRIMARY KEY(inference_id, memory_id),
     UNIQUE(inference_id, position)
 );
 CREATE INDEX inferred_from ON inference_sources(memory_id);
 
-CREATE TABLE memory_changes (
-    seq INTEGER PRIMARY KEY AUTOINCREMENT,
-    memory_id TEXT NOT NULL,
-    change TEXT NOT NULL CHECK(json_valid(change))
-);
-
 CREATE TABLE audit (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
     at TEXT NOT NULL,
     action TEXT NOT NULL,
-    details TEXT NOT NULL CHECK(json_valid(details))
+    details TEXT NOT NULL CHECK(json_valid(details)),
+    reverts INTEGER REFERENCES audit(seq),
+    memory_change TEXT CHECK(memory_change IS NULL OR json_valid(memory_change))
 );
+CREATE UNIQUE INDEX audit_reversal ON audit(reverts) WHERE reverts IS NOT NULL;
 
 CREATE TABLE revisions (
     domain TEXT PRIMARY KEY,
-    version INTEGER NOT NULL
+    version INTEGER NOT NULL,
+    reserved INTEGER CHECK(reserved IS NULL OR domain='evidence')
 );
-INSERT INTO revisions VALUES ('memories',0),('inferences',0),('candidates',0);
+INSERT INTO revisions(domain,version) VALUES ('memories',0),('inferences',0),('candidates',0),('evidence',0);
 
 CREATE TABLE jobs (
     kind TEXT NOT NULL CHECK(kind IN ('title', 'distillation', 'context', 'dream')),
     target TEXT NOT NULL,
-    id TEXT,
     state TEXT,
-    phase TEXT,
     retry_at REAL,
-    generation INTEGER,
-    failures INTEGER,
-    version TEXT,
-    through TEXT,
-    partial TEXT,
-    cursor TEXT CHECK(cursor IS NULL OR json_valid(cursor)),
-    remaining_requests INTEGER,
-    requests INTEGER,
-    batch INTEGER,
-    proposed INTEGER,
-    updated_at TEXT,
-    extra TEXT NOT NULL CHECK(json_valid(extra)),
+    evidence_commit INTEGER,
+    checkpoint TEXT NOT NULL CHECK(json_valid(checkpoint) AND json_type(checkpoint)='object'),
     PRIMARY KEY(kind, target)
 );
 
@@ -166,16 +157,12 @@ CREATE TABLE receipts (
     CHECK((session_id IS NULL)=(turn_id IS NULL))
 );
 
-CREATE TABLE attachment_objects (
-    sha256 TEXT PRIMARY KEY,
-    size INTEGER NOT NULL
-);
-
 CREATE TABLE attachments (
     session_id TEXT NOT NULL,
     message_id TEXT NOT NULL,
     id TEXT NOT NULL,
-    sha256 TEXT NOT NULL REFERENCES attachment_objects,
+    sha256 TEXT NOT NULL,
+    size INTEGER NOT NULL CHECK(size>0),
     name TEXT NOT NULL,
     media_type TEXT NOT NULL,
     PRIMARY KEY(session_id, message_id, id),
@@ -189,18 +176,11 @@ CREATE TABLE file_cleanup (
     PRIMARY KEY(kind, object_id)
 );
 
-CREATE TABLE usage (
-    provider TEXT NOT NULL,
-    period TEXT NOT NULL,
-    window TEXT NOT NULL,
-    units INTEGER NOT NULL,
-    PRIMARY KEY(provider, period)
-);
-
-CREATE TABLE quota_pauses (
+CREATE TABLE search_usage (
     provider TEXT PRIMARY KEY,
-    reason TEXT NOT NULL,
-    resume_at REAL
+    daily_window TEXT, daily_units INTEGER NOT NULL DEFAULT 0 CHECK(daily_units>=0),
+    monthly_window TEXT, monthly_units INTEGER NOT NULL DEFAULT 0 CHECK(monthly_units>=0),
+    pause_reason TEXT, resume_at REAL
 );
 
 CREATE TABLE git_sync (
@@ -208,25 +188,11 @@ CREATE TABLE git_sync (
     state TEXT NOT NULL
 );
 
-CREATE TABLE session_reasoning (
-    event_id INTEGER PRIMARY KEY REFERENCES session_events ON DELETE CASCADE,
-    body TEXT NOT NULL CHECK(json_valid(body))
-);
 CREATE TRIGGER attachment_removed AFTER DELETE ON attachments BEGIN INSERT OR IGNORE INTO file_cleanup VALUES('attachment',old.sha256); END;
 
-CREATE TABLE attachment_reservations (
-    token TEXT NOT NULL,
-    digest TEXT NOT NULL,
-    PRIMARY KEY(token, digest)
-);
-
-CREATE TRIGGER reasoning_changed AFTER UPDATE ON session_reasoning BEGIN
-    UPDATE sessions SET revision=revision+1,history_revision=history_revision+1
-    WHERE id=(SELECT session_id FROM session_events WHERE seq=new.event_id);
-END;
-CREATE TRIGGER reasoning_removed AFTER DELETE ON session_reasoning BEGIN
-    UPDATE sessions SET revision=revision+1,history_revision=history_revision+1
-    WHERE id=(SELECT session_id FROM session_events WHERE seq=old.event_id);
+CREATE TRIGGER reasoning_changed AFTER UPDATE OF reasoning ON session_events
+WHEN new.reasoning IS NOT old.reasoning BEGIN
+    UPDATE sessions SET revision=revision+1,history_revision=history_revision+1 WHERE id=new.session_id;
 END;
 
 CREATE TRIGGER topic_visibility AFTER UPDATE OF archived,title ON topics WHEN new.archived<>old.archived OR new.title<>old.title BEGIN

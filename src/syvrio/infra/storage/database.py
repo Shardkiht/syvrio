@@ -8,7 +8,7 @@ import sqlite3
 import threading
 import time
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -34,7 +34,9 @@ class Unit:
     owner: tuple
     writable: bool
     depth: int = 0
+    preparing: list[Callable[[sqlite3.Connection], None]] = field(default_factory=list)
     committed: list = field(default_factory=list)
+    reversals: list[Callable[[], None]] = field(default_factory=list)
 
 
 _current: ContextVar[Unit | None] = ContextVar("syvrio_db_unit", default=None)
@@ -55,9 +57,14 @@ def database_path(paths: SyvrioPaths) -> Path:
 def _check_layout(db: sqlite3.Connection) -> None:
     # 只编译查询来核对当前读写需要的结构，不扫描聊天记录。
     try:
-        db.execute("""SELECT e.distilled, s.ready, t.preview, u.units, q.resume_at, g.state
-                   FROM session_events e, search_signatures s, tool_previews t,
-                        usage u, quota_pauses q, git_sync g LIMIT 0""")
+        db.execute("""SELECT e.distilled, e.reasoning, e.tool_preview, e.tool_length, s.ready,
+                        a.size, u.daily_units, u.resume_at, g.state,
+                        v.reserved, m.commit_id, i.commit_id, tv.commit_id, l.memory_version,
+                        log.reverts, log.memory_change, j.checkpoint, j.evidence_commit
+                   FROM session_events e, search_signatures s, attachments a,
+                        search_usage u, git_sync g, revisions v, memory_versions m,
+                        inference_versions i, topic_versions tv, inference_sources l,
+                        audit log, jobs j LIMIT 0""")
     except sqlite3.OperationalError as exc:
         if exc.sqlite_errorcode != sqlite3.SQLITE_ERROR:
             raise
@@ -111,10 +118,10 @@ def _create_schema(db: sqlite3.Connection) -> None:
 
 
 def _install_projections(db: sqlite3.Connection) -> None:
-    from . import projection_revisions, session_indexes, session_previews
+    from . import evidence_schema, projection_revisions, session_indexes
 
+    evidence_schema.install(db)
     session_indexes.install(db)
-    session_previews.install(db)
     projection_revisions.install(db)
 
 
@@ -137,6 +144,29 @@ def transaction_mode() -> str | None:
     if unit is None or unit.owner != _owner():
         return None
     return "write" if unit.writable else "read"
+
+
+def before_commit(callback: Callable[[sqlite3.Connection], None]) -> None:
+    """登记当前写事务提交前的动作；保存点回滚时同时撤销登记。"""
+    unit = _current.get()
+    if unit is None or unit.owner != _owner() or not unit.writable:
+        raise DatabaseError("Commit preparation outside its write transaction.")
+    unit.preparing.append(callback)
+
+
+def on_rollback(callback: Callable[[], None]) -> None:
+    """写事务或登记它的保存点回滚时，按倒序撤回关联的内存变更。"""
+    unit = _current.get()
+    if unit is None or unit.owner != _owner() or not unit.writable:
+        raise DatabaseError("Rollback callback outside its write transaction.")
+    unit.reversals.append(callback)
+
+
+def _revert(unit: Unit, start: int = 0) -> None:
+    with ExitStack() as cleanup:
+        for callback in unit.reversals[start:]:
+            cleanup.callback(callback)
+        del unit.reversals[start:]
 
 
 def on_commit(callback):
@@ -212,6 +242,8 @@ def transaction(paths: SyvrioPaths, *, write: bool = True) -> Iterator[sqlite3.C
                 "A nested operation cannot switch databases or promote a read snapshot."
             )
         db = parent.connection
+        reversals = len(parent.reversals)
+        preparations = len(parent.preparing)
         callbacks = len(parent.committed)
         parent.depth += 1
         savepoint = f"nested_{parent.depth}"
@@ -220,8 +252,12 @@ def transaction(paths: SyvrioPaths, *, write: bool = True) -> Iterator[sqlite3.C
             try:
                 yield db
             except BaseException:
+                del parent.preparing[preparations:]
                 del parent.committed[callbacks:]
-                db.execute(f"ROLLBACK TO {savepoint}")
+                try:
+                    _revert(parent, reversals)
+                finally:
+                    db.execute(f"ROLLBACK TO {savepoint}")
                 raise
             finally:
                 db.execute(f"RELEASE {savepoint}")
@@ -239,7 +275,15 @@ def transaction(paths: SyvrioPaths, *, write: bool = True) -> Iterator[sqlite3.C
         token = _current.set(unit)
         try:
             yield db
+            for callback in unit.preparing:
+                callback(db)
             db.commit()
+        except BaseException:
+            try:
+                _revert(unit)
+            finally:
+                db.rollback()
+            raise
         finally:
             _current.reset(token)
         for callback in unit.committed:

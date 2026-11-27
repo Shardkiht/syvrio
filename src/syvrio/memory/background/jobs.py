@@ -1,4 +1,4 @@
-"""Durable background requests, keyed by lane and business entity."""
+"""按任务类型和目标保存调度状态及任务自己的检查点。"""
 
 import json
 from dataclasses import dataclass
@@ -43,40 +43,19 @@ def pending_title_ids(paths: SyvrioPaths, session_ids: list[str]) -> set[str]:
         }
 
 
-# Common scheduling fields and lane checkpoints live in typed columns.
-_COLUMNS = (
-    "id",
-    "state",
-    "phase",
-    "retry_at",
-    "generation",
-    "failures",
-    "version",
-    "through",
-    "partial",
-    "cursor",
-    "remaining_requests",
-    "requests",
-    "batch",
-    "proposed",
-    "updated_at",
-)
-_FIELDS = ",".join(_COLUMNS)
-_PARAMS = ",".join("?" for _ in _COLUMNS)
-_UPDATES = ",".join(f"{name}=excluded.{name}" for name in _COLUMNS)
+_SHARED_FIELDS = ("state", "retry_at", "evidence_commit")
 
 
 def read_job(key):
     with transaction(key.paths, write=False) as db:
         row = db.execute(
-            "SELECT * FROM jobs WHERE kind=? AND target=?", (key.kind, key.target)
+            "SELECT state,retry_at,evidence_commit,checkpoint FROM jobs WHERE kind=? AND target=?",
+            (key.kind, key.target),
         ).fetchone()
         if row is None:
             return None
-        state = json.loads(row["extra"])
-        state.update({name: row[name] for name in _COLUMNS if row[name] is not None})
-        if "cursor" in state:
-            state["cursor"] = json.loads(state["cursor"])
+        state = json.loads(row["checkpoint"])
+        state.update({name: row[name] for name in _SHARED_FIELDS if row[name] is not None})
         return state
 
 
@@ -85,14 +64,18 @@ def save_job(key, state):
         if state is None:
             db.execute("DELETE FROM jobs WHERE kind=? AND target=?", (key.kind, key.target))
             return
-        values = [state.get(name) for name in _COLUMNS]
-        if "cursor" in state:
-            values[_COLUMNS.index("cursor")] = encode(state["cursor"])
-        extra = {key: value for key, value in state.items() if key not in _COLUMNS}
+        checkpoint = {name: value for name, value in state.items() if name not in _SHARED_FIELDS}
         db.execute(
-            f"""INSERT INTO jobs(kind,target,{_FIELDS},extra) VALUES(?,?,{_PARAMS},?)
-             ON CONFLICT(kind,target) DO UPDATE SET {_UPDATES},extra=excluded.extra""",
-            (key.kind, key.target, *values, encode(extra)),
+            """INSERT INTO jobs(kind,target,state,retry_at,evidence_commit,checkpoint)
+               VALUES(?,?,?,?,?,?) ON CONFLICT(kind,target) DO UPDATE SET
+               state=excluded.state,retry_at=excluded.retry_at,
+               evidence_commit=excluded.evidence_commit,checkpoint=excluded.checkpoint""",
+            (
+                key.kind,
+                key.target,
+                *(state.get(name) for name in _SHARED_FIELDS),
+                encode(checkpoint),
+            ),
         )
 
 

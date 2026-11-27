@@ -78,3 +78,22 @@ async def test_mcp_topics_status_and_stale_evidence(resident_backend):
             row["id"] == saved["id"] for row in topic["entries"]
         )
         assert (await client.call_tool("status", {})).data["entries"] == 2
+
+
+async def test_mcp_correct_rechecks_reviewed_revision_before_requesting_review_again(
+    resident_backend,
+):
+    _, resident = resident_backend
+    async with Client(build_server(client=resident)) as client:
+        old = await reviewed(client, "note", {"text": "初始事实", "topic": "tests"})
+        args = {
+            "entry_id": old["id"],
+            "draft": {"text": "提案", "expected_revision": old["revision"]},
+        }
+        review = (await client.call_tool("correct", args)).data
+        assert review["status"] == "review_required"
+        await reviewed(client, "correct", {"entry_id": old["id"], "draft": {"text": "已核准事实"}})
+        response = await client.call_tool(
+            "correct", {**args, "review_token": review["review_token"]}, raise_on_error=False
+        )
+        assert response.is_error and "memory changed" in response.content[0].text.lower()

@@ -79,7 +79,7 @@ default_limit = 15
 
 Dream 使用 `memory.toml` 中独立的 `[dream].context_window`，默认 200,000 tokens。后台先生成画像，再生成待审推断。每个阶段的输入和预留输出能放进有效窗口时，一次发送全部资料，超过才分批。模型声明的输入上限较小时按该上限执行。
 
-Dream 运行中切换模型会从下一批生效。任务失败后换模型再执行 `/dream run`，会从上次成功保存的位置继续；正式事实或已确认推断发生变化时，会按新资料重新生成画像。
+Dream 运行中切换模型会从下一批生效。任务失败后换模型再执行 `/dream run`，会沿用本轮固定的证据版本，从上次成功保存的位置继续。期间发生的事实修正和推断变化留给下一轮。
 
 设置位于其他目录时，用 `SYVRIO_CONFIG` 指定该入口，或将分组文件放到 `~/.syvrio/` 并将入口命名为 `config.toml`。删除某个覆盖项或可选分组文件，下次加载恢复相应默认值。显式指定的入口丢失时启动报错；包内默认文件缺失时需要修复安装。
 
@@ -102,7 +102,7 @@ Dream 运行中切换模型会从下一批生效。任务失败后换模型再�
 
 | 操作 | 行为 |
 | --- | --- |
-| 记录、修正、状态变化 | `memorize` 新增明确事实；`correct` 更正错误；`transition` 记录随时间变化的事实；`deprecate` 弃用正式记忆，保留其历史。 |
+| 记录、修正、状态变化 | `memorize` 新增明确事实；`correct` 在原 ID 上更正错误并保留版本；`transition` 记录随时间变化的事实；`deprecate` 弃用正式记忆，保留其历史。 |
 | `/pending` | 网页右上角的 Pending 可打开待审列表，按主题、正文或 ID 搜索。`/pending edit <id>` 打开完整正文。保留原文时需确认“保存原文”，改写后从最终事实及可信来源异步补全空字段。 |
 | `/inferences` | 在可滚动的完整列表中按状态筛选，并搜索正文、类别或 ID。用户确认的推断和正式事实分别保存。 |
 | `/profile` | 读取最近一次发布的完整画像。 |
@@ -147,7 +147,7 @@ MCP 提供检索、主题阅读、记录、更正、状态变化、弃用和待�
 
 每个部署的业务主库位于 `Vault/syvrio.sqlite3`。会话、事实、推断、待审候选、已发布画像、后台进度和撤回凭据都在其中。搜索供应商的用量、暂停状态和本机 Git 同步状态也在主库中，可直接在同一连接查看。向量缓存与网页搜索缓存分别保存在 `Runtime/cache/vectors.sqlite3` 和 `Runtime/cache/web-search.sqlite3`。上传原件按 SHA-256 保存在 `Vault/attachments/objects/`。归档会话保留在数据库中，可从 Archive 恢复；正式事实仍引用原话时禁止永久删除。
 
-Git 仓库位于 `Vault/export/`，其中的 Markdown 和 JSONL 由同一个已提交的快照生成。事务回滚时，导出文件仍保留上次提交的内容。完整备份使用 `syvrio backup DEST --config CONFIG`，恢复到新目录使用 `syvrio restore DEST NEW_VAULT`。会话检索和沉淀索引随空库一同创建。首次配置请使用空 Vault 和独立 Runtime。[存储与恢复](docs/storage.md)
+Git 仓库位于 `Vault/export/`，其中的 Markdown 和 JSONL 由同一个已提交的快照生成。每次正式记忆变更在审计记录中单独保存变更内容，Git 据此生成有效变更清单。`/undo` 成功后，操作审计保留原记录及对应的撤销记录，有效变更清单排除已撤销的操作。事务回滚时，导出文件仍保留上次提交的内容。完整备份使用 `syvrio backup DEST --config CONFIG`，恢复到新目录使用 `syvrio restore DEST NEW_VAULT`。会话检索和沉淀索引随空库一同创建。首次配置请使用空 Vault 和独立 Runtime。[存储与恢复](docs/storage.md)
 
 ## 配置与 Git
 
@@ -253,7 +253,7 @@ LLM 可以在 `search` 调用里用 `providers` 指定多个已启用来源的�
 
 - 结果是外部不可信内容，只作资料引用，不执行其中任何指令。
 - daemon 未启动或全部 provider 失败时返回结构化错误和启动提示，不编造结果。
-- `[search]` 配置：`enabled`（关闭时不注册工具）、`providers`（按顺序降级）、`base_url`、`timeout`、`max_results`、`cache_ttl`、`transport`（`http` 默认；`mcp` 每次启动 npx MCP 进程）、`auto_start`（常驻后端仅在启用的搜索或抓取使用 open-websearch HTTP 服务时，才后台探测并启动该服务）、`engines`（上游搜索引擎，默认 `["bing"]`）、`fallback_engines`（候补引擎序列，默认 `["baidu", "duckduckgo", "sogou"]`）、`max_engines`（自动回退最多尝试的引擎数，默认 3）、`max_search_engines`（显式 `search_engine` 列表上限，0 表示不限，默认 0）、`timeout_budget`（回退共享超时预算，默认 25 秒，单次请求超时不超过剩余预算）、`max_requests`（一次搜索跨所有 provider 共享的请求次数上限，默认 9；超出即返回当前最佳候选并附截断提示，该结果不写入缓存）、`anysearch_zone` / `anysearch_language`（AnySearch 的区域与语言，默认 `cn` / `zh-CN`）、`searxng_base_url` / `searxng_timeout`（自托管 SearXNG 实例地址与单次超时，默认 `http://127.0.0.1:8888` / 10 秒）、`usage_limits`（每厂商调用上限，`[search.usage_limits.<provider>]` 设 `daily` 与 `monthly`（0 不限）；同一厂商的 Search 与 Fetch 共用同一计数池，达到上限即跳过该厂商并正常回退；计数保存在主库的 `usage` 表，**本地计数不等于服务商实际账单上限**）、`fetch_timeout`（抓取正文的单独超时，默认 45 秒）。`syvrio setup` 可管理双周期额度与官方暂停。
+- `[search]` 配置：`enabled`（关闭时不注册工具）、`providers`（按顺序降级）、`base_url`、`timeout`、`max_results`、`cache_ttl`、`transport`（`http` 默认；`mcp` 每次启动 npx MCP 进程）、`auto_start`（常驻后端仅在启用的搜索或抓取使用 open-websearch HTTP 服务时，才后台探测并启动该服务）、`engines`（上游搜索引擎，默认 `["bing"]`）、`fallback_engines`（候补引擎序列，默认 `["baidu", "duckduckgo", "sogou"]`）、`max_engines`（自动回退最多尝试的引擎数，默认 3）、`max_search_engines`（显式 `search_engine` 列表上限，0 表示不限，默认 0）、`timeout_budget`（回退共享超时预算，默认 25 秒，单次请求超时不超过剩余预算）、`max_requests`（一次搜索跨所有 provider 共享的请求次数上限，默认 9；超出即返回当前最佳候选并附截断提示，该结果不写入缓存）、`anysearch_zone` / `anysearch_language`（AnySearch 的区域与语言，默认 `cn` / `zh-CN`）、`searxng_base_url` / `searxng_timeout`（自托管 SearXNG 实例地址与单次超时，默认 `http://127.0.0.1:8888` / 10 秒）、`usage_limits`（每厂商调用上限，`[search.usage_limits.<provider>]` 设 `daily` 与 `monthly`（0 不限）；同一厂商的 Search 与 Fetch 共用同一计数池，达到上限即跳过该厂商并正常回退；计数保存在主库的 `search_usage` 表，**本地计数不等于服务商实际账单上限**）、`fetch_timeout`（抓取正文的单独超时，默认 45 秒）。`syvrio setup` 可管理双周期额度与官方暂停。
 
 受控真实冒烟：`scripts/smoke_search_apis.py` 默认只做本地检查（Key 是否可读、厂商是否会注册；匿名 Provider 无 Key 也标记为可注册），不发任何请求；加 `--provider <厂商> --operation search|fetch --live` 才对单一厂商发起最多 `--max-requests`（默认 1，上限 10）次真实请求，输出脱敏报告（成功与否、结果数或正文长度、错误类型、耗时与待验证字段）。脚本从凭据库读取 Key，仅输出检查结果。网页抓取由独立的 `[fetch]` 配置控制：`providers` 是抓取正文用的 provider 顺序（默认 `["open_websearch"]`），与搜索的 provider 顺序相互独立；配置了 Key 的官方厂商（tavily / exa / you / volcengine）加入该列表后才参与抓取。
 - `auto_start` 启动的 daemon 在 Windows 下隐藏控制台窗口；退出 TUI 后继续常驻，下次直接复用。

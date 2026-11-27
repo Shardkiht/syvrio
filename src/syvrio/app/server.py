@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastmcp import FastMCP
 
 from ..backend.client import ResidentClient
-from ..backend.client_contracts import MemoryContext, MemoryDraft
+from ..backend.client_contracts import MemoryContext, MemoryCorrection, MemoryDraft
 
 
 def build_server(client: ResidentClient | None = None) -> FastMCP:
@@ -80,11 +80,11 @@ def build_server(client: ResidentClient | None = None) -> FastMCP:
         )
 
     @mcp.tool
-    def correct(entry_id: str, draft: MemoryDraft, review_token: str | None = None) -> dict:
-        """更正记录错误；旧事实保留并弃用。"""
+    def correct(entry_id: str, draft: MemoryCorrection, review_token: str | None = None) -> dict:
+        """更正同一条记忆，保留更正前的版本及来源。"""
         return model_write(
             "correct",
-            {"entry_id": entry_id, "draft": draft.model_dump(exclude_none=True)},
+            {"entry_id": entry_id, "draft": draft.model_dump(exclude_unset=True)},
             review_token,
         )
 

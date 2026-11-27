@@ -12,8 +12,10 @@ from pathlib import Path
 from syvrio.infra.session.attachment_objects import original_path
 from syvrio.infra.session.attachments import Attachment
 from syvrio.infra.session.store import SessionStore
+from syvrio.infra.storage.audit import append_audit
 from syvrio.infra.storage.database import encode, transaction
 from syvrio.infra.storage.files import sync_directory
+from syvrio.infra.time import utc_timestamp
 
 from .snapshot import fingerprint
 
@@ -97,10 +99,6 @@ def _transfer(records, paths, changes, store, cleanup):
                     dest = original_path(paths.attachments_dir, obj.sha256)
                     obj.path(paths.attachments_dir, paths.attachments_dir)
                     publish_blob(obj.sha256, obj.size, dest)
-                    db.execute(
-                        "INSERT INTO attachment_objects VALUES(?,?) ON CONFLICT(sha256) DO NOTHING",
-                        (obj.sha256, obj.size),
-                    )
                 store._insert(db, sid, event)
             if archived:
                 db.execute("UPDATE sessions SET archived=1 WHERE id=?", (sid,))
@@ -166,16 +164,19 @@ def _transfer(records, paths, changes, store, cleanup):
                 (key, kind, text, state, created, updated),
             )
             db.executemany(
-                "INSERT INTO inference_sources VALUES(?,?,?)",
+                "INSERT INTO inference_sources(inference_id,memory_id,position) VALUES(?,?,?)",
                 [(key, x, i) for i, x in enumerate(sources)],
             )
         for (name, digest, num), row in records.logs.items():
             if not fresh(name, f"{digest}/{num}", row):
                 continue
             if name == "memory-changes.jsonl":
-                db.execute(
-                    "INSERT INTO memory_changes(memory_id,change) VALUES(?,?)",
-                    (row["id"], encode(row["change"])),
+                append_audit(
+                    db,
+                    "legacy_memory_change",
+                    {"memory_id": row["id"]},
+                    at=row.get("at"),
+                    memory_change=row["change"],
                 )
             elif name == "resolved.jsonl":
                 db.execute(
@@ -203,8 +204,6 @@ def _transfer(records, paths, changes, store, cleanup):
                 ).fetchone()[0]
                 publish_blob(records.soul, size, soul)
         if added:
-            from syvrio.infra.time import utc_timestamp
-
             db.execute(
                 "INSERT INTO audit(at,action,details) VALUES(?,?,?)",
                 (utc_timestamp(), "legacy_vault_import", encode({"entries": added})),

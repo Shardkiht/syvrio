@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from heapq import merge
 from itertools import islice
@@ -12,8 +12,7 @@ from pathlib import Path
 from ..storage.database import transaction, transaction_mode
 from ..storage.documents import DocumentError
 from ..storage.paths import SESSION_ID_RE, SyvrioPaths, vault_paths
-from ..storage.session_indexes import PENDING_USER, search_signature
-from ..storage.session_previews import PREVIEW_SIZE
+from ..storage.session_indexes import PENDING_USER, TOOL_PREVIEW_SIZE, search_signature
 from .attachments import AttachmentBatch
 from .model import Session, first_title_exchange
 
@@ -79,14 +78,11 @@ class SessionQuery:
             ).fetchone()
             if not session:
                 raise KeyError(session_id)
-            select = (
-                "SELECT e.*, r.body FROM session_events e LEFT JOIN session_reasoning r ON r.event_id=e.seq"
-                if include_reasoning
-                else "SELECT e.*,NULL AS body FROM session_events e"
-            )
+            body = "e.reasoning" if include_reasoning else "NULL"
+            select = f"SELECT e.kind,e.message_id,e.role,e.at,e.content,e.payload,{body} AS body FROM session_events e"
             event_attachments = {}
             for attachment in db.execute(
-                """SELECT a.message_id,a.id,a.name,a.media_type,a.sha256,o.size FROM attachments a JOIN attachment_objects o USING(sha256) WHERE a.session_id=? ORDER BY a.rowid""",
+                """SELECT a.message_id,a.id,a.name,a.media_type,a.sha256,a.size FROM attachments a WHERE a.session_id=? ORDER BY a.rowid""",
                 (session_id,),
             ):
                 meta = dict(attachment)
@@ -136,14 +132,11 @@ class SessionQuery:
                 start = """AND e.seq >= (SELECT seq FROM session_events WHERE session_id=?
                            ORDER BY seq LIMIT 1 OFFSET ?)"""
                 args.extend((session_id, min(covered, 2**63 - 1)))
-            reasoning = (
-                "LEFT JOIN session_reasoning r ON r.event_id=e.seq" if include_reasoning else ""
-            )
-            body = "r.body" if include_reasoning else "NULL"
+            body = "e.reasoning" if include_reasoning else "NULL"
             rows = db.execute(
                 f"""
                 SELECT e.kind,e.message_id,e.role,e.at,e.payload,e.content,{body} AS body
-                FROM session_events e {reasoning} WHERE e.session_id=? AND e.active=1
+                FROM session_events e WHERE e.session_id=? AND e.active=1
                 AND e.kind IN ('message','assistant','tool') {start} ORDER BY e.seq
             """,
                 args,
@@ -237,15 +230,13 @@ class SessionQuery:
             preview = "e.kind='tool' AND e.message_id IS NOT NULL"
             # 较短的预生成摘要可直接命中；请求更长时按本次长度读取原文。
             excerpt = (
-                "coalesce(p.preview,tool_excerpt(e.content))"
-                if tool_preview <= PREVIEW_SIZE
+                "coalesce(e.tool_preview,tool_excerpt(e.content))"
+                if tool_preview <= TOOL_PREVIEW_SIZE
                 else "tool_excerpt(e.content)"
             )
-            select = f"""SELECT e.seq,e.kind,e.message_id,e.role,e.at,e.payload,r.body,
+            select = f"""SELECT e.seq,e.kind,e.message_id,e.role,e.at,e.payload,e.reasoning AS body,
                 CASE WHEN {preview} THEN {excerpt} ELSE e.content END AS content,
-                CASE WHEN {preview} THEN coalesce(p.length,tool_length(e.content)) END AS tool_length FROM session_events e
-                LEFT JOIN tool_previews p ON p.event_id=e.seq
-                LEFT JOIN session_reasoning r ON r.event_id=e.seq
+                CASE WHEN {preview} THEN coalesce(e.tool_length,tool_length(e.content)) END AS tool_length FROM session_events e
                 WHERE e.session_id=? AND e.active=1
                 AND e.kind IN ('message','assistant','tool','summary','turn_failed')"""
             rows = db.execute(
@@ -281,8 +272,8 @@ class SessionQuery:
             attachments = {}
             if ids:
                 for item in db.execute(
-                    """SELECT a.message_id,a.id,a.name,a.media_type,a.sha256,o.size
-                    FROM attachments a JOIN attachment_objects o USING(sha256) WHERE a.session_id=?
+                    """SELECT a.message_id,a.id,a.name,a.media_type,a.sha256,a.size
+                    FROM attachments a WHERE a.session_id=?
                     AND a.message_id IN (SELECT value FROM json_each(?)) ORDER BY a.rowid""",
                     (session_id, json.dumps(ids)),
                 ):
@@ -294,7 +285,7 @@ class SessionQuery:
                 (session_id,),
             ).fetchone()
             records = [self._record(row, attachments) for row in reversed(rows)]
-            if tool_preview < PREVIEW_SIZE:
+            if tool_preview < TOOL_PREVIEW_SIZE:
                 for record in records:
                     if record.get("tool_content_length") is not None:
                         record["content"] = record["content"][:tool_preview]
@@ -324,8 +315,7 @@ class SessionQuery:
         self._validate_session_id(session_id)
         with transaction(self.paths, write=False) as db:
             row = db.execute(
-                """SELECT a.id,a.name,a.media_type,a.sha256,o.size FROM attachments a
-                JOIN attachment_objects o ON o.sha256=a.sha256
+                """SELECT a.id,a.name,a.media_type,a.sha256,a.size FROM attachments a
                 JOIN sessions s ON s.id=a.session_id
                 JOIN session_events e ON (e.session_id,e.message_id)=(a.session_id,a.message_id)
                 WHERE s.id=? AND s.archived=? AND e.active=1 AND a.message_id=? AND a.id=?""",
@@ -339,9 +329,7 @@ class SessionQuery:
 
     def verify_attachments(self):
         with transaction(self.paths, write=False) as db:
-            rows = db.execute(
-                "SELECT a.*,o.size FROM attachments a JOIN attachment_objects o USING(sha256)"
-            ).fetchall()
+            rows = db.execute("SELECT * FROM attachments").fetchall()
         checked = 0
         errors = []
         for row in rows:
@@ -457,20 +445,22 @@ class SessionQuery:
                    ORDER BY g.started_at DESC,g.session_id DESC,g.event_id DESC LIMIT ?6""",
                 (exclude_session, c0, c1, p0, p1, limit),
             )
-            ordered = merge(titles, messages, key=lambda row: row[:4], reverse=True)
-            for _, sid, heading, _, title, mid, role, content in islice(ordered, limit):
-                excerpt = content
-                if not heading:
-                    match = pattern.search(content)
-                    start, end = max(0, match.start() - 48), min(len(content), match.end() + 80)
-                    excerpt = (
-                        ("…" if start else "")
-                        + content[start:end]
-                        + ("…" if end < len(content) else "")
+            with closing(merge(titles, messages, key=lambda row: row[:4], reverse=True)) as ordered:
+                for _, sid, heading, _, title, mid, role, content in islice(ordered, limit):
+                    excerpt = content
+                    if not heading:
+                        match = pattern.search(content)
+                        start, end = max(0, match.start() - 48), min(len(content), match.end() + 80)
+                        excerpt = (
+                            ("…" if start else "")
+                            + content[start:end]
+                            + ("…" if end < len(content) else "")
+                        )
+                    hits.append(
+                        dict(
+                            session_id=sid, title=title, message_id=mid, role=role, excerpt=excerpt
+                        )
                     )
-                hits.append(
-                    dict(session_id=sid, title=title, message_id=mid, role=role, excerpt=excerpt)
-                )
         return {"results": hits}
 
     def search_message(self, session_id: str, message_id: str) -> dict:

@@ -62,10 +62,12 @@ class MemoryUseCases:
 
     def load_inference_review(self, *, include_sources: bool = True) -> InferenceReview:
         items = self.service.list_inferences()
-        source_ids = (
-            {key for item in items for key in item.source_ids} if include_sources else set()
+        versions = (
+            {pair for item in items for pair in item.source_versions.items()}
+            if include_sources
+            else set()
         )
-        return InferenceReview(items, self._source_texts(source_ids))
+        return InferenceReview(items, self.service.store.version_texts(versions))
 
     def review_inference(
         self, item_id: str, action: str, text: str | None = None, *, include_sources: bool = True

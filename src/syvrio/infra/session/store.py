@@ -10,9 +10,8 @@ from typing import Any
 
 from ..llm.tokens import estimate_tokens
 from ..security.secrets import redact_secrets
-from ..storage import session_previews
 from ..storage.database import encode, on_commit, transaction
-from ..storage.session_indexes import PENDING_USER, index_message
+from ..storage.session_indexes import PENDING_USER, TOOL_PREVIEW_SIZE, index_message
 from ..time import serialize_timestamp, timestamp_calendar_date, utc_now
 from .attachment_objects import cleanup
 from .errors import ConversationError
@@ -131,11 +130,9 @@ class SessionStore(SessionQuery):
             return Session(id=key, started_at=started, records=[meta])
 
     def recover_deletions(self):
-        # Called under the exclusive backend lease before accepting any uploads.
+        # 后端持有独占租约，此时尚未接收上传。
         import shutil
 
-        with transaction(self.paths) as db:
-            db.execute("DELETE FROM attachment_reservations")
         cleanup(self.paths)
         staging = self.attachments_dir / ".incoming"
         if staging.resolve() != staging:
@@ -156,16 +153,25 @@ class SessionStore(SessionQuery):
         content = data.pop("content", None)
         if reason:
             data["reasoning_local"] = True
+        tool = (content or "") if kind == "tool" and msg is not None else None
         cur = db.execute(
-            "INSERT INTO session_events(session_id,kind,message_id,role,at,content,payload) VALUES(?,?,?,?,?,?,?)",
-            (key, kind, msg, role, at, content, encode(data)),
+            """INSERT INTO session_events(session_id,kind,message_id,role,at,content,payload,reasoning,tool_preview,tool_length)
+               VALUES(?,?,?,?,?,?,?,?,?,?)""",
+            (
+                key,
+                kind,
+                msg,
+                role,
+                at,
+                content,
+                encode(data),
+                encode(reason) if reason else None,
+                tool[:TOOL_PREVIEW_SIZE] if tool is not None else None,
+                len(tool) if tool is not None else None,
+            ),
         )
         if kind in {"message", "assistant"} and content is not None:
             index_message(db, cur.lastrowid, content)
-        if kind == "tool" and msg is not None and content and "\x00" in content:
-            session_previews.save(db, cur.lastrowid, content)
-        if reason:
-            db.execute("INSERT INTO session_reasoning VALUES(?,?)", (cur.lastrowid, encode(reason)))
         if kind == "undo":
             db.execute(
                 """UPDATE session_events SET active=0 WHERE session_id=? AND kind IN
@@ -176,8 +182,16 @@ class SessionStore(SessionQuery):
             )
         for item in items:
             db.execute(
-                "INSERT INTO attachments VALUES(?,?,?,?,?,?)",
-                (key, msg, item["id"], item["sha256"], item["name"], item["media_type"]),
+                "INSERT INTO attachments(session_id,message_id,id,sha256,name,media_type,size) VALUES(?,?,?,?,?,?,?)",
+                (
+                    key,
+                    msg,
+                    item["id"],
+                    item["sha256"],
+                    item["name"],
+                    item["media_type"],
+                    item["size"],
+                ),
             )
         db.execute(
             """UPDATE sessions SET revision=revision+1,history_revision=history_revision+?,

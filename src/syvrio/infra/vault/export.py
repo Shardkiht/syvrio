@@ -11,6 +11,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from ..session.query import SessionQuery
+from ..storage.audit import effective_memory_changes, public_audit_events
 from ..storage.database import committed_read, encode, transaction
 
 
@@ -59,6 +60,12 @@ def render(paths):
                     body.append(f"- Metadata: {encode(extensions)}")
                 body.append("")
             files[f"memories/{topic}.md"] = "\n".join(body)
+        history = db.execute("""SELECT v.* FROM memory_versions v JOIN memories m ON m.id=v.memory_id
+            JOIN topics now ON now.name=m.topic JOIN topics then_topic ON then_topic.name=v.topic
+            WHERE now.archived=0 AND then_topic.archived=0
+            AND NOT EXISTS(SELECT 1 FROM sessions s WHERE s.id=v.session_id AND s.archived)
+            ORDER BY v.memory_id,v.commit_id""")
+        files["records/memory_versions.jsonl"] = _jsonl(dict(row) for row in history)
         related = _related(
             db.execute(
                 """SELECT r.candidate_id,r.memory_id FROM candidate_related r
@@ -76,36 +83,27 @@ def render(paths):
             item["related_ids"] = related.get(row["id"], [])
             pending.append(item)
         files["pending.jsonl"] = _jsonl(pending)
-        sources = _related(
-            db.execute(
-                "SELECT inference_id,memory_id FROM inference_sources ORDER BY inference_id,position"
-            )
-        )
+        sources = {}
+        versions = {}
+        for owner, memory, commit in db.execute("""SELECT inference_id,memory_id,memory_version
+                FROM inference_sources ORDER BY inference_id,position"""):
+            sources.setdefault(owner, []).append(memory)
+            if commit is not None:
+                versions.setdefault(owner, {})[memory] = commit
         inferences = []
         for row in db.execute(
             "SELECT id,kind,text,status,created_at,updated_at FROM inferences ORDER BY id"
         ):
             item = dict(row)
             item["source_ids"] = sources.get(row["id"], [])
+            item["source_versions"] = versions.get(row["id"], {})
             inferences.append(item)
         files["inferences.jsonl"] = _jsonl(inferences)
         profile = db.execute("SELECT body FROM profile").fetchone()
         if profile:
             files["profile.md"] = profile[0].rstrip() + "\n"
-        changes = db.execute("""SELECT c.* FROM memory_changes c
-            JOIN memories m ON m.id=c.memory_id JOIN topics t ON t.name=m.topic
-            WHERE t.archived=0 ORDER BY c.seq""")
-        files["records/memory_changes.jsonl"] = _jsonl(
-            {**dict(row), "change": json.loads(row["change"])} for row in changes
-        )
-        audit = db.execute("""SELECT a.* FROM audit a WHERE NOT EXISTS (
-            SELECT 1 FROM sessions s WHERE s.id=json_extract(a.details,'$.session') AND s.archived)
-            AND NOT EXISTS (SELECT 1 FROM memories m JOIN topics t ON t.name=m.topic
-                WHERE m.id=json_extract(a.details,'$.memory_id') AND t.archived)
-            ORDER BY a.seq""")
-        files["records/audit.jsonl"] = _jsonl(
-            {**dict(row), "details": json.loads(row["details"])} for row in audit
-        )
+        files["records/memory_changes.jsonl"] = _jsonl(effective_memory_changes(db))
+        files["records/audit.jsonl"] = _jsonl(public_audit_events(db))
         sessions = SessionQuery(paths)
         for (sid,) in db.execute("SELECT id FROM sessions WHERE archived=0 ORDER BY id"):
             session = sessions.load(sid, include_reasoning=False)

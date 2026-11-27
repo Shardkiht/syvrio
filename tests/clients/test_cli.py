@@ -377,8 +377,12 @@ def test_cli_correct_and_forget(tmp_path):
     )
     assert result.exit_code == 0, result.output
     assert "已更正" in result.output
-    assert service.store.find(entry.id).status == "deprecated"
-    assert service.store.has_text("新表述：住在滨江")
+    current = service.store.find(entry.id)
+    assert current.status == "active" and current.text == "新表述：住在滨江"
+    assert [row["text"] for row in service.store.version_history(entry.id)] == [
+        entry.text,
+        current.text,
+    ]
 
     active = service.store.entries(topic="housing")
     assert len(active) == 1

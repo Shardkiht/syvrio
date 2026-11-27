@@ -144,7 +144,7 @@ async def test_inference_sources_batch_only_referenced_facts(
         proposals.add(service.propose_inference(f"合成推断 {index}", ids, kind="profile").id)
     source_text = {entry.id: entry.text for entry in sources}
     batches = []
-    read_sources = service.store.source_texts
+    read_sources = service.store.version_texts
 
     def observe(ids):
         batches.append(set(ids))
@@ -157,7 +157,7 @@ async def test_inference_sources_batch_only_referenced_facts(
         await app.workers.wait_for_complete()
         monkeypatch.setattr(service.store, "entries", unexpected)
         monkeypatch.setattr(service.store, "find", unexpected)
-        monkeypatch.setattr(service.store, "source_texts", observe)
+        monkeypatch.setattr(service.store, "version_texts", observe)
         screen = await _open_resident_inferences(app, pilot)
         visited = set()
         for index in range(len(proposals)):
@@ -169,7 +169,9 @@ async def test_inference_sources_batch_only_referenced_facts(
             detail = str(screen.query_one("#inference-detail-sources").render())
             assert all(source_text[key] in detail for key in selected.source_ids)
         assert visited == proposals
-        assert batches == [set(source_text)]
+        assert batches == [
+            {pair for item in service.list_inferences() for pair in item.source_versions.items()}
+        ]
 
 
 async def test_inference_edit_failure_preserves_draft_and_retries(

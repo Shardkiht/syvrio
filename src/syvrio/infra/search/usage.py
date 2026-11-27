@@ -9,7 +9,7 @@ from datetime import datetime
 from threading import RLock
 from typing import Callable
 
-from ..storage.database import transaction
+from ..storage.database import on_rollback, transaction
 from ..storage.paths import SyvrioPaths
 
 
@@ -44,41 +44,41 @@ class UsageLimiter:
             return
         # 嵌套调用可能已持有主库写锁。所有调用统一先取得数据库事务，再锁实例计数。
         with transaction(self.paths, write=write) as db, self._mutex:
-            stored = {}
-            for period, window, count in db.execute(
-                "SELECT period,window,units FROM usage WHERE provider=?", (provider,)
-            ):
-                stored[period] = {"window": window, "count": count}
-            pause = db.execute(
-                "SELECT reason,resume_at FROM quota_pauses WHERE provider=?", (provider,)
+            row = db.execute(
+                """SELECT daily_window,daily_units,monthly_window,monthly_units,pause_reason,resume_at
+                FROM search_usage WHERE provider=?""",
+                (provider,),
             ).fetchone()
-            if pause:
-                stored["paused"] = {"reason": pause[0], "resume_at": pause[1]}
-            entry = {key: row.copy() for key, row in stored.items()} if write else stored
+            entry = {}
+            if row is not None:
+                entry["daily"] = {"window": row[0], "count": row[1]}
+                entry["monthly"] = {"window": row[2], "count": row[3]}
+                if row[4] is not None:
+                    entry["paused"] = {"reason": row[4], "resume_at": row[5]}
             self._counts[provider] = entry
             yield
-            if not write:
+            if not write or not entry:
                 return
-            for period in ("daily", "monthly"):
-                counter = entry.get(period)
-                if not counter or counter == stored.get(period):
-                    continue
-                if period not in stored and counter["count"] == 0:
-                    continue
-                db.execute(
-                    "INSERT OR REPLACE INTO usage VALUES(?,?,?,?)",
-                    (provider, period, counter["window"], counter["count"]),
-                )
-            paused = entry.get("paused")
-            if paused == stored.get("paused"):
+            day, month = entry["daily"], entry["monthly"]
+            paused = entry.get("paused") or {}
+            values = (
+                day["window"],
+                day["count"],
+                month["window"],
+                month["count"],
+                paused.get("reason"),
+                paused.get("resume_at"),
+            )
+            if row is None and not (day["count"] or month["count"] or paused):
                 return
-            if paused:
+            if row is None or tuple(row) != values:
                 db.execute(
-                    "INSERT OR REPLACE INTO quota_pauses VALUES(?,?,?)",
-                    (provider, paused["reason"], paused.get("resume_at")),
+                    """INSERT INTO search_usage(provider,daily_window,daily_units,monthly_window,monthly_units,pause_reason,resume_at)
+                    VALUES(?,?,?,?,?,?,?) ON CONFLICT(provider) DO UPDATE SET daily_window=excluded.daily_window,
+                    daily_units=excluded.daily_units,monthly_window=excluded.monthly_window,monthly_units=excluded.monthly_units,
+                    pause_reason=excluded.pause_reason,resume_at=excluded.resume_at""",
+                    (provider, *values),
                 )
-            else:
-                db.execute("DELETE FROM quota_pauses WHERE provider=?", (provider,))
 
     def _entry(self, provider: str) -> dict:
         now = self._clock()
@@ -144,7 +144,12 @@ class UsageLimiter:
             if self._remaining(self._status(provider, entry)) == 0:
                 return None
             self._increment(entry)
-            return UsageReservation(provider, entry["daily"]["window"], entry["monthly"]["window"])
+            reservation = UsageReservation(
+                provider, entry["daily"]["window"], entry["monthly"]["window"]
+            )
+            if self.paths is not None:
+                on_rollback(lambda: setattr(reservation, "refunded", True))
+            return reservation
 
     def _increment(self, entry: dict) -> None:
         for period in ("daily", "monthly"):
@@ -167,6 +172,8 @@ class UsageLimiter:
                 counter = entry[period]
                 if counter["window"] == charged_window and counter["count"] > 0:
                     counter["count"] -= 1
+            if self.paths is not None:
+                on_rollback(lambda: setattr(reservation, "refunded", False))
             reservation.refunded = True
 
     def pause(self, provider: str, reason: str, resume_at: float | None = None) -> None:

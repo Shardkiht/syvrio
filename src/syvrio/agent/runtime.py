@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Iterator
+from contextlib import nullcontext
 from copy import copy
 from dataclasses import asdict, dataclass, field, replace
 from datetime import date
@@ -388,28 +389,13 @@ class AgentRuntime:
         journal = TurnJournal(self.service.paths, session.id, message_id)
         record = {"type": "message", "id": message_id, "role": "user", "content": text}
         if attachments:
-            from ..infra.session.attachment_objects import release, reserve
-
-            token = message_id
-            reserve(self.service.paths, token, attachments.files)
             record["attachments"] = [asdict(item) for item in attachments.files]
-        try:
-            if attachments:
-                attachments.publish(self.service.paths)
+        with attachments.sending(self.service.paths) if attachments else nullcontext():
             with self.service.work.write():
                 if replace_message_id is None:
                     self.sessions.append(session, record)
                 else:
                     self.undo(session, expected_latest=replace_message_id, replacement=record)
-                if attachments:
-                    release(self.service.paths, token)
-        except BaseException:
-            if attachments:
-                release(self.service.paths, token)
-                attachments.discard()
-            raise
-        if attachments:
-            attachments.finish()
         if on_user_message is not None:
             # 立即上报本条用户消息 ID；生成期间 /undo 用它精确撤销当前回合。
             on_user_message(message_id)

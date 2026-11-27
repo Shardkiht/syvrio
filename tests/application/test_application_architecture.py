@@ -66,9 +66,7 @@ def test_conversation_settings_and_model_loop_do_not_import_sqlite():
         ROOT / name
         for name in ("memory/service.py", "memory/turn_undo.py", "memory/background/dream.py")
     )
-    assert not _violations(
-        paths, ("sqlite3", "syvrio.infra.storage.database", "syvrio.infra.storage.session_previews")
-    )
+    assert not _violations(paths, ("sqlite3", "syvrio.infra.storage.database"))
     assert not _violations(
         [ROOT / "application/settings.py", ROOT / "agent/network_tools.py"], ("syvrio.memory",)
     )

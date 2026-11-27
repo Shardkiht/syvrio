@@ -40,6 +40,7 @@ from .models import (
     Inference,
     InferenceKind,
     MemoryContext,
+    MemoryCorrection,
     MemoryDraft,
     MemoryUpdate,
     PendingItem,
@@ -111,6 +112,12 @@ class MemorizeResult:
 
 def pending_view(item: PendingItem) -> dict:
     return item.model_dump(exclude={"created_at", "session_id", "message_id"}, exclude_none=True)
+
+
+@dataclass(frozen=True, slots=True)
+class CorrectionPreview:
+    draft: MemoryDraft
+    recall_query: str
 
 
 class MemoryTargetError(SyvrioError, ValueError):
@@ -199,7 +206,6 @@ class MemoryService:
                         entry_id=entry_id,
                         supersedes=supersedes,
                     )
-                    self.audit.write("add", memory_id=new.id)
                 else:
                     if (
                         existing.text != draft.text
@@ -216,13 +222,7 @@ class MemoryService:
             for change in changes:
                 if change.context and contains_secret(change.context.model_dump_json()):
                     raise ValueError("Credentials cannot be stored in memory context.")
-                old = self.store.find(change.id)
-                if old is None:
-                    raise KeyError(f"Memory not found: {change.id}")
-                updated = self.store.update(change.id, context=change.context, status=change.status)
-                if updated.context != old.context or updated.status != old.status:
-                    self.audit.write("update", memory_id=updated.id)
-                result.append(updated)
+                result.append(self.store.save_revision(change.id, change))
             return result
 
     def validate_draft(self, draft: MemoryDraft) -> None:
@@ -241,18 +241,25 @@ class MemoryService:
     def memorize(self, draft: MemoryDraft, **source) -> Entry:
         return self.add(draft, **source)
 
-    def correct(self, entry_id: str, draft: MemoryDraft, **source) -> Entry:
-        with self.work.write():
+    def preview_correction(
+        self, entry_id: str, draft: MemoryCorrection | MemoryDraft
+    ) -> CorrectionPreview:
+        with self.work.read():
             old = self.require_entry(entry_id)
-            draft = MemoryDraft.model_validate(draft)
-            if draft.text == old.text:
-                raise ValueError("A correction requires a changed fact.")
-            return self.apply(
-                draft,
-                [MemoryUpdate(id=entry_id, status=STATUS_DEPRECATED)],
-                supersedes=entry_id,
-                **source,
-            )[0]
+            patch = MemoryCorrection.model_validate(draft.model_dump(exclude_unset=True))
+            if patch.expected_revision is not None and patch.expected_revision != old.revision:
+                raise MemoryTargetError("The memory changed. Refresh before correcting it.")
+            merged = patch.apply_to(old)
+            self.validate_draft(merged)
+            query = f"{old.text} {patch.text}" if patch.text else old.text
+            return CorrectionPreview(merged, query)
+
+    def correct(self, entry_id: str, draft: MemoryCorrection | MemoryDraft, **source) -> Entry:
+        with self.work.write():
+            # 审核和落盘之间允许并发修改，在写事务内重新核对目标和合并结果。
+            preview = self.preview_correction(entry_id, draft)
+            origin = self._source_fields(source.get("session_id"), source.get("message_id"))
+            return self.store.save_revision(entry_id, preview.draft, source=origin)
 
     def transition(
         self,
@@ -420,7 +427,14 @@ class MemoryService:
             else self.store.revisions("memories")
         )
 
-    def propose_inference(self, text: str, source_ids: list[str], kind: InferenceKind) -> Inference:
+    def propose_inference(
+        self,
+        text: str,
+        source_ids: list[str],
+        kind: InferenceKind,
+        *,
+        evidence_commit: int | None = None,
+    ) -> Inference:
         text = text.strip()
         if not text or contains_secret(text) or contains_secret(kind):
             raise ValueError("Inference text and kind must be nonempty and free of credentials.")
@@ -434,13 +448,19 @@ class MemoryService:
             updated_at=stamp,
         )
         with self.work.write():
-            for key in item.source_ids:
-                self.require_entry(key)
+            if evidence_commit is None:
+                for key in item.source_ids:
+                    self.require_entry(key)
+                evidence_commit = self.store.evidence_commit()
+            versions = self.store.evidence_sources(item.source_ids, evidence_commit)
+            if set(versions) != set(item.source_ids):
+                raise ValueError("Unknown source memory in the selected revision.")
+            item.source_versions = versions
             for record in self.inferences.all():
-                if (record.kind, normalize_text(record.text), record.source_ids) == (
+                if (record.kind, normalize_text(record.text), record.source_versions) == (
                     item.kind,
                     normalize_text(item.text),
-                    item.source_ids,
+                    versions,
                 ):
                     return record
             self.inferences.add(item)
@@ -625,16 +645,19 @@ class MemoryService:
             ) from exc
         return {"session_id": session_id, "message_id": message_id}
 
-    def read_memory_source(self, memory_id: str) -> dict:
+    def read_memory_source(self, memory_id: str, commit_id: int | None = None) -> dict:
         if not isinstance(memory_id, str) or not re.fullmatch(
             r"[A-Za-z0-9][A-Za-z0-9_.:-]*", memory_id
         ):
             raise ValueError("Invalid memory ID.")
         with self.work.read():
-            entry = self.store.find(memory_id)
-            if entry is None:
-                raise KeyError("Memory not found.")
-            session_id, message_id = entry.source_session_id, entry.source_message_id
+            if commit_id is None:
+                entry = self.store.find(memory_id)
+                if entry is None:
+                    raise KeyError("Memory not found.")
+                session_id, message_id = entry.source_session_id, entry.source_message_id
+            else:
+                session_id, message_id = self.store.version_origin(memory_id, commit_id)
             if not session_id and not message_id:
                 return {
                     "status": "no_session_source",

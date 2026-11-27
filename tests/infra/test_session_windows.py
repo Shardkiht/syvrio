@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Barrier
@@ -35,7 +36,11 @@ def test_pages_preserve_tool_groups_and_use_saved_preview(tmp_path):
     previous = store.history_window(session.id, 2, before_seq=page.earlier_cursor, **args)
     assert [r["id"] for r in previous.records] == ["u"] and previous.earlier_cursor is None
     with database.transaction(store.paths, write=False) as db:
-        assert tuple(db.execute("SELECT preview,length FROM tool_previews").fetchone()) == (
+        assert tuple(
+            db.execute(
+                "SELECT tool_preview,tool_length FROM session_events WHERE kind='tool'"
+            ).fetchone()
+        ) == (
             text[:300],
             len(text),
         )
@@ -48,6 +53,66 @@ def test_pages_preserve_tool_groups_and_use_saved_preview(tmp_path):
         store.history_window(session.id, 2, before_seq=None, **args)
     with pytest.raises(ValueError):
         store.history_window(session.id, 1, archived=True, tool_preview=3, before_seq=2**63)
+
+
+def test_external_tool_writes_refresh_preview_and_preserve_nul(tmp_path):
+    store = SessionStore(tmp_path)
+    session = store.create()
+    with database.transaction(store.paths) as db:
+        db.execute(
+            """INSERT INTO session_events(session_id,kind,message_id,at,content)
+               VALUES(?,'tool','tool','2026-01-01T00:00:00+00:00',?)""",
+            (session.id, "外部写入" * 150),
+        )
+        assert tuple(
+            db.execute(
+                "SELECT tool_preview,tool_length FROM session_events WHERE message_id='tool'"
+            ).fetchone()
+        ) == ("外部写入" * 75, 600)
+    for text in ("更新后的文本" * 400, "第一段\x00第二段🙂" * 400):
+        with database.transaction(store.paths) as db:
+            db.execute("UPDATE session_events SET content=? WHERE message_id='tool'", (text,))
+            if "\x00" not in text:
+                cached = db.execute(
+                    "SELECT tool_preview,tool_length FROM session_events WHERE message_id='tool'"
+                ).fetchone()
+                assert tuple(cached) == (text[:300], len(text))
+        page = store.history_window(
+            session.id, 1, archived=False, before_seq=None, tool_preview=200
+        )
+        (result,) = page.records
+        assert result["content"] == text[:200]
+        assert result["tool_content_length"] == len(text)
+        assert store.tool_content(session.id, "tool", archived=False) == text
+
+
+def test_reasoning_free_reads_do_not_request_private_column(tmp_path):
+    store = SessionStore(tmp_path)
+    session = store.create()
+    thought = {"text": "private reasoning"}
+    store.append_event_transactionally(
+        session,
+        {"type": "message", "role": "user", "id": "u", "content": "question"},
+        {"type": "assistant", "id": "a", "content": "public answer", "reasoning": thought},
+    )
+
+    def deny_private_column(action, table, column, database_name, trigger_name):
+        if action == sqlite3.SQLITE_READ and (table, column) == ("session_events", "reasoning"):
+            return sqlite3.SQLITE_DENY
+        return sqlite3.SQLITE_OK
+
+    with database.transaction(store.paths, write=False) as db:
+        db.set_authorizer(deny_private_column)
+        try:
+            records = store.load(session.id, include_reasoning=False).records
+            _, history, _ = store.context_history(
+                session.id, include_reasoning=False, active_message_id="u"
+            )
+        finally:
+            db.set_authorizer(None)
+    for view in (records, history):
+        assert view[-1]["content"] == "public answer" and "reasoning" not in view[-1]
+    assert store.load(session.id).records[-1]["reasoning"] == thought
 
 
 def test_distilled_progress_does_not_replay_history(tmp_path, monkeypatch):
