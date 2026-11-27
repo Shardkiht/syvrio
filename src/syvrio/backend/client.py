@@ -158,7 +158,7 @@ class ResidentClient:
 
     def correct(self, entry_id, draft):
         return Entry.model_validate(
-            self.call("correct", entry_id=entry_id, draft=draft.model_dump(exclude_none=True))
+            self.call("correct", entry_id=entry_id, draft=draft.model_dump(exclude_unset=True))
         )
 
     def transition(self, entry_id, draft, previous_valid_to=None):

@@ -15,6 +15,8 @@ import type {
   MessageDraft,
   ModelSearchResponse,
   PendingEvidence,
+  MemoryPage,
+  InferenceSource,
   ChatSearchHit,
   SessionDeletionPreview,
   SessionListResponse,
@@ -77,6 +79,16 @@ export function attachmentUrl(sessionId: string, messageId: string, fileId: stri
 }
 
 export const api = {
+  memories: (topic: string, q: string, after: string, signal: AbortSignal) =>
+    jsonRequest<MemoryPage>('/api/memories?' + new URLSearchParams({ topic, q, after }), { signal, cache: 'no-store' }),
+  addMemory: (topic: string, text: string, requestId: string) =>
+    jsonRequest<{ id: string }>('/api/memories', { method: 'POST', headers: jsonHeaders,
+      body: JSON.stringify({ topic, text, request_id: requestId, confirmed: true }) }),
+  editMemory: (id: string, text: string, expectedRevision: number) =>
+    jsonRequest<{ id: string }>(`/api/memories/${encodeURIComponent(id)}`, { method: 'PUT', headers: jsonHeaders,
+      body: JSON.stringify({ text, expected_revision: expectedRevision, confirmed: true }) }),
+  inferenceSources: (id: string, signal: AbortSignal) =>
+    jsonRequest<{ sources: InferenceSource[] }>(`/api/inferences/${encodeURIComponent(id)}/sources`, { signal, cache: 'no-store' }),
   searchChats: (q: string, signal: AbortSignal) =>
     jsonRequest<{ results: ChatSearchHit[] }>('/api/sessions/search?' + new URLSearchParams({ q }), { signal, cache: 'no-store' }),
   toolResult: (sessionId: string, recordId: string, archived: boolean, signal: AbortSignal) =>
@@ -123,6 +135,11 @@ export const api = {
   listArchive: (offset = 0) => jsonRequest<SessionListResponse>('/api/sessions?archived=true&limit=500' + (offset ? `&offset=${offset}` : '')),
   archiveSession: (id: string) => jsonRequest(`/api/sessions/${encodeURIComponent(id)}/archive`, { method: 'POST' }),
   restoreSession: (id: string) => jsonRequest(`/api/sessions/${encodeURIComponent(id)}/restore`, { method: 'POST' }),
+  earlierHistory: (id: string, before: number, archived: boolean, signal: AbortSignal) =>
+    jsonRequest<HistoryResponse>(
+      `/api/sessions/${encodeURIComponent(id)}?before_seq=${before}${archived ? '&archived=true' : ''}`,
+      { signal, cache: 'no-store' },
+    ),
   archivedHistory: (id: string) => jsonRequest<HistoryResponse>(`/api/sessions/${encodeURIComponent(id)}?archived=true`),
 
   createSession: () =>

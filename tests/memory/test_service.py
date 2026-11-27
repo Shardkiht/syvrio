@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-import json
+import sqlite3
 
 import pytest
 
 from syvrio.infra.config import Config, LLMConfig, RetrievalConfig
 from syvrio.infra.session import SessionStore
+from syvrio.infra.storage.database import transaction
 from syvrio.infra.vault.files import initialize_vault
 from syvrio.infra.vault.sync import GitSyncService
 from syvrio.memory.extractor import StaticExtractor
@@ -17,6 +18,7 @@ from syvrio.memory.models import (
     PendingItem,
 )
 from syvrio.memory.service import MemoryService
+from tests.support.storage import rejected, rows
 
 pytestmark = pytest.mark.memory
 
@@ -61,7 +63,7 @@ def test_context_and_trusted_source_survive_import_and_approval(tmp_path, questi
     result = svc.apply_import(candidates, version, **source)
     if question:
         (queued,) = result.queued
-        assert svc.queue.decode(svc.queue.pending_path.read_bytes()) == [queued]
+        assert svc.pending() == [queued]
         assert queued.context == context and not result.admitted
         entry = svc.approve(queued.id)
     else:
@@ -91,12 +93,12 @@ def test_import_dry_run_and_duplicate_retry(tmp_path):
     result = svc.import_text("外部材料", dry_run=True, extractor=extractor)
     assert result.to_dict()["admitted"][0]["context"] == {"emotion": {"event": "紧张"}}
     assert [p.text for p in result.queued] == ["也许在附近"]
-    assert not svc.pending() and not svc.current_facts() and not svc.store.changes_path.exists()
+    assert not svc.pending() and not svc.current_facts() and not rows(svc.paths, "audit")
     saved = svc.import_text("外部材料", extractor=extractor)
     again = svc.import_text("外部材料", extractor=extractor)
     assert again.duplicates == ["有过紧张的感受"] and not again.admitted
     assert again.queued == saved.queued and len(svc.pending()) == 1
-    assert len(svc.store.changes_path.read_bytes().splitlines()) == 1
+    assert [event["action"] for event in rows(svc.paths, "audit")] == ["add"]
 
 
 def test_import_rejects_stale_evidence_across_call_and_retries_fresh(tmp_path):
@@ -133,7 +135,7 @@ def test_source_identity_is_idempotent_without_sharing_unrelated_messages(tmp_pa
     assert reopened.add(draft("另一条事实", "misc"), **one).id == generated.id
     independent = reopened.add(draft("另一条事实", "misc"), **two)
     assert independent.id != generated.id
-    assert len(reopened.store.changes_path.read_bytes().splitlines()) == 3
+    assert [event["action"] for event in rows(reopened.paths, "audit")] == ["add"] * 3
 
 
 def test_queue_question_and_payload_cannot_store_credentials(tmp_path):
@@ -151,22 +153,24 @@ def test_init_creates_vault_git_and_readme(tmp_path):
     git = GitSyncService(service.config, service.paths)
     initialize_vault(git, service.initialize_files)
     vault = tmp_path / "vault"
-    assert (vault / "README.md").exists()
-    assert (vault / ".git").is_dir()
-    assert b"/attachments/" in (vault / ".gitignore").read_bytes().splitlines()
+    assert (vault / "syvrio.sqlite3").is_file()
+    assert (vault / "export" / ".git").is_dir()
+    assert b"/attachments/" in (vault / "export" / ".gitignore").read_bytes().splitlines()
     assert git.history(limit=5)[0]["subject"] == "memory: 初始化记忆库"
 
 
-def test_turn_undo_targets_archived_rejection_file(tmp_path):
-    from syvrio.memory.turn_undo import TurnFileJournal
+def test_undo_rejection_restores_original_candidate(tmp_path):
+    from syvrio.memory.turn_undo import TurnJournal
 
     service = make_service(tmp_path)
+    session = SessionStore(service.paths).create()
     candidate = service.create_pending(draft("Synthetic candidate"), "Which?", [])
-    journal = TurnFileJournal(service.paths, "s-1", "t-1", lambda ids, files: {})
+    journal = TurnJournal(service.paths, session.id, "t-1")
     with journal.capture():
         service.reject(candidate.id)
-    assert service.queue.resolved_path == service.paths.archived_dir / "pending/rejected.md"
-    assert journal.plan()[service.queue.resolved_path] is None
+    assert rejected(service.queue) == [candidate]
+    journal.restore()
+    assert service.pending() == [candidate] and not rejected(service.queue)
 
 
 def test_reopening_vault_preserves_user_ignore_rules_and_excludes_uploads(tmp_path):
@@ -174,7 +178,7 @@ def test_reopening_vault_preserves_user_ignore_rules_and_excludes_uploads(tmp_pa
     git = GitSyncService(service.config, service.paths)
     initialize_vault(git, service.initialize_files)
     vault = service.config.vault
-    path = vault / ".gitignore"
+    path = git.repo.path / ".gitignore"
     prior = b"# private rules\r\n*.local\r\n!/attachments/"
     path.write_bytes(prior)
     upload = vault / "attachments" / "sample.txt"
@@ -188,7 +192,7 @@ def test_reopening_vault_preserves_user_ignore_rules_and_excludes_uploads(tmp_pa
     assert path.read_bytes() == expected
     git.repo.stage_all()
     staged = git.repo.staged_paths()
-    assert "sample.txt" in staged and "attachments/sample.txt" not in staged
+    assert "sample.txt" not in staged and "attachments/sample.txt" not in staged
     git.ensure_ignore_rules()
     assert path.read_bytes() == expected
 
@@ -204,13 +208,13 @@ def test_approval_retries_and_never_changes_related_fact(tmp_path, override):
     assert order.text == (override or item.text) and order.id != old.id
     assert order.context == (None if override else item.context)
     assert svc.store.find(old.id).status == "active" and svc.store.find(old.id).text == old.text
-    assert not svc.pending() and not svc.queue.resolved_path.exists()
-    before = svc.store.changes_path.read_bytes(), svc.audit.path.read_bytes()
+    assert not svc.pending() and not rejected(svc.queue)
+    before = rows(svc.paths, "audit")
     assert svc.approve(item.id, text_override=override) == order
     with pytest.raises(ValueError):
         svc.approve(item.id, text_override="不同的重试正文")
-    assert (svc.store.changes_path.read_bytes(), svc.audit.path.read_bytes()) == before
-    assert [json.loads(line)["action"] for line in before[1].splitlines()] == ["add", "add"]
+    assert rows(svc.paths, "audit") == before
+    assert [line["action"] for line in before] == ["add", "add"]
 
 
 def test_review_keeps_deprecated_related_fact_and_archive_contains_original_only(tmp_path):
@@ -218,22 +222,22 @@ def test_review_keeps_deprecated_related_fact_and_archive_contains_original_only
     old = svc.note("先前事实")
     item = svc.create_pending(draft("待确认", location="示例展厅"), "这里指哪里？", [old.id])
     svc.deprecate(old.id)
-    before = svc.audit.path.read_bytes(), svc.store.changes_path.read_bytes()
+    before = rows(svc.paths, "audit")
     assert svc.reject(item.id) == item
-    assert svc.queue.decode(svc.queue.resolved_path.read_bytes()) == [item]
+    assert rejected(svc.queue) == [item]
     assert not svc.pending() and svc.store.find(old.id).status == "deprecated"
-    assert (svc.audit.path.read_bytes(), svc.store.changes_path.read_bytes()) == before
+    assert rows(svc.paths, "audit") == before
 
 
 @pytest.mark.parametrize("value", ["", "   ", "API key: demo-placeholder"])
 def test_invalid_approval_keeps_original_and_all_files(tmp_path, value):
     svc = make_service(tmp_path)
     item = svc.create_pending(draft("候选"), "是这个意思吗？", [])
-    before = svc.queue.pending_path.read_bytes()
+    before = svc.pending()
     with pytest.raises(ValueError):
         svc.approve(item.id, text_override=value)
-    assert svc.pending() == [item] and svc.queue.pending_path.read_bytes() == before
-    assert not svc.current_facts() and not svc.store.changes_path.exists()
+    assert svc.pending() == [item] and svc.pending() == before
+    assert not svc.current_facts() and not rows(svc.paths, "audit")
 
 
 def test_commit_generates_fallback_summary_and_history(tmp_path):
@@ -281,13 +285,34 @@ def test_recall_and_read_topic_return_structured_active_facts(tmp_path):
         "topic": "general/preferences",
         "entries": [hit.model_dump(exclude_none=True)],
     }
-    assert set(result["entries"][0]) == {"id", "status", "text", "topic"}
+    assert set(result["entries"][0]) == {"id", "status", "text", "topic", "revision"}
+    assert hit.revision == wanted.revision
     topics = service.topics()
     assert len(topics) == 1 and topics[0]["entries"] == 1
     with pytest.raises((ValueError, KeyError)):
         service.read_topic("../preferences")
     with pytest.raises(KeyError):
         service.read_topic("no-such-topic")
+
+
+@pytest.mark.parametrize("filtered", [False, True], ids=["exact-field", "location-filter"])
+def test_recall_decodes_matched_context_once(tmp_path, filtered):
+    from unittest.mock import patch
+
+    service = make_service(tmp_path)
+    fact = service.store.append("events", "口味：清淡", context=MemoryContext(location="展馆"))
+    service.store.snapshot()
+    with patch.object(
+        MemoryContext, "model_validate_json", wraps=MemoryContext.model_validate_json
+    ) as decode:
+        if filtered:
+            (hit,) = service.recall("清淡", location="展馆")
+        else:
+            hit = service.current_field("口味")
+        assert hit.id == fact.id
+        assert decode.call_count == 1
+    hit.context.location = "其他地点"
+    assert service.current_field("口味").context.location == "展馆"
 
 
 def test_commit_push_failure_does_not_hide_commit(tmp_path):
@@ -385,7 +410,7 @@ def test_approve_rejects_secret_from_manually_edited_candidate(tmp_path):
         ("approve", "audit"),
         ("approve", "resolve"),
         ("approve", "context_job"),
-        ("correct", "status"),
+        ("correct", "version"),
         ("correct", "audit"),
         ("transition", "status"),
         ("reject", "pending"),
@@ -395,7 +420,6 @@ def test_approve_rejects_secret_from_manually_edited_candidate(tmp_path):
 def test_failed_multi_file_operations_restore_every_file_and_can_retry(
     tmp_path, monkeypatch, operation, stage
 ):
-    from syvrio.infra.storage import transaction
     from syvrio.memory import service as service_module
 
     svc = make_service(tmp_path)
@@ -403,13 +427,17 @@ def test_failed_multi_file_operations_restore_every_file_and_can_retry(
     pending = svc.create_pending(draft("待确认的事实", "new"), "具体是什么？", [old.id])
 
     def snapshot():
-        roots = (
-            svc.paths.memories_dir,
-            svc.paths.vault_dir / "archived",
-            svc.paths.vault_dir / "records",
-            svc.paths.jobs_dir,
-        )
-        return {p: p.read_bytes() for root in roots for p in root.rglob("*") if p.is_file()}
+        return {
+            name: rows(svc.paths, name)
+            for name in (
+                "memories",
+                "topics",
+                "candidates",
+                "candidate_related",
+                "audit",
+                "jobs",
+            )
+        }
 
     def execute():
         if operation == "approve":
@@ -427,23 +455,32 @@ def test_failed_multi_file_operations_restore_every_file_and_can_retry(
 
     before = snapshot()
     with monkeypatch.context() as patch:
-        if stage == "pending":
-            writer = transaction.atomic_write
-
-            def fail_pending(path, payload):
-                return fail() if path == svc.queue.pending_path else writer(path, payload)
-
-            patch.setattr(transaction, "atomic_write", fail_pending)
+        if stage == "audit":
+            with transaction(svc.paths) as db:
+                db.execute(
+                    "CREATE TRIGGER inject BEFORE INSERT ON audit BEGIN SELECT RAISE(ABORT, 'injected audit failure'); END"
+                )
+        elif stage == "version":
+            with transaction(svc.paths) as db:
+                db.execute(
+                    "CREATE TRIGGER inject BEFORE INSERT ON memory_versions BEGIN SELECT RAISE(ABORT, 'injected history failure'); END"
+                )
+        elif stage == "pending":
+            with transaction(svc.paths) as db:
+                db.execute(
+                    "CREATE TRIGGER inject BEFORE UPDATE ON candidates BEGIN SELECT RAISE(ABORT, 'injected disk error'); END"
+                )
         else:
             obj, name = {
-                "status": (svc.store, "update"),
-                "audit": (svc.audit, "write"),
+                "status": (svc.store, "save_revision"),
                 "resolve": (svc.queue, "resolve"),
                 "context_job": (service_module, "enqueue_context_fill"),
             }[stage]
             patch.setattr(obj, name, fail)
-        with pytest.raises(OSError, match="injected"):
+        with pytest.raises((OSError, sqlite3.IntegrityError), match="injected"):
             execute()
+    with transaction(svc.paths) as db:
+        db.execute("DROP TRIGGER IF EXISTS inject")
     assert snapshot() == before
     assert svc.store.find(old.id).status == "active" and svc.pending() == [pending]
     execute()
@@ -455,5 +492,7 @@ def test_failed_multi_file_operations_restore_every_file_and_can_retry(
             svc.store.find(old.id).status == "active"
             and svc.store.find(old.id).context.valid_to == "2025"
         )
+    elif operation == "correct":
+        assert svc.store.find(old.id).text == "更正文" and svc.pending() == [pending]
     else:
         assert svc.store.find(old.id).status == "deprecated" and svc.pending() == [pending]

@@ -4,7 +4,6 @@ import calendar
 import re
 import secrets
 from datetime import date
-from pathlib import PurePosixPath
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -33,19 +32,14 @@ class MemoryContext(BaseModel):
     location: str | None = None
     emotion: MemoryEmotion | None = None
 
-    def markdown_fields(self) -> list[tuple[str, str]]:
-        values = self.model_dump(exclude_none=True)
-        fields = [(key, values[name]) for key, name in _CONTEXT_KEYS.items() if name in values]
-        fields.extend(
-            (f"emotion.{phase}", text) for phase, text in values.get("emotion", {}).items()
-        )
-        return fields
-
     @property
     def emotion_texts(self) -> tuple[str, ...]:
         if self.emotion is None:
             return ()
         return tuple(self.emotion.model_dump(exclude_none=True).values())
+
+    def index_text(self, text: str) -> str:
+        return "\n".join(value for value in (text, self.location, *self.emotion_texts) if value)
 
     @field_validator("event_time", "valid_from", "valid_to")
     @classmethod
@@ -87,8 +81,6 @@ class MemoryContext(BaseModel):
         return self
 
 
-_CONTEXT_KEYS = {key: key for key in ("event_time", "valid_from", "valid_to", "location")}
-_EMOTION_KEYS = {f"emotion.{phase}": phase for phase in MemoryEmotion.model_fields}
 MemoryStatus = Literal["active", "deprecated"]
 
 
@@ -123,7 +115,41 @@ class MemoryDraft(BaseModel):
         return value
 
 
+class MemoryContextPatch(MemoryContext):
+    @model_validator(mode="after")
+    def validate_context(self) -> MemoryContextPatch:
+        # 局部清除情绪阶段时保留显式的空值，合并后再校验完整上下文。
+        return self
+
+
+class MemoryCorrection(BaseModel):
+    """未提交的字段保留原值，显式为空的上下文字段才清除。"""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    text: str | None = Field(default=None, min_length=1)
+    topic: str | None = Field(default=None, min_length=1)
+    context: MemoryContextPatch | None = None
+    expected_revision: int | None = Field(default=None, ge=1)
+
+    def apply_to(self, entry: Entry) -> MemoryDraft:
+        changes = self.model_dump(exclude_unset=True, exclude={"expected_revision"})
+        context = entry.context.model_dump(exclude_none=True) if entry.context else {}
+        if "context" in changes:
+            patch = changes.pop("context")
+            if patch is None:
+                context.clear()
+            else:
+                for key, value in patch.items():
+                    if key == "emotion" and isinstance(value, dict):
+                        value = {**(context.get(key) or {}), **value}
+                    context[key] = value
+        return MemoryDraft.model_validate(
+            {"text": entry.text, "topic": entry.topic, "context": context or None, **changes}
+        )
+
+
 class RecallEntry(MemoryDraft):
+    revision: int | None = None
     id: str = Field(min_length=1)
     status: MemoryStatus = "active"
 
@@ -136,9 +162,35 @@ class MemoryUpdate(BaseModel):
 
     @model_validator(mode="after")
     def has_change(self) -> MemoryUpdate:
-        if self.status is None and not (self.context and self.context.markdown_fields()):
+        if self.status is None and not (
+            self.context and self.context.model_dump(exclude_none=True)
+        ):
             raise ValueError("A memory update needs context or status.")
         return self
+
+    def merge_context(
+        self, current_context: MemoryContext | None
+    ) -> tuple[MemoryContext | None, dict]:
+        """只补充缺少的上下文，保留审计需要的新增字段。"""
+        fields = current_context.model_dump(exclude_none=True) if current_context else {}
+        incoming = self.context.model_dump(exclude_none=True) if self.context else {}
+        changes = {}
+        for key, value in incoming.items():
+            if key == "emotion":
+                current = fields.setdefault(key, {})
+                for k, v in value.items():
+                    if k in current and current[k] != v:
+                        raise ValueError("Context field already has a value.")
+                    if k not in current:
+                        changes.setdefault(key, {})[k] = v
+                        current[k] = v
+            elif key in fields and fields[key] != value:
+                raise ValueError(f"Context field {key} already has a value.")
+            elif key not in fields:
+                changes[key] = fields[key] = value
+        if not changes:
+            return current_context, {}
+        return MemoryContext.model_validate(fields), changes
 
 
 class Candidate(MemoryDraft):
@@ -165,6 +217,7 @@ class Inference(BaseModel):
     text: str = Field(min_length=1)
     kind: str = Field(min_length=1)
     source_ids: list[str] = Field(min_length=1)
+    source_versions: dict[str, int] = Field(default_factory=dict)
     created_at: str
     updated_at: str
     status: InferenceStatus = "hypothesis"
@@ -245,13 +298,6 @@ class PendingItem(MemoryDraft):
         return self
 
 
-class FieldNode(BaseModel):
-    key: str
-    value: str | None = None
-    children: tuple[FieldNode, ...] = ()
-    raw_markdown: str
-
-
 class Entry(BaseModel):
     id: str
     topic: str
@@ -261,14 +307,9 @@ class Entry(BaseModel):
     supersedes: str | None = None
     metadata: dict[str, str] = Field(default_factory=dict)
 
-    raw_markdown: str = ""
-    source_path: str = ""
-    line: int = 0
-    end_line: int = 0
-    confidence: float | None = None
-    context_fields: tuple[FieldNode, ...] = ()
-    extension_fields: tuple[FieldNode, ...] = ()
-    topic_title: str = Field(default="", exclude=True)
+    revision: int = 0
+    context: MemoryContext | None = None
+    topic_title: str = ""
 
     @property
     def source_session_id(self) -> str | None:
@@ -278,48 +319,19 @@ class Entry(BaseModel):
     def source_message_id(self) -> str | None:
         return self.metadata.get("message_id")
 
-    @property
-    def context(self) -> MemoryContext | None:
-        if self.context_fields:
-            values: dict[str, str] = {}
-            emotions: dict[str, str] = {}
-            for node in self.context_fields:
-                if node.value is None:
-                    continue
-                if name := _CONTEXT_KEYS.get(node.key):
-                    values.setdefault(name, node.value)
-                elif phase := _EMOTION_KEYS.get(node.key):
-                    emotions.setdefault(phase, node.value)
-            # 手写的 v2 记录可能省略配套字段。只投影已识别的标量值，
-            # 避免推测类型或来源。
-            for key in ("event_time", "valid_from", "valid_to"):
-                try:
-                    MemoryContext.validate_date(values.get(key))
-                except ValueError:
-                    values.pop(key, None)
-            if not values and not emotions:
-                return None
-            emotion = MemoryEmotion.model_validate(emotions) if emotions else None
-            return MemoryContext.model_construct(**values, emotion=emotion)
-        raw = self.metadata.get("context")
-        return MemoryContext.model_validate_json(raw) if raw else None
-
     def as_recall(self) -> RecallEntry:
-        topic = self.topic
-        if topic.startswith("memories/") and topic.endswith(".md"):
-            topic = PurePosixPath(topic.removeprefix("memories/")).with_suffix("").as_posix()
         return RecallEntry(
-            id=self.id, status=self.status, topic=topic, text=self.text, context=self.context
+            id=self.id,
+            status=self.status,
+            topic=self.topic,
+            text=self.text,
+            context=self.context,
+            revision=self.revision,
         )
 
     @property
     def index_text(self) -> str:
-        context = self.context
-        if context is None:
-            return self.text
-        return "\n".join(
-            value for value in (self.text, context.location, *context.emotion_texts) if value
-        )
+        return self.context.index_text(self.text) if self.context else self.text
 
     @property
     def embedding_text(self) -> str:

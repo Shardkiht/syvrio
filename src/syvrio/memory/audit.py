@@ -1,19 +1,16 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
+from ..infra.storage.audit import append_audit
+from ..infra.storage.database import transaction
 from ..infra.storage.paths import SyvrioPaths, vault_paths
-from ..infra.storage.transaction import vault_transaction
-from ..infra.time import utc_timestamp
 
 
 class AuditLog:
     def __init__(self, vault: Path | SyvrioPaths):
         self.paths = vault if isinstance(vault, SyvrioPaths) else vault_paths(vault)
-        self.path = self.paths.records_dir / "audit.jsonl"
 
     def write(self, action: str, **fields) -> None:
-        record = {"at": utc_timestamp(), "action": action, **fields}
-        with vault_transaction(self.paths) as tx:
-            tx.append(self.path, (json.dumps(record, ensure_ascii=False) + "\n").encode("utf-8"))
+        with transaction(self.paths) as db:
+            append_audit(db, action, fields)

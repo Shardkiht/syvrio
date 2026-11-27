@@ -285,9 +285,9 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
       open({ kind: 'settings', section: settingsSections[bare] });
       return;
     }
-    if (requestLine.toLowerCase() === '/topics') {
+    if (/^\/topics(?:\s|$)/i.test(requestLine)) {
       // 立即打开浏览面板，由面板载入共享命令结果并处理重试。
-      setPanel({ kind: 'topics' });
+      setPanel({ kind: 'topics', topic: requestLine.slice('/topics'.length).trim() || undefined });
       return;
     }
     const readTitle = readPanelTitle(bare);

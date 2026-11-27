@@ -14,6 +14,7 @@ from ..infra.llm import LiteLLMChatModel
 from ..infra.observability.diagnostics import record_event
 from ..infra.session import SessionStore
 from ..infra.session.errors import ConversationError
+from ..infra.storage.database import keep_wal_open
 from ..infra.storage.locking import LockTimeout
 from ..infra.vault.files import open_vault
 from ..infra.vault.sync import GitSyncService
@@ -22,6 +23,7 @@ from ..memory.service import MemoryService, get_service
 from .maintenance import prepare_vault_runtime
 from .ownership import BackendLease
 from .scheduler import GitScheduler
+from .updates.activity import ResidentActivity
 
 
 class ResidentChannel:
@@ -48,7 +50,12 @@ class ResidentChannel:
             self._runtime = AgentRuntime(self._service, model, self._sessions)
         self._runtime.start()
         self._runtime.allow_local_paths = False
-        self._background = parent._background if parent else BackgroundMemory(self._service)
+        self.activity = parent.activity if parent else ResidentActivity()
+        self._background = (
+            parent._background
+            if parent
+            else BackgroundMemory(self._service, work=self.activity.work)
+        )
         self._runtime.on_distillation = self._background.request_distillation
         self._runtime.on_title_needed = self._background.request_title
         self._app_service = ApplicationService(
@@ -68,11 +75,14 @@ class ResidentChannel:
         else:
             self.directory = parent.directory
         self._git_scheduler = (
-            parent._git_scheduler if parent else GitScheduler(self._app_service.git)
+            parent._git_scheduler
+            if parent
+            else GitScheduler(self._app_service.git, self.activity.work)
         )
         self._commands = CommandUseCases(self._app_service)
         self._client_lock = BackendLease(self._service.paths)
         self._started = False
+        self._wal_connection = None
         self._search_warmup: threading.Thread | None = None
 
     @property
@@ -93,6 +103,7 @@ class ResidentChannel:
             ) from exc
         try:
             prepare_vault_runtime(self._service.paths)
+            self._wal_connection = keep_wal_open(self._service.paths)
             self._sessions.recover_deletions()
             open_vault(self.git, self._service.initialize_files)
             try:
@@ -104,6 +115,9 @@ class ResidentChannel:
             self._started = True
         except BaseException:
             self._background.stop()
+            if self._wal_connection is not None:
+                self._wal_connection.close()
+                self._wal_connection = None
             if ownership is None:
                 self._client_lock.release()
             raise
@@ -117,7 +131,9 @@ class ResidentChannel:
 
     def _warm_search(self) -> None:
         try:
-            self._app_service.warm_search()
+            with self.activity.work() as admitted:
+                if admitted:
+                    self._app_service.warm_search()
         except Exception as exc:
             record_event("backend.startup_hook_failed", exc)
 
@@ -141,5 +157,7 @@ class ResidentChannel:
                     self._background.stop()
                     if self._search_warmup is not None and self._search_warmup.is_alive():
                         self._search_warmup.join()
+                    self._wal_connection.close()
+                    self._wal_connection = None
                     self._client_lock.release()
                     self._started = False

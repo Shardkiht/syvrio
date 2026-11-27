@@ -28,7 +28,7 @@ def configuration(root: Path) -> Path:
     config = root / "settings.toml"
     config.write_text(
         f'vault="{(root / "vault").as_posix()}"\nruntime="{(root / "runtime").as_posix()}"\n'
-        "[search]\nenabled=false\n[git]\nauto_sync=false\n",
+        "[search]\nenabled=false\nauto_start=false\n[git]\nauto_sync=false\n",
         encoding="utf-8",
     )
     (root / "models.toml").write_text(
@@ -150,30 +150,23 @@ def test_foreground_backend_starts_without_the_web_package(headless_config):
 
 
 def test_stopped_deployment_reads_git_and_backup_at_the_same_path(tmp_path, headless_config):
-    import shutil
-
     from syvrio.backend.maintenance import initialize_configured_vault
+    from syvrio.infra.config import load_config
     from syvrio.infra.session import SessionStore
+    from syvrio.infra.storage.backup import assemble
+    from syvrio.infra.vault.sync import GitSyncService
     from syvrio.memory.store import MemoryStore
 
     initialize_configured_vault(headless_config, None)
     paths = client_paths(headless_config)
     topic = MemoryStore(paths)
     entry = topic.append("checks", "apricot")
-    document = topic.topic_path("checks")
     sessions = SessionStore(paths)
     session = sessions.create()
     sessions.rename(session, "Original conversation")
-
-    def git(*args):
-        return subprocess.run(
-            ["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid", *args],
-            cwd=paths.vault_dir,
-            capture_output=True,
-            check=True,
-            text=True,
-            encoding="utf-8",
-        ).stdout.strip()
+    git = GitSyncService(load_config(headless_config), paths)
+    git.commit(push=False)
+    backup = assemble(paths.vault_dir, tmp_path / "backup")
 
     def check_after_start(expected, previous, title):
         process = subprocess.Popen(
@@ -195,28 +188,13 @@ def test_stopped_deployment_reads_git_and_backup_at_the_same_path(tmp_path, head
                 process.kill()
                 process.wait(timeout=10)
 
-    git("add", ".")
-    git("commit", "-m", "First snapshot")
-    first = git("rev-parse", "HEAD")
-    document.write_text(
-        document.read_text(encoding="utf-8").replace("apricot", "cobalt"), encoding="utf-8"
-    )
-    sessions.rename(session, "Restored conversation")
-    git("add", ".")
-    git("commit", "-m", "Backup snapshot")
-    backup = shutil.copytree(paths.vault_dir, tmp_path / "backup")
-
-    git("switch", "--detach", first)
-    check_after_start("apricot", "cobalt", "Original conversation")
-
-    document.write_text(
-        document.read_text(encoding="utf-8").replace("apricot", "saffron"), encoding="utf-8"
-    )
-    check_after_start("saffron", "apricot", "Original conversation")
-
+    document = git.repo.path / "content" / "memories" / "general" / "checks.md"
+    document.write_text("saffron", encoding="utf-8")
+    check_after_start("apricot", "saffron", "Original conversation")
+    sessions.rename(session, "After backup")
     paths.vault_dir.rename(tmp_path / "previous")
-    shutil.copytree(backup, paths.vault_dir)
-    check_after_start("cobalt", "saffron", "Restored conversation")
+    assemble(backup, paths.vault_dir, restore=True)
+    check_after_start("apricot", "saffron", "Original conversation")
 
 
 def test_automatic_process_discovery_cli_mcp_and_vault_ownership(tmp_path, headless_config):

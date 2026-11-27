@@ -83,4 +83,4 @@ def test_runtime_metadata_uses_syvrio_directory(tmp_path: Path):
     assert service.paths.state_dir.is_dir()
     assert not (config.vault / ".syvrio").exists()
     service.note("品牌测试条目", topic="misc")
-    assert (config.vault / "memories" / "general" / "misc.md").exists()
+    assert service.store.entries("misc")[0].topic == "general/misc"

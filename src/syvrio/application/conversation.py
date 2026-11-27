@@ -133,8 +133,7 @@ class ConversationUseCases:
 
     @property
     def current_id(self) -> str | None:
-        session = self.runtime.session
-        return session.id if session is not None else None
+        return self.runtime.session_id
 
     @property
     def model_label(self) -> str:
@@ -151,9 +150,7 @@ class ConversationUseCases:
     def plan_is_current(self) -> bool:
         if self.runtime.last_plan_session is None:
             return True
-        return (
-            self.runtime.has_session and self.runtime.last_plan_session == self.runtime.current.id
-        )
+        return self.runtime.last_plan_session == self.current_id
 
     def queue_snapshot(self) -> QueueSnapshot:
         with self._lock:
@@ -177,7 +174,7 @@ class ConversationUseCases:
             return Submission("command")
         if not self.runtime.has_session:
             self.runtime.ensure_session()
-        session_id = self.runtime.session.id
+        session_id = self.current_id
         item = QueuedLine(session_id=session_id, line=line, attachments=attachments)
         with self._lock:
             self.queue.append(item)
@@ -352,9 +349,7 @@ class ConversationUseCases:
             record_event("turn.unbound", RuntimeError("run_turn without begin_turn"))
             return TurnResult(status="failed", error="No active turn", turn_id=None)
         try:
-            if session_id and not (
-                self.runtime.has_session and self.runtime.session.id == session_id
-            ):
+            if session_id and self.current_id != session_id:
                 # 后台任务执行时从磁盘新鲜加载，不跨切换复用内存对象（对象会过期）。
                 session = self.sessions.load(session_id)
             reply = self.runtime.ask(
@@ -496,6 +491,12 @@ class ConversationUseCases:
 
     # ---------- 会话生命周期 ----------
 
+    def browse(self, session_id: str) -> None:
+        with self.scheduling.operation("switch"):
+            if not self.session_exists(session_id):
+                raise ConversationError("session_not_found", "Session not found.")
+            self.runtime.browse(session_id)
+
     def navigate(self, session_id: str | None) -> SwitchResult:
         with self.scheduling.operation("new" if session_id is None else "switch"):
             if session_id is not None and not self.session_exists(session_id):
@@ -511,7 +512,7 @@ class ConversationUseCases:
     def switch(self, session_id: str | None) -> SwitchResult:
         stats: dict = {}
         if session_id is None:
-            with self.runtime.service.write_lock:
+            with self.runtime.service.work.write():
                 stats = self.runtime.close(distill=False)
                 self.runtime.start()
             return SwitchResult(None, None, stats)
@@ -522,7 +523,7 @@ class ConversationUseCases:
         self.runtime.rename(title)
 
     def rename_session(self, session_id: str, title: str) -> None:
-        if self.runtime.has_session and session_id == self.runtime.current.id:
+        if session_id == self.current_id:
             self.runtime.rename(title)
         else:
             rename_session(self.sessions, self.sessions.load(session_id), title)
@@ -543,7 +544,7 @@ class ConversationUseCases:
         self.set_archived(session_id, True)
 
     def set_archived(self, session_id: str, archived: bool) -> None:
-        with self._lock, self.runtime.service.write_lock:
+        with self._lock, self.runtime.service.work.write():
             allowed, reason = self.archive_guard(session_id)
             if not allowed:
                 raise SessionProtectedError(reason)
@@ -577,7 +578,7 @@ class ConversationUseCases:
     def deletion_preview(
         self, session_id: str, *, archived: bool = False
     ) -> tuple[list[PendingItem], str]:
-        with self.runtime.service.write_lock:
+        with self.runtime.service.work.read():
             if not self.sessions.exists(session_id, archived=archived):
                 raise KeyError(session_id)
             allowed, reason = self._source_guard(session_id)
@@ -588,7 +589,7 @@ class ConversationUseCases:
     def delete_session(
         self, session_id: str, pending_revision: str = "", *, confirmed: bool
     ) -> bool:
-        with self.runtime.service.write_lock:
+        with self.runtime.service.work.write():
             if not self.sessions.exists(session_id, archived=True):
                 if self.sessions.exists(session_id):
                     raise ConversationError(
@@ -615,7 +616,7 @@ class ConversationUseCases:
         return self.sessions.exists(session_id)
 
     def reload_current_session(self, session_id: str) -> None:
-        if self.runtime.has_session and self.runtime.current.id == session_id:
+        if self.current_id == session_id:
             self.runtime.session = self.sessions.load(session_id)
 
     def list_sessions(self, limit: int = 100) -> list[dict]:
@@ -635,6 +636,12 @@ class ConversationUseCases:
     def estimate_usage(self, session: Session) -> int:
         context, active_message_id = self._session_context(session.id)
         return self.runtime.estimate_usage(session, context, active_message_id=active_message_id)
+
+    def estimate_saved_usage(self, session_id: str) -> int:
+        context, active_message_id = self._session_context(session_id)
+        return self.runtime.estimate_saved_usage(
+            session_id, context, active_message_id=active_message_id
+        )
 
     def _session_context(self, session_id: str | None) -> tuple[ContextManager, str | None]:
         """在当前回合结束前沿用该回合的预算和模型协议。"""

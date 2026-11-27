@@ -1,141 +1,133 @@
 from __future__ import annotations
 
-import hashlib
-import re
 from pathlib import Path
 
-from ..infra.storage.files import safe_component
+from ..infra.storage import evidence_versions
+from ..infra.storage.database import transaction
 from ..infra.storage.paths import SyvrioPaths, vault_paths
-from ..infra.storage.transaction import vault_transaction
 from .models import Entry, Inference
-from .schema import (
-    SchemaError,
-    _span_code,
-    append_record,
-    parse_blocks,
-    render_sections,
-    replacements,
-    validate_file_model,
-)
-from .store import MemoryStore, read_utf8, tracked_write
+from .undo_store import image, track
 
 
-def source_fingerprint(entry: Entry) -> str:
-    """检查异步任务使用的快照是否已变化。"""
-    record = entry.topic + "\x00" + entry.raw_markdown.rstrip("\r\n")
-    return hashlib.sha256(record.encode("utf-8")).hexdigest()
+def source_version(entry: Entry) -> str:
+    return str(entry.revision)
 
 
 class InferenceStore:
-    def __init__(self, vault: Path | SyvrioPaths) -> None:
+    def __init__(self, vault: Path | SyvrioPaths):
         self.paths = vault if isinstance(vault, SyvrioPaths) else vault_paths(vault)
-        self.root = self.paths.vault_dir / "inferences"
 
-    def path_for(self, kind: str, item_id: str) -> Path:
-        if (
-            not safe_component(kind)
-            or not safe_component(item_id)
-            or not re.fullmatch(r"[\w.-]+", item_id)
-        ):
-            raise ValueError("Invalid inference kind or id.")
-        path = self.root / kind / (item_id + ".md")
-        if path.resolve() != path.absolute():
-            raise SchemaError("Redirected inference path.")
-        return path
+    def all(self, *, at: int | None = None):
+        with transaction(self.paths, write=False) as db:
+            links = {}
+            versions = {}
+            for source, key, version in db.execute(
+                "SELECT inference_id,memory_id,memory_version FROM inference_sources ORDER BY inference_id,position"
+            ):
+                links.setdefault(source, []).append(key)
+                if version is not None:
+                    versions.setdefault(source, {})[key] = version
+            if at is None:
+                rows = db.execute(
+                    "SELECT id,kind,status,text,created_at,updated_at FROM inferences ORDER BY kind,id"
+                )
+            else:
+                rows = db.execute(
+                    """SELECT v.inference_id AS id, v.kind, v.status, v.text,
+                    v.created_at, v.updated_at FROM inference_versions v
+                    WHERE v.commit_id=(SELECT max(h.commit_id) FROM inference_versions h
+                    WHERE h.inference_id=v.inference_id AND h.commit_id<=?)
+                    ORDER BY v.kind,v.inference_id""",
+                    (at,),
+                )
+            return [
+                Inference(
+                    **dict(row),
+                    source_ids=links.get(row["id"], []),
+                    source_versions=versions.get(row["id"], {}),
+                )
+                for row in rows
+            ]
 
-    def _paths(self) -> list[Path]:
-        if self.root.resolve() != self.root.absolute():
-            raise SchemaError("Redirected inferences directory.")
-        paths = sorted(self.root.rglob("*.md"))
-        if any(path.resolve() != path.absolute() for path in paths):
-            raise SchemaError("Redirected inference path.")
-        return paths
+    def source_references(self, item_id: str) -> list[tuple[str, int | None]]:
+        with transaction(self.paths, write=False) as db:
+            if not db.execute("SELECT 1 FROM inferences WHERE id=?", (item_id,)).fetchone():
+                raise KeyError(item_id)
+            return [
+                (row[0], row[1])
+                for row in db.execute(
+                    """SELECT memory_id,memory_version FROM inference_sources
+                       WHERE inference_id=? ORDER BY position""",
+                    (item_id,),
+                )
+            ]
 
-    def _read(self, path: Path):
-        raw = read_utf8(path)
-        return self._parse(path, raw)
-
-    def decode(self, path: Path, payload: bytes) -> Inference:
-        return self._parse(path, payload.decode("utf-8"))[0]
-
-    def _parse(self, path: Path, raw: str):
-        _, blocks = parse_blocks(raw, str(path.relative_to(self.paths.vault_dir)))
-        if len(blocks) != 1:
-            raise SchemaError("An inference file must contain exactly one record.")
-        block = blocks[0]
-        fields = block.values("Core")
-        if set(fields) != {"id", "kind", "status", "text", "source_ids"} or block.sections.get(
-            "Context"
-        ):
-            raise SchemaError("Invalid inference Core or Context.")
-        extensions = block.extensions({"created_at", "updated_at"})
-        item = validate_file_model(Inference, {**fields, **extensions}, str(path), block.line)
-        expected = self.path_for(item.kind, item.id)
-        if path.parts != expected.parts:
-            raise SchemaError("Inference path must agree with its kind and id.")
-        return item, block, raw
-
-    def all(self) -> list[Inference]:
-        with vault_transaction(self.paths):
-            result = [self._read(path)[0] for path in self._paths()]
-            if len({item.id for item in result}) != len(result):
-                raise SchemaError("Duplicate inference id.")
-            return result
-
-    def fingerprint(self) -> str:
-        with vault_transaction(self.paths):
-            digest = hashlib.sha256()
-            for path in self._paths():
-                data = read_utf8(path).encode("utf-8")
-                digest.update(path.relative_to(self.root).as_posix().encode("utf-8") + b"\x00")
-                digest.update(hashlib.sha256(data).digest())
-            return digest.hexdigest()
-
-    @staticmethod
-    def _render(item: Inference) -> str:
-        core = [(k, getattr(item, k)) for k in ("id", "status", "text", "kind", "source_ids")]
-        extensions = [("created_at", item.created_at), ("updated_at", item.updated_at)]
-        return append_record("", render_sections(core, extensions=extensions), item.kind, "\n")
-
-    def add(self, item: Inference) -> Inference:
-        with vault_transaction(self.paths):
-            old = next((i for i in self.all() if i.id == item.id), None)
+    def add(self, item):
+        with transaction(self.paths):
+            old = next((x for x in self.all() if x.id == item.id), None)
             if old is not None and old != item:
                 raise ValueError("Duplicate inference id.")
             self.record(item)
             return item
 
-    def record(self, *items: Inference) -> None:
-        with vault_transaction(self.paths) as tx:
-            existing = {i.id: i for i in self.all()}
-            facts = {entry.id for entry in MemoryStore(self.paths).entries(include_inactive=True)}
+    def record(self, *items):
+        with transaction(self.paths) as db:
+            evidence_versions.group_changes(db)
             seen = set()
             for item in items:
                 item = Inference.model_validate(item.model_dump())
-                path = self.path_for(item.kind, item.id)
                 if item.id in seen:
                     raise ValueError("Duplicate inference id in one revision.")
                 seen.add(item.id)
-                if missing := set(item.source_ids) - facts:
-                    raise ValueError(f"Unknown source memory: {', '.join(sorted(missing))}.")
-                old = existing.get(item.id)
-                if old == item:
-                    continue
-                if old is None:
-                    if path.exists():
-                        raise SchemaError("An inference already occupies this path.")
-                    output = self._render(item)
-                else:
-                    mutable = {"status", "updated_at"}
-                    if item.model_dump(exclude=mutable) != old.model_dump(exclude=mutable):
+                before = image(db, "inferences", item.id)
+                if before:
+                    if (
+                        before["kind"],
+                        before["text"],
+                        before["created_at"],
+                        sorted(x["memory_id"] for x in before["_links"]),
+                        {
+                            x["memory_id"]: x["memory_version"]
+                            for x in before["_links"]
+                            if x["memory_version"] is not None
+                        },
+                    ) != (
+                        item.kind,
+                        item.text,
+                        item.created_at,
+                        item.source_ids,
+                        item.source_versions,
+                    ):
                         raise ValueError("Editing an inference's content requires a new id.")
-                    _, block, raw = self._read(path)
-                    changes = []
-                    for section, key in (("Core", "status"), ("Extensions", "updated_at")):
-                        if getattr(old, key) != getattr(item, key):
-                            start, end = block.positions[section, key]
-                            changes.append((start, end, _span_code(getattr(item, key))))
-                    output = replacements(raw, changes)
-                tracked_write(tx, path, output.encode("utf-8"))
-                if self._read(path)[0] != item:
-                    raise SchemaError("Inference failed to round-trip.")
+                    if (item.status, item.updated_at) == (before["status"], before["updated_at"]):
+                        continue
+                    db.execute(
+                        "UPDATE inferences SET status=?,updated_at=?,revision=revision+1 WHERE id=?",
+                        (item.status, item.updated_at, item.id),
+                    )
+                else:
+                    if any(
+                        not db.execute("SELECT 1 FROM memories WHERE id=?", (key,)).fetchone()
+                        for key in item.source_ids
+                    ):
+                        raise ValueError("Unknown source memory.")
+                    db.execute(
+                        "INSERT INTO inferences(id,kind,text,status,created_at,updated_at) VALUES(?,?,?,?,?,?)",
+                        (
+                            item.id,
+                            item.kind,
+                            item.text,
+                            item.status,
+                            item.created_at,
+                            item.updated_at,
+                        ),
+                    )
+                    db.executemany(
+                        """INSERT INTO inference_sources
+                        (inference_id,position,memory_id,memory_version) VALUES(?,?,?,?)""",
+                        [
+                            (item.id, i, key, item.source_versions.get(key))
+                            for i, key in enumerate(item.source_ids)
+                        ],
+                    )
+                track(db, "inferences", item.id, before=before)

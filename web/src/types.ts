@@ -35,7 +35,16 @@ export interface StreamEvent {
   ok?: boolean | null;
 }
 
+export interface AttachmentPolicy {
+  extensions: string[];
+  max_files: number;
+  max_file_bytes: number;
+  max_batch_bytes: number;
+  max_name_length: number;
+}
+
 export interface HealthResponse {
+  attachment_policy: AttachmentPolicy;
   status: string;
   version: string;
   provider: string;
@@ -167,6 +176,7 @@ export interface HistoryResponse {
   items: HistoryItem[];
   summary: string | null;
   has_earlier: boolean;
+  earlier_cursor?: number | null;
   current: boolean;
 }
 
@@ -246,6 +256,19 @@ export interface ChatSearchHit {
   message_id: string;
   role: 'title' | 'assistant' | 'user';
   excerpt: string;
+}
+
+export interface MemoryRow {
+  id: string; text: string; topic: string; revision: number;
+}
+export interface MemoryPage {
+  entries: MemoryRow[]; next: string | null;
+}
+export interface SourceVersion {
+  commit: number; text: string; topic: string; status: string; context: Record<string, unknown> | null;
+}
+export interface InferenceSource {
+  id: string; cited_commit: number | null; cited: SourceVersion | null; current: SourceVersion | null;
 }
 
 export interface PendingEvidence {

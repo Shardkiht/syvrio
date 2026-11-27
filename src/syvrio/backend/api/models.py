@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field, StrictBool
 
 from ...application.contracts import ModelOption
 from ...application.turns import TurnEvent
+from ...infra.session.attachment_policy import ATTACHMENT_POLICY, AttachmentPolicy
 from ..updates.installer import UpdateProgress
 
 
@@ -30,6 +31,7 @@ class HealthResponse(BaseModel):
     # 所有客户端共享常驻实例及其按会话维护的队列。
     single_client: bool = False
     static_ready: bool = False
+    attachment_policy: AttachmentPolicy = ATTACHMENT_POLICY
 
 
 class UpdateJobResponse(BaseModel):
@@ -48,6 +50,20 @@ class UpdateCheckResponse(UpdateJobResponse):
 class UpdateRequest(BaseModel):
     version: str
     confirmed: StrictBool
+
+
+class ManualMemoryRequest(BaseModel):
+    text: str = Field(min_length=1)
+    confirmed: StrictBool
+
+
+class AddMemoryRequest(ManualMemoryRequest):
+    topic: str = Field(min_length=1)
+    request_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+
+
+class EditMemoryRequest(ManualMemoryRequest):
+    expected_revision: int = Field(ge=1)
 
 
 class ContextUsageResponse(BaseModel):
@@ -197,6 +213,7 @@ class HistoryResponse(BaseModel):
     items: list[HistoryItem]
     summary: str | None = None
     has_earlier: bool = False
+    earlier_cursor: int | None = None
     current: bool = False
 
 

@@ -14,13 +14,18 @@ from ..system.gitops import GitError, GitRepo, classify_git_error, redact_git_me
 # 导致 git add 报错退出。
 ACTIVE_VAULT_PATHS = [
     "--",
-    ".",
+    "content",
+    ".gitignore",
     ":(top,glob,exclude)[a]rchived/**",
     ":(top,glob,exclude)[a]rchive/**",
 ]
 
 SENSITIVE_PATTERNS = (
     ".env",
+    "*.sqlite*",
+    "*.db",
+    "*.db-wal",
+    "*.db-shm",
     "*.env",
     ".env.*",
     "*.env.*",
@@ -49,6 +54,9 @@ Thumbs.db
 *~
 /attachments/
 /archived/
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
 """
 
 
@@ -144,7 +152,9 @@ class VaultGitRepo(GitRepo):
 
     def sensitive_paths(self) -> list[str]:
         """工作区与暂存区中疑似凭据文件；返回 Git 原始相对路径供提示。"""
-        return self._sensitive_in([*self.status_paths(), *self.staged_paths()])
+        # Ignore unrelated files for export, but report accidentally placed credentials.
+        names = self._run(["ls-files", "--cached", "--others", "--exclude-standard", "-z"]).stdout
+        return self._sensitive_in([p for p in names.split("\x00") if p])
 
     def has_staged(self) -> bool:
         completed = self._run(["diff", "--cached", "--quiet", *ACTIVE_VAULT_PATHS])
@@ -208,10 +218,10 @@ class VaultGitRepo(GitRepo):
 
     def commit(self, message: str) -> str | None:
         self._require_own_repo()
-        if not self.has_staged():
-            return None
         # 最终保护：只按即将提交的索引判断，未暂存的工作区文件不影响独立提交。
         self._refuse_staged_sensitive()
+        if not self.has_staged():
+            return None
         completed = self._run([*self._identity_args(), "commit", "-m", message])
         if completed.returncode != 0:
             detail = completed.stderr.strip() or completed.stdout.strip()
@@ -219,6 +229,7 @@ class VaultGitRepo(GitRepo):
         return self._run(["rev-parse", "--short", "HEAD"]).stdout.strip()
 
     def _refuse_staged_sensitive(self) -> None:
+        indexed = self._run(["diff", "--cached", "--name-only", "-z"]).stdout.split("\x00")
         # 手工暂存的归档保留在用户索引中，并排除在托管提交之外。
         if self._run(["diff", "--cached", "--quiet", "--", "archived", "archive"]).returncode == 1:
             raise GitError(
@@ -230,6 +241,12 @@ class VaultGitRepo(GitRepo):
             paths = "、".join(sensitive[:5])
             raise GitError(
                 f"拒绝提交疑似敏感文件：{paths}。请移出 vault 或加入 .gitignore。", kind="sensitive"
+            )
+        outside = [p for p in indexed if p and p != ".gitignore" and not p.startswith("content/")]
+        if outside:
+            raise GitError(
+                "Only the generated export can be committed: " + ", ".join(outside[:5]),
+                kind="sensitive",
             )
 
     def push(self) -> str:

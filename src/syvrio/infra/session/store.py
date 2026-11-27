@@ -1,107 +1,36 @@
-"""会话 JSONL 归档及其附属文件的可靠写入和恢复。"""
-
 from __future__ import annotations
 
 import json
-import logging
-import os
 import secrets
-import shutil
 from collections import OrderedDict
-from collections.abc import Callable, Iterator
-from contextlib import ExitStack, contextmanager
 from copy import deepcopy
-from dataclasses import dataclass, field, replace
-from functools import cached_property
-from pathlib import Path
-from threading import Lock
+from dataclasses import dataclass
+from threading import RLock
 from typing import Any
 
+from ..llm.tokens import estimate_tokens
 from ..security.secrets import redact_secrets
-from ..storage.files import FileVersion, atomic_write, file_version
-from ..storage.locking import session_file_lock, vault_write_lock
-from ..storage.paths import TURN_UNDO_DIR, SyvrioPaths, vault_paths
-from ..storage.transaction import vault_transaction
+from ..storage.database import encode, on_commit, transaction
+from ..storage.session_indexes import PENDING_USER, TOOL_PREVIEW_SIZE, index_message
 from ..time import serialize_timestamp, timestamp_calendar_date, utc_now
-from .attachment_objects import release_message, upgrade_originals
+from .attachment_objects import cleanup
 from .errors import ConversationError
 from .model import Session, new_message_id, now_iso, validate_record
 from .query import SessionQuery
+from .receipts import ReceiptStore
 
 
-def _reasoning_versions(folder: Path) -> dict[str, FileVersion]:
-    if folder.resolve() != folder:
-        raise ValueError("Redirected local reasoning directory.")
-    try:
-        with os.scandir(folder) as entries:
-            return {
-                entry.name: file_version(entry.stat(follow_symlinks=False))
-                for entry in entries
-                if entry.name.endswith(".json")
-            }
-    except FileNotFoundError:
-        return {}
-
-
+@dataclass(frozen=True)
 class HistoryRevision:
-    """为投影缓存标识版本，仅追加关闭标记时沿用原标识。"""
+    session_id: str
+    revision: int
 
 
 @dataclass(frozen=True)
 class SessionSnapshot:
-    """多个读取方共享的只读日志版本，Runtime 另取独立副本。"""
-
     session: Session
-    version: FileVersion
-    # None 表示对话记录完全没有引用本地思考内容。
-    reasoning: dict[str, FileVersion] | None
-    history_revision: HistoryRevision = field(default_factory=HistoryRevision)
-
-    @cached_property
-    def attachments(self) -> dict:
-        return {
-            (row["id"], item["id"]): item
-            for row in self.session.active_records()
-            if row.get("role") == "user"
-            for item in row.get("attachments", [])
-        }
-
-
-def _sidecar_directory(path: Path) -> Path:
-    if path.resolve() != path or path.exists() and not path.is_dir():
-        raise ValueError("Invalid or redirected session sidecar directory.")
-    return path
-
-
-def _finish_sidecar_deletion(folder: Path, *, attachments: bool) -> None:
-    try:
-        if attachments:
-            for message in folder.iterdir():
-                if message.is_dir():
-                    release_message(folder.parent.parent, message, folder.name)
-        shutil.rmtree(folder)
-    except OSError as exc:
-        # Windows 上查看器可能仍打开着文件，重启后会再次尝试恢复。
-        logging.getLogger(__name__).warning("Session sidecar cleanup deferred: %s", exc)
-
-
-@contextmanager
-def _stage_sidecars(root: Path, session_id: str, *, attachments: bool) -> Iterator[None]:
-    source = _sidecar_directory(root / session_id)
-    if not source.exists():
-        yield
-        return
-    staged = _sidecar_directory(root / ".deleting" / session_id)
-    if staged.exists():
-        raise ValueError("An earlier session deletion needs recovery.")
-    staged.parent.mkdir(exist_ok=True)
-    source.rename(staged)
-    try:
-        yield
-    except BaseException:
-        staged.rename(source)
-        raise
-    _finish_sidecar_deletion(staged, attachments=attachments)
+    version: int
+    history_revision: HistoryRevision
 
 
 def _redact_record(value: Any) -> Any:
@@ -128,255 +57,282 @@ def _stamp_event(record: dict) -> None:
 
 
 class SessionStore(SessionQuery):
-    def __init__(self, vault: Path | SyvrioPaths):
-        paths = vault if isinstance(vault, SyvrioPaths) else vault_paths(vault)
-        super().__init__(paths)
-        self._lock = vault_write_lock(paths)
-        self._turn_undo_root = paths.runtime_dir.resolve() / TURN_UNDO_DIR
-        self._sidecar_roots = (self.attachments_dir, self._reasoning_root, self._turn_undo_root)
-        self._cache_lock = Lock()
-        self._snapshots: OrderedDict[Path, SessionSnapshot] = OrderedDict()
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._snapshot_lock = RLock()
+        self._snapshots = OrderedDict()
+        self.receipts = ReceiptStore(self.paths)
 
-    def _attachment_metadata(self, path: Path, message_id: str, attachment_id: str) -> dict | None:
-        with session_file_lock(self.paths, path.stem):
-            snapshot = self._snapshots.get(path)
-            if snapshot is not None and snapshot.version == file_version(path.stat()):
-                return snapshot.attachments.get((message_id, attachment_id))
-            return super()._attachment_metadata(path, message_id, attachment_id)
+    @staticmethod
+    def publish_records(target: Session, updated: Session) -> None:
+        """外层提交后再替换活跃会话的内存记录。"""
+        on_commit(lambda: setattr(target, "records", updated.records))
 
-    def load_snapshot(self, session_id: str) -> Session:
-        """返回独立副本，供 Runtime 追加或撤回。"""
-        return deepcopy(self.read_snapshot(session_id).session)
+    def load_snapshot(self, session_id):
+        return self.read_snapshot(session_id).session
 
-    def read_snapshot(self, session_id: str) -> SessionSnapshot:
-        """核验已保存的版本，在只读投影之间共享其记录。"""
+    def read_snapshot(self, session_id):
         self._validate_session_id(session_id)
-        with session_file_lock(self.paths, session_id):
-            path = self._path(session_id)
-            try:
-                version = file_version(path.stat())
-            except FileNotFoundError as exc:
-                raise KeyError(f"会话不存在：{session_id}") from exc
-            cached = self._snapshots.get(path)
-            try:
-                reasoning = None
-                if cached is None or cached.version != version or cached.reasoning is not None:
-                    reasoning = _reasoning_versions(self._reasoning_root / session_id)
-            except (OSError, ValueError, RuntimeError):
-                # 常规读取时跳过单个缺失或被重定向的附属文件。
-                return SessionSnapshot(self._load_path(path, include_reasoning=True), version, None)
-            if cached is None or cached.version != version or cached.reasoning != reasoning:
-                session = self._load_path(path, include_reasoning=True)
-                has_reasoning = any(item.get("reasoning_local") is True for item in session.records)
-                cached = SessionSnapshot(session, version, reasoning if has_reasoning else None)
-            self._cache_snapshot(path, cached)
-            return cached
+        with self._snapshot_lock, transaction(self.paths, write=False) as db:
+            row = db.execute(
+                """SELECT revision,history_revision,
+                (SELECT max(seq) FROM session_events WHERE session_id=s.id)
+                FROM sessions s WHERE id=? AND archived=0""",
+                (session_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(session_id)
+            version, history_version, last_seq = row
+            cached = self._snapshots.get(session_id)
+            if cached and cached[0].version == version:
+                return deepcopy(cached[0])
+            if (
+                cached
+                and cached[0].history_revision.revision == history_version
+                and cached[0].version < version
+            ):
+                session = deepcopy(cached[0].session)
+                for kind, at, payload in db.execute(
+                    """SELECT kind,at,payload FROM session_events
+                        WHERE session_id=? AND seq>? ORDER BY seq""",
+                    (session_id, cached[1]),
+                ):
+                    session.records.append({**json.loads(payload), "type": kind, "at": at})
+            else:
+                session = self.load(session_id)
+            snapshot = SessionSnapshot(
+                session, version, HistoryRevision(session_id, history_version)
+            )
 
-    def _cache_snapshot(self, path: Path, snapshot: SessionSnapshot) -> None:
-        with self._cache_lock:
-            self._snapshots[path] = snapshot
-            self._snapshots.move_to_end(path)
-            if len(self._snapshots) > 8:
-                self._snapshots.popitem(last=False)
+            def publish():
+                with self._snapshot_lock:
+                    self._snapshots[session_id] = deepcopy(snapshot), last_seq
+                    self._snapshots.move_to_end(session_id)
+                    if len(self._snapshots) > 16:
+                        self._snapshots.popitem(last=False)
 
-    def create(self) -> Session:
+            on_commit(publish)
+            return snapshot
+
+    def create(self):
         stamp = utc_now()
-        with self._lock:
-            archive = self.root / f"{stamp.year:04d}" / f"{stamp.month:02d}"
-            if not archive.resolve().is_relative_to(self.root.resolve()) or self.root.is_symlink():
-                raise ValueError("session archive cannot redirect outside sessions")
-            archive.mkdir(parents=True, exist_ok=True)
-            session_id = f"s-{stamp:%Y%m%d-%H%M%S}-{secrets.token_hex(2)}"
-            path = archive / f"{session_id}.jsonl"
-            known = {item.stem for item in self._files()}
-            # 独占创建还能防止进程间同时创建文件时发生冲突。
+        started = serialize_timestamp(stamp.replace(microsecond=0))
+        with transaction(self.paths) as db:
             while True:
-                if (
-                    session_id in known
-                    or (self.archive_root / path.relative_to(self.root)).exists()
-                ):
-                    session_id = f"s-{stamp:%Y%m%d-%H%M%S}-{secrets.token_hex(2)}"
-                    path = archive / f"{session_id}.jsonl"
-                    continue
-                meta = {
-                    "type": "meta",
-                    "id": session_id,
-                    "started_at": serialize_timestamp(stamp.replace(microsecond=0)),
-                    "cwd": str(Path.cwd()),
-                }
-                try:
-                    with (
-                        session_file_lock(self.paths, session_id),
-                        path.open("x", encoding="utf-8") as handle,
-                    ):
-                        handle.write(json.dumps(meta, ensure_ascii=False) + "\n")
+                key = f"s-{stamp:%Y%m%d-%H%M%S}-{secrets.token_hex(2)}"
+                if db.execute(
+                    "INSERT INTO sessions(id,started_at) VALUES(?,?) ON CONFLICT DO NOTHING",
+                    (key, started),
+                ).rowcount:
                     break
-                except FileExistsError:
-                    session_id = f"s-{stamp:%Y%m%d-%H%M%S}-{secrets.token_hex(2)}"
-                    path = archive / f"{session_id}.jsonl"
+            meta = {"type": "meta", "id": key, "started_at": started}
+            self._insert(db, key, meta)
+            return Session(id=key, started_at=started, records=[meta])
 
-        return Session(id=session_id, started_at=meta["started_at"], path=path, records=[meta])
+    def recover_deletions(self):
+        # 后端持有独占租约，此时尚未接收上传。
+        import shutil
 
-    def recover_deletions(self) -> None:
-        with self._lock:
-            for root in self._sidecar_roots:
-                pending = _sidecar_directory(root / ".deleting")
-                if not pending.exists():
-                    continue
-                for item in pending.iterdir():
-                    staged = _sidecar_directory(item)
-                    if self.exists(item.name) or self.exists(item.name, archived=True):
-                        original = _sidecar_directory(root / item.name)
-                        if original.exists():
-                            raise ValueError("Cannot restore over an existing session directory.")
-                        staged.rename(original)
-                    else:
-                        _finish_sidecar_deletion(staged, attachments=root == self.attachments_dir)
-            upgrade_originals(self.attachments_dir)
+        cleanup(self.paths)
+        staging = self.attachments_dir / ".incoming"
+        if staging.resolve() != staging:
+            raise ValueError("Invalid attachment staging directory.")
+        if staging.is_dir():
+            for batch in staging.iterdir():
+                if batch.is_dir() and not batch.is_symlink():
+                    shutil.rmtree(batch)
 
-    def append(self, session: Session, record: dict) -> dict:
-        raw_reasoning = record.get("reasoning")
-        record = _redact_record(record)
-        reasoning = record.pop("reasoning", None)
-        if reasoning and reasoning != raw_reasoning:
-            # 已脱敏的思考片段不能作为原始协议数据重放。
-            reasoning.pop("source", None)
-        _stamp_event(record)
-        # 损坏尾行原样保留：只追加换行和恢复标记，后续加载据此跳过该行。
-        with self._lock, session_file_lock(self.paths, session.id):
-            if not session.path.resolve().is_relative_to(self.root):
-                raise ValueError("Only active sessions can be modified.")
-            cached = None
-            with session.path.open("r+b") as handle:
-                if (
-                    record.keys() == {"type", "at"}
-                    and record["type"] == "closed"
-                    and session.damaged_tail_line is None
-                ):
-                    previous = self._snapshots.get(session.path)
-                    if (
-                        previous is not None
-                        and previous.session.damaged_tail_line is None
-                        and previous.version == file_version(os.fstat(handle.fileno()))
-                    ):
-                        cached = previous
-                if reasoning:
-                    attachment = self._reasoning_path(session.id, record["id"])
-                    atomic_write(
-                        attachment, json.dumps(reasoning, ensure_ascii=False).encode("utf-8")
-                    )
-                    record["reasoning_local"] = True
-                handle.seek(0, 2)
-                if handle.tell():
-                    handle.seek(-1, 2)
-                    if handle.read(1) != b"\n":
-                        handle.write(b"\n")
-                if session.damaged_tail_line is not None:
-                    recovery = {
-                        "type": "recovery",
-                        "ignored_line": session.damaged_tail_line,
-                        "at": now_iso(),
-                    }
-                    handle.write((json.dumps(recovery) + "\n").encode("utf-8"))
-                    session.records.append(recovery)
-                    session.damaged_tail_line = None
-                handle.write((json.dumps(record, ensure_ascii=False) + "\n").encode("utf-8"))
-                if cached is not None:
-                    handle.flush()
-                    version = file_version(os.fstat(handle.fileno()))
-            if cached is not None:
-                # 为 Runtime 保留已保存的关闭事件，界面显示的历史保持一致。
-                saved = replace(cached.session, records=[*cached.session.records, record.copy()])
-                self._cache_snapshot(session.path, replace(cached, session=saved, version=version))
-            if reasoning:
-                record["reasoning"] = reasoning
-            session.records.append(record)
+    def _insert(self, db, key, record):
+        data = dict(record)
+        reason = data.pop("reasoning", None)
+        items = data.pop("attachments", [])
+        kind = data.pop("type")
+        msg = data.pop("id", None)
+        role = data.pop("role", None)
+        at = data.pop("at", data.get("started_at"))
+        content = data.pop("content", None)
+        if reason:
+            data["reasoning_local"] = True
+        tool = (content or "") if kind == "tool" and msg is not None else None
+        cur = db.execute(
+            """INSERT INTO session_events(session_id,kind,message_id,role,at,content,payload,reasoning,tool_preview,tool_length)
+               VALUES(?,?,?,?,?,?,?,?,?,?)""",
+            (
+                key,
+                kind,
+                msg,
+                role,
+                at,
+                content,
+                encode(data),
+                encode(reason) if reason else None,
+                tool[:TOOL_PREVIEW_SIZE] if tool is not None else None,
+                len(tool) if tool is not None else None,
+            ),
+        )
+        if kind in {"message", "assistant"} and content is not None:
+            index_message(db, cur.lastrowid, content)
+        if kind == "undo":
+            db.execute(
+                """UPDATE session_events SET active=0 WHERE session_id=? AND kind IN
+                ('message','assistant','tool','summary','turn_failed') AND seq>=(
+                    SELECT seq FROM session_events WHERE session_id=? AND kind='message' AND role='user' AND active=1 AND message_id=?)
+                AND seq < ?""",
+                (key, key, data.get("message_id"), cur.lastrowid),
+            )
+        for item in items:
+            db.execute(
+                "INSERT INTO attachments(session_id,message_id,id,sha256,name,media_type,size) VALUES(?,?,?,?,?,?,?)",
+                (
+                    key,
+                    msg,
+                    item["id"],
+                    item["sha256"],
+                    item["name"],
+                    item["media_type"],
+                    item["size"],
+                ),
+            )
+        db.execute(
+            """UPDATE sessions SET revision=revision+1,history_revision=history_revision+?,
+            updated_at=?,last_message_at=CASE WHEN ? IN ('message','meta') THEN ? ELSE last_message_at END,
+            tokens=tokens+?,messages=messages+?,undistilled=undistilled+?,summaries=summaries+? WHERE id=?""",
+            (
+                kind not in {"closed", "distilled"},
+                at,
+                kind,
+                at,
+                estimate_tokens(content or "")
+                if kind in {"message", "assistant", "summary"}
+                else 0,
+                kind == "message",
+                kind == "message",
+                kind == "summary",
+                key,
+            ),
+        )
+        if kind in {"distilled", "summary"}:
+            if kind == "distilled":
+                boundary = (
+                    "seq <= (SELECT seq FROM session_events WHERE session_id=? AND message_id=?)"
+                )
+                args = (key, key, data.get("up_to"))
+            else:
+                boundary = "message_id IN (SELECT value FROM json_each(?))"
+                args = (key, encode(data["distilled_ids"]))
+            consumed = db.execute(
+                f"UPDATE session_events SET distilled=1 WHERE session_id=? AND {PENDING_USER} AND {boundary}",
+                args,
+            ).rowcount
+            if consumed:
+                db.execute(
+                    "UPDATE sessions SET undistilled=undistilled-? WHERE id=?", (consumed, key)
+                )
+        if kind == "title" and data.get("title") and data.get("source") != "llm":
+            db.execute("UPDATE sessions SET title=? WHERE id=?", (data["title"], key))
+        elif kind == "title":
+            pair = self._first_title_exchange(db, key)
+            title = self._saved_title(db, key, pair[1]["id"] if pair else None)
+            db.execute("UPDATE sessions SET title=? WHERE id=?", (title, key))
+        elif kind == "undo":
+            projected = self.load(key, include_reasoning=False)
+            db.execute(
+                "UPDATE sessions SET title=?,last_message_at=?,messages=?,undistilled=?,tokens=? WHERE id=?",
+                (
+                    projected.saved_title(),
+                    projected.last_message_at,
+                    len(projected.messages),
+                    len(projected.undistilled_messages()),
+                    projected.estimated_tokens(),
+                    key,
+                ),
+            )
+
+    def append_generated_title(
+        self, session_id: str, record: dict, live_session: Session | None
+    ) -> None:
+        if live_session is not None:
+            self.append(live_session, record)
+        else:
+            with transaction(self.paths) as db:
+                self._append_events(db, session_id, (record,))
+
+    def append(self, session, record):
+        with transaction(self.paths) as db:
+            result = self._append_events(db, session.id, (record,))
+            on_commit(lambda: session.records.append(result))
+            return result
+
+    def append_event_transactionally(self, session, event, *following):
+        with transaction(self.paths) as db:
+            return self._append_events(db, session.id, (event, *following))
+
+    def _append_events(self, db, session_id, events):
+        self._validate_session_id(session_id)
+        if not db.execute(
+            "SELECT 1 FROM sessions WHERE id=? AND archived=0", (session_id,)
+        ).fetchone():
+            raise KeyError(session_id)
+        for raw in events:
+            record = _redact_record(raw)
+            if record.get("reasoning") and record["reasoning"] != raw.get("reasoning"):
+                record["reasoning"].pop("source", None)
+            _stamp_event(record)
+            self._insert(db, session_id, record)
         return record
 
-    def append_event_transactionally(self, session: Session, event: dict, *following: dict) -> dict:
-        """在调用方的事务中一次替换文件，一并发布关联事件。"""
-        with vault_transaction(self.paths) as tx:
-            tx.guard(session_file_lock(self.paths, session.id))
-            current = self.load(session.id, include_reasoning=False)
-            records = []
-            if current.damaged_tail_line is not None:
-                records.append(
-                    {"type": "recovery", "ignored_line": current.damaged_tail_line, "at": now_iso()}
-                )
-            for raw in (event, *following):
-                record = _redact_record(raw)
-                _stamp_event(record)
-                records.append(record)
-            prefix = b""
-            with current.path.open("rb") as file:
-                if file.seek(0, 2):
-                    file.seek(-1, 2)
-                    if file.read(1) != b"\n":
-                        prefix = b"\n"
-            payload = "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in records)
-            tx.append(current.path, prefix + payload.encode("utf-8"))
-        return records[-1]
+    def close_browsed(self, session_id: str) -> str | None:
+        """浏览者离开时保留关闭事件和沉淀目标，无需将全部记录装入工作会话。"""
+        with transaction(self.paths) as db:
+            self._append_events(db, session_id, ({"type": "closed"},))
+            row = db.execute(
+                """SELECT message_id FROM session_events WHERE session_id=?
+                AND active=1 AND kind='message' AND role='user' ORDER BY seq DESC LIMIT 1""",
+                (session_id,),
+            ).fetchone()
+            return row[0] if row else None
 
-    def advance_distilled(self, session: Session, message_id: str) -> None:
+    def advance_distilled(self, session: Session | str, message_id: str) -> None:
         """将下一个游标与从该消息提取的所有事实一同提交。"""
-        with vault_transaction(self.paths):
-            current = self.load(session.id, include_reasoning=False)
-            pending = current.undistilled_messages()
-            if not pending or pending[0]["id"] != message_id:
+        session_id = session.id if isinstance(session, Session) else session
+        with transaction(self.paths) as db:
+            first = db.execute(
+                f"SELECT message_id FROM session_events WHERE session_id=? AND {PENDING_USER} AND EXISTS(SELECT 1 FROM sessions WHERE id=session_id AND archived=0) ORDER BY seq LIMIT 1",
+                (session_id,),
+            ).fetchone()
+            if first is None or first[0] != message_id:
                 raise ValueError("Distillation cursor no longer points at this message.")
-            self.append_event_transactionally(current, {"type": "distilled", "up_to": message_id})
+            record = {"type": "distilled", "up_to": message_id}
+            _stamp_event(record)
+            self._insert(db, session_id, record)
 
     def rename(self, session: Session, title: str) -> None:
         if not isinstance(title, str) or not (title := title.strip()) or len(title) > 80:
             raise ConversationError("invalid_title", "Enter a session title of 1 to 80 characters.")
-        record = self.append_event_transactionally(session, {"type": "title", "title": title})
-        session.records.append(record)
+        self.append(session, {"type": "title", "title": title})
 
-    def set_archived(self, session_id: str, archived: bool) -> None:
-        """仅移动对话记录，保留来源 ID 及所有原始附属文件。"""
-        self._validate_session_id(session_id)
-        with self._lock, session_file_lock(self.paths, session_id):
-            source = self._find(session_id, archived=not archived)
-            existing = self._find(session_id, archived=archived)
-            if source is None:
-                if existing is not None:
-                    return
+    def set_archived(self, session_id, archived):
+        with transaction(self.paths) as db:
+            if not db.execute(
+                "UPDATE sessions SET archived=? WHERE id=?", (archived, session_id)
+            ).rowcount:
                 raise KeyError(session_id)
-            root, destination = (
-                (self.root, self.archive_root) if archived else (self.archive_root, self.root)
-            )
-            target = destination / source.relative_to(root)
-            if existing is not None or target.exists() or target.resolve() != target:
-                raise ValueError("Session archive destination is occupied or redirected.")
-            target.parent.mkdir(parents=True, exist_ok=True)
-            source.rename(target)
-            self._snapshots.pop(source, None)
-            self._listing_cache.pop(session_id, None)
-            self._undistilled_cache.pop(session_id, None)
+            if archived:
+                db.execute(
+                    "DELETE FROM jobs WHERE kind IN ('title','distillation') AND target=?",
+                    (session_id,),
+                )
 
-    def delete(
-        self,
-        session_id: str,
-        *,
-        archived: bool = False,
-        before_delete: Callable[[], None] | None = None,
-    ) -> bool:
-        self._validate_session_id(session_id)
-        with self._lock, session_file_lock(self.paths, session_id):
-            path = self._find(session_id, archived=archived)
-            if path is None:
+    def delete(self, session_id, *, archived=False, before_delete=None):
+        with transaction(self.paths) as db:
+            if not self.exists(session_id, archived=archived):
                 return False
-            with ExitStack() as sidecars:
-                for root in self._sidecar_roots:
-                    sidecars.enter_context(
-                        _stage_sidecars(root, session_id, attachments=root == self.attachments_dir)
-                    )
-                # 事务提交后才清理暂存的附件；中断时先恢复事务，再按会话是否存在恢复附件。
-                with vault_transaction(self.paths) as tx:
-                    if before_delete is not None:
-                        before_delete()
-                    tx.write(path, None)
-            self._snapshots.pop(path, None)
-            self._listing_cache.pop(session_id, None)
-            self._undistilled_cache.pop(session_id, None)
+            if before_delete:
+                before_delete()
+            db.execute("DELETE FROM sessions WHERE id=?", (session_id,))
+            db.execute(
+                "DELETE FROM jobs WHERE kind IN ('title','distillation') AND target=?",
+                (session_id,),
+            )
+            on_commit(lambda: cleanup(self.paths))
         return True

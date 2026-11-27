@@ -14,7 +14,7 @@ from syvrio.infra.config import QIANWEN_BASE_URL, LLMConfig
 from syvrio.infra.llm.tokens import estimate_tokens
 from syvrio.memory.background import BackgroundMemory, dream, model
 from syvrio.memory.background.dream import Dream
-from syvrio.memory.background.jobs import encode_job, read_job
+from syvrio.memory.background.jobs import read_job, save_job
 from syvrio.memory.models import MemoryContext, MemoryDraft, MemoryUpdate, ReflectionResponse
 
 pytestmark = pytest.mark.memory
@@ -78,7 +78,7 @@ def test_profile_is_a_complete_atomic_first_stage_then_new_hypotheses(service, m
     pending = service.propose_inference("未证实的推断", [first.id], "偏好")
     deprecated = add(service, "弃用的事实")
     service.apply(updates=[MemoryUpdate(id=deprecated.id, status="deprecated")])
-    service.profile.path.write_text("人工画像", encoding="utf-8")
+    service.profile.publish("人工画像", {})
     calls = []
 
     def generate(_, prompt, data, schema):
@@ -88,7 +88,7 @@ def test_profile_is_a_complete_atomic_first_stage_then_new_hypotheses(service, m
             assert data["draft"] == ""
             assert service.profile.read_text() == "人工画像"
             return schema(summary="# 画像\n用户喜欢种植。")
-        assert service.profile.read_text() == "# 画像\n用户喜欢种植。\n"
+        assert service.profile.read_text() == "# 画像\n用户喜欢种植。"
         assert set(r["id"] for r in data["facts"]) == {first.id, second.id}
         return schema(
             proposals=[
@@ -134,7 +134,7 @@ def test_all_sources_contribute_across_profile_batches_before_publication(servic
     job = engine.request()
     engine.step(Event())
     assert engine.status()["state"] == "paused"
-    assert not service.profile.path.exists()
+    assert not service.profile.read_text()
     restarted = Dream(service)
     # 在批次间更改聊天预算不会使 Dream 游标失效。
     service.config.chat.context_window *= 2
@@ -158,8 +158,8 @@ def test_saved_cursor_resumes_only_the_unfinished_stage(service, monkeypatch, ph
         model=service.config.llm.litellm_model(),
         version=dream._state(service)[-1],
     )
-    engine.path.write_bytes(encode_job(checkpoint))
-    service.profile.path.write_text("Published profile", encoding="utf-8")
+    save_job(engine.path, checkpoint)
+    service.profile.publish("Published profile", {})
 
     def generate(_, prompt, data, schema):
         assert service.profile.read_text() == "Published profile"
@@ -183,7 +183,7 @@ def test_saved_cursor_resumes_only_the_unfinished_stage(service, monkeypatch, ph
 
 def test_profile_failure_preserves_previous_profile_and_never_runs_hypotheses(service, monkeypatch):
     add(service, "合成事实")
-    service.profile.path.write_text("先前的画像", encoding="utf-8")
+    service.profile.publish("先前的画像", {})
     owner = BackgroundMemory(service)
     job = owner.request_dream()
 
@@ -226,7 +226,7 @@ def test_live_dream_status_only_marks_the_current_request_as_running(
     owner.start()
     try:
         assert entered.wait(5)
-        checkpoint = owner.dream.path.read_bytes()
+        checkpoint = read_job(owner.dream.path)
         assert read_job(owner.dream.path)["state"] == "queued"
         assert Dream(service).status(live=True)["state"] == "queued"
         status = commands.command("status")
@@ -235,7 +235,7 @@ def test_live_dream_status_only_marks_the_current_request_as_running(
         assert (
             repeated.data["state"] == "running" and repeated.message == "Dream is already running."
         )
-        assert owner.dream.path.read_bytes() == checkpoint
+        assert read_job(owner.dream.path) == checkpoint
         release.set()
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
@@ -251,30 +251,29 @@ def test_live_dream_status_only_marks_the_current_request_as_running(
         owner.stop()
 
 
-def test_late_provider_response_after_worker_stop_or_evidence_change_is_discarded(
-    service, monkeypatch
-):
+def test_frozen_input_accepts_concurrent_write_but_respects_worker_stop(service, monkeypatch):
     fact = add(service, "测试事实")
     engine = Dream(service)
     engine.request()
 
     def change(*args):
         service.apply(updates=[MemoryUpdate(id=fact.id, context=MemoryContext(location="杭州"))])
-        return args[-1](summary="过期画像")
+        assert "context" not in args[2]["evidence"][0]
+        return args[-1](summary="起点画像")
 
     monkeypatch.setattr(dream, "ask", change)
     engine.step(Event())
-    assert service.profile.read_text() == ""
+    assert service.profile.read_text() == "起点画像"
 
     stop = Event()
 
     def shut_down(*args):
         stop.set()
-        return args[-1](summary="Stopped before publication")
+        return args[-1](proposals=[])
 
     monkeypatch.setattr(dream, "ask", shut_down)
     engine.step(stop)
-    assert engine.status()["state"] == "queued" and not service.profile.path.exists()
+    assert engine.status()["state"] == "queued" and service.profile.read_text() == "起点画像"
 
 
 def test_inference_failure_preserves_profile_and_resumes_same_batch(service, monkeypatch):
@@ -325,7 +324,7 @@ def test_model_switch_after_failed_hypotheses_keeps_published_profile(service, m
 
     monkeypatch.setattr(dream, "ask", generate)
     engine.step(Event())
-    metadata = engine.metadata.read_bytes()
+    metadata = service.profile.metadata()
     with pytest.raises(TimeoutError) as exc:
         engine.step(Event())
     engine.failed(exc.value, job_id, engine.status()["generation"])
@@ -333,7 +332,7 @@ def test_model_switch_after_failed_hypotheses_keeps_published_profile(service, m
     assert engine.request(retry_now=True) == job_id
     engine.step(Event())
     assert calls == [dream.PROFILE, dream.INFER, dream.INFER]
-    assert engine.metadata.read_bytes() == metadata
+    assert service.profile.metadata() == metadata
     assert engine.status()["state"] == "completed"
 
 
@@ -383,7 +382,7 @@ def test_model_switch_while_preparing_request_takes_effect_on_next_batch(service
     assert engine.status()["state"] == "completed"
 
 
-def test_evidence_version_rechecked_before_publishing_hypotheses(service, monkeypatch):
+def test_hypotheses_pin_sources_even_if_deprecated_during_generation(service, monkeypatch):
     fact = add(service, "旧事实")
     engine = Dream(service)
     engine.request()
@@ -396,14 +395,14 @@ def test_evidence_version_rechecked_before_publishing_hypotheses(service, monkey
 
     monkeypatch.setattr(dream, "ask", mutate)
     engine.step(Event())
-    assert not service.list_inferences()
+    (proposal,) = service.list_inferences()
+    assert proposal.source_versions == {fact.id: engine.status()["evidence_commit"]}
     assert service.profile.read_text().strip() == "成功画像"
 
 
 def test_profile_empty_vault_requires_no_llm_and_does_not_alter_inferences(service, monkeypatch):
     monkeypatch.setattr(dream, "ask", lambda *args: pytest.fail("empty profile needs no model"))
-    service.profile.path.parent.mkdir(parents=True, exist_ok=True)
-    service.profile.path.write_text("没有来源的旧画像", encoding="utf-8")
+    service.profile.publish("没有来源的旧画像", {})
     engine = Dream(service)
     engine.request()
     engine.step(Event())
@@ -446,7 +445,7 @@ def test_truncated_dream_retries_same_batch_with_next_request_and_resets_between
     service, monkeypatch
 ):
     entry = add(service, "Synthetic profile evidence")
-    service.profile.path.write_text("Old profile", encoding="utf-8")
+    service.profile.publish("Old profile", {})
     service.config.llm = LLMConfig(provider="local")
     monkeypatch.setattr(model, "model_metadata", lambda _: {"max_output_tokens": 7300})
     monkeypatch.setattr(model, "provider_reasoning_levels", lambda _: None)
@@ -536,12 +535,12 @@ def test_dream_keeps_bounded_retry_settings_for_remaining_batches_in_same_phase(
     # 旧版本留下的检查点可能已超过当前上限。
     checkpoint = read_job(engine.path)
     checkpoint["retry_output_tokens"] = 47332
-    engine.path.write_bytes(encode_job(checkpoint))
+    save_job(engine.path, checkpoint)
     engine.step(Event())
     status = engine.status()
     assert (status["state"], status["batch"], status["remaining_requests"]) == ("paused", 1, 0)
     assert status["retry_output_tokens"] == 16000
-    assert not service.profile.path.exists()
+    assert not service.profile.read_text()
 
     service.config.chat.default_budget = 3
     restarted = Dream(service)
@@ -591,7 +590,7 @@ def test_truncation_at_context_ceiling_pauses_without_spending_another_request(
     engine.failed(truncated.value, job, engine.status()["generation"])
     assert not engine.due()
     assert engine.status()["state"] == "paused" and engine.status()["remaining_requests"] == 2
-    assert limits == [3000] and not service.profile.path.exists()
+    assert limits == [3000] and not service.profile.read_text()
 
 
 def test_invalid_finished_dream_response_preserves_validation_error(service, monkeypatch):
@@ -727,7 +726,7 @@ def test_automatic_dream_retries_from_checkpoint_without_consuming_extra_request
         owner.stop()
     checkpoint = owner.dream.status()
     assert checkpoint["failures"] == checkpoint["requests"] == 1
-    assert not service.profile.path.exists()
+    assert not service.profile.read_text()
 
     restarted = BackgroundMemory(service)
     assert restarted.dream.status() == checkpoint
@@ -741,7 +740,7 @@ def test_automatic_dream_retries_from_checkpoint_without_consuming_extra_request
     assert restarted.dream.status()["failures"] == 0
 
 
-def test_failed_model_call_and_stale_input_still_consume_budget(service, monkeypatch):
+def test_concurrent_update_does_not_reset_reserved_budget(service, monkeypatch):
     entry = add(service, "初始事实")
     engine = Dream(service)
     service.config.chat.default_budget = 1
@@ -749,13 +748,14 @@ def test_failed_model_call_and_stale_input_still_consume_budget(service, monkeyp
 
     def model_call(_, prompt, data, schema):
         service.apply(updates=[MemoryUpdate(id=entry.id, context=MemoryContext(location="新地点"))])
-        return schema(summary="已失效结果")
+        assert "context" not in data["evidence"][0]
+        return schema(summary="原始证据画像")
 
     monkeypatch.setattr(dream, "ask", model_call)
     engine.step(Event())
     assert engine.status()["requests"] == 1 and engine.status()["remaining_requests"] == 0
     engine.step(Event())
-    assert engine.status()["state"] == "paused" and not service.profile.path.exists()
+    assert engine.status()["state"] == "paused" and service.profile.read_text() == "原始证据画像"
 
 
 def test_run_continues_failed_checkpoint_and_ignores_old_generation(service):
@@ -764,7 +764,7 @@ def test_run_continues_failed_checkpoint_and_ignores_old_generation(service):
     generation = engine.status()["generation"]
     checkpoint = read_job(engine.path)
     checkpoint.update(state="failed", batch=2, requests=4)
-    engine.path.write_bytes(encode_job(checkpoint))
+    save_job(engine.path, checkpoint)
     assert engine.request() == job
     engine.failed(TimeoutError(), job, generation)
     status = engine.status()

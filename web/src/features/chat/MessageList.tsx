@@ -7,6 +7,7 @@ import { Markdown } from '../../shared/Markdown';
 import { MessageActions, type MessageActionHandler, type OpenEditor } from './MessageActions';
 import { ArrowUpIcon } from '../../shared/Icons';
 import { SurfacePresence } from '../../shared/SurfacePresence';
+import { EarlierHistory } from './EarlierHistory';
 import { Thinking } from './Thinking';
 
 type ToolSegment = Extract<Segment, { kind: 'tool' }>;
@@ -157,6 +158,18 @@ const AssistantRow = memo(function AssistantRow({ message, onToggle }: {
       {message.interrupted && <div className="stopped">Stopped</div>}
     </div>
   );
+});
+
+const EarlierRows = memo(function EarlierRows({ cursor, sessionId, archived }: {
+  cursor: number; sessionId: string; archived: boolean;
+}) {
+  return <EarlierHistory cursor={cursor} sessionId={sessionId} archived={archived}>
+    {(message, toggle) => {
+      if (message.role === 'user') return <UserRow key={message.id} message={message} sessionId={sessionId} archived={archived} />;
+      if (message.role === 'assistant') return <AssistantRow key={message.id} message={message} onToggle={toggle} />;
+      return <InfoLine key={message.id} message={message} />;
+    }}
+  </EarlierHistory>;
 });
 
 function SegmentView({ segment, onToggle }: { segment: Exclude<Segment, ToolSegment>; onToggle: () => void }) {
@@ -412,6 +425,9 @@ export function MessageList({
               </UserRow>;
             }
             if (message.role === 'assistant') return <AssistantRow key={message.id} message={message} onToggle={onToggle} />;
+            if (message.earlierCursor && sessionId) {
+              return <EarlierRows key={message.id} cursor={message.earlierCursor} sessionId={sessionId} archived={archived} />;
+            }
             return <InfoLine key={message.id} message={message} />;
           })}
         </div>

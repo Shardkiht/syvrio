@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+from collections import OrderedDict
+from dataclasses import dataclass
 from threading import Lock
-from weakref import WeakKeyDictionary
 
-from ...infra.session import HistoryRevision
 from ...infra.session.errors import SessionProtectedError
-from .channel import APIChannel, APIError
+from .channel import HISTORY_ITEM_LIMIT, TOOL_CONTENT_LIMIT, APIChannel, APIError
 from .models import (
     CommandResponse,
     CreateSessionResponse,
@@ -18,13 +18,18 @@ from .models import (
 )
 
 
+@dataclass(frozen=True)
+class CachedHistory:
+    revision: int
+    version: str
+    history: HistoryResponse
+
+
 class ClientViews:
     def __init__(self, owner: APIChannel) -> None:
         self.owner = owner
         self._history_lock = Lock()
-        self._histories: WeakKeyDictionary[HistoryRevision, tuple[str, HistoryResponse]] = (
-            WeakKeyDictionary()
-        )
+        self._histories: OrderedDict[str, CachedHistory] = OrderedDict()
 
     def create_session(self, key: str) -> CreateSessionResponse:
         return self.owner.directory.new(key, APIChannel.create_session)
@@ -45,8 +50,10 @@ class ClientViews:
     ) -> SwitchSessionResponse:
         if not include_history:
             self.owner._validate_session_id(session_id)
-            session = self.owner.directory.select(key, session_id)
-            return SwitchSessionResponse(session_id=session.id, title=session.title())
+            channel = self.owner.directory.select(key, session_id)
+            return SwitchSessionResponse(
+                session_id=session_id, title=channel.conversation.sessions.session_title(session_id)
+            )
         version, history = self.versioned_history(key, session_id, select=True)
         return SwitchSessionHistoryResponse(
             session_id=history.session_id,
@@ -61,26 +68,37 @@ class ClientViews:
         self.owner._validate_session_id(session_id)
         try:
             if select:
-                snapshot = self.owner.directory.select_snapshot(key, session_id)
-                current = True
+                self.owner.directory.select(key, session_id)
+            channel = self.owner.directory.channel(key)
+            store = channel.conversation.sessions
+            current = select or channel.conversation.current_id == session_id
+            with self._history_lock:
+                cached = self._histories.get(session_id)
+            revision, page = store.latest_history_page(
+                session_id,
+                limit=HISTORY_ITEM_LIMIT,
+                tool_preview=TOOL_CONTENT_LIMIT,
+                known_revision=cached.revision if cached else None,
+            )
+            if page is None:
+                assert cached is not None
+                version, history = cached.version, cached.history
             else:
-                channel = self.owner.directory.channel(key)
-                snapshot = channel.conversation.sessions.read_snapshot(session_id)
-                current = channel.conversation.current_id == session_id
+                history = self.owner.project_history(page, current=True)
+                content = history.model_dump_json(exclude={"current"}).encode()
+                version = hashlib.sha256(content).hexdigest()
+                if revision is not None:
+                    with self._history_lock:
+                        latest = self._histories.get(session_id)
+                        if latest is None or latest.revision < revision:
+                            self._histories[session_id] = CachedHistory(revision, version, history)
+                            self._histories.move_to_end(session_id)
+                            if len(self._histories) > 16:
+                                self._histories.popitem(last=False)
         except KeyError as exc:
             raise APIError("session_not_found", "Session not found.", 404) from exc
         except (ValueError, OSError) as exc:
             raise APIError("session_unreadable", "Session history could not be read.", 500) from exc
-        with self._history_lock:
-            projection = self._histories.get(snapshot.history_revision)
-            if projection is None:
-                history = self.owner.project_history(snapshot.session, current=True)
-                # 关闭聊天和提炼记忆会追加内部记录，界面显示的历史保持相同。
-                content = history.model_dump_json(exclude={"current"}).encode()
-                version = hashlib.sha256(content).hexdigest()
-                projection = (version, history)
-                self._histories[snapshot.history_revision] = projection
-        version, history = projection
         return version, history if current else history.model_copy(update={"current": False})
 
     def archive(self, session_id: str, archived: bool) -> dict:

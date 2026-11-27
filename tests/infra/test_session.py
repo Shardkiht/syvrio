@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime
 
 import pytest
 
 from syvrio.infra.session import SessionStore, new_message_id
+from syvrio.infra.storage.database import transaction
 
 pytestmark = pytest.mark.agent
 
@@ -51,7 +51,7 @@ def test_title_job_survives_restart_and_uses_first_valid_exchange(service, monke
     from threading import Event
 
     from syvrio.memory.background import BackgroundMemory, titles
-    from syvrio.memory.background.jobs import job_path
+    from syvrio.memory.background.jobs import job_key
 
     backend = BackgroundMemory(service)
     store = backend.sessions
@@ -74,10 +74,10 @@ def test_title_job_survives_restart_and_uses_first_valid_exchange(service, monke
         store.append(session, item)
         store.append(untouched, item)
     # 列出会话或重启服务都不会调度历史对话。
-    assert len(store.list()) == 2 and not backend.pending_titles()
+    assert len(store.list()) == 2 and not backend.pending_titles([session.id, untouched.id])
     backend.request_title(session.id)
     restarted = BackgroundMemory(service)
-    assert restarted.pending_titles() == {session.id}
+    assert restarted.pending_titles([session.id, untouched.id]) == {session.id}
     seen = []
 
     def generate(service, question, answer):
@@ -85,23 +85,52 @@ def test_title_job_survives_restart_and_uses_first_valid_exchange(service, monke
         return "Generated title"
 
     monkeypatch.setattr(titles, "generate", generate)
-    path = job_path(service.paths, "title", session.id)
+    path = job_key(service.paths, "title", session.id)
     assert restarted._step_job("title", path, Event())
-    assert seen == [("actual question", "actual answer")] and not restarted.pending_titles()
+    assert seen == [("actual question", "actual answer")] and not restarted.pending_titles(
+        [session.id, untouched.id]
+    )
     saved = store.load(session.id)
     assert saved.title() == "Generated title"
     assert store.load(untouched.id).title() == "未命名会话"
     backend.request_title(session.id)
-    assert not backend.pending_titles()
+    assert not backend.pending_titles([session.id, untouched.id])
     store.append(saved, {"type": "undo", "message_id": "m2"})
     assert saved.title() == "未命名会话"
+
+
+def test_generated_title_only_reads_title_evidence(service, monkeypatch):
+    from threading import Event
+
+    from syvrio.memory.background import BackgroundMemory, titles
+    from syvrio.memory.background.jobs import job_key
+
+    service.initialize_files()
+    bg = BackgroundMemory(service)
+    store = bg.sessions
+    session = store.create()
+    for event in (
+        {"type": "message", "id": "m1", "role": "user", "content": "question"},
+        {"type": "tool", "id": "t1", "content": "x" * 256_000},
+        {"type": "assistant", "id": "a1", "content": "answer"},
+    ):
+        store.append(session, event)
+
+    def unexpected_load(*args, **kwargs):
+        pytest.fail("Title generation loaded full session history.")
+
+    monkeypatch.setattr(store, "load", unexpected_load)
+    monkeypatch.setattr(titles, "generate", lambda *_: "New title")
+    bg.request_title(session.id)
+    assert bg._step_job("title", job_key(service.paths, "title", session.id), Event())
+    assert not store.untitled_exchange(session.id)
 
 
 def test_missing_title_credentials_leave_history_readable(service, monkeypatch):
     from threading import Event
 
     from syvrio.memory.background import BackgroundMemory, titles
-    from syvrio.memory.background.jobs import job_path
+    from syvrio.memory.background.jobs import job_key, read_job
 
     backend = BackgroundMemory(service)
     session = backend.sessions.create()
@@ -112,8 +141,8 @@ def test_missing_title_credentials_leave_history_readable(service, monkeypatch):
         backend.sessions.append(session, item)
     monkeypatch.setattr(titles, "ask", lambda *_: pytest.fail("Unexpected title model call"))
     backend.request_title(session.id)
-    path = job_path(service.paths, "title", session.id)
-    assert backend._step_job("title", path, Event()) and not path.exists()
+    path = job_key(service.paths, "title", session.id)
+    assert backend._step_job("title", path, Event()) and not read_job(path)
     loaded = backend.sessions.load(session.id)
     assert loaded.title() == "未命名会话" and loaded.user_texts() == ["question"]
 
@@ -130,51 +159,10 @@ def test_session_redacts_credentials_in_nested_records(tmp_path):
         },
     )
     store.rename(session, f"密码是 {secret}")
-    assert secret not in session.path.read_text(encoding="utf-8")
     assert secret not in str(record)
     assert secret not in str(session.records)
     assert secret not in str(store.load(session.id).records)
     assert "敏感信息已隐藏" in record["content"]
-
-
-@pytest.mark.parametrize("ending", [b"", b"\n", "合".encode("utf-8")[:2]])
-def test_session_recovers_torn_tail_without_rewriting_original(tmp_path, ending):
-    store, session = make_store(tmp_path)
-    store.append(session, {"type": "message", "id": "m1", "role": "user", "content": "合成陈述"})
-    with session.path.open("ab") as handle:
-        handle.write(b'{"type":"assistant","content":"' + ending)
-    original = session.path.read_bytes()
-    loaded = store.load(session.id)
-    assert loaded.user_texts() == ["合成陈述"]
-    assert loaded.damaged_tail_line is not None
-    assert store.list()[0]["id"] == session.id
-    assert store.unconsolidated()[0].id == session.id
-    assert session.path.read_bytes() == original
-    store.append(loaded, {"type": "message", "id": "m2", "role": "user", "content": "接续陈述"})
-    assert session.path.read_bytes().startswith(original)
-    reloaded = store.load(session.id)
-    assert reloaded.user_texts() == ["合成陈述", "接续陈述"]
-    assert any(record.get("type") == "recovery" for record in reloaded.records)
-
-
-def test_session_appends_after_complete_record_without_newline(tmp_path):
-    store, session = make_store(tmp_path)
-    session.path.write_bytes(session.path.read_bytes().rstrip(b"\n"))
-    original = session.path.read_bytes()
-    loaded = store.load(session.id)
-    store.append(loaded, {"type": "message", "id": "m1", "role": "user", "content": "合成陈述"})
-    assert session.path.read_bytes().startswith(original + b"\n")
-    assert store.load(session.id).user_texts() == ["合成陈述"]
-
-
-def test_session_does_not_silently_ignore_unmarked_middle_corruption(tmp_path):
-    import json
-
-    store, session = make_store(tmp_path)
-    with session.path.open("ab") as handle:
-        handle.write(b'broken\n{"type":"message","id":"m","role":"user","content":"synthetic"}\n')
-    with pytest.raises(json.JSONDecodeError):
-        store.load(session.id)
 
 
 def test_rename_and_list(tmp_path):
@@ -196,56 +184,10 @@ def test_rename_and_list(tmp_path):
     assert rows[0]["messages"] == 1
 
 
-@pytest.mark.parametrize("count", [1, 10, 50])
-def test_active_listing_scans_only_active_root_once(tmp_path, monkeypatch, count):
-    store = SessionStore(tmp_path)
-    for _ in range(count):
-        store.create()
-    scans = 0
-    files = store._files
-
-    def count_files(*, archived=False):
-        nonlocal scans
-        assert not archived
-        scans += 1
-        return files(archived=archived)
-
-    monkeypatch.setattr(store, "_files", count_files)
-    assert len(store.list(limit=count, with_tokens=False)) == count
-    assert scans == 1
-    assert len(store.list(limit=count, with_tokens=True)) == count
-    assert scans == 2
-
-
-def test_session_listing_rejects_duplicate_ids(tmp_path):
-    store, session = make_store(tmp_path)
-    previous_month = store.root / "2000" / "01"
-    previous_month.mkdir(parents=True)
-    (previous_month / session.path.name).write_bytes(session.path.read_bytes())
-    with pytest.raises(ValueError, match="duplicate session ID"):
-        store.list()
-
-
-def test_session_listing_rejects_symlinks(tmp_path):
-    store, session = make_store(tmp_path)
-    link = session.path.with_name("linked-session.jsonl")
-    try:
-        link.symlink_to(session.path)
-    except (OSError, NotImplementedError):
-        pytest.skip("Creating symlinks is unavailable")
-    with pytest.raises(ValueError, match="symlink in session archive"):
-        store.list()
-
-
 def test_session_listing_orders_by_last_message_before_limiting(tmp_path):
     store = SessionStore(tmp_path)
     older = store.create()
     newer = store.create()
-    previous_month = store.root / "2000" / "01"
-    previous_month.mkdir(parents=True)
-    old_path = previous_month / older.path.name
-    older.path.rename(old_path)
-    older = store.load(older.id)
     for session, stamp in ((older, "2025-01-01"), (newer, "2025-01-02")):
         store.append(
             session,
@@ -324,7 +266,8 @@ def test_session_listing_sorts_timestamps_before_limiting(tmp_path, older_at, ne
                 session, {"type": "message", "role": "user", "content": "Turn", "at": stamp}
             )
     if not older_at:
-        older.path.write_text('{"type": "meta"}\n', encoding="utf-8")
+        with transaction(store.paths) as db:
+            db.execute("UPDATE sessions SET last_message_at='' WHERE id=?", (older.id,))
     assert [row["id"] for row in store.list()] == [newer.id, older.id]
     assert store.list(limit=1)[0]["id"] == newer.id
 
@@ -334,14 +277,10 @@ def test_session_rejects_invalid_timestamp_on_append_and_load(tmp_path, invalid)
     store, session = make_store(tmp_path)
     assert session.started_at.endswith("+00:00")
     record = {"type": "message", "role": "user", "content": "Turn", "at": invalid}
-    before = session.path.read_bytes()
+    before = store.load(session.id).records
     with pytest.raises(ValueError):
         store.append(session, record)
-    assert session.path.read_bytes() == before
-    with session.path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(record) + "\n")
-    with pytest.raises(ValueError):
-        store.load(session.id)
+    assert store.load(session.id).records == before
 
 
 def test_session_listing_keeps_archive_order_for_equal_times(tmp_path):
@@ -428,101 +367,9 @@ def test_delete_session_file(tmp_path):
     )
 
     assert store.delete(session.id) is True
-    assert not session.path.exists()
+    assert not store.exists(session.id)
     assert store.list() == []
     assert store.delete(session.id) is False
-
-
-def test_permanent_delete_removes_only_this_sessions_uploaded_copies(tmp_path, monkeypatch):
-    from dataclasses import asdict
-    from pathlib import Path
-
-    from syvrio.infra.session.attachments import AttachmentBatch
-
-    store, first = make_store(tmp_path / "vault")
-    second = store.create()
-    source = tmp_path / "notes.txt"
-    source.write_bytes(b"same document in two sessions")
-    for session in (first, second):
-        mid = new_message_id()
-        with source.open("rb") as stream:
-            batch = AttachmentBatch.stage(store.attachments_dir, [(source.name, stream)])
-        batch.bind(session.id, mid)
-        store.append(
-            session,
-            {
-                "type": "message",
-                "id": mid,
-                "role": "user",
-                "content": "Read",
-                "attachments": [asdict(item) for item in batch.files],
-            },
-        )
-    unlink = Path.unlink
-    reasoning = store._reasoning_path(first.id, "assistant")
-    journal = store._turn_undo_root / first.id / "turn.json"
-    for sidecar in (reasoning, journal):
-        sidecar.parent.mkdir(parents=True)
-        sidecar.write_bytes(b"preserve on failure")
-
-    original = first.path.read_bytes()
-    store.set_archived(first.id, True)
-    archived = store.load(first.id, archived=True)
-    assert archived.path.read_bytes() == original
-    assert store.verify_attachments() == (2, [])
-    originals = list((store.attachments_dir / ".objects").rglob("original"))
-    assert len(originals) == 1
-    archived_file = next((store.attachments_dir / first.id).glob("*/*.ref"))
-    saved = archived_file.read_bytes()
-    archived_file.unlink()
-    count, errors = store.verify_attachments()
-    assert count == 1 and len(errors) == 1 and first.id in errors[0]
-    archived_file.write_bytes(saved)
-    with pytest.raises(ValueError, match="active sessions"):
-        store.append(archived, {"type": "title", "title": "stale write"})
-    store.set_archived(first.id, False)
-    assert first.path.read_bytes() == original and store.verify_attachments() == (2, [])
-    store.set_archived(first.id, True)
-
-    def fail_to_unlink(path, *args, **kwargs):
-        if path == archived.path:
-            raise PermissionError("session is open")
-        return unlink(path, *args, **kwargs)
-
-    with monkeypatch.context() as mp:
-        mp.setattr(Path, "unlink", fail_to_unlink)
-        with pytest.raises(PermissionError, match="session is open"):
-            store.delete(first.id, archived=True)
-    assert archived.path.read_bytes() == original
-    assert (store.attachments_dir / first.id).is_dir()
-    assert all(sidecar.read_bytes() == b"preserve on failure" for sidecar in (reasoning, journal))
-    assert store.delete(first.id, archived=True)
-    assert not any(sidecar.exists() for sidecar in (reasoning, journal))
-    with pytest.raises(FileNotFoundError):
-        store.append(first, {"type": "title", "title": "late write"})
-    assert not first.path.exists()
-    assert not (store.attachments_dir / first.id).exists()
-    assert store.verify_attachments() == (1, [])
-    assert originals[0].read_bytes() == source.read_bytes()
-    assert store.delete(second.id)
-    assert not originals[0].exists()
-    assert source.read_bytes() == b"same document in two sessions"
-
-
-@pytest.mark.parametrize("committed", [False, True])
-def test_recover_attachment_deletion_after_interruption(tmp_path, committed):
-    store, session = make_store(tmp_path)
-    for root in store._sidecar_roots:
-        pending = root / ".deleting" / session.id
-        pending.mkdir(parents=True)
-        (pending / "saved.txt").write_bytes(b"keep if deletion did not commit")
-    if committed:
-        session.path.unlink()
-    store.recover_deletions()
-    store.recover_deletions()
-    for root in store._sidecar_roots:
-        assert not (root / ".deleting" / session.id).exists()
-        assert (root / session.id / "saved.txt").is_file() is (not committed)
 
 
 def test_create_retries_id_collision_without_overwrite(tmp_path, monkeypatch):
@@ -541,7 +388,7 @@ def test_create_retries_id_collision_without_overwrite(tmp_path, monkeypatch):
     assert store.load(first.id).records[0]["id"] == first.id
 
 
-def test_unconsolidated_filters_threshold_before_limit(tmp_path):
+def test_pending_sessions_return_ids_in_most_recent_order(tmp_path):
     store = SessionStore(tmp_path)
     sessions = []
     for index, count in enumerate((5, 1, 2, 1)):
@@ -559,9 +406,7 @@ def test_unconsolidated_filters_threshold_before_limit(tmp_path):
                 },
             )
 
-    assert [s.id for s in store.unconsolidated(3, min_new_messages=3)] == [sessions[0].id]
-    assert [s.id for s in store.unconsolidated(3)] == [s.id for s in reversed(sessions[1:])]
-    assert store.unconsolidated(3, exclude=sessions[0].id, min_new_messages=3) == []
+    assert store.pending_sessions() == [s.id for s in reversed(sessions)]
 
 
 def test_distillation_tracks_ids_separately_from_new_summary_boundaries(tmp_path):
@@ -637,20 +482,11 @@ def test_list_reuses_cached_summary_until_file_changes(tmp_path, monkeypatch):
             "content": "第一条",
         },
     )
-    calls = 0
-    original = store._load_path
-
-    def counting(path, *, include_reasoning):
-        nonlocal calls
-        calls += 1
-        assert not include_reasoning
-        return original(path, include_reasoning=include_reasoning)
-
-    monkeypatch.setattr(store, "_load_path", counting)
-
+    monkeypatch.setattr(
+        store, "load", lambda *a, **kw: pytest.fail("read history to render sidebar")
+    )
     first = store.list()
     second = store.list()
-    assert calls == 1
     assert first == second
 
     store.append(
@@ -663,11 +499,10 @@ def test_list_reuses_cached_summary_until_file_changes(tmp_path, monkeypatch):
         },
     )
     third = store.list()
-    assert calls == 2
     assert third[0]["messages"] == 2
 
 
-def test_unconsolidated_skips_unchanged_consolidated_files(tmp_path, monkeypatch):
+def test_pending_sessions_skip_completed_sessions_without_loading_history(tmp_path, monkeypatch):
     store, session = make_store(tmp_path)
     message_id = new_message_id()
     store.append(
@@ -680,20 +515,10 @@ def test_unconsolidated_skips_unchanged_consolidated_files(tmp_path, monkeypatch
         },
     )
     store.append(session, {"type": "distilled", "up_to": message_id})
-    calls = 0
-    original = store._load_path
-
-    def counting(path, *, include_reasoning):
-        nonlocal calls
-        calls += 1
-        assert not include_reasoning
-        return original(path, include_reasoning=include_reasoning)
-
-    monkeypatch.setattr(store, "_load_path", counting)
-
-    assert store.unconsolidated(3) == []
-    assert store.unconsolidated(3, min_new_messages=3) == []
-    assert calls == 1
+    monkeypatch.setattr(
+        store, "load", lambda *a, **kw: pytest.fail("loaded completed conversation")
+    )
+    assert store.pending_sessions() == []
 
 
 def test_distilled_high_water_mark_does_not_move_backwards(tmp_path):
@@ -713,68 +538,6 @@ def test_distilled_high_water_mark_does_not_move_backwards(tmp_path):
     assert store.load(session.id).user_texts_after_distilled() == ["陈述2"]
 
 
-@pytest.mark.parametrize(
-    "bad",
-    [
-        b"\xff",
-        b"[]",
-        b"null",
-        b"42",
-        b'{"type":"title","title":[]}',
-        b'{"type":"message","role":"user","content":{}}',
-        b'{"type":"summary","covered_records":"bad"}',
-        b'{"type":"summary","distilled_ids":[{}]}',
-        b'{"type":"assistant","tool_calls":[null]}',
-        b'{"type":"meta","at":12}',
-    ],
-)
-def test_bad_session_is_reported_without_blocking_healthy_files(tmp_path, caplog, bad):
-    store, healthy = make_store(tmp_path)
-    store.append(
-        healthy, {"type": "message", "id": "m-good", "role": "user", "content": "Synthetic fact"}
-    )
-    broken = store.create()
-    with broken.path.open("ab") as handle:
-        handle.write(bad + b'\n{"type":"closed"}\n')
-    original = broken.path.read_bytes()
-    with pytest.raises(ValueError):
-        store.load(broken.id)
-    for with_tokens in (False, True):
-        assert [row["id"] for row in store.list(with_tokens=with_tokens)] == [healthy.id]
-        assert [row.id for row in store.unconsolidated()] == [healthy.id]
-    assert broken.id in caplog.text
-    assert broken.path.read_bytes() == original
-
-
-def test_complete_nonobject_tail_is_not_treated_as_torn_write(tmp_path):
-    store, session = make_store(tmp_path)
-    with session.path.open("ab") as handle:
-        handle.write(b"[]\n")
-    original = session.path.read_bytes()
-    with pytest.raises(ValueError, match="Session record"):
-        store.load(session.id)
-    assert session.path.read_bytes() == original
-
-
-def test_create_retries_exclusive_open_race(tmp_path, monkeypatch):
-    from pathlib import Path
-
-    original_open = Path.open
-    collided = []
-
-    def race(path, mode="r", *args, **kwargs):
-        if mode == "x" and not collided:
-            collided.append(path)
-            with original_open(path, "wb") as handle:
-                handle.write(b"synthetic competing session\n")
-        return original_open(path, mode, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "open", race)
-    created = SessionStore(tmp_path).create()
-    assert created.path != collided[0]
-    assert collided[0].read_bytes() == b"synthetic competing session\n"
-
-
 @pytest.mark.parametrize("identifier", [{}, {"id": "../invalid"}])
 def test_invalid_reasoning_reference_keeps_assistant_body(tmp_path, identifier):
     store, session = make_store(tmp_path)
@@ -782,110 +545,39 @@ def test_invalid_reasoning_reference_keeps_assistant_body(tmp_path, identifier):
         session,
         {"type": "assistant", "content": "Synthetic reply", "reasoning_local": True, **identifier},
     )
-    before = session.path.read_bytes()
+    before = store.load(session.id).records
     assistant = store.load(session.id).records[-1]
     assert assistant["content"] == "Synthetic reply"
     assert "reasoning" not in assistant
-    assert session.path.read_bytes() == before
+    assert store.load(session.id).records == before
 
 
-@pytest.mark.parametrize(
-    "bad",
-    [
-        None,
-        b"\xff",
-        b"{",
-        b"[]",
-        b'{"text": "bad", "seconds": []}',
-        b'{"text": "bad", "fragments": {}}',
-    ],
-)
-def test_unreadable_reasoning_attachment_keeps_session_and_other_reasoning(tmp_path, caplog, bad):
+def test_missing_private_reasoning_preserves_both_messages(tmp_path):
     store, session = make_store(tmp_path)
-    for record_id in ("broken", "healthy"):
+    for identifier in ("first", "second"):
         store.append(
             session,
             {
                 "type": "assistant",
-                "id": record_id,
-                "content": "Synthetic reply",
-                "reasoning": {"text": "Synthetic reasoning", "source": "synthetic"},
+                "id": identifier,
+                "content": "visible",
+                "reasoning": {"text": "local reasoning"},
             },
         )
-    attachment = store._reasoning_path(session.id, "broken")
-    if bad is None:
-        attachment.unlink()
-        attachment.mkdir()
-    else:
-        attachment.write_bytes(bad)
-    original = session.path.read_bytes()
-
-    broken, healthy = store.load(session.id).records[-2:]
-
-    assert broken["content"] == "Synthetic reply"
-    assert "reasoning" not in broken
-    assert healthy["reasoning"]["text"] == "Synthetic reasoning"
-    assert "Skipping unreadable reasoning attachment" in caplog.text
-    assert "Synthetic reasoning" not in caplog.text
-    assert session.path.read_bytes() == original
-
-
-def test_attachment_index_skips_tool_payload_and_invalidates_undo(tmp_path, monkeypatch):
-    from syvrio.infra.session import attachment_index
-
-    store, session = make_store(tmp_path)
-    path = session.path
-
-    def add(mid, **fields):
-        store.append(
-            session, {"id": mid, "type": "message", "role": "user", "content": "", **fields}
-        )
-
-    add("before", attachments=[{"id": "keep"}])
-    add("turn")
-    add("inserted", turn_root="turn", attachments=[{"id": "file"}])
-    store.append(session, {"type": "tool", "content": "large-result" * 20000})
-    lookup = attachment_index.attachment_metadata
-    original = json.loads
-    parsed = []
-
-    def counted(raw):
-        assert b"large-result" not in raw
-        parsed.append(raw)
-        return original(raw)
-
-    with monkeypatch.context() as patch:
-        patch.setattr(attachment_index.json, "loads", counted)
-        assert lookup(path, "inserted", "file") == {"id": "file"}
-        parsed.clear()
-        assert lookup(path, "before", "keep") == {"id": "keep"}
-        assert lookup(path, "turn", "file") is None
-        assert parsed == []
-    store.append_event_transactionally(session, {"type": "undo", "message_id": "turn"})
-    assert lookup(path, "inserted", "file") is None
-    assert lookup(path, "before", "keep") == {"id": "keep"}
-    add("replacement", attachments=[{"id": "new"}])
-    assert lookup(path, "replacement", "new") == {"id": "new"}
-
-
-def test_attachment_lookup_honors_json_escaped_undo(tmp_path):
-    from syvrio.infra.session.attachment_index import attachment_metadata
-
-    _, session = make_store(tmp_path)
-    with session.path.open("ab") as stream:
-        stream.write(
-            b'{"type":"message","id":"m1","role":"user","content":"","attachments":[{"id":"a"}]}\n'
-        )
-        stream.write(rb'{"type":"\u0075ndo","message_id":"m1"}' + b"\n")
-    assert attachment_metadata(session.path, "m1", "a") is None
+    with transaction(store.paths) as db:
+        db.execute("UPDATE session_events SET reasoning=NULL WHERE message_id='first'")
+    first, second = store.load(session.id).records[-2:]
+    assert first["content"] == second["content"] == "visible"
+    assert "reasoning" not in first
+    assert second["reasoning"]["text"] == "local reasoning"
 
 
 @pytest.mark.parametrize("reader_kind", ["snapshot", "query"])
 def test_readers_wait_only_for_the_session_published_by_transaction(tmp_path, reader_kind):
-    from concurrent.futures import ThreadPoolExecutor, TimeoutError
+    from concurrent.futures import ThreadPoolExecutor
 
     from syvrio.infra.session.query import SessionQuery
-    from syvrio.infra.storage.transaction import vault_transaction
+    from syvrio.infra.storage.database import transaction
 
     store, edited = make_store(tmp_path)
     other = store.create()
@@ -894,11 +586,10 @@ def test_readers_wait_only_for_the_session_published_by_transaction(tmp_path, re
     read = store.load_snapshot if reader_kind == "snapshot" else query.load
     with ThreadPoolExecutor(2) as pool:
         with pytest.raises(RuntimeError, match="rollback"):
-            with vault_transaction(store.paths):
+            with transaction(store.paths):
                 store.append_event_transactionally(edited, {"type": "undo", "message_id": "old"})
                 waiting = pool.submit(read, edited.id)
                 assert pool.submit(read, other.id).result(3).id == other.id
-                with pytest.raises(TimeoutError):
-                    waiting.result(0.1)
+                assert waiting.result(3).user_texts() == ["before"]
                 raise RuntimeError("rollback")
         assert waiting.result(3).user_texts() == ["before"]

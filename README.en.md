@@ -6,7 +6,7 @@
 
 **A local-first memory agent that remembers you.**
 
-Turn everyday conversations into long-term Markdown memories you can inspect, trace, and roll back. Use the terminal chat, the private web client, or connect an MCP client.
+Turn everyday conversations into long-term local memories you can inspect, trace, and roll back. Use the terminal chat, the private web client, or connect an MCP client.
 
 [![test](https://github.com/Shardkiht/syvrio/actions/workflows/test.yml/badge.svg)](https://github.com/Shardkiht/syvrio/actions/workflows/test.yml)
 [![PyPI](https://img.shields.io/pypi/v/syvrio)](https://pypi.org/project/syvrio/)
@@ -17,7 +17,7 @@ Turn everyday conversations into long-term Markdown memories you can inspect, tr
 
 </div>
 
-Stop repeating your preferences and plans every time you start a chat. Tell it “I prefer unsweetened hot drinks,” open another conversation, and it can look that preference up. Open the Markdown files to inspect what it remembers, correct a fact, or retire an entry while preserving its history.
+Stop repeating your preferences and plans every time you start a chat. Tell it “I prefer unsweetened hot drinks,” open another conversation, and it can look that preference up. Inspect what it remembers in the topic browser. Correct or retire a fact through the client, or read the exported history in Git.
 
 ![Syvrio Web remembers a preference for unsweetened hot drinks and recommends roasted barley tea in a new chat](docs/assets/syvrio-demo.gif)
 
@@ -33,7 +33,7 @@ uv run syvrio setup
 uv run syvrio chat
 ```
 
-Each deployment uses one Vault. With the backend stopped, you can switch Git revisions, edit files or restore a backup at the same path. Setup configures the model. To choose a custom Vault directory, run `syvrio init --vault <directory>` on first deployment. Save provider API keys to the credential store through Settings or `syvrio setup`. Sending the first message creates a session. The terminal, web interface, CLI and MCP client connect to the same resident backend and share sessions, memories, job progress and configuration. Any client can start the backend on first connection. The terminal connects directly. The browser loads its pages from the Web gateway and uses the same API through it. When the browser and terminal open the same conversation, their messages run in the order received. Different conversations can generate replies concurrently. You can open another conversation or start a new one during a reply. The original conversation continues processing its queue and shows the latest reply when you return.
+Each deployment uses one Vault. Git provides a read-only export. To recover the complete dataset, stop the backend and use `syvrio restore` with a new destination. Setup configures the model. To choose a custom Vault directory, run `syvrio init --vault <directory>` on first deployment. Save provider API keys to the credential store through Settings or `syvrio setup`. Sending the first message creates a session. The terminal, web interface, CLI and MCP client connect to the same resident backend and share sessions, memories, job progress and configuration. Any client can start the backend on first connection. The terminal connects directly. The browser loads its pages from the Web gateway and uses the same API through it. When the browser and terminal open the same conversation, their messages run in the order received. Different conversations can generate replies concurrently. You can open another conversation or start a new one during a reply. The original conversation continues processing its queue and shows the latest reply when you return.
 
 To run the web interface from source, install Node.js and Corepack, build the assets once, then start the server.
 
@@ -52,7 +52,6 @@ The development frontend runs at `http://127.0.0.1:7987/`. Start its gateway wit
 
 Enter `/update` in the Web app or TUI to check for stable releases on PyPI. In the Web app, you can also choose **Settings → About → Check for updates**. If a systemd user service manages the installation, choose Install and confirm the target version to start the upgrade. Connected clients briefly disconnect during the restart. See the [update guide](docs/web.md#pypi-自动更新).
 
-On upgrade from 0.6.2, the first startup imports the paired Vault’s background checkpoints and keeps the originals for rollback. A conflict or an unknown owner stops startup and preserves the files. [Upgrade and recovery](docs/vault-v2.md#runtime-与恢复)
 
 `syvrio update` shows progress as it downloads, verifies, installs dependencies and restarts the service. Downloads show a percentage when the size is known. The interactive terminal shows elapsed time while it waits. Updates started from the Web app or TUI also report progress in the update panel.
 
@@ -75,7 +74,7 @@ For example, set `default_limit = 15` under `[retrieval]` in `memory.toml` to re
 
 Dream has its own `[dream].context_window` in `memory.toml`, defaulting to 200,000 tokens. It generates the profile first, then proposes inferences. Each stage sends all its evidence in one request when its input and output allowance fit. Larger inputs resume in batches. A smaller advertised model window takes precedence.
 
-A model change takes effect on the next Dream request. After a failure, switch models and run `/dream run` to resume from the last saved position. Changes to the underlying facts or confirmed inferences cause Dream to rebuild the profile from the updated evidence.
+A model change takes effect on the next Dream request. After a failure, switch models and run `/dream run` to resume from the last saved position using the same evidence version. Facts and inferences that change during the run enter the next run.
 
 For a nondefault directory, set `SYVRIO_CONFIG` to the entry or place the group files under `~/.syvrio/` with `config.toml` as the entry. Removing an override or an optional group file restores the corresponding defaults on the next load. A missing explicitly selected entry stops startup. Repair the installation if a packaged defaults file is missing.
 
@@ -90,20 +89,22 @@ Each outgoing message keeps its delivery ID across retries. The web app retains 
 - **Sending and undoing.** In the browser, Send becomes Stop in the same position while a reply is in progress. Press Enter during a reply to queue a message for the end of the turn. Ctrl+Enter requests insertion at a safe point in the current turn. Tool calls must finish before insertion. `/undo` interrupts the latest turn, restores eligible local file changes and puts the sent text back in the composer. In the browser, hover over the latest user message to undo or edit and resend it. The edit replaces the original turn when it is saved. If saving fails, the original messages, attachments and memory changes remain available. You can revise or retry the draft after refreshing. Later edits or references from another session can block the entire undo.
 - **Documents and images.** Click the circular **+** inside the web composer or press **Ctrl+O** in the TUI to attach local files. Each message supports up to eight files, 20 MiB per file and 40 MiB in total. Models can read documents. Vision-capable models can also analyze PNG, JPEG, WebP and GIF images. The `/import` chat command opens the same local file picker as **+**. Selected files stay in the draft until you press Send or Enter. The model can then read or summarize the files, or save facts when you ask it to.
 - **Sessions and models.** Browse and manage conversations with `/sessions`. After the first complete exchange, the model suggests a short title in the language of the conversation. Edit the title in the Web header or use `/rename`. Titles can contain up to 80 characters. Longer titles prompt you to revise them. While a reply is streaming, use `/model` to select a model, `/think` to choose the reasoning level, and `/context` to set the context window. Both the TUI and Web can select from the full provider model catalog. File memory extraction and replies after tool calls use the model selected when the turn began. Queued messages use the latest settings when their turn starts. Expand reasoning and tool details in the conversation. Type `/` to see the available commands.
-- **Context compaction.** New messages, follow-ups after tool calls, and `/compact` use the same threshold. File reads return the full text by default and accept an optional offset and length. Tool results are recorded in full and sent to the model intact below the threshold. The estimate counts only the reasoning history the active model can replay. When estimated input reaches 80% of the available input budget (the default), completed conversation history and tool results since the previous summary are folded into the summary. The input budget reserves room for the model's output. The original messages remain in the session JSONL. Background distillation processes each original user message, checks evidence in batches when it exceeds the model window, and commits its progress with the facts it saved. Switching sessions, exiting or restarting the backend can resume unfinished work.
+- **Context compaction.** New messages, follow-ups after tool calls, and `/compact` use the same threshold. File reads return the full text by default and accept an optional offset and length. Tool results are recorded in full and sent to the model intact below the threshold. The estimate counts only the reasoning history the active model can replay. When estimated input reaches 80% of the available input budget (the default), completed conversation history and tool results since the previous summary are folded into the summary. The input budget reserves room for the model's output. The original messages remain in SQLite as session events. Background distillation processes each original user message, checks evidence in batches when it exceeds the model window, and commits its progress with the facts it saved. Switching sessions, exiting or restarting the backend can resume unfinished work.
 
 ## Memory, review and profiles
 
-Formal memories are Markdown entries organized by topic. Each has a stable ID, text, topic and status. Optional context covers event date, validity dates, location and feelings, including separate wording for the event and for later recollection. Dates retain the stated precision of year, month or day. A chat-derived entry links to its source session and user message. By default, `recall` returns up to 10 formal facts. Use `limit` to choose a different count. Results can be filtered by date range, location and emotion.
+Formal memories are SQLite records organized by topic. Each has a stable ID, text, topic and status. Optional context covers event date, validity dates, location and feelings, including separate wording for the event and for later recollection. Dates retain the stated precision of year, month or day. A chat-derived entry links to its source session and user message. By default, `recall` returns up to 10 formal facts. Use `limit` to choose a different count. Results can be filtered by date range, location and emotion.
 
 | Action | Result |
 | --- | --- |
-| Record and manage a fact | `memorize` saves a fact. `correct` corrects an error. `transition` records a change over time. `deprecate` retires a fact while retaining its history. |
+| Record and manage a fact | `memorize` saves a fact. `correct` revises the same fact and keeps its earlier versions. `transition` records a change over time. `deprecate` retires a fact while retaining its history. |
 | `/pending` | Open Pending in the upper right of the web app. Search by topic, text or ID. `/pending edit <id>` opens the full text. Saving the original wording requires choosing Save unchanged. Edited facts can receive context from their trusted source in the background. |
 | `/inferences` | Scroll the full list, filter by status, and search by text, category or ID. Confirmed inferences are stored separately from formal facts. |
 | `/profile` | Read the most recently published full profile. |
-| `/topics` | Browse topics by category and filter by title or path. Open a topic to read its active entries. Returning to the list restores your filter and position. |
+| `/topics` | Browse and search active memory text across topics or within one topic. Results are paginated. Add memories or edit their text and confirm before saving. In inference details, **Compare sources** shows the cited and current version of each source. |
 | `/dream` | Alias for `/dream run`. Confirm to let the backend schedule profile updates and generate hypotheses for review. Use `/dream status` to see progress, retries or failures. |
+
+Each chat memory proposal has its own ID. After reviewing the retrieved evidence, the model can decide several proposals together, save facts, queue questions for review, or skip them. Retrying returns the existing status or receipt.
 
 A model proposes a pending item when a question still needs the user's decision after reviewing recalled facts and active candidates. Invalid input such as credentials is blocked at write time. Deprecation preserves memory IDs. An undo of the latest turn can restore the previous files, including removal of a newly created ID, after checking for intervening changes and references.
 
@@ -137,24 +138,15 @@ The MCP server exposes recall, topic reading, recording, correction, transitions
 
 ## Vault and backups
 
-On desktop, drag the sidebar’s right edge to resize it, or double-click to restore its default width. The browser remembers your choice.
+Each deployment stores its conversations, facts, candidates, inferences, published profile, jobs and undo records in `Vault/syvrio.sqlite3`. The same database stores search provider pauses and local Git sync state. Vector embeddings and web search results are cached separately in `Runtime/cache/vectors.sqlite3` and `Runtime/cache/web-search.sqlite3`. Uploaded originals are addressed by SHA-256 under `Vault/attachments/objects/`. Archived conversations remain available in Archive. A fact that cites a conversation prevents permanent deletion.
 
-Click the magnifying glass beside the sidebar logo to search chat titles and messages. Results appear in place of the chat list after you pause typing, or immediately on Enter. Click a result to open its conversation. Selecting a result keeps the query. Click outside the search or press Esc to close it and return to the conversation list. The agent uses the same case-insensitive search through `search_chats` for other conversations. Archived chats, undone turns, reasoning and tool records are excluded. In Pending, expand **View evidence** to read the original user message, its conversation and timestamp, and any related memories.
+Git operates in `Vault/export/` on Markdown and JSONL rendered from a single committed database snapshot. Each change to a fact is recorded explicitly in its audit entry. Git uses that field to export the effective changes. After a successful `/undo`, the audit retains the original entry and its reversal, while the effective change list excludes the reverted operation. Rolled-back transactions never appear in the export. For a complete backup run `syvrio backup DEST --config CONFIG`. Restore into a new directory with `syvrio restore DEST NEW_VAULT`. Chat search and distillation indexes are created together with a new database. For a fresh installation, use an empty Vault and a dedicated Runtime. [Storage and recovery](docs/storage.md)
 
-| Data | Location |
-| --- | --- |
-| Formal memories and active candidates | `memories/<topic>.md` and `memories/pending.md` |
-| Rejected candidates, inferences and full profile | `archived/pending/rejected.md`, `inferences/<kind>/<ID>.md` and `profile.md` |
-| Sessions and formal memory changes | `sessions/YYYY/MM/<ID>.jsonl` and `records/memory-changes.jsonl` |
-| Shared original attachments | `attachments/`, excluded from Vault Git sync |
-
-Confirming the conversation in the sidebar archive dialog moves it into `archived/sessions/YYYY/MM/<id>.jsonl`. Open Archive at the bottom of the sidebar to read, restore or explicitly confirm permanent deletion. Retrieval, background jobs and managed Git sync exclude the entire `archived/` tree. Attachment verification covers both active and archived conversations. Copy the complete Vault when moving it to preserve archived files and original attachments. Permanent session deletion lists related candidates and, when confirmed, removes them and the session’s attachment references. Identical uploads share one stored original, which is removed when its last reference is deleted. Each message retains its own filename. A reference from formal memory blocks deletion. Indexes, locks and background jobs live in a separate Runtime directory. The resident backend acquires the Vault lease before it recovers transactions and interrupted attachment deletions. The Vault module initializes the README and SOUL files. Sessions share one Vault Git service for local commits, pushes and scheduled synchronization. [Vault format](docs/vault-v2.md)
-
-The CLI supports `syvrio sessions --archived`, `--archive ID`, `--restore ID` and `--delete-permanently ID`.
+In the Web sidebar, use the magnifying glass beside the logo to search, then click a title or message result to open its conversation. Selecting a result keeps the query. Click outside the search or press Esc to close it and return to the conversation list.
 
 ## Configuration and Git
 
-Use `syvrio setup` to configure the model and API base URL. The wizard and `/think` share the active model’s reasoning choices, using provider-declared levels when available and protocol presets otherwise. `SYVRIO_CONFIG` selects the entry configuration file and `SYVRIO_RUNTIME` selects its paired Runtime. When the configuration omits `vault`, `SYVRIO_VAULT` supplies the deployment default. Retrieval supports keywords, local embeddings and embedding APIs. An optional `SOUL.md` holds a user-written assistant persona. For a Vault with a Git remote, `/git` shows status and synchronization actions. Back up attachments separately. Model-generated commit summaries include the file statistics. If a diff exceeds the model window, the summary uses excerpts from individual files so smaller changes later in the diff remain visible.
+Use `syvrio setup` to configure the model and API base URL. The wizard and `/think` share the active model’s reasoning choices, using provider-declared levels when available and protocol presets otherwise. `SYVRIO_CONFIG` selects the entry configuration file and `SYVRIO_RUNTIME` selects its paired Runtime. When the configuration omits `vault`, `SYVRIO_VAULT` supplies the deployment default. Retrieval supports keywords, local embeddings and embedding APIs. An optional `SOUL.md` holds a user-written assistant persona. For a Vault with a Git remote, `/git` shows status and synchronization actions. Complete backups include referenced originals. Model-generated commit summaries include the file statistics. If a diff exceeds the model window, the summary uses excerpts from individual files so smaller changes later in the diff remain visible.
 
 For Qianwen AI Platform pay-as-you-go, open **Settings → Providers → 千问 AI 平台** and select **Add key**. Open **Model**, refresh the catalog, then search by name and select a model. Terminal users can save the key with `syvrio setup`. Syvrio stores Qianwen and Bailian credentials separately. [Qianwen API key guide](https://platform.qianwenai.com/docs/api-reference/preparation/api-key)
 
@@ -186,7 +178,7 @@ providers = ["parallel_mcp", "anysearch", "open_websearch"]
 providers = ["anysearch", "parallel_mcp", "open_websearch"]
 ```
 
-Search uses the existing quality gate, fallback chain, request budget, cache and `UsageLimiter`. Each has a local default protection cap of 20 requests per day, adjustable through `[search.usage_limits.<provider>]`; 0 means unlimited. These values are local request protection, not vendor free-tier entitlements or billing caps, and a configured key may incur vendor-side charges. Authentication failures (401/403) are reported explicitly and fall back to the next provider; the key is never silently dropped to retry anonymously. Search and Fetch share the vendor counter. When the vendor reports exhausted quota, Syvrio pauses it and tries the next configured Fetch provider.
+AnySearch and Parallel MCP searches use the same quality checks, fallback rules, per-search request budget and cache as other providers. On an authentication failure (401/403), the router reports the error and follows the configured fallback order.
 
 - **AnySearch Fetch** posts the URL to the [Extract API](https://www.anysearch.com/docs/api-endpoints/v1-extract) at `https://api.anysearch.com/v1/extract`, extracts `data.content`, and strips HTML.
 - **Parallel Fetch** calls `web_fetch` through [Parallel MCP 2.0](https://docs.parallel.ai/integrations/mcp/quickstart) at `https://mcp.parallel.ai/mcp`. It requests Markdown for one URL and the fetch router tries other providers if it receives only excerpts.
@@ -234,11 +226,11 @@ Automatic fallback: search is progressive — each request pulls more candidates
 
 The LLM may pass `providers` to the `search` call to recommend an ordered list of enabled sources, plus `strategy` to choose how the router schedules them (the same parameters are supported by Agent Function Calling and MCP):
 
-- `auto` (default): search providers in the recommended order and stop once results pass the quality gate; continue to the next provider on failure, timeout, local quota exhaustion, or weak quality. After the list is exhausted, remaining configured providers may still be used as fallback.
+- `auto` (default): search providers in the recommended order and stop once results pass the quality gate; continue to the next provider on failure, timeout, a provider pause, or weak quality. After the list is exhausted, remaining configured providers may still be used as fallback.
 - `compare`: for fresh news or important facts that benefit from cross-checking. When budget allows, it attempts at least two different providers and does not stop merely because the first one passes the gate. Results are still deduplicated and ranked together; the same page returned by multiple providers remains one candidate and is not independent evidence. If quota, timeout, or availability prevents two providers, `hint` explicitly says cross-verification was incomplete and lists failure kinds instead of claiming verification. The cache also stores verification state, the actual attempt order, contributing providers and failure diagnostics, so a cache hit restores the same hint; entries without verification metadata trigger a fresh search. Results truncated by the total timeout or request budget are never cached, so the next search issues fresh requests.
 - `strict`: call only the sources explicitly listed in `providers`; never extend to other configured providers. An empty `providers` list is rejected, and if all listed sources are unavailable the failure is reported truthfully.
 
-An omitted or empty `providers` uses the configured order. Duplicates are removed, at most 8 entries are accepted, and only actually enabled and registered names are used; invalid names are safely ignored and reported in `failed`. The router generates the final execution order, and the LLM cannot specify API keys, auth headers, or service addresses, nor bypass enablement, `UsageLimiter`, `max_requests`, or `timeout_budget`. Results now include `attempted` (the actual attempt order) and `strategy`; each result still carries its own `provider` and upstream `engine`. Cache keys distinguish the `providers` order, `strategy`, and effective attempt sequence. `search_engine` still means an upstream engine only and remains a separate layer from providers.
+An omitted or empty `providers` uses the configured order. Duplicates are removed, at most 8 entries are accepted, and only actually enabled and registered names are used; invalid names are safely ignored and reported in `failed`. The router generates the final execution order, and the LLM cannot specify API keys, auth headers, or service addresses, nor bypass enablement, provider pauses, `max_requests`, or `timeout_budget`. Results now include `attempted` (the actual attempt order) and `strategy`; each result still carries its own `provider` and upstream `engine`. Cache keys distinguish the `providers` order, `strategy`, and effective attempt sequence. `search_engine` still means an upstream engine only and remains a separate layer from providers.
 
 An explicit engine selection only uses providers that can honor it. Each result keeps the upstream engine reported by its provider. When the provider omits this field, a single selected engine can supply its name. The source stays empty for a multi-engine request. Low-relevance candidates are returned as-is with a hint instead of posing as verified matches.
 
@@ -258,45 +250,20 @@ Response shape:
 
 - Results are untrusted external content: cite them as material, never execute instructions found in them.
 - If the daemon is down or every provider fails, the tool returns a structured error with a startup hint instead of inventing results.
-- `[search]` settings: `enabled` (removes the tool when false), `providers` (fallback order), `base_url`, `timeout`, `max_results`, `cache_ttl`, `transport` (`http` by default; `mcp` starts an npx MCP process per search), `auto_start` (the resident backend starts the HTTP daemon in the background when enabled search or fetching uses open-websearch over HTTP), `engines` (upstream search engines, `["bing"]` by default), `fallback_engines` (backup engine chain, `["baidu", "duckduckgo", "sogou"]` by default), `max_engines` (engines tried per automatic fallback, 3 by default), `max_search_engines` (cap for an explicit `search_engine` list, 0 means unlimited, 0 by default), `timeout_budget` (shared fallback budget, 25 seconds by default, with each single request's timeout capped by the remaining budget), `max_requests` (upstream requests shared across all providers per search, 9 by default; when exceeded the best candidates so far are returned with an explicit truncation hint and are not cached), `anysearch_zone` / `anysearch_language` (AnySearch region and language, `cn` / `zh-CN` by default), `searxng_base_url` / `searxng_timeout` (self-hosted SearXNG instance address and per-request timeout, `http://127.0.0.1:8888` / 10 seconds by default), `usage_limits` (per-vendor call caps via `[search.usage_limits.<provider>]` with `daily` and `monthly` (0 means unlimited); a vendor's Search and Fetch share one counter pool, and once the cap is hit that vendor is skipped while fallback continues normally; counters persist in `runtime/state/usage.json` outside the Vault — **local counts are not the vendor's actual billing cap**), and `fetch_timeout` (separate timeout for fetching page text, 45 seconds by default). `syvrio setup` manages both periods and official quota pauses.
+- `[search]` settings: `enabled` (removes the tool when false), `providers` (fallback order), `base_url`, `timeout`, `max_results`, `cache_ttl`, `transport` (`http` by default; `mcp` starts an npx MCP process per search), `auto_start` (the resident backend starts the HTTP daemon in the background when enabled search or fetching uses open-websearch over HTTP), `engines` (upstream search engines, `["bing"]` by default), `fallback_engines` (backup engine chain, `["baidu", "duckduckgo", "sogou"]` by default), `max_engines` (engines tried per automatic fallback, 3 by default), `max_search_engines` (cap for an explicit `search_engine` list, 0 means unlimited, 0 by default), `timeout_budget` (shared fallback budget, 25 seconds by default, with each single request's timeout capped by the remaining budget), `max_requests` (upstream requests shared across all providers per search, 9 by default; when exceeded the best candidates so far are returned with an explicit truncation hint and are not cached), `anysearch_zone` / `anysearch_language` (AnySearch region and language, `cn` / `zh-CN` by default), `searxng_base_url` / `searxng_timeout` (self-hosted SearXNG instance address and per-request timeout, `http://127.0.0.1:8888` / 10 seconds by default), and `fetch_timeout` (separate timeout for fetching page text, 45 seconds by default).
 
 Controlled real-network smoke test: `scripts/smoke_search_apis.py` by default only performs local checks (key readability, whether each vendor would register; anonymous providers are marked registrable without a key) and never sends a request; adding `--provider <vendor> --operation search|fetch --live` sends at most `--max-requests` (default 1, cap 10) real requests to a single vendor and prints a desensitized report (success, result count or content length, error kind, duration and unverified fields). The script reads keys from the credential store and reports only the check results. Page fetching is controlled by a separate `[fetch]` section: `providers` is the fetch provider order (`["open_websearch"]` by default), independent of the search provider order; official vendors with a configured key (tavily / exa / you / volcengine) join fetching only once listed here.
 - A daemon started by `auto_start` has no visible console window on Windows and stays resident for reuse after the TUI exits.
-- Search results are cached in `runtime/cache/search/search-cache.json` as derived data that can be deleted. Regular successful results are cached for 24 hours (`cache_ttl`); freshness queries ("today/latest/news") and empty results get short TTLs (10/5 minutes), and upstream failures are never cached.
+- Web search results are cached in `Runtime/cache/web-search.sqlite3`. Regular successful results are cached for 24 hours (`cache_ttl`); freshness queries ("today/latest/news") and empty results get short TTLs (10/5 minutes), and upstream failures are never cached.
 
 
 Fetching independently follows `[fetch].providers`. Official fetch adapters and open-websearch use `search.fetch_timeout`; search uses `search.timeout`. Only open-websearch fetching requires HTTP transport; configured official fetch adapters are independent of that transport.
 
-### Local search API limits and official quota pauses
+### Search provider pauses and recovery
 
-These runtime request-count protection defaults also apply when providers are enabled by editing TOML. They are not vendor free-tier or billing entitlements.
+When a provider reports an exhausted quota, insufficient balance or a spending limit, Syvrio pauses it if the adapter recognizes the error. Search and Fetch share the pause across restarts and follow their own fallback policies. Chat tools and MCP search return the affected provider names in `quota_exhausted`. The model is asked to mention these providers briefly even when another provider succeeds. Cached search results remain available. Ordinary rate limits, timeouts, server errors and authentication failures apply to the current request.
 
-| Provider | Daily | Monthly |
-| --- | ---: | ---: |
-| baidu_search | 50 | 0 |
-| tavily | 0 | 800 |
-| exa | 0 | 1000 |
-| you | 0 | 1500 |
-| volcengine | 0 | 450 |
-| anysearch | 20 | 0 |
-| parallel_mcp | 20 | 0 |
-| searxng | 0 | 0 |
-| open_websearch | 0 | 0 |
-
-Use `daily` / `monthly` under `[search.usage_limits.<provider>]` to override defaults. Explicit zero disables that period's cap. Either exhausted period blocks dispatch. Search and Fetch share counts; cache hits are free of local charges; dispatched search failures count conservatively, while a failed fetch (no page content returned) releases its pre-charged count. Local calendar days/months use the runtime machine's timezone. State persists in `runtime/state/usage.json`; check-and-count is synchronized within one process, without a strict cross-process guarantee.
-
-```toml
-[search.usage_limits.tavily]
-daily = 0
-monthly = 800
-```
-
-Each provider stores the calendar window and count under `daily` and `monthly`. A vendor pause is stored under `paused`. Tavily Credits, Exa dollar credits and You.com balances are not interchangeable with request counts: balances may run out, or charges may accrue, before the local limit.
-
-In `syvrio setup`, select search/fetch setup then quota and official-pause management to view defaults, effective limits, tracked usage, remaining counts and pause reasons; edit both caps (0 means unlimited), restore defaults, or clear an official pause without resetting counters. Enabling a provider no longer assigns a universal daily cap of 20.
-
-Only documented official quota/balance/spending-limit errors persist a pause. Ordinary rate limits, timeouts, 5xx and authentication failures do not. Local-limit and official-pause reasons differ; automatic fallback continues, while explicit provider selection never silently substitutes another provider. Cached results remain available. A pause expires automatically only with a reliable recovery timestamp. The checked vendor documents do not establish exact reset instants/timezones for these account errors, so current recognized errors require manual recovery rather than guessed calendar resets.
-
+Search and Fetch can retry once a provider-supplied recovery time has passed. After adding credits or changing plans, you can also open the search and fetch settings in `syvrio setup` to see the pause reason and resume the provider manually. The provider account controls free allowances, overage charges and spending limits.
 
 ## Development and verification
 

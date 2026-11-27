@@ -2,22 +2,17 @@
 
 from __future__ import annotations
 
-import hashlib
-import os
 from pathlib import Path
 
 from ..infra.storage.locking import VaultLock, client_instance_lock
-from ..infra.storage.paths import syvrio_home
 
 
 def physical_vault_lock(vault: Path) -> VaultLock:
     """按物理目录标识复用后端和离线核验的独占权。"""
-    vault = vault.resolve()
-    stat = vault.stat()
-    # 指向同一 Vault 的重命名目录、目录联接和符号链接共用同一标识。
-    identity = f"{stat.st_dev}:{stat.st_ino}" if stat.st_ino else os.path.normcase(str(vault))
-    key = hashlib.sha256(os.fsencode(identity)).hexdigest()
-    return VaultLock(syvrio_home() / "owners" / (key + ".lock"))
+    path = vault.resolve() / ".backend.lock"
+    if path.is_symlink():
+        raise ValueError("Invalid backend ownership lock.")
+    return VaultLock(path)
 
 
 class BackendLease:

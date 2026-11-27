@@ -82,7 +82,9 @@ def test_import_is_preview_by_default_and_reports_remaining_chunks(service, tmp_
 
 def test_tool_registration_is_scoped_to_current_turn(service, tmp_path):
     session = SessionStore(service.config.vault).create()
-    assert "read_file" not in build_tools(service, session)._tools
-    tools = build_tools(service, session, file_paths=[tmp_path / "synthetic.txt"])
+    assert "read_file" not in build_tools(service, session, config=service.config)._tools
+    tools = build_tools(
+        service, session, config=service.config, file_paths=[tmp_path / "synthetic.txt"]
+    )
     assert tools._tools["import_file"].mutating
     assert not tools.execute("read_file", {"path": str(tmp_path / "not-granted.txt")}).ok

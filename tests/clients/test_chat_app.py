@@ -129,34 +129,49 @@ async def test_inference_screen_edit_labels_and_shortcut_letters_in_editor(resid
         assert str(screen.query_one("#inference-hint").render()) == "Ctrl+S Save · Esc Cancel"
 
 
-async def test_inference_sources_use_one_fact_scan(service, resident_backend, monkeypatch):
+async def test_inference_sources_batch_only_referenced_facts(
+    service, resident_backend, monkeypatch
+):
     from syvrio.app.tui.resident import ResidentChatApp
 
     _, client = resident_backend
     app = ResidentChatApp(client)
     sources = [service.note(f"合成来源 {index}") for index in range(3)]
+    service.note("未被引用的事实")
+    proposals = set()
     for index in range(6):
-        service.propose_inference(f"合成推断 {index}", [sources[index % 3].id], kind="profile")
-    calls = []
-    entries = service.store.entries
+        ids = [sources[index % 3].id, sources[(index + 1) % 3].id]
+        proposals.add(service.propose_inference(f"合成推断 {index}", ids, kind="profile").id)
+    source_text = {entry.id: entry.text for entry in sources}
+    batches = []
+    read_sources = service.store.version_texts
 
-    def counted_entries(*args, **kwargs):
-        calls.append(kwargs)
-        return entries(*args, **kwargs)
+    def observe(ids):
+        batches.append(set(ids))
+        return read_sources(ids)
 
-    monkeypatch.setattr(service.store, "entries", counted_entries)
-    monkeypatch.setattr(service.store, "find", lambda *_: pytest.fail("来源不得逐个 find 全库扫描"))
+    def unexpected(*args, **kwargs):
+        pytest.fail("来源应一次按引用 ID 批量读取，不能全表读取或逐条查询")
+
     async with app.run_test(size=(100, 30)) as pilot:
         await app.workers.wait_for_complete()
-        before = len(calls)
+        monkeypatch.setattr(service.store, "entries", unexpected)
+        monkeypatch.setattr(service.store, "find", unexpected)
+        monkeypatch.setattr(service.store, "version_texts", observe)
         screen = await _open_resident_inferences(app, pilot)
-        assert len(calls) - before == 1
-        assert calls[-1] == {"include_inactive": True}
-        source_text = {entry.id: entry.text for entry in sources}
-        selected = screen._current()
-        assert source_text[selected.source_ids[0]] in str(
-            screen.query_one("#inference-detail-sources").render()
-        )
+        visited = set()
+        for index in range(len(proposals)):
+            if index:
+                await pilot.press("down")
+                await pilot.pause()
+            selected = screen._current()
+            visited.add(selected.id)
+            detail = str(screen.query_one("#inference-detail-sources").render())
+            assert all(source_text[key] in detail for key in selected.source_ids)
+        assert visited == proposals
+        assert batches == [
+            {pair for item in service.list_inferences() for pair in item.source_versions.items()}
+        ]
 
 
 async def test_inference_edit_failure_preserves_draft_and_retries(
@@ -589,7 +604,7 @@ async def test_profile_view_keeps_published_summary_until_dream_runs(resident_ba
     from syvrio.app.tui.widgets import ProfileScreen
 
     _, client = resident_backend
-    service.profile.path.write_text("Previous profile", encoding="utf-8")
+    service.profile.publish("Previous profile", {})
     service.note("Subsequent fact", topic="preferences")
     app = ResidentChatApp(client)
     async with app.run_test() as pilot:
@@ -603,7 +618,10 @@ async def test_profile_view_keeps_published_summary_until_dream_runs(resident_ba
 
 async def test_profile_view_reports_read_failure(resident_backend, service, monkeypatch):
     _, client = resident_backend
-    service.profile.path.write_bytes(b"\xff")
+    from syvrio.infra.storage.database import transaction
+
+    with transaction(service.paths) as db:
+        db.execute("INSERT INTO profile VALUES(1, 'fixture', 'invalid JSON')")
     app = ResidentChatApp(client)
     notifications = []
     monkeypatch.setattr(app, "notify", lambda message, **kwargs: notifications.append(message))
@@ -612,7 +630,8 @@ async def test_profile_view_reports_read_failure(resident_backend, service, monk
         await pilot.pause()
         assert notifications == ["Could not read the published profile."]
         assert app.query_one("#input", Input).has_focus
-        assert service.profile.path.read_bytes() == b"\xff"
+        with transaction(service.paths, write=False) as db:
+            assert db.execute("SELECT metadata FROM profile").fetchone()[0] == "invalid JSON"
 
 
 async def test_profile_long_mixed_text_scrolls_and_resizes(resident_backend, service):
@@ -624,7 +643,7 @@ async def test_profile_long_mixed_text_scrolls_and_resizes(resident_backend, ser
         for n in range(40)
     )
     assert len(summary_text) > 2000
-    service.profile.path.write_text(summary_text, encoding="utf-8")
+    service.profile.publish(summary_text, {})
     app = ResidentChatApp(client)
     async with app.run_test(size=(120, 36)) as pilot:
         await app._command("/profile")
@@ -667,7 +686,7 @@ async def test_dream_publishes_profile_in_background(resident_backend, service, 
     async with app.run_test() as pilot:
         await app._command("/dream", confirmed=True)
         async with asyncio.timeout(8):
-            while not service.profile.path.exists():
+            while not service.profile.read_text():
                 await pilot.pause(0.05)
         assert not app.query_one("#input", Input).disabled
         assert service.profile.read_text().strip() == "Updated profile"
@@ -682,7 +701,7 @@ async def test_profile_remains_readable_while_dream_runs(resident_backend, servi
     _, client = resident_backend
     service.config.chat.default_budget = 1
     service.note("Synthetic preference", topic="preferences")
-    service.profile.path.write_text("Current profile", encoding="utf-8")
+    service.profile.publish("Current profile", {})
     started, release = threading.Event(), threading.Event()
 
     def slow_summary(_, prompt, data, schema):
@@ -1599,11 +1618,11 @@ def test_startup_commits_dirty_vault_without_crashed_sessions(service):
     owner = WebBackend(service=service)
     initialize_vault(owner.git, service.initialize_files)
     service.note("Uncommitted synthetic fact", topic="misc")
-    assert owner.git.repo.has_changes()
+    assert owner.git.is_dirty()
     owner.startup()
     try:
         assert not owner.health().busy
-        assert not owner.git.repo.has_changes()
+        assert not owner.git.is_dirty()
     finally:
         owner.shutdown()
 
@@ -1753,7 +1772,7 @@ async def test_startup_catchup_advances_crashed_session_cursor(service, monkeypa
             while sessions.load(crashed.id).undistilled_messages():
                 await asyncio.sleep(0.02)
         assert not owner.health().busy
-        assert not sessions.unconsolidated(limit=10)
+        assert not sessions.pending_sessions()
         assert calls == [message_id]
     finally:
         owner.shutdown()
@@ -1910,7 +1929,9 @@ async def test_pending_decision_keeps_tui_responsive(
         else:
             assert isinstance(app.screen, PickScreen)
             assert any("reject applied" in message for message in notifications)
-            assert item.text in service.queue.resolved_path.read_text(encoding="utf-8")
+            from tests.support.storage import rejected
+
+            assert item.id in {r.id for r in rejected(service.queue)}
         await pilot.press("escape")
         assert widget.has_focus
 
@@ -2206,9 +2227,8 @@ async def test_startup_catchup_does_not_block_switching(service, monkeypatch):
 
 async def test_transcript_replays_tool_events(resident_backend):
     # 回归：旧会话不仅回放问答正文，也要能看到当时的工具事件。
-    import json
 
-    from syvrio.agent.tools import SEARCH_NOTICE
+    from syvrio.agent.network_tools import SEARCH_NOTICE
 
     owner, client = resident_backend
     app = ResidentChatApp(client)
@@ -2634,12 +2654,11 @@ async def test_startup_compensation_runs_missed_daily_sync(service):
     service.config.git = GitConfig(auto_sync=True, sync_time="00:00")
     service.config.search.auto_start = False
     owner = WebBackend(service=service)
-    state_path = service.paths.state_dir / "git-sync.json"
     owner.startup()
     try:
         async with asyncio.timeout(8):
             while True:
-                state = json.loads(state_path.read_text()) if state_path.exists() else {}
+                state = owner.git._read_state()
                 if (
                     state.get("last_daily_blocked_date") == date.today().isoformat()
                     and not owner.git.running
@@ -2692,9 +2711,17 @@ async def test_attachment_picker_send_and_undo_through_resident(resident_backend
         await app._command("/import")
         await pilot.pause()
         assert isinstance(app.screen, AttachmentScreen)
-        app.screen.query_one(TextArea).load_text("\n".join(map(str, paths)))
+        app.screen.query_one(TextArea).load_text(str(paths[0]))
         await pilot.click("#attach-selected")
         await pilot.pause()
+        await app._command("/import")
+        await pilot.pause()
+        duplicate = tmp_path / "renamed.md"
+        duplicate.write_bytes(paths[0].read_bytes())
+        app.screen.query_one(TextArea).load_text("\n".join(map(str, (duplicate, paths[1]))))
+        await pilot.click("#attach-selected")
+        await pilot.pause()
+        assert app._uploads[app.sid] == tuple(paths)
         composer = app.query_one("#input", Input)
         composer.value = "Read both attachments"
         await pilot.press("enter")

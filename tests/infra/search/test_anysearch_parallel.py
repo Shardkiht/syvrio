@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from syvrio.infra.config import SearchConfig, UsageLimit, load_config
+from syvrio.infra.config import SearchConfig, load_config
 from syvrio.infra.search.base import (
     ProviderError,
     ProviderErrorKind,
@@ -16,7 +16,6 @@ from syvrio.infra.search.base import (
 from syvrio.infra.search.providers.anysearch import AnySearchProvider
 from syvrio.infra.search.providers.parallel_mcp import MCP_URL, ParallelMcpProvider
 from syvrio.infra.search.router import SearchRouter, build_registry
-from syvrio.infra.search.usage import UsageLimiter
 
 pytestmark = pytest.mark.search
 
@@ -153,7 +152,7 @@ class FakeClient:
     async def __aexit__(self, exc_type, exc, tb):
         self.record["closed"] = True
 
-    async def call_tool(self, name, arguments, timeout=None):
+    async def call_tool(self, name, arguments, timeout=None, raise_on_error=True):
         self.record.update(name=name, arguments=arguments, timeout=timeout)
         if self.error is not None:
             raise self.error
@@ -267,6 +266,28 @@ def test_parallel_tool_error_and_unparseable_payload():
     assert caught.value.kind is ProviderErrorKind.BAD_RESPONSE
 
 
+@pytest.mark.parametrize("transport_error", [False, True], ids=["tool-result", "transport"])
+def test_parallel_search_payment_required_reports_official_pause(transport_error):
+    detail = "HTTP 402 synthetic-private-upstream-message"
+    if transport_error:
+        request = httpx.Request("POST", MCP_URL)
+        response = httpx.Response(402, request=request)
+        provider, record = _parallel(
+            error=httpx.HTTPStatusError(detail, request=request, response=response)
+        )
+    else:
+        provider, record = _parallel(
+            SimpleNamespace(is_error=True, content=[SimpleNamespace(text=detail)])
+        )
+
+    with pytest.raises(ProviderError) as caught:
+        provider.search(SearchQuery("synthetic query"))
+    assert caught.value.kind is ProviderErrorKind.QUOTA
+    assert caught.value.pause_reason == "official_quota_exhausted"
+    assert "synthetic-private-upstream-message" not in caught.value.detail
+    assert record["closed"] is True
+
+
 def test_parallel_timeout_and_auth_errors_are_explicit():
     provider, record = _parallel(error=TimeoutError())
     with pytest.raises(ProviderError) as caught:
@@ -341,7 +362,7 @@ def test_optional_providers_use_keys_when_present(monkeypatch):
     assert set(seen) == {"ANYSEARCH_API_KEY", "PARALLEL_API_KEY"}
 
 
-def test_router_falls_back_and_usage_limit_is_local():
+def test_router_falls_back_on_auth_error():
     class Failing:
         name = "parallel_mcp"
         capabilities = {"search"}
@@ -352,10 +373,8 @@ def test_router_falls_back_and_usage_limit_is_local():
     class Working:
         name = "anysearch"
         capabilities = {"search"}
-        calls = 0
 
         def search(self, query):
-            type(self).calls += 1
             return [
                 SearchResult(
                     "Synthetic query", "https://example.com", "synthetic", provider="anysearch"
@@ -371,20 +390,6 @@ def test_router_falls_back_and_usage_limit_is_local():
     assert outcome.results[0].provider == "anysearch"
     assert outcome.failed[0].kind == "auth"
 
-    Working.calls = 0
-    limiter = UsageLimiter({"anysearch": UsageLimit(daily=1)})
-    limited = SearchRouter(
-        {"anysearch": Working()},
-        order=["anysearch"],
-        usage_limiter=limiter,
-    )
-    assert limited.search(SearchQuery("synthetic query")).results
-    assert Working.calls == 1
-    blocked = limited.search(SearchQuery("synthetic query"))
-    assert blocked.results == []
-    assert blocked.failed[0].kind == "quota"
-    assert Working.calls == 1
-
 
 def test_config_roundtrip_keeps_anysearch_options(tmp_path):
     path = tmp_path / "config.toml"
@@ -395,5 +400,3 @@ def test_config_roundtrip_keeps_anysearch_options(tmp_path):
     config = load_config(path)
     assert config.search.anysearch_zone == "us"
     assert config.search.anysearch_language == "en-US"
-    assert config.search.usage_limits["anysearch"].daily == 20
-    assert config.search.usage_limits["parallel_mcp"].daily == 20

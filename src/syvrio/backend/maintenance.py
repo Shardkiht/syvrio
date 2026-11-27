@@ -15,12 +15,12 @@ from ..infra.config import (
 from ..infra.config.files import ConfigFiles
 from ..infra.errors import SyvrioError
 from ..infra.storage import paths as local_paths
-from ..infra.storage.locking import LockTimeout, vault_write_lock
+from ..infra.storage.database import database_path
+from ..infra.storage.locking import LockTimeout
 from ..infra.storage.paths import SyvrioPaths, runtime_path
 from ..infra.vault.files import initialize_vault as provision_vault
 from ..infra.vault.sync import GitSyncService
 from .ownership import BackendLease, physical_vault_lock
-from .updates.runtime_layout import prepare_runtime_upgrade
 
 
 class MaintenanceError(SyvrioError, ValueError):
@@ -29,9 +29,7 @@ class MaintenanceError(SyvrioError, ValueError):
 
 def prepare_vault_runtime(paths: SyvrioPaths) -> None:
     """调用方持有后端租约，在写入前核对部署目录并恢复未完成的事务。"""
-    with vault_write_lock(paths):
-        paths.bind()
-        prepare_runtime_upgrade(paths)
+    paths.bind()
 
 
 def initialize_owned_vault(
@@ -41,7 +39,12 @@ def initialize_owned_vault(
     from ..memory.service import MemoryService
 
     vault = config.vault
-    if vault.exists() and any(vault.iterdir()) and not (vault / ".git").exists() and not force:
+    if (
+        vault.exists()
+        and any(p.name != ".backend.lock" for p in vault.iterdir())
+        and not database_path(config.paths(config_path)).is_file()
+        and not force
+    ):
         raise MaintenanceError(f"{vault} 非空且不是 Syvrio 记忆库；确认无误后加 --force。")
     paths = config.paths(config_path)
     prepare_vault_runtime(paths)
@@ -115,7 +118,7 @@ def verify_local_attachments(vault: Path) -> tuple[int, list[str]]:
         checked, errors = client.call("verify_attachments")
         return checked, errors
     try:
-        return SessionQuery(vault, offline=True).verify_attachments()
+        return SessionQuery(vault).verify_attachments()
     finally:
         lock.release()
 
@@ -132,3 +135,16 @@ def update_managed(on_progress) -> str:
             f"更新配置缺失（{root / 'config.toml'}），请先按 Web 文档配置受管理的服务。"
         ) from exc
     return update(root, *options, prepare_restart=prepare_restart, on_progress=on_progress)
+
+
+def backup_database(config_path, destination):
+    from ..infra.storage.backup import assemble
+
+    with configured_maintenance(config_path) as (config, _):
+        return assemble(config.vault, destination)
+
+
+def restore_database(source, destination):
+    from ..infra.storage.backup import assemble
+
+    return assemble(source, destination, restore=True)

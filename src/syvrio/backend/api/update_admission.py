@@ -1,67 +1,25 @@
-"""在检查空闲状态与停止网页服务之间预留独占时段。"""
+"""升级交接期间拦截新的写请求。"""
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from threading import Lock
-
 from fastapi import FastAPI, Request
 
-from ...infra.storage.locking import LockTimeout, VaultLock
-from ...infra.storage.paths import syvrio_home
-from .channel import APIError
+from ..updates.activity import ResidentActivity
 from .http import STATE_MODIFYING, error_response
 
 
-class UpdateAdmission:
-    def __init__(self, app: FastAPI, busy: Callable[[], bool]):
-        self._lock = Lock()
-        self._writes = 0
-        self._ticket = ""
-        self._busy = busy
-        app.middleware("http")(self.guard)
-
-    def _reserved(self) -> bool:
-        if self._ticket:
-            # 工作进程在切换或回滚完成前持有这把系统锁。
-            # 即使进程被终止，系统也会释放锁，客户端可以继续操作。
-            update_lock = VaultLock(syvrio_home() / "update" / "update.lock")
-            try:
-                update_lock.acquire(timeout=0)
-            except LockTimeout:
-                return True
-            update_lock.release()
-            self._ticket = ""
-        return False
-
-    def reserve(self, ticket: str) -> None:
-        with self._lock:
-            if self._reserved() or self._writes or self._busy():
-                raise APIError(
-                    "update_busy", "Wait for active work to finish before updating.", 409
-                )
-            self._ticket = ticket
-
-    def release(self, ticket: str) -> None:
-        with self._lock:
-            if self._ticket == ticket:
-                self._ticket = ""
-
-    async def guard(self, request: Request, call_next):
+def guard_update_writes(app: FastAPI, activity: ResidentActivity) -> None:
+    @app.middleware("http")
+    async def guard(request: Request, call_next):
         if request.method not in STATE_MODIFYING or request.url.path in {
             "/api/resident/update_drain",
             "/api/resident/update_resume",
             "/api/resident/shutdown",
         }:
             return await call_next(request)
-        with self._lock:
-            if self._reserved():
+        with activity.work(background=False) as admitted:
+            if not admitted:
                 return error_response(
                     "update_busy", "The service is restarting for an update.", 409
                 )
-            self._writes += 1
-        try:
             return await call_next(request)
-        finally:
-            with self._lock:
-                self._writes -= 1

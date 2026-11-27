@@ -5,7 +5,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from syvrio.infra.config import SearchConfig, UsageLimit
+from syvrio.infra.config import SearchConfig
 from syvrio.infra.search.base import (
     ProviderError,
     ProviderErrorKind,
@@ -271,7 +271,6 @@ def test_registry_registers_searxng_without_key_and_defaults():
     assert isinstance(registry["searxng"], SearxngProvider)
     assert config.searxng_base_url == "http://127.0.0.1:8888"
     assert config.searxng_timeout == 10.0
-    assert config.usage_limits["searxng"] == UsageLimit(0, 0)
 
 
 class _NamedProvider:

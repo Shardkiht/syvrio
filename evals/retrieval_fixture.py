@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import json
 import platform
-from collections import defaultdict
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from importlib.metadata import version
 from unittest.mock import patch
 
 from syvrio.infra.llm.tokens import estimate_tokens
-from syvrio.memory.schema import Core, render_record
+from syvrio.infra.storage.database import transaction
+from syvrio.infra.time import parse_timestamp
 from syvrio.memory.service import MemoryService
 
 if __package__:
@@ -44,18 +44,14 @@ def seed(service: MemoryService, corpus: list[dict]) -> list[str]:
         set(ids)
     ) != len(ids):
         raise ValueError("Frozen corpus IDs must be unique nonempty strings.")
-    by_topic = defaultdict(list)
-    for key, item in zip(ids, corpus, strict=True):
-        record = render_record(
-            Core(id=key, status="active", text=item["text"]),
-            extensions=[("recorded_at", "2024-01-01T00:00:00Z")],
-        )
-        by_topic[item["category"]].append(record)
-    for category, records in by_topic.items():
-        path = service.store.topic_path(category)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("x", encoding="utf-8") as stream:
-            stream.write(f"# {category}\n\n" + "\n".join(records))
+    with transaction(service.paths):
+        for key, item in zip(ids, corpus, strict=True):
+            service.store.append(
+                item["category"],
+                item["text"],
+                entry_id=key,
+                when=parse_timestamp("2024-01-01T00:00:00Z"),
+            )
     entries = service.current_facts()
     if len(entries) != len(ids) or {e.id for e in entries} != set(ids):
         raise ValueError("The loaded Vault does not match the frozen corpus IDs.")

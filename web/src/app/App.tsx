@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { CommandPalette, CommandResultDialog, ConfirmDialog, SessionCommandDialog } from '../features/commands/CommandUI';
 import { Composer, type ComposerDraft } from '../features/chat/Composer';
 import type { MeterReading } from '../features/chat/ContextMeter';
-import { CommandsIcon, InboxIcon, PanelIcon, SettingsIcon } from '../shared/Icons';
+import { CommandsIcon, FileIcon, InboxIcon, PanelIcon, SettingsIcon } from '../shared/Icons';
 import { RecoveredEdit } from '../features/chat/MessageActions';
 import { MessageList } from '../features/chat/MessageList';
 import { PendingReview } from '../features/commands/PendingReview';
@@ -217,6 +217,8 @@ export default function App() {
               </div>
             </div>
             <div className="topbar-actions">
+              <button type="button" className="icon-button" aria-haspopup="dialog" aria-label="Browse memories"
+                title="Browse memories" onClick={() => void runCommand('/topics')}><FileIcon size={22} /></button>
               <button
                 type="button"
                 className="icon-button commands-toggle"
@@ -275,6 +277,7 @@ export default function App() {
               checkingSelection={checkingSelection}
               onSendAfterSelection={sendAfterSelection}
               pickerRef={picker}
+              attachmentPolicy={health?.attachment_policy}
               openFiles={openFiles}
               busy={chat.busy}
               progress={chat.progress}
@@ -376,16 +379,11 @@ export default function App() {
             onResolve={(action, id, text) => reviewMemory(panel.kind, action, id, text)}
             onClose={closeDialog} />
         ) : 'kind' in panel && panel.kind === 'topics' ? (
-          <TopicBrowser key="topics" initialTopics={panel.topics} initialDocument={panel.document}
+          <TopicBrowser key={panel.topic ?? 'topics'} initialTopics={panel.topics} initialTopic={panel.topic ?? panel.document?.topic}
             readTopics={async () => {
               const list = await readTopicPanel('/topics', null);
               if (!list.topics) throw new Error('The topic list is unavailable.');
               return list.topics;
-            }}
-            readTopic={async topic => {
-              const detail = await readTopicPanel(`/topics ${topic}`, null);
-              if (!detail.document) throw new Error('This topic is unavailable.');
-              return detail.document;
             }}
             onClose={closeDialog} />
         ) : 'kind' in panel && panel.kind === 'dream' ? (

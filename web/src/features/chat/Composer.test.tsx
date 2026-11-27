@@ -1,5 +1,6 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
+import { testAttachmentPolicy } from '../../test/attachmentPolicy';
 import { Composer } from './Composer';
 
 function renderComposer() {
@@ -79,7 +80,7 @@ it('previews draft images locally and releases their URLs when removed or sent',
   vi.stubGlobal('URL', PreviewURL);
   try {
     const onSend = vi.fn();
-    render(<Composer busy={false} progress="" onSend={onSend} onStop={() => {}} />);
+    render(<Composer attachmentPolicy={testAttachmentPolicy} busy={false} progress="" onSend={onSend} onStop={() => {}} />);
     const png = new File(['a'], 'one.png', { type: 'image/png' });
     const gif = new File(['b'], 'two.gif');
     const note = new File(['c'], 'notes.txt');
@@ -104,7 +105,7 @@ it('previews draft images locally and releases their URLs when removed or sent',
 
 it('pastes files and clipboard images into the draft and leaves plain text to the browser', async () => {
   const onSend = vi.fn();
-  render(<Composer busy={false} progress="" onSend={onSend} onStop={() => {}} />);
+  render(<Composer attachmentPolicy={testAttachmentPolicy} busy={false} progress="" onSend={onSend} onStop={() => {}} />);
   const input = screen.getByRole('textbox', { name: 'Message' });
   expect(fireEvent.paste(input, { clipboardData: { files: [], items: [{ kind: 'string' }] } })).toBe(true);
   const note = new File(['first'], 'report.txt');
@@ -126,7 +127,7 @@ it('pastes files and clipboard images into the draft and leaves plain text to th
 
 it('uses the plus button to pick and send multiple attachments', async () => {
   const onSend = vi.fn();
-  render(<Composer busy={false} progress="" onSend={onSend} onStop={() => {}} />);
+  render(<Composer attachmentPolicy={testAttachmentPolicy} busy={false} progress="" onSend={onSend} onStop={() => {}} />);
   const picker = screen.getByLabelText('Select attachments') as HTMLInputElement;
   const openPicker = vi.spyOn(picker, 'click');
   fireEvent.click(screen.getByRole('button', { name: 'Attach files' }));
@@ -199,4 +200,29 @@ describe('Composer sizing', () => {
     expect(input.style.height).toBe('');
     expect(input.style.overflowY).toBe('hidden');
   });
+});
+
+it('applies the backend policy to selection and keeps previous files on an invalid addition', async () => {
+  const policy = { ...testAttachmentPolicy, extensions: ['.custom'], max_files: 2, max_file_bytes: 4, max_batch_bytes: 5 };
+  const send = vi.fn();
+  render(<Composer attachmentPolicy={policy} busy={false} progress="" onSend={send} onStop={() => {}} />);
+  const picker = screen.getByLabelText('Select attachments') as HTMLInputElement;
+  expect(picker.accept).toBe('.custom');
+  const first = new File(['aa'], 'first.custom');
+  const second = new File(['bbb'], 'second.custom');
+  const pick = (...files: File[]) => fireEvent.change(picker, { target: { files } });
+  pick(first);
+  pick(new File(['aa'], 'copy.custom'), second);
+  await screen.findByTitle(second.name);
+  for (const [file, expected] of [
+    [new File(['x'], 'wrong.txt'), /format/],
+    [new File([], 'empty.custom'), /empty/i],
+    [new File(['12345'], 'large.custom'), /at most/i],
+    [new File(['c'], 'third.custom'), /at most 2/i],
+  ] as const) {
+    pick(file);
+    expect((await screen.findByRole('alert')).textContent).toMatch(expected);
+  }
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+  expect(send).toHaveBeenCalledWith('Analyze the attached files.', [first, second]);
 });

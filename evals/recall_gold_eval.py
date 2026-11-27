@@ -201,7 +201,7 @@ def evaluate(data_path: Path, method: str) -> dict:
                 vector.sync()
             for k in LIMITS:
                 config.retrieval.default_limit = k
-                tools = build_tools(service, SessionStore(service.paths).create())
+                tools = build_tools(service, SessionStore(service.paths).create(), config=config)
                 for row, case in zip(rows, data["cases"], strict=True):
                     hit = tool_search(tools, case["query"], texts)
                     row["runs"][str(k)] = {

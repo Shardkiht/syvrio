@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from multiprocessing import get_context
 from threading import Barrier, Event
 
 import numpy as np
@@ -13,6 +14,8 @@ from syvrio.infra.retrieval import (
     SearchHit,
     VectorRetriever,
 )
+from syvrio.infra.storage.cache_database import cache_transaction
+from syvrio.infra.storage.database import database_path, transaction
 from syvrio.infra.vault.files import initialize_vault
 from syvrio.infra.vault.sync import GitSyncService
 from syvrio.memory import service as service_module
@@ -56,6 +59,17 @@ class FakeEmbedder:
         return self._vector(text)
 
 
+def persisted_vector(store, embedder, **kwargs):
+    return VectorRetriever(
+        store, embedder, paths=store.paths, current_revision=store.revision, **kwargs
+    )
+
+
+def vector_rows(paths):
+    with cache_transaction(paths, "vectors", write=False) as db:
+        return db.execute("SELECT * FROM vectors ORDER BY memory_id,model").fetchall()
+
+
 def seeded_store(tmp_path) -> MemoryStore:
     store = MemoryStore(tmp_path)
     store.append("housing", "在找市区的房子，预算 4000 以内")
@@ -65,17 +79,17 @@ def seeded_store(tmp_path) -> MemoryStore:
 
 def test_vector_search_finds_paraphrase(tmp_path):
     store = seeded_store(tmp_path)
-    retriever = VectorRetriever(store, FakeEmbedder(GROUPS), cache_dir=store.paths.index_dir)
+    retriever = persisted_vector(store, FakeEmbedder(GROUPS))
 
     hits = retriever.search("住的地方", limit=3)
 
-    assert hits and hits[0].topic == "memories/general/housing.md"
+    assert hits and hits[0].topic == "general/housing"
 
 
 def test_incremental_sync_embeds_only_new_entries(tmp_path):
     store = seeded_store(tmp_path)
     embedder = FakeEmbedder(GROUPS)
-    retriever = VectorRetriever(store, embedder, cache_dir=store.paths.index_dir)
+    retriever = persisted_vector(store, embedder)
 
     retriever.search("房子", 3)
     assert len(embedder.passages) == 2
@@ -87,6 +101,22 @@ def test_incremental_sync_embeds_only_new_entries(tmp_path):
     assert len(embedder.passages) == 3
 
 
+def test_vector_cache_writes_only_changed_rows(tmp_path):
+    store = seeded_store(tmp_path)
+    retriever = persisted_vector(store, FakeEmbedder(GROUPS))
+    retriever.sync()
+    with cache_transaction(store.paths, "vectors") as db:
+        db.execute("CREATE TABLE updated_vectors(id TEXT)")
+        db.execute("""CREATE TRIGGER count_vector_updates AFTER UPDATE ON vectors BEGIN
+                      INSERT INTO updated_vectors VALUES(new.memory_id); END""")
+    with transaction(store.paths) as db:
+        changed = store.entries()[0]
+        db.execute("UPDATE memories SET text=text||' updated' WHERE id=?", (changed.id,))
+    retriever.sync()
+    with cache_transaction(store.paths, "vectors", write=False) as db:
+        assert [r[0] for r in db.execute("SELECT id FROM updated_vectors")] == [changed.id]
+
+
 def test_query_embedding_does_not_hold_index_lock(tmp_path):
     store = seeded_store(tmp_path)
     simultaneous = Barrier(3)
@@ -96,45 +126,34 @@ def test_query_embedding_does_not_hold_index_lock(tmp_path):
             simultaneous.wait(timeout=5)
             return super().embed_query(text)
 
-    retriever = VectorRetriever(store, ParallelEmbedder(GROUPS), cache_dir=store.paths.index_dir)
+    retriever = persisted_vector(store, ParallelEmbedder(GROUPS))
     retriever.sync()
     with ThreadPoolExecutor(max_workers=3) as pool:
         results = list(pool.map(retriever.search, ["咖啡"] * 3))
-    assert all(hits and hits[0].topic == "memories/general/preferences.md" for hits in results)
+    assert all(hits and hits[0].topic == "general/preferences" for hits in results)
 
 
-def test_repeated_embedding_input_reuses_vectors_across_topics_and_restarts(tmp_path):
-    store = MemoryStore(tmp_path)
-    first = store.append("preferences", "咖啡")
-    second = store.append("drinks", "咖啡")
-    embedder = FakeEmbedder(GROUPS)
-    retriever = VectorRetriever(store, embedder, cache_dir=store.paths.index_dir)
-    assert {hit.id for hit in retriever.search("咖啡")} == {first.id, second.id}
-    assert embedder.passages == ["咖啡"]
-
-    third = store.append("notes", "咖啡")
-    fresh = FakeEmbedder(GROUPS)
-    reopened = VectorRetriever(store, fresh, cache_dir=store.paths.index_dir)
-    assert {hit.id for hit in reopened.search("咖啡")} == {first.id, second.id, third.id}
-    assert fresh.passages == []
-
-
-def test_unavailable_vector_cache_directory_preserves_results(tmp_path):
+def test_rolled_back_recall_cannot_publish_keyword_or_vector_indexes(tmp_path):
     store = seeded_store(tmp_path)
-    blocked = tmp_path / "blocked-cache"
-    blocked.write_text("unavailable", encoding="utf-8")
-    retriever = VectorRetriever(store, FakeEmbedder(GROUPS), cache_dir=blocked)
-    assert retriever.search("住房")[0].topic == "memories/general/housing.md"
-    store.append("career", "后端工作")
-    assert retriever.search("工作")[0].topic == "memories/general/career.md"
-    assert len(retriever.embedder.passages) == 3
-    assert not retriever.degraded
+    keyword = KeywordRetriever(store)
+    vector = persisted_vector(store, FakeEmbedder(GROUPS))
+    for retriever in (keyword, vector):
+        assert retriever.search("工作") == []
+    with pytest.raises(RuntimeError, match="rollback"), transaction(store.paths):
+        temporary = store.append("career", "后端工作")
+        for retriever in (keyword, vector):
+            assert retriever.search("工作")[0].id == temporary.id
+        raise RuntimeError("rollback")
+    committed = store.append("career", "新的工作安排")
+    for retriever in (keyword, vector):
+        assert retriever.search("工作")[0].id == committed.id
+    assert temporary.id not in {r["memory_id"] for r in vector_rows(store.paths)}
 
 
 def test_concurrent_queries_share_one_complete_vector_index(tmp_path):
     store = seeded_store(tmp_path)
     embedder = FakeEmbedder(GROUPS)
-    retriever = VectorRetriever(store, embedder, cache_dir=store.paths.index_dir)
+    retriever = persisted_vector(store, embedder)
     start = Barrier(4)
 
     def search(query):
@@ -143,7 +162,7 @@ def test_concurrent_queries_share_one_complete_vector_index(tmp_path):
 
     with ThreadPoolExecutor(max_workers=4) as pool:
         topics = list(pool.map(search, ["住房", "咖啡"] * 2))
-    assert topics == ["memories/general/housing.md", "memories/general/preferences.md"] * 2
+    assert topics == ["general/housing", "general/preferences"] * 2
     assert len(embedder.passages) == 2
 
 
@@ -153,7 +172,7 @@ def test_concurrent_correction_does_not_drop_a_recalled_fact(service, mode, monk
 
     old = service.note("常喝拿铁咖啡", topic="preferences")
     keyword = KeywordRetriever(service.store)
-    vector = VectorRetriever(service.store, FakeEmbedder(GROUPS), cache_dir=service.paths.index_dir)
+    vector = persisted_vector(service.store, FakeEmbedder(GROUPS))
     service.retriever = {
         "keyword": keyword,
         "vector": vector,
@@ -183,64 +202,206 @@ def test_concurrent_correction_does_not_drop_a_recalled_fact(service, mode, monk
         assert [hit.id for hit in read.result(timeout=10)] == [old.id]
 
     if mode != "keyword":
-        with np.load(vector.cache_path, allow_pickle=False) as cached:
-            assert cached["ids"].tolist() == [new.id]
+        assert [r["memory_id"] for r in vector_rows(service.paths)] == [new.id]
     assert [hit.id for hit in service.recall("咖啡")] == [new.id]
 
 
 def test_hybrid_recall_reads_each_topic_once_for_both_queries(service, monkeypatch):
-    from collections import Counter
-    from pathlib import Path
 
     coffee = service.note("常喝拿铁咖啡", topic="preferences")
-    other = service.note("使用键盘工作", topic="devices")
-    paths = {service.store.topic_path(entry.topic) for entry in (coffee, other)}
+    service.note("使用键盘工作", topic="devices")
     service.retriever = HybridRetriever(
-        KeywordRetriever(service.store),
-        VectorRetriever(service.store, FakeEmbedder(GROUPS), cache_dir=service.paths.index_dir),
+        KeywordRetriever(service.store), persisted_vector(service.store, FakeEmbedder(GROUPS))
     )
-    reads = Counter()
-    read_bytes = Path.read_bytes
+    original = service.store.snapshot
+    seen = []
 
-    def count_read(path):
-        if path in paths:
-            reads[path] += 1
-        return read_bytes(path)
+    def counted():
+        data = original()
+        seen.append(data.revision)
+        return data
 
-    monkeypatch.setattr(Path, "read_bytes", count_read)
+    monkeypatch.setattr(service.store, "snapshot", counted)
     for _ in range(2):
-        reads.clear()
-        assert service.recall("咖啡", original_query="常喝什么咖啡")[0].id == coffee.id
-        assert reads == {path: 1 for path in paths}
+        seen.clear()
+        assert service.recall(coffee.text, original_query=coffee.text)[0].id == coffee.id
+        assert len(seen) == 1
 
 
 def test_cache_persists_across_instances(tmp_path):
     store = seeded_store(tmp_path)
-    VectorRetriever(store, FakeEmbedder(GROUPS), cache_dir=store.paths.index_dir).search("房子", 3)
+    persisted_vector(store, FakeEmbedder(GROUPS)).search("房子", 3)
 
     embedder = FakeEmbedder(GROUPS)
-    retriever = VectorRetriever(store, embedder, cache_dir=store.paths.index_dir)
+    retriever = persisted_vector(store, embedder)
     assert retriever.search("房子", 3)
     assert embedder.passages == []
 
 
+def test_repeated_embedding_input_keeps_distinct_facts_and_reuses_vectors(tmp_path):
+    store = MemoryStore(tmp_path)
+    first = store.append("preferences", "咖啡")
+    second = store.append("drinks", "咖啡")
+    embedder = FakeEmbedder(GROUPS)
+    vector = persisted_vector(store, embedder)
+    assert {hit.id for hit in vector.search("咖啡")} == {first.id, second.id}
+    assert embedder.passages == ["咖啡"]
+
+    third = store.append("notes", "咖啡")
+    fresh = FakeEmbedder(GROUPS)
+    assert {hit.id for hit in persisted_vector(store, fresh).search("咖啡")} == {
+        first.id,
+        second.id,
+        third.id,
+    }
+    assert fresh.passages == []
+    cached = vector_rows(store.paths)
+    assert {row["memory_id"] for row in cached} == {first.id, second.id, third.id}
+    assert len({row["input_digest"] for row in cached}) == 1
+
+
+def test_vector_cache_removal_rebuilds_from_authoritative_memories(tmp_path):
+    store = seeded_store(tmp_path)
+    before = persisted_vector(store, FakeEmbedder(GROUPS)).search("咖啡")
+    path = store.paths.cache_dir / "vectors.sqlite3"
+    assert path.is_file()
+    with transaction(store.paths, write=False) as db:
+        assert db.execute("SELECT 1 FROM sqlite_schema WHERE name='vectors'").fetchone() is None
+    path.unlink()
+    embedder = FakeEmbedder(GROUPS)
+    assert persisted_vector(store, embedder).search("咖啡") == before
+    assert len(embedder.passages) == len(store.entries()) == len(vector_rows(store.paths))
+
+
+@pytest.fixture
+def cache_diagnostics(monkeypatch):
+    from syvrio.infra.observability import diagnostics
+
+    events = []
+    monkeypatch.setattr(diagnostics, "_RECORDED_ONCE", set())
+
+    def record(event, error):
+        events.append(event)
+        return True
+
+    monkeypatch.setattr(diagnostics, "record_event", record)
+    return events
+
+
+def test_hybrid_recall_with_damaged_vector_file_uses_memory_then_keywords(
+    service, cache_diagnostics
+):
+    first = service.note("偏爱清淡的茶", topic="preferences")
+    path = service.paths.cache_dir / "vectors.sqlite3"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    unknown_bytes = b"unreadable cache; preserve this file"
+    path.write_bytes(unknown_bytes)
+    embedder = FakeEmbedder(GROUPS)
+    service.retriever = HybridRetriever(
+        KeywordRetriever(service.store), persisted_vector(service.store, embedder)
+    )
+    assert service.recall("咖啡")[0].id == first.id
+
+    second = service.note("住房预算有限", topic="housing")
+    assert service.recall("房子")[0].id == second.id
+    assert len(embedder.passages) == 2
+    assert service.recall("咖啡")[0].id == first.id
+
+    service.retriever = HybridRetriever(
+        KeywordRetriever(service.store),
+        persisted_vector(service.store, FakeEmbedder(GROUPS, fail=True)),
+    )
+    assert service.recall("住房预算")[0].id == second.id
+    assert path.read_bytes() == unknown_bytes
+    assert cache_diagnostics.count("degraded.vector_cache") == 1
+
+
+def test_failed_cache_write_after_business_commit_keeps_result(service, cache_diagnostics):
+    from syvrio.infra.session import SessionStore
+
+    fact = service.note("偏爱清淡的茶", topic="preferences")
+    service.store.snapshot()
+    embedder = FakeEmbedder(GROUPS)
+    service.retriever = HybridRetriever(
+        KeywordRetriever(service.store), persisted_vector(service.store, embedder)
+    )
+    with cache_transaction(service.paths, "vectors") as cache:
+        cache.execute("""CREATE TRIGGER fail_cache BEFORE INSERT ON vectors
+                       BEGIN SELECT RAISE(ABORT,'cache write unavailable'); END""")
+    sessions = SessionStore(service.paths)
+    with transaction(service.paths):
+        session = sessions.create()
+        assert service.recall("咖啡")[0].id == fact.id
+        assert "degraded.vector_cache" not in cache_diagnostics
+    assert sessions.load(session.id).id == session.id
+    assert vector_rows(service.paths) == []
+    assert service.recall("咖啡")[0].id == fact.id
+    assert len(embedder.passages) == 1
+    assert cache_diagnostics.count("degraded.vector_cache") == 1
+
+
+def test_cache_can_publish_while_another_connection_holds_business_write_lock(tmp_path):
+    store = seeded_store(tmp_path)
+    vector = persisted_vector(store, FakeEmbedder(GROUPS))
+    with ThreadPoolExecutor(max_workers=1) as pool, transaction(store.paths):
+        assert pool.submit(vector.search, "咖啡").result(timeout=5)
+        assert len(vector_rows(store.paths)) == 2
+
+
+def _change_vector_in_another_process(paths, memory_id):
+    store = MemoryStore(paths)
+    with transaction(paths) as db:
+        db.execute("UPDATE memories SET text='住房' WHERE id=?", (memory_id,))
+    return persisted_vector(store, FakeEmbedder(GROUPS)).search("房子")[0].id
+
+
+def test_late_vector_publish_cannot_replace_another_writers_result(tmp_path):
+    from syvrio.infra.retrieval.vector import text_hash
+
+    store = MemoryStore(tmp_path)
+    entry = store.append("preferences", "咖啡")
+    ready, resume = Event(), Event()
+
+    class SlowEmbedder(FakeEmbedder):
+        def embed(self, texts):
+            result = super().embed(texts)
+            ready.set()
+            assert resume.wait(45)
+            return result
+
+    slow = persisted_vector(store, SlowEmbedder(GROUPS))
+    with (
+        ProcessPoolExecutor(max_workers=1, mp_context=get_context("spawn")) as writers,
+        ThreadPoolExecutor(max_workers=1) as pool,
+    ):
+        old = pool.submit(slow.search, "咖啡")
+        try:
+            assert ready.wait(10)
+            update = writers.submit(_change_vector_in_another_process, store.paths, entry.id)
+            assert update.result(timeout=40) == entry.id
+        finally:
+            resume.set()
+        assert old.result(timeout=10)[0].text == "咖啡"
+
+    assert [r["input_digest"] for r in vector_rows(store.paths)] == [text_hash("住房")]
+    warm = FakeEmbedder(GROUPS)
+    assert persisted_vector(store, warm).search("房子")[0].text == "住房"
+    assert not warm.passages
+
+
 def test_model_change_rebuilds_cache(tmp_path):
     store = seeded_store(tmp_path)
-    VectorRetriever(
-        store, FakeEmbedder(GROUPS, model_id="fake-a"), cache_dir=store.paths.index_dir
-    ).search("房子", 3)
+    persisted_vector(store, FakeEmbedder(GROUPS, model_id="fake-a")).search("房子", 3)
 
     embedder = FakeEmbedder(GROUPS, model_id="fake-b")
-    retriever = VectorRetriever(store, embedder, cache_dir=store.paths.index_dir)
+    retriever = persisted_vector(store, embedder)
     assert retriever.search("房子", 3)
     assert len(embedder.passages) == 2
 
 
 def test_vector_search_degrades_to_empty_when_embedder_fails(tmp_path):
     store = seeded_store(tmp_path)
-    retriever = VectorRetriever(
-        store, FakeEmbedder(GROUPS, fail=True), cache_dir=store.paths.index_dir
-    )
+    retriever = persisted_vector(store, FakeEmbedder(GROUPS, fail=True))
 
     assert retriever.search("房子", 3) == []
 
@@ -259,7 +420,7 @@ def test_sync_retries_after_embedding_failure(tmp_path):
     clock = FakeClock()
     store = seeded_store(tmp_path)
     embedder = FakeEmbedder(GROUPS, fail=True)
-    retriever = VectorRetriever(store, embedder, clock=clock, cache_dir=store.paths.index_dir)
+    retriever = persisted_vector(store, embedder, clock=clock)
     assert retriever.search("房子", 3) == []
     assert retriever.degraded is True
     passage_calls = len(embedder.passages)
@@ -272,7 +433,7 @@ def test_sync_retries_after_embedding_failure(tmp_path):
     # 冷却到期后即使记忆文件没变也要重新同步，而不是一直返回空。
     clock.now += RETRY_COOLDOWN_SECONDS
     hits = retriever.search("房子", 3)
-    assert hits and hits[0].topic == "memories/general/housing.md"
+    assert hits and hits[0].topic == "general/housing"
     assert retriever.degraded is False
 
 
@@ -282,7 +443,7 @@ def test_query_failure_enters_cooldown(tmp_path):
     clock = FakeClock()
     store = seeded_store(tmp_path)
     embedder = FakeEmbedder(GROUPS)
-    retriever = VectorRetriever(store, embedder, clock=clock, cache_dir=store.paths.index_dir)
+    retriever = persisted_vector(store, embedder, clock=clock)
     assert retriever.search("房子", 3)
 
     embedder.fail = True
@@ -302,7 +463,7 @@ def test_query_failure_enters_cooldown(tmp_path):
 def test_search_ignores_deleted_entries(tmp_path):
     store = seeded_store(tmp_path)
     entry = store.append("career", "在找后端工作")
-    retriever = VectorRetriever(store, FakeEmbedder(GROUPS), cache_dir=store.paths.index_dir)
+    retriever = persisted_vector(store, FakeEmbedder(GROUPS))
     assert retriever.search("后端", 3)
 
     store.set_status(entry.id, "deprecated")
@@ -341,12 +502,12 @@ def test_hybrid_falls_back_to_keyword_when_vector_fails(tmp_path):
     store = seeded_store(tmp_path)
     hybrid = HybridRetriever(
         KeywordRetriever(store),
-        VectorRetriever(store, FakeEmbedder(GROUPS, fail=True), cache_dir=store.paths.index_dir),
+        persisted_vector(store, FakeEmbedder(GROUPS, fail=True)),
     )
 
     hits = hybrid.search("咖啡", limit=3)
 
-    assert hits and hits[0].topic == "memories/general/preferences.md"
+    assert hits and hits[0].topic == "general/preferences"
 
 
 def test_literal_coverage_does_not_join_words_across_separators():
@@ -406,7 +567,7 @@ def test_same_model_dimension_change_rebuilds_stale_cache(tmp_path, add_entry):
     store = MemoryStore(tmp_path)
     original = store.append("work", "Synthetic first note.")
     embedder = ResizedEmbedder()
-    retriever = VectorRetriever(store, embedder, cache_dir=store.paths.index_dir)
+    retriever = persisted_vector(store, embedder)
     assert [hit.id for hit in retriever.search("synthetic")] == [original.id]
     embedder.dimension = 3
     expected = {original.id}
@@ -414,8 +575,9 @@ def test_same_model_dimension_change_rebuilds_stale_cache(tmp_path, add_entry):
         expected.add(store.append("work", "Synthetic second note.").id)
     assert {hit.id for hit in retriever.search("synthetic")} == expected
     assert not retriever.degraded
-    with np.load(retriever.cache_path) as data:
-        assert data["vectors"].shape == (len(expected), 3)
+    assert {r["memory_id"]: r["dimensions"] for r in vector_rows(store.paths)} == dict.fromkeys(
+        expected, 3
+    )
 
 
 def test_short_field_coverage_keeps_exact_hit_without_restoring_noise(tmp_path):
@@ -433,8 +595,8 @@ def test_short_field_coverage_keeps_exact_hit_without_restoring_noise(tmp_path):
     assert noise.id in {hit.id for hit in keyword.search(query)}
     hits = HybridRetriever(keyword, SemanticHits()).search(query)
     assert [hit.id for hit in hits] == [name.id, competing.id]
-    assert hits[0].raw_markdown == name.raw_markdown
-    assert (hits[0].source_path, hits[0].line) == (name.source_path, name.line)
+    assert hits[0].text == name.text
+    assert hits[0].topic == name.topic
 
 
 def test_field_index_respects_token_boundaries_and_longest_labels(tmp_path):
@@ -469,9 +631,7 @@ def test_same_field_uses_context_to_choose_between_records(tmp_path):
             "batch": ["批处理", "常规"],
         }
     )
-    hybrid = HybridRetriever(
-        keyword, VectorRetriever(store, embedder, cache_dir=store.paths.index_dir)
-    )
+    hybrid = HybridRetriever(keyword, persisted_vector(store, embedder))
 
     for query, expected in (("预览节点的运行模式", first), ("批处理节点的运行模式", second)):
         hit = hybrid.search(query, 1)[0]
@@ -496,32 +656,26 @@ def test_embedding_cache_rebuilds_changed_short_fact_only(tmp_path):
     short = store.append("identity", "姓名：虚构人物甲", title="合成人物资料")
     long = store.append("preferences", "我喜欢清淡的咖啡，有时也会喝茶")
     embedder = FakeEmbedder({"name": ["姓名"], **GROUPS})
-    vector = VectorRetriever(store, embedder, cache_dir=store.paths.index_dir)
-    vector.cache_path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez(
-        vector.cache_path,
-        model=np.array(embedder.model_id),
-        ids=np.array([short.id, long.id]),
-        hashes=np.array([text_hash("passage including a topic title"), text_hash(long.text)]),
-        vectors=np.array([[1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]]),
-    )
+    vector = persisted_vector(store, embedder)
+    vector.sync()
+    embedder.passages.clear()
+    with cache_transaction(store.paths, "vectors") as db:
+        db.execute(
+            "UPDATE vectors SET input_digest=? WHERE memory_id=?",
+            (text_hash("previous input"), short.id),
+        )
+    vector = persisted_vector(store, embedder)
     assert short.embedding_text == short.text
     assert long.embedding_text == long.index_text
     assert vector.search("姓名")[0].id == short.id
     assert embedder.passages == [short.embedding_text]
-    assert store.find(short.id).raw_markdown == short.raw_markdown
-
-    path = store.topic_path(short.topic)
-    path.write_text(
-        path.read_text(encoding="utf-8").replace("# 合成人物资料", "# 演示身份档案"),
-        encoding="utf-8",
-        newline="\n",
-    )
+    with transaction(store.paths) as db:
+        db.execute("UPDATE topics SET title='updated synthetic label' WHERE name=?", (short.topic,))
     embedder.passages.clear()
     vector.sync()
     updated = store.find(short.id)
     assert embedder.passages == []
-    assert updated.raw_markdown == short.raw_markdown
+    assert updated.text == short.text
 
 
 def test_large_corpus_keeps_explicit_short_fields_without_local_model(tmp_path):
@@ -596,12 +750,9 @@ def test_vector_cache_is_outside_vault_git_worktree(tmp_path):
     initialize_vault(git, service.initialize_files)
     service.note("喜欢清淡、像茶的风味")
     git.commit(push=False)
-    retriever = VectorRetriever(
-        service.store, FakeEmbedder(GROUPS), cache_dir=service.store.paths.index_dir
-    )
+    retriever = persisted_vector(service.store, FakeEmbedder(GROUPS))
     retriever.sync()
-    assert retriever.cache_path == service.paths.runtime_dir / "indexes" / "vectors.npz"
-    assert retriever.cache_path.is_file()
+    assert vector_rows(service.paths) and not git.is_dirty()
     assert not git.repo.has_changes()
     assert not (config.vault / ".syvrio").exists()
 
@@ -612,7 +763,8 @@ def test_init_vault_preserves_user_gitignore_without_final_newline(tmp_path):
     config = Config(vault=tmp_path / "vault", retrieval=RetrievalConfig(method="keyword"))
     service = MemoryService(config)
     service.store.ensure()
-    gitignore = config.vault / ".gitignore"
+    gitignore = config.vault / "export" / ".gitignore"
+    gitignore.parent.mkdir()
     gitignore.write_bytes(b"*.log")
 
     git = GitSyncService(config, service.paths)
@@ -623,39 +775,29 @@ def test_init_vault_preserves_user_gitignore_without_final_newline(tmp_path):
     assert gitignore.read_bytes() == b"*.log\n/attachments/\n/archived/\n"
 
 
-def test_sync_refuses_duplicate_entry_ids_across_topics(tmp_path):
-    import pytest
-
-    from syvrio.memory.schema import Core, SchemaError, render_record
-
+def test_duplicate_id_cannot_enter_second_topic(tmp_path):
     store = MemoryStore(tmp_path)
-    store.append("food", "喜欢清淡、像茶的风味", entry_id="mem-dup")
-    housing = store.topic_path("housing")
-    housing.write_text(
-        render_record(
-            Core(id="mem-dup", status="active", text="在找市区的房子"),
-            extensions=[("recorded_at", "2026-01-01T00:00:00Z")],
-        ),
-        encoding="utf-8",
-    )
-    retriever = VectorRetriever(store, FakeEmbedder(GROUPS), cache_dir=store.paths.index_dir)
-
-    with pytest.raises(SchemaError, match="duplicate memory id across topics"):
-        retriever.sync()
+    first = store.append("a", "one", entry_id="mem-dup")
+    with pytest.raises(ValueError, match="Duplicate"):
+        store.append("b", "two", entry_id=first.id)
+    assert store.entries() == [first]
 
 
-def test_malformed_cache_ids_rebuild_instead_of_crashing(tmp_path):
+@pytest.mark.parametrize(
+    "assignment",
+    ["vector=X'00'", "dimensions='unknown'", "vector='not a vector'"],
+)
+def test_malformed_vector_is_regenerated(tmp_path, assignment, cache_diagnostics):
     store = seeded_store(tmp_path)
-    retriever = VectorRetriever(store, FakeEmbedder(GROUPS), cache_dir=store.paths.index_dir)
-    retriever.cache_path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez(
-        retriever.cache_path,
-        model=np.array("fake"),
-        ids=np.array([["bad"]]),
-        hashes=np.array(["bad"]),
-        vectors=np.ones((1, 3)),
-    )
-    assert retriever.search("房子")
+    first = persisted_vector(store, FakeEmbedder(GROUPS))
+    first.sync()
+    with cache_transaction(store.paths, "vectors") as db:
+        db.execute(f"UPDATE vectors SET {assignment}")
+    refreshed = persisted_vector(store, FakeEmbedder(GROUPS))
+    assert refreshed.search("房子")[0].topic == "general/housing"
+    assert cache_diagnostics.count("degraded.vector_cache") == 1
+    assert len(vector_rows(store.paths)) == len(store.entries())
+    assert all(len(r["vector"]) == 4 * r["dimensions"] for r in vector_rows(store.paths))
 
 
 def test_retrievers_read_an_independent_source_and_write_only_their_cache(tmp_path):
@@ -669,11 +811,7 @@ def test_retrievers_read_an_independent_source_and_write_only_their_cache(tmp_pa
         text: str = "口味：清淡咖啡"
         index_text: str = "口味：清淡咖啡 茶"
         embedding_text: str = "清淡咖啡"
-        source_path: str = "notes.md"
-        raw_markdown: str = "- 口味：清淡咖啡"
         timestamp: str = "2026-01-01"
-        line: int = 3
-        end_line: int = 3
 
     class Source:
         rows = (Record(),)
@@ -683,24 +821,27 @@ def test_retrievers_read_an_independent_source_and_write_only_their_cache(tmp_pa
         def snapshot(self):
             return SimpleNamespace(records=self.rows, revision=self.revision)
 
-        def topic_path(self, topic):
-            return tmp_path / f"{topic}.md"
-
     source = Source()
     before = set(tmp_path.iterdir())
-    cache = tmp_path / "index"
     keyword = KeywordRetriever(source)
-    vector = VectorRetriever(source, FakeEmbedder(GROUPS), cache_dir=cache)
+    vector = VectorRetriever(source, FakeEmbedder(GROUPS))
     assert keyword.unique_field("口味") is source.rows[0]
     hits = [keyword.search("口味")[0], vector.search("茶")[0]]
     for hit in hits:
         assert hit.id == source.rows[0].id
-        assert hit.raw_markdown == source.rows[0].raw_markdown
-        assert hit.file == str(tmp_path / "notes.md")
-        assert (hit.line, hit.end_line) == (3, 3)
+        assert hit.text == source.rows[0].text
     assert hits[0].matched_field == "口味"
-    assert vector.cache_path.is_file()
-    assert set(tmp_path.iterdir()) - before == {cache}
+    assert set(tmp_path.iterdir()) == before
+    paths = MemoryStore(tmp_path).paths
+    cached = VectorRetriever(source, FakeEmbedder(GROUPS), paths=paths)
+    assert cached.search("茶")[0].id == source.rows[0].id
+    assert [row["memory_id"] for row in vector_rows(paths)] == [source.rows[0].id]
+    reused = FakeEmbedder(GROUPS)
+    assert VectorRetriever(source, reused, paths=paths).search("茶")[0].id == source.rows[0].id
+    assert reused.passages == []
+    assert not database_path(paths).exists()
     source.rows = ()
     source.revision += 1
+    cached.sync()
+    assert not vector_rows(paths)
     assert keyword.search("口味") == vector.search("茶") == []

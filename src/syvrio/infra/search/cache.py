@@ -1,19 +1,18 @@
 from __future__ import annotations
 
 import json
-import os
+import sqlite3
 import time
 from dataclasses import asdict, dataclass, field
-from pathlib import Path
-from threading import Lock
 from typing import Callable
 
 from ..observability.diagnostics import record_once
+from ..storage.cache_database import cache_transaction
+from ..storage.database import DatabaseError, encode
+from ..storage.paths import SyvrioPaths
 from .base import SearchFailure, SearchResult
 
-CACHE_VERSION = 2
 _MAX_META_ITEMS = 20
-_WRITE_LOCK = Lock()
 
 
 @dataclass(slots=True)
@@ -28,13 +27,6 @@ class CachedSearch:
     failed: list[SearchFailure] = field(default_factory=list)
 
 
-def _expires(entry: dict) -> float:
-    try:
-        return float(entry.get("expires", 0))
-    except (TypeError, ValueError):
-        return 0.0
-
-
 def _string_list(value: object) -> list[str]:
     if not isinstance(value, list):
         return []
@@ -42,15 +34,15 @@ def _string_list(value: object) -> list[str]:
 
 
 class SearchCache:
-    """搜索结果的文件缓存；只是派生数据，损坏或过期都可直接丢弃。"""
+    """在 Runtime 缓存有期限的网页搜索结果。"""
 
     def __init__(
         self,
-        path: Path,
+        paths: SyvrioPaths,
         ttl: int,
         clock: Callable[[], float] = time.time,
     ):
-        self.path = path
+        self.paths = paths
         self.ttl = ttl
         self.clock = clock
 
@@ -58,12 +50,22 @@ class SearchCache:
         """返回结果及验证元数据；字段缺失或损坏时重新搜索。"""
         if self.ttl <= 0:
             return None
-        entry = self._load().get("entries", {}).get(key)
-        if not isinstance(entry, dict):
+        try:
+            with cache_transaction(self.paths, "web-search", write=False) as db:
+                row = db.execute(
+                    "SELECT result FROM search_cache WHERE cache_key=? AND expires>?",
+                    (key, self.clock()),
+                ).fetchone()
+        except (OSError, sqlite3.Error, DatabaseError) as exc:
+            # 缓存无法读取时，仍由供应商返回这次的搜索结果。
+            record_once("degraded.web_search_cache", exc)
             return None
-        if _expires(entry) <= self.clock():
+        if not row:
             return None
         try:
+            entry = json.loads(row[0])
+            if not isinstance(entry, dict) or not isinstance(entry.get("results"), list):
+                return None
             results = [
                 SearchResult(**item) for item in entry.get("results", []) if isinstance(item, dict)
             ]
@@ -117,45 +119,24 @@ class SearchCache:
         """ttl 为空时用实例默认值；空结果等短命条目传更短的 ttl。"""
         if self.ttl <= 0:
             return
-        # 多个并行工具可能共用该缓存，合并与发布须在同一把锁内完成。
-        with _WRITE_LOCK:
-            data = self._load()
-            now = self.clock()
-            entries = {
-                item_key: item
-                for item_key, item in data.get("entries", {}).items()
-                if isinstance(item, dict) and _expires(item) > now
-            }
-            entries[key] = {
-                "expires": now + (self.ttl if ttl is None else min(ttl, self.ttl)),
-                "provider": provider,
-                "strategy": strategy,
-                "attempted": list(attempted)[:_MAX_META_ITEMS],
-                "contributors": list(contributors)[:_MAX_META_ITEMS],
-                "verification": verification,
-                "failed": [asdict(item) for item in list(failed)[:_MAX_META_ITEMS]],
-                "results": [asdict(result) for result in results],
-            }
-            data = {"version": CACHE_VERSION, "entries": entries}
-            try:
-                self.path.parent.mkdir(parents=True, exist_ok=True)
-                tmp = self.path.with_name(self.path.name + ".tmp")
-                tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-                os.replace(tmp, self.path)
-            except OSError as exc:
-                record_once("degraded.web_search_cache", exc)
-
-    def _load(self) -> dict:
+        now = self.clock()
+        expires = now + (self.ttl if ttl is None else min(ttl, self.ttl))
+        result = dict(
+            provider=provider,
+            strategy=strategy,
+            attempted=list(attempted)[:_MAX_META_ITEMS],
+            contributors=list(contributors)[:_MAX_META_ITEMS],
+            verification=verification,
+            failed=[asdict(item) for item in list(failed)[:_MAX_META_ITEMS]],
+            results=[asdict(item) for item in results],
+        )
         try:
-            data = json.loads(self.path.read_text(encoding="utf-8"))
-        except FileNotFoundError:
-            return {"version": CACHE_VERSION, "entries": {}}
-        except (OSError, ValueError) as exc:
+            with cache_transaction(self.paths, "web-search") as db:
+                db.execute("DELETE FROM search_cache WHERE expires<=?", (now,))
+                db.execute(
+                    "INSERT OR REPLACE INTO search_cache VALUES(?,?,?)",
+                    (key, expires, encode(result)),
+                )
+        except (OSError, sqlite3.Error, DatabaseError) as exc:
+            # 本次结果已经取得，缓存写入失败只影响后续复用。
             record_once("degraded.web_search_cache", exc)
-            return {"version": CACHE_VERSION, "entries": {}}
-        if not isinstance(data, dict) or data.get("version") != CACHE_VERSION:
-            # v1 没有验证元数据；整体失效，避免把未知状态猜成完成。
-            return {"version": CACHE_VERSION, "entries": {}}
-        if not isinstance(data.get("entries"), dict):
-            return {"version": CACHE_VERSION, "entries": {}}
-        return data

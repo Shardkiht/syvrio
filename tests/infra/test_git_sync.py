@@ -20,7 +20,7 @@ from syvrio.infra.config import (
     write_example_config,
 )
 from syvrio.infra.session import SessionStore
-from syvrio.infra.storage.locking import LockTimeout, git_operation_lock, vault_write_lock
+from syvrio.infra.storage.locking import LockTimeout, git_operation_lock
 from syvrio.infra.system.gitops import GitError, classify_git_error
 from syvrio.infra.vault.files import initialize_vault
 from syvrio.infra.vault.sync import STAGE_CHECK, STAGE_COMMIT, STAGE_PUSH, GitSyncService
@@ -59,20 +59,36 @@ def make_services(
     return service, git
 
 
+def test_git_state_follows_the_vault_transaction(tmp_path):
+    from syvrio.infra.storage.database import transaction
+
+    service, git = make_uninitialized_services(tmp_path / "vault")
+    with pytest.raises(RuntimeError, match="abort"), transaction(service.paths) as db:
+        git.record_push_success()
+        assert json.loads(db.execute("SELECT state FROM git_sync").fetchone()[0])["last_push_at"]
+        raise RuntimeError("abort")
+
+    assert git._read_state() == {}
+    git.record_push_success()
+    assert git._read_state()["last_push_at"]
+
+
 def test_vault_git_never_stages_or_summarizes_archived_data(tmp_path):
     service, git = make_services(tmp_path)
-    repo, vault = git.repo, service.paths.vault_dir
+    repo, vault = git.repo, git.repo.path
     store = SessionStore(service.paths)
     session = store.create()
     marker = "quartz archive only text"
     store.append(session, {"type": "message", "role": "user", "content": marker})
+    git.is_dirty()
     repo.stage_all()
     assert repo.commit("Save active session")
     store.set_archived(session.id, True)
     extra = vault / "archived" / "misc" / "credentials.txt"
-    extra.parent.mkdir()
+    extra.parent.mkdir(parents=True)
     extra.write_text(marker)
     assert not repo.sensitive_paths()
+    git.is_dirty()
     repo.stage_all()
     assert all(not path.startswith("archived/") for path in repo.staged_paths())
     assert marker not in repo.staged_diff()
@@ -97,7 +113,7 @@ def test_commit_summary_keeps_later_files_and_fits_the_model_window(tmp_path, mo
     from syvrio.infra.vault import commit_summary
 
     service, git = make_services(tmp_path)
-    vault = service.paths.vault_dir
+    vault = git.repo.path / "content"
     (vault / "a-long.md").write_text(
         "".join(f"line {index} synthetic change\n" for index in range(2000)), encoding="utf-8"
     )
@@ -156,9 +172,9 @@ def test_git_summary_respects_model_output_limit(monkeypatch, metadata, expected
 def add_remote(service: MemoryService, tmp_path: Path, *, upstream: bool = True) -> Path:
     remote = tmp_path / "remote.git"
     _git("init", "--bare", str(remote))
-    _git("remote", "add", "origin", str(remote), cwd=service.config.vault)
+    _git("remote", "add", "origin", str(remote), cwd=service.config.vault / "export")
     if upstream:
-        _git("push", "-u", "origin", "HEAD", cwd=service.config.vault)
+        _git("push", "-u", "origin", "HEAD", cwd=service.config.vault / "export")
     return remote
 
 
@@ -171,7 +187,7 @@ def remote_log(remote: Path) -> list[str]:
 
 
 def read_state(git: GitSyncService) -> dict:
-    return json.loads(git.state_path.read_text(encoding="utf-8"))
+    return git._read_state()
 
 
 def test_sync_commits_and_pushes(tmp_path):
@@ -200,7 +216,7 @@ def test_commit_command_pushes_existing_unpushed_without_new_commit(tmp_path):
     assert not result["committed"]
     assert result["pushed"]
     assert git.repo.unpushed_count() == 0
-    head = _git("rev-parse", "--short", "HEAD", cwd=service.config.vault).stdout.strip()
+    head = _git("rev-parse", "--short", "HEAD", cwd=service.config.vault / "export").stdout.strip()
     assert any(head in line for line in remote_log(remote))
     assert read_state(git)["last_push_at"]
 
@@ -277,7 +293,13 @@ def test_missing_upstream_reports_partial(tmp_path):
 def test_push_failure_preserves_commit_and_next_sync_pushes_it(tmp_path):
     service, git = make_services(tmp_path)
     remote = add_remote(service, tmp_path)
-    _git("remote", "set-url", "origin", str(tmp_path / "missing.git"), cwd=service.config.vault)
+    _git(
+        "remote",
+        "set-url",
+        "origin",
+        str(tmp_path / "missing.git"),
+        cwd=service.config.vault / "export",
+    )
     service.note("推送失败的记录", topic="misc")
 
     failed = git.sync("manual")
@@ -286,7 +308,7 @@ def test_push_failure_preserves_commit_and_next_sync_pushes_it(tmp_path):
     assert not failed.pushed
     assert failed.error
 
-    _git("remote", "set-url", "origin", str(remote), cwd=service.config.vault)
+    _git("remote", "set-url", "origin", str(remote), cwd=service.config.vault / "export")
     recovered = git.sync("manual")
 
     assert recovered.status == "success"
@@ -325,9 +347,9 @@ def test_diverged_remote_stops_push_without_force(tmp_path):
 
 def test_sensitive_file_blocks_commit(tmp_path):
     service, git = make_services(tmp_path)
-    (service.config.vault / ".env").write_text("API_KEY=synthetic\n", encoding="utf-8")
+    (git.repo.path / ".env").write_text("API_KEY=synthetic\n", encoding="utf-8")
     service.note("正常记录", topic="misc")
-    before = _git("rev-list", "--count", "HEAD", cwd=service.config.vault).stdout.strip()
+    before = _git("rev-list", "--count", "HEAD", cwd=service.config.vault / "export").stdout.strip()
 
     result = git.sync("manual")
 
@@ -336,14 +358,15 @@ def test_sensitive_file_blocks_commit(tmp_path):
     assert result.error_kind == "sensitive"
     assert ".env" in result.error
     assert git.repo.has_changes()
-    after = _git("rev-list", "--count", "HEAD", cwd=service.config.vault).stdout.strip()
+    after = _git("rev-list", "--count", "HEAD", cwd=service.config.vault / "export").stdout.strip()
     assert before == after
 
 
 @pytest.mark.parametrize("entrypoint", ["sync", "startup"])
 def test_sensitive_recheck_restores_partial_staging(tmp_path, monkeypatch, entrypoint):
     service, git = make_services(tmp_path)
-    vault = service.config.vault
+    vault = git.repo.path
+    service.note("synthetic change")
     path = vault / "sample.txt"
     path.write_text("staged version", encoding="utf-8")
     _git("add", "--", path.name, cwd=vault)
@@ -352,7 +375,7 @@ def test_sensitive_recheck_restores_partial_staging(tmp_path, monkeypatch, entry
     stage = git.repo.stage_all
 
     def add_sensitive_file_then_stage():
-        (vault / ".env").write_text("API_KEY=synthetic\n", encoding="utf-8")
+        (vault / "content" / ".env").write_text("API_KEY=synthetic\n", encoding="utf-8")
         stage()
 
     monkeypatch.setattr(git.repo, "stage_all", add_sensitive_file_then_stage)
@@ -364,10 +387,10 @@ def test_sensitive_recheck_restores_partial_staging(tmp_path, monkeypatch, entry
         with pytest.raises(GitError, match=r"\.env") as raised:
             git.commit_pending_changes()
         assert raised.value.kind == "sensitive"
-    assert git.repo.staged_paths() == [path.name]
+    assert _git("diff", "--cached", "--name-only", cwd=vault).stdout.splitlines() == [path.name]
     assert _git("diff", "--cached", "--binary", cwd=vault).stdout == before
     assert path.read_text(encoding="utf-8") == "working tree version"
-    assert (vault / ".env").exists()
+    assert (vault / "content" / ".env").exists()
 
 
 # ---------- Git 工作树根目录约束 ----------
@@ -378,7 +401,7 @@ def test_standalone_vault_initializes_its_own_repository(tmp_path):
 
     assert git.repo.is_repo
     assert git.repo.foreign_repo_root() is None
-    assert git.repo.repo_root().resolve() == service.config.vault.resolve()
+    assert git.repo.repo_root().resolve() == (service.config.vault / "export").resolve()
 
 
 def test_relative_vault_path_is_recognized(tmp_path, monkeypatch):
@@ -388,7 +411,7 @@ def test_relative_vault_path_is_recognized(tmp_path, monkeypatch):
     initialize_vault(git, service.initialize_files)
 
     assert git.repo.is_repo
-    assert git.repo.repo_root().resolve() == (tmp_path / "vault").resolve()
+    assert git.repo.repo_root().resolve() == (tmp_path / "vault" / "export").resolve()
 
 
 def test_symlinked_vault_path_is_recognized(tmp_path):
@@ -404,9 +427,9 @@ def test_symlinked_vault_path_is_recognized(tmp_path):
     initialize_vault(git, service.initialize_files)
 
     assert git.repo.is_repo
-    assert (real / ".git").exists()
+    assert (real / "export" / ".git").exists()
     fact = service.note("Synthetic reading preference", topic="general/preferences")
-    assert (real / "memories" / "general" / "preferences.md").is_file()
+    assert (real / "syvrio.sqlite3").is_file()
     assert service.read_topic("preferences")["entries"][0]["id"] == fact.id
     reopened, _ = make_uninitialized_services(real)
     assert reopened.store.find(fact.id).text == fact.text
@@ -498,7 +521,7 @@ def test_own_vault_commit_and_push_still_work(tmp_path):
 @pytest.mark.parametrize("name", [".env", "keys.env", "my secrets.env", "密钥 文件.env"])
 def test_commit_rejects_staged_sensitive_file(tmp_path, name):
     service, git = make_services(tmp_path)
-    vault = service.config.vault
+    vault = git.repo.path
     target = vault / name
     target.write_text("synthetic\n", encoding="utf-8")
     _git("add", name, cwd=vault)
@@ -517,25 +540,25 @@ def test_commit_rejects_staged_sensitive_file(tmp_path, name):
 
 def test_commit_allows_staged_clean_file_with_unstaged_sensitive_file(tmp_path):
     service, git = make_services(tmp_path)
-    vault = service.config.vault
+    vault = git.repo.path
     (vault / ".env").write_text("API_KEY=synthetic\n", encoding="utf-8")
-    (vault / "notes.md").write_text("synthetic\n", encoding="utf-8")
-    _git("add", "notes.md", cwd=vault)
+    (vault / "content/notes.md").write_text("synthetic\n", encoding="utf-8")
+    _git("add", "content/notes.md", cwd=vault)
 
     commit_hash = git.repo.commit("synthetic commit")
 
     assert commit_hash
     tracked = _git("ls-files", cwd=vault).stdout.splitlines()
-    assert "notes.md" in tracked
+    assert "content/notes.md" in tracked
     assert ".env" not in tracked
     assert (vault / ".env").exists()
 
 
 def test_commit_normal_file_succeeds(tmp_path):
     service, git = make_services(tmp_path)
-    vault = service.config.vault
-    (vault / "notes.md").write_text("synthetic\n", encoding="utf-8")
-    _git("add", "notes.md", cwd=vault)
+    vault = git.repo.path
+    (vault / "content/notes.md").write_text("synthetic\n", encoding="utf-8")
+    _git("add", "content/notes.md", cwd=vault)
 
     commit_hash = git.repo.commit("synthetic commit")
 
@@ -579,7 +602,8 @@ def test_direct_commit_still_rejects_parent_repository(tmp_path):
 )
 def test_sensitive_name_variants_are_detected(tmp_path, relative):
     service, git = make_services(tmp_path)
-    path = service.config.vault / relative
+    relative = "content/" + relative
+    path = git.repo.path / relative
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("synthetic\n", encoding="utf-8")
 
@@ -595,7 +619,8 @@ def test_sensitive_name_variants_are_detected(tmp_path, relative):
 )
 def test_normal_files_are_not_flagged_as_sensitive(tmp_path, relative):
     service, git = make_services(tmp_path)
-    path = service.config.vault / relative
+    relative = "content/" + relative
+    path = git.repo.path / relative
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("synthetic\n", encoding="utf-8")
 
@@ -606,10 +631,10 @@ def test_normal_files_are_not_flagged_as_sensitive(tmp_path, relative):
 
 
 def test_init_vault_refuses_untracked_sensitive_file(tmp_path):
-    vault = tmp_path / "vault"
-    vault.mkdir()
+    vault = tmp_path / "vault" / "export"
+    vault.mkdir(parents=True)
     (vault / ".env").write_text("API_KEY=synthetic\n", encoding="utf-8")
-    service, git = make_uninitialized_services(vault)
+    service, git = make_uninitialized_services(vault.parent)
 
     with pytest.raises(GitError) as caught:
         initialize_vault(git, service.initialize_files)
@@ -620,12 +645,12 @@ def test_init_vault_refuses_untracked_sensitive_file(tmp_path):
 
 
 def test_init_vault_refuses_pre_staged_sensitive_file(tmp_path):
-    vault = tmp_path / "vault"
-    vault.mkdir()
+    vault = tmp_path / "vault" / "export"
+    vault.mkdir(parents=True)
     _git("init", cwd=vault)
     (vault / ".env").write_text("API_KEY=synthetic\n", encoding="utf-8")
     _git("add", ".env", cwd=vault)
-    service, git = make_uninitialized_services(vault)
+    service, git = make_uninitialized_services(vault.parent)
 
     with pytest.raises(GitError) as caught:
         initialize_vault(git, service.initialize_files)
@@ -642,14 +667,14 @@ def test_init_vault_refuses_pre_staged_sensitive_file(tmp_path):
 
 
 def test_init_vault_refuses_staged_sensitive_file_even_if_gitignored(tmp_path):
-    vault = tmp_path / "vault"
-    vault.mkdir()
+    vault = tmp_path / "vault" / "export"
+    vault.mkdir(parents=True)
     _git("init", cwd=vault)
     (vault / ".gitignore").write_text("*.env\n", encoding="utf-8")
     (vault / ".env").write_text("API_KEY=synthetic\n", encoding="utf-8")
     _git("add", ".gitignore", cwd=vault)
     _git("add", "-f", ".env", cwd=vault)
-    service, git = make_uninitialized_services(vault)
+    service, git = make_uninitialized_services(vault.parent)
 
     with pytest.raises(GitError) as caught:
         initialize_vault(git, service.initialize_files)
@@ -661,16 +686,17 @@ def test_init_vault_refuses_staged_sensitive_file_even_if_gitignored(tmp_path):
 
 
 def test_init_vault_commits_normal_files(tmp_path):
-    vault = tmp_path / "vault"
-    vault.mkdir()
+    vault = tmp_path / "vault" / "export"
+    vault.mkdir(parents=True)
     (vault / "notes.md").write_text("# synthetic\n", encoding="utf-8")
-    service, git = make_uninitialized_services(vault)
+    service, git = make_uninitialized_services(vault.parent)
 
     result = initialize_vault(git, service.initialize_files)
 
     assert result["commit"]
     tracked = _git("ls-files", cwd=vault).stdout.splitlines()
-    assert "notes.md" in tracked
+    assert "notes.md" not in tracked
+    assert "content/inferences.jsonl" in tracked
     assert not any(name.endswith(".env") for name in tracked)
 
 
@@ -716,7 +742,7 @@ def test_state_file_and_locks_are_gitignored(tmp_path):
 
     git.sync("manual")
 
-    status = _git("status", "--porcelain", cwd=service.config.vault).stdout
+    status = _git("status", "--porcelain", cwd=service.config.vault / "export").stdout
     assert ".syvrio/git-sync-state.json" not in status
     assert ".syvrio/vault.lock" not in status
     assert ".syvrio/git.lock" not in status
@@ -808,27 +834,6 @@ def test_next_sync_at_rolls_to_next_day_after_success(tmp_path):
 # ---------- 并发与跨进程 ----------
 
 
-def test_session_append_waits_for_vault_lock(tmp_path):
-    service, _ = make_services(tmp_path)
-    store = SessionStore(service.config.vault)
-    session = store.create()
-    finished = threading.Event()
-
-    def writer():
-        store.append(
-            session,
-            {"type": "message", "id": "m-synthetic", "role": "user", "content": "并发写入"},
-        )
-        finished.set()
-
-    with service.write_lock:
-        thread = threading.Thread(target=writer)
-        thread.start()
-        assert not finished.wait(0.2)
-    assert finished.wait(2)
-    thread.join()
-
-
 def _lock_child(vault: Path, code: str) -> subprocess.Popen:
     env = os.environ.copy()
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[2] / "src")
@@ -839,34 +844,6 @@ def _lock_child(vault: Path, code: str) -> subprocess.Popen:
         text=True,
         env=env,
     )
-
-
-def test_vault_lock_same_process_contention_times_out_without_releasing_owner(tmp_path):
-    vault = tmp_path / "vault"
-    lock = vault_write_lock(vault)
-    entered, release = threading.Event(), threading.Event()
-    result: dict[str, object] = {}
-
-    def owner():
-        with lock:
-            entered.set()
-            assert release.wait(5)
-
-    thread = threading.Thread(target=owner)
-    thread.start()
-    try:
-        assert entered.wait(5)
-        with pytest.raises(LockTimeout):
-            lock.acquire(timeout=0.1)
-        assert lock.locked  # 另一线程仍拥有锁，不允许错误释放。
-        result["owner_active"] = thread.is_alive()
-    finally:
-        release.set()
-        thread.join(timeout=5)
-    assert result["owner_active"] is True
-    assert not lock.locked
-    with lock:
-        assert lock.locked
 
 
 def test_git_lock_same_process_contention_causes_busy_result(tmp_path):
@@ -889,76 +866,6 @@ def test_git_lock_same_process_contention_causes_busy_result(tmp_path):
     finally:
         release.set()
         thread.join(timeout=5)
-
-
-def test_vault_lock_contention_does_not_commit_unprotected(tmp_path):
-    service, git = make_services(tmp_path)
-    service.note("待提交数据", topic="misc")
-    lock = vault_write_lock(service.config.vault)
-    entered, release = threading.Event(), threading.Event()
-
-    def owner():
-        with lock:
-            entered.set()
-            assert release.wait(5)
-
-    thread = threading.Thread(target=owner)
-    thread.start()
-    try:
-        assert entered.wait(5)
-        # 使用同进程另一个线程执行同步，确保测试真实模拟锁竞争。
-        # vault 锁等待默认为 30s；此处将其 acquire 包装成较短超时。
-        original_acquire = lock.acquire
-
-        def acquire_short(timeout=None):
-            return original_acquire(timeout=0.1)
-
-        lock.acquire = acquire_short
-        try:
-            result = git.sync("manual")
-            assert result.status == "failed"
-            assert result.error_kind == "vault_busy"
-            assert git.repo.has_changes()
-        finally:
-            lock.acquire = original_acquire
-    finally:
-        release.set()
-        thread.join(timeout=5)
-
-
-def test_vault_lock_is_cross_process(tmp_path):
-    vault = tmp_path / "vault"
-    vault.mkdir()
-    child = _lock_child(
-        vault,
-        "import time\nfrom syvrio.infra.storage.locking import vault_write_lock\n"
-        "lock = vault_write_lock({vault!r})\nlock.acquire()\n"
-        "print('locked', flush=True)\ntime.sleep(30)\n",
-    )
-    try:
-        assert child.stdout.readline().strip() == "locked"
-        with pytest.raises(LockTimeout):
-            vault_write_lock(vault).acquire(timeout=0.2)
-    finally:
-        child.terminate()
-        child.wait(timeout=5)
-    assert vault_write_lock(vault).acquire(timeout=2)
-    vault_write_lock(vault).release()
-
-
-def test_lock_released_after_process_crash(tmp_path):
-    vault = tmp_path / "vault"
-    vault.mkdir()
-    child = _lock_child(
-        vault,
-        "import os\nfrom syvrio.infra.storage.locking import vault_write_lock\n"
-        "lock = vault_write_lock({vault!r})\nlock.acquire()\n"
-        "print('locked', flush=True)\nos._exit(0)\n",
-    )
-    assert child.stdout.readline().strip() == "locked"
-    assert child.wait(timeout=5) == 0
-    assert vault_write_lock(vault).acquire(timeout=2)
-    vault_write_lock(vault).release()
 
 
 def test_git_operation_lock_is_cross_process(tmp_path):
@@ -1055,7 +962,7 @@ def test_push_network_wait_does_not_block_memory_writes(tmp_path):
         release.set()
         thread.join(timeout=10)
     assert result_box["result"].status == "success"
-    assert git.repo.has_changes()  # Push 期间的新写入留给下次同步
+    assert git.is_dirty()  # Push 期间的新写入留给下次同步
 
 
 def test_session_jsonl_integrity_during_concurrent_sync(tmp_path):
@@ -1097,11 +1004,11 @@ def test_session_jsonl_integrity_during_concurrent_sync(tmp_path):
 
     result = result_box["result"]
     assert result.status == "success"
-    worktree = [json.loads(line) for line in session.path.read_text(encoding="utf-8").splitlines()]
+    worktree = store.load(session.id).records
     committed_raw = _git(
         "show",
-        f"HEAD:{session.path.relative_to(service.config.vault).as_posix()}",
-        cwd=service.config.vault,
+        f"HEAD:content/sessions/{session.id}.jsonl",
+        cwd=service.config.vault / "export",
     ).stdout
     committed = [json.loads(line) for line in committed_raw.splitlines()]
     assert all(isinstance(record, dict) for record in worktree)

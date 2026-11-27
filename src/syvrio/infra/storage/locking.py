@@ -1,4 +1,4 @@
-"""Vault 写入与 Git 操作的跨进程锁。
+"""部署独占与 Git 操作的跨进程锁。
 
 同一进程内通过注册表共享同一个重入锁，避免同一文件被重复加锁；
 跨进程使用操作系统文件锁（POSIX flock / Windows msvcrt），进程异常退出时
@@ -11,9 +11,8 @@ import os
 import threading
 import time
 from pathlib import Path
-from weakref import WeakValueDictionary
 
-from .paths import SESSION_ID_RE, SyvrioPaths, vault_paths
+from .paths import SyvrioPaths, vault_paths
 
 if os.name == "nt":
     import msvcrt
@@ -156,39 +155,6 @@ def _lock_path(vault: Path | SyvrioPaths, name: str) -> Path:
     return paths.lock_dir / name
 
 
-def vault_write_lock(vault: Path | SyvrioPaths) -> VaultLock:
-    """保护记忆文件、会话追加与 Git 快照阶段。"""
-    return _shared(_lock_path(vault, "vault.lock"))
-
-
-_SESSION_LOCKS: WeakValueDictionary[str, VaultLock] = WeakValueDictionary()
-
-
-def session_file_lock(paths: SyvrioPaths, session_id: str) -> VaultLock:
-    """协调单个会话文件的发布，读者只与该会话的变更互斥。"""
-    if not SESSION_ID_RE.fullmatch(session_id):
-        raise ValueError("Invalid session identifier.")
-    path = paths.lock_dir / "sessions" / (session_id + ".lock")
-    key = os.path.normcase(os.path.abspath(path))
-    with _REGISTRY_LOCK:
-        lock = _SESSION_LOCKS.get(key)
-        if lock is None:
-            lock = VaultLock(path)
-            _SESSION_LOCKS[key] = lock
-        return lock
-
-
-def attachment_store_lock(root: Path, digest: str) -> VaultLock:
-    """协调附件原件的创建与最后一个引用的释放。"""
-    # 固定数量的锁分片；相同内容始终串行，无关附件可以并行发布或删除。
-    directory = root / ".locks"
-    directory.mkdir(exist_ok=True)
-    path = directory / (digest[:2] + ".lock")
-    if path.resolve() != path:
-        raise ValueError("Redirected attachment lock.")
-    return _shared(path)
-
-
 def git_operation_lock(vault: Path | SyvrioPaths) -> VaultLock:
     """保护 Stage/Commit/Push 等 Git 操作之间的互斥。"""
     return _shared(_lock_path(vault, "git.lock"))
@@ -197,7 +163,7 @@ def git_operation_lock(vault: Path | SyvrioPaths) -> VaultLock:
 def client_instance_lock(vault: Path | SyvrioPaths) -> VaultLock:
     """单客户端标记，同一时间仅允许一个 TUI 或网页进程写入 Vault。
 
-    此锁在客户端的整个生命周期内持有，vault.lock 则用于单次写入。
+    此锁在客户端的整个生命周期内持有。业务写入由 SQLite 事务协调。
     进程退出时操作系统会释放锁，即使崩溃也不会留下失效锁。
     """
     return _shared(_lock_path(vault, "client.lock"))

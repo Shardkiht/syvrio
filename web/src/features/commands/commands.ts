@@ -116,6 +116,7 @@ export interface TopicDocument {
 export interface TopicsPanel {
   kind: 'topics';
   topics?: TopicListItem[];
+  topic?: string;
   document?: TopicDocument;
 }
 

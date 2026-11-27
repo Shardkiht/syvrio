@@ -11,7 +11,7 @@ from ..application.contracts import ImportDocument
 from ..infra.config import WebShareConfig, write_config
 from ..infra.search import SearchQuery, build_search_router
 from ..infra.search.tool_request import run_tool_search
-from ..memory.models import MemoryDraft
+from ..memory.models import MemoryCorrection, MemoryDraft
 from .client_contracts import UploadedImportDocument
 from .hosts import normalize_domain
 
@@ -24,7 +24,9 @@ class ResidentOperations:
 
     def dispatch(self, name: str, data: dict):
         service = self.service
-        if name in {"memorize", "correct", "transition"}:
+        if name == "correct":
+            data = {**data, "draft": MemoryCorrection.model_validate(data.get("draft"))}
+        elif name in {"memorize", "transition"}:
             data = {**data, "draft": MemoryDraft.model_validate(data.get("draft"))}
         operations = {
             "web_share": self.web_share,
@@ -38,6 +40,8 @@ class ResidentOperations:
             "read_topic": service.read_topic,
             "deprecate": service.deprecate,
             "correct": service.correct,
+            "memory_history": service.store.version_history,
+            "read_memory_source": service.read_memory_source,
             "transition": service.transition,
             "topics": service.topics,
             "pending": service.pending,

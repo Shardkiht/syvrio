@@ -4,23 +4,23 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import logging
 import os
 import re
 from collections.abc import Callable, Iterable
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
+from stat import S_ISREG
 from typing import BinaryIO
 from uuid import uuid4
 
 from PIL import Image
 
-from ..storage.documents import SUPPORTED_SUFFIXES, DocumentError
-from .attachment_objects import original_path, publish, release_message
+from ..storage.documents import DocumentError
+from .attachment_objects import original_path, protect_upload, publish
+from .attachment_policy import ATTACHMENT_POLICY, IMAGE_TYPES
 
-MAX_FILES = 8
-MAX_FILE_BYTES = 20 * 1024 * 1024
-MAX_BATCH_BYTES = 40 * 1024 * 1024
-IMAGE_TYPES = {".png": "png", ".jpg": "jpeg", ".jpeg": "jpeg", ".webp": "webp", ".gif": "gif"}
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}")
 
 
@@ -41,22 +41,34 @@ class Attachment:
             self.id != self.sha256 and not re.fullmatch(r"[a-f0-9]{32}", self.id)
         ) or PureWindowsPath(self.name).name != self.name:
             raise DocumentError("Invalid attachment metadata.")
-        shared = original_path(root, self.sha256)
-        marker = folder / (self.sha256 + ".ref")
-        if marker.resolve() == marker and marker.is_file():
-            return shared
+        if folder == root:
+            return original_path(root, self.sha256)
         return folder / self.filename
+
+    def available_path(self, root: Path, folder: Path) -> Path:
+        path = self.path(root, folder)
+        error = "Attachment is missing or changed. Restore the matching attachment archive."
+        if path.resolve() != path:
+            raise DocumentError(error)
+        try:
+            info = path.stat()
+        except OSError as exc:
+            raise DocumentError(error) from exc
+        if (
+            not S_ISREG(info.st_mode)
+            or not 0 < info.st_size == self.size <= ATTACHMENT_POLICY.max_file_bytes
+        ):
+            raise DocumentError(error)
+        return path
 
     def verify(
         self, root: Path, folder: Path, copy_to: Callable[[bytes], object] | None = None
     ) -> os.stat_result:
-        path = self.path(root, folder)
+        path = self.available_path(root, folder)
         unavailable = "Attachment is missing or changed. Restore the matching attachment archive."
-        if path.resolve() != path or not path.is_file():
-            raise DocumentError(unavailable)
         with path.open("rb") as source:
             stat = os.fstat(source.fileno())
-            if not 0 < stat.st_size == self.size <= MAX_FILE_BYTES:
+            if stat.st_size != self.size:
                 raise DocumentError(unavailable)
             if copy_to is None:
                 digest = hashlib.file_digest(source, "sha256")
@@ -112,15 +124,7 @@ class AttachmentBatch:
         try:
             for name, stream in streams:
                 suffix = Path(name).suffix.lower()
-                if (
-                    not name
-                    or PureWindowsPath(name).name != name
-                    or len(name) > 255
-                    or any(ord(c) < 32 for c in name)
-                    or suffix not in SUPPORTED_SUFFIXES
-                    and suffix not in IMAGE_TYPES
-                ):
-                    raise DocumentError("Unsupported attachment name or format.")
+                ATTACHMENT_POLICY.validate_name(name)
                 identifier = uuid4().hex
                 path = folder / (identifier + suffix)
                 size = 0
@@ -129,14 +133,12 @@ class AttachmentBatch:
                     paths.append(path)
                     while chunk := stream.read(256 * 1024):
                         size += len(chunk)
-                        if size > MAX_FILE_BYTES:
-                            raise DocumentError(
-                                "Attachment limit is 20 MiB per file and 40 MiB per message."
-                            )
+                        ATTACHMENT_POLICY.validate_size(size)
                         output.write(chunk)
                         digest.update(chunk)
-                if not size:
-                    raise DocumentError("Empty attachments cannot be read.")
+                    output.flush()
+                    os.fsync(output.fileno())
+                ATTACHMENT_POLICY.validate_size(size)
                 media = "application/octet-stream"
                 if suffix in IMAGE_TYPES:
                     try:
@@ -155,8 +157,7 @@ class AttachmentBatch:
                     path.unlink()
                     continue
                 total += size
-                if len(files) >= MAX_FILES or total > MAX_BATCH_BYTES:
-                    raise DocumentError("Attach at most 8 files and 40 MiB per message.")
+                ATTACHMENT_POLICY.validate_batch(len(files) + 1, total)
                 item = Attachment(checksum, name, size, media, checksum)
                 final = folder / item.filename
                 path.rename(final)
@@ -172,28 +173,36 @@ class AttachmentBatch:
             raise
         return cls(root, folder, tuple(files))
 
-    def bind(self, session_id: str, message_id: str) -> None:
-        if not _ID.fullmatch(session_id) or not _ID.fullmatch(message_id):
-            raise DocumentError("Invalid attachment identifier.")
-        # 并发提交可首次创建同一个会话目录；创建后再解析，避免 Windows 解析中途遇到新目录。
-        (_directory(self.root) / session_id).mkdir(exist_ok=True)
-        dest = _directory(self.root, session_id, message_id)
-        dest.mkdir()
+    @contextmanager
+    def sending(self, paths):
         try:
-            for item in self.files:
-                publish(self.root, self.folder / item.filename, dest, item.sha256)
-            self.folder.rmdir()
+            with protect_upload(paths, self.files):
+                for item in self.files:
+                    if self.folder == self.root:
+                        # 两次发送之间最后一条引用可能已删除，须在占用生效后再核对原件。
+                        item.available_path(self.root, self.root)
+                    else:
+                        publish(paths, item, self.folder / item.filename)
+                yield
         except BaseException:
-            release_message(self.root, dest, session_id)
-            dest.rmdir()
+            self.discard()
             raise
-        self.folder = dest
+        self._finish()
 
-    def discard(self) -> None:
-        if self.folder.resolve() != self.folder or not self.folder.is_relative_to(self.root):
-            raise DocumentError("Invalid attachment directory.")
-        if self.folder.parent.name != ".incoming":
-            release_message(self.root, self.folder, self.folder.parent.name)
+    def _finish(self):
+        try:
+            self.discard()
+        except OSError:
+            logging.getLogger(__name__).warning(
+                "Committed attachment staging cleanup deferred until restart", exc_info=True
+            )
+        self.folder = self.root
+
+    def discard(self):
+        if self.folder == self.root:
+            return
+        if self.folder.parent != self.root / ".incoming" or self.folder.resolve() != self.folder:
+            raise DocumentError("Invalid attachment staging directory.")
         for item in self.files:
             (self.folder / item.filename).unlink(missing_ok=True)
         self.folder.rmdir()
@@ -214,7 +223,7 @@ class AttachmentBatch:
         record: dict,
         destination: Callable[[bytes], object],
     ) -> tuple[Attachment, os.stat_result]:
-        folder = _directory(root, session_id, message_id)
+        folder = root
         item = Attachment(**record)
         return item, item.verify(root, folder, destination)
 
@@ -222,7 +231,7 @@ class AttachmentBatch:
     def restore(
         cls, root: Path, session_id: str, message_id: str, records: list[dict]
     ) -> AttachmentBatch:
-        folder = _directory(root, session_id, message_id)
+        folder = root
         files = tuple(Attachment(**record) for record in records)
         for item in files:
             item.verify(root, folder)

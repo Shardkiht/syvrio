@@ -13,7 +13,13 @@ import typer
 from .. import __version__
 from ..backend import maintenance
 from ..backend.client import ResidentClient
-from ..backend.client_contracts import SESSION_ID_RE, SUPPORTED_SUFFIXES, MemoryContext, MemoryDraft
+from ..backend.client_contracts import (
+    SESSION_ID_RE,
+    SUPPORTED_SUFFIXES,
+    MemoryContext,
+    MemoryCorrection,
+    MemoryDraft,
+)
 from ..backend.diagnostics import start_diagnostics
 from ..infra.errors import SyvrioError
 from ..infra.observability.diagnostics import record_event, stop_diagnostics
@@ -63,6 +69,18 @@ def _root(
 
 def _service(config: Path | None) -> ResidentClient:
     return ResidentClient(config)
+
+
+@app.command()
+def backup(destination: Path, config: Path | None = CONFIG_OPTION):
+    """Copy a complete offline database and its external originals into a new directory."""
+    typer.echo(maintenance.backup_database(config, destination))
+
+
+@app.command()
+def restore(source: Path, destination: Path):
+    """Verify a complete backup and restore into a new Vault directory."""
+    typer.echo(maintenance.restore_database(source, destination))
 
 
 @app.command("verify-attachments")
@@ -420,12 +438,16 @@ def reject(
 def correct(
     entry_id: str = typer.Argument(..., help="要更正的记忆 ID"),
     text: str = typer.Argument(..., help="更正后的完整表述"),
-    topic: str = typer.Option(..., "--topic", "-t", help="更正后的主题"),
+    topic: str | None = typer.Option(None, "--topic", "-t", help="更正后的主题"),
+    expected_revision: int | None = typer.Option(None, "--expected-revision", min=1),
     config: Path | None = CONFIG_OPTION,
 ) -> None:
-    """写入更正后的新条目并将原记忆标为弃用。"""
+    """更正同一条正式记忆，并保存版本历史。"""
     try:
-        entry = _service(config).correct(entry_id, MemoryDraft(text=text, topic=topic))
+        patch = MemoryCorrection(text=text, expected_revision=expected_revision)
+        if topic is not None:
+            patch.topic = topic
+        entry = _service(config).correct(entry_id, patch)
     except KeyError as exc:
         fail(str(exc), exc=exc)
         return
@@ -433,7 +455,7 @@ def correct(
         fail(str(exc), exc=exc)
         return
     console.print(f"[bold]已更正[/] [{entry.topic}] {entry.text}")
-    console.print(f"[dim]旧条目 {entry_id} 已弃用，审计已记录[/dim]")
+    console.print(f"[dim]记忆 {entry_id} · 修订号 {entry.revision}[/dim]")
 
 
 @app.command("forget", hidden=True)

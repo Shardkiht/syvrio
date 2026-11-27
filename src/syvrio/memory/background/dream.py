@@ -8,15 +8,13 @@ import secrets
 import time
 from collections.abc import Callable
 from dataclasses import replace
-from pathlib import Path
 from threading import Event, Lock
 
 from ...infra.llm.client import effective_context_window
 from ...infra.llm.tokens import estimate_tokens
-from ...infra.storage.transaction import vault_transaction
 from ...infra.time import utc_timestamp
 from ..models import ProfileSummaryResponse, ReflectionResponse
-from .jobs import encode_job, job_path, read_job
+from .jobs import job_key, read_job, save_job
 from .model import (
     MAX_DREAM_OUTPUT_TOKENS,
     MESSAGE_OVERHEAD,
@@ -42,12 +40,12 @@ def _fingerprint(rows: list[dict]) -> str:
     return hashlib.sha256(data.encode("utf-8")).hexdigest()
 
 
-def _state(service):
-    facts = sorted(
-        (f.as_recall().model_dump(exclude_none=True) for f in service.current_facts()),
-        key=lambda row: row["id"],
-    )
-    inferences = service.list_inferences()
+def _state(service, commit=None):
+    with service.work.read():
+        if commit is None:
+            commit = service.store.evidence_commit()
+        facts = service.store.facts_at(commit)
+        inferences = service.inferences.all(at=commit)
     confirmed = sorted(
         (
             i.model_dump(include={"id", "text", "source_ids", "kind", "status"})
@@ -106,14 +104,13 @@ class Dream:
     def __init__(self, service):
         self.service = service
         self.paths = service.paths
-        self.path = job_path(self.paths, "dream", "job")
-        self.metadata = job_path(self.paths, "dream", "profile")
+        self.path = job_key(self.paths, "dream", "job")
         self._active_lock = Lock()
+        self._evidence_cache = None
         self._active_request: tuple[str, int, int] | None = None
 
     def status(self, *, live: bool = False) -> dict:
-        with vault_transaction(self.paths):
-            job = read_job(self.path) or {"state": "idle"}
+        job = read_job(self.path) or {"state": "idle"}
         with self._active_lock:
             if (
                 live
@@ -143,13 +140,13 @@ class Dream:
 
     def request(self, *, retry_now: bool = False) -> str:
         max_requests = self.service.config.chat.default_budget
-        with vault_transaction(self.paths) as tx:
+        with self.service.work.write():
             job = read_job(self.path) or {}
             if job.get("state") == "queued":
                 # 检查点已到期或正在处理时，逐字节保留原文件。
                 if retry_now and job.get("retry_at", 0) > time.time():
                     job["retry_at"] = 0
-                    tx.write(self.path, encode_job(job))
+                    save_job(self.path, job)
                 return job["id"]
             if job.get("state") == "paused" and not max_requests:
                 return job["id"]
@@ -161,6 +158,7 @@ class Dream:
                     "cursor": [0, 0],
                     "requests": 0,
                     "proposed": 0,
+                    "evidence_commit": self.service.store.evidence_commit(),
                     "version": "",
                     "partial": "",
                 }
@@ -173,69 +171,88 @@ class Dream:
                 failures=0,
             )
             job.pop("error", None)
-            tx.write(self.path, encode_job(job))
+            save_job(self.path, job)
             return job["id"]
 
     def due(self) -> bool:
         job = self.status()
         return job["state"] == "queued" and job.get("retry_at", 0) <= time.time()
 
+    def current_evidence_fingerprint(self) -> str:
+        return _state(self.service)[3]
+
+    def request_if_needed(self, evidence_fingerprint: str) -> None:
+        """调度器已在当前写事务中复核证据版本，按最新任务和画像状态决定是否入队。"""
+        job = read_job(self.path) or {}
+        metadata = self.service.profile.metadata() or {}
+        if (
+            job.get("state") in {"paused", "failed"}
+            or evidence_fingerprint != metadata.get("version")
+            or not self.service.profile.read_text()
+        ):
+            self.request()
+
+    def _evidence(self, commit):
+        cached = self._evidence_cache
+        if cached is None or cached[0] != commit:
+            cached = (commit, _state(self.service, commit))
+            self._evidence_cache = cached
+        return cached[1]
+
     def step(self, stop: Event) -> None:
         """执行一次模型请求，随后原子地发布结果或保存检查点。"""
-        with vault_transaction(self.paths) as tx:
-            job = read_job(self.path)
-            if not job or job["state"] != "queued" or stop.is_set():
+        with self.service.work.read():
+            checkpoint = read_job(self.path)
+            if not checkpoint or checkpoint["state"] != "queued" or stop.is_set():
                 return
-            facts, confirmed, existing, version = _state(self.service)
-            # 规划和发送使用同一快照，即使用户在请求期间切换了模型。
-            settings = self.service.config
-            config = replace(settings, llm=replace(settings.llm), dream=replace(settings.dream))
-            window = effective_context_window(config.llm, config.dream.context_window)
-            model = config.llm.litellm_model()
-            if job["version"] != version:
-                job.pop("retry_output_tokens", None)
-                job.update(
-                    version=version,
-                    phase="profile",
-                    batch=0,
-                    cursor=[0, 0],
-                    partial="",
-                )
-            if job.get("model") != model:
-                job.pop("retry_output_tokens", None)
-                job.update(model=model, failures=0, retry_at=0)
-                job.pop("error", None)
-            job["window"] = window
-            phase = job["phase"]
-            evidence = facts + confirmed if phase == "profile" else facts
-            prompt = PROFILE if phase == "profile" else INFER
+        commit = checkpoint["evidence_commit"]
+        facts, confirmed, existing, version = self._evidence(commit)
+        job = dict(checkpoint)
+        # 规划和发送使用同一快照，即使用户在请求期间切换了模型。
+        settings = self.service.config
+        config = replace(settings, llm=replace(settings.llm), dream=replace(settings.dream))
+        window = effective_context_window(config.llm, config.dream.context_window)
+        model = config.llm.litellm_model()
+        job["version"] = version
+        if job.get("model") != model:
+            job.pop("retry_output_tokens", None)
+            job.update(model=model, failures=0, retry_at=0)
+            job.pop("error", None)
+        job["window"] = window
+        phase = job["phase"]
+        evidence = facts + confirmed if phase == "profile" else facts
+        prompt = PROFILE if phase == "profile" else INFER
 
-            def payload(batch):
-                if phase == "profile":
-                    return {"draft": job["partial"], "evidence": batch}
-                ids = {row["id"] for row in batch}
-                return {
-                    "facts": batch,
-                    "known": [i.text for i in existing if ids.intersection(i.source_ids)],
-                }
+        def payload(batch):
+            if phase == "profile":
+                return {"draft": job["partial"], "evidence": batch}
+            ids = {row["id"] for row in batch}
+            return {
+                "facts": batch,
+                "known": [i.text for i in existing if ids.intersection(i.source_ids)],
+            }
 
-            minimum_output = 2048 if config.llm.is_spark else 256
-            reserve = min(dream_output_ceiling(config.llm), max(minimum_output, window // 4))
-            rows, next_cursor = _next_batch(
-                evidence, job["cursor"], prompt, payload, window - MESSAGE_OVERHEAD - reserve
-            )
-            request_payload = payload(rows)
+        minimum_output = 2048 if config.llm.is_spark else 256
+        reserve = min(dream_output_ceiling(config.llm), max(minimum_output, window // 4))
+        rows, next_cursor = _next_batch(
+            evidence, job["cursor"], prompt, payload, window - MESSAGE_OVERHEAD - reserve
+        )
+        request_payload = payload(rows)
+        # 检查点仍归本次任务时才预留预算，证据提交号固定至整轮结束。
+        with self.service.work.write():
+            if stop.is_set() or read_job(self.path) != checkpoint:
+                return
             if rows:
                 if job["remaining_requests"] == 0:
                     job.update(state="paused", updated_at=utc_timestamp())
-                    tx.write(self.path, encode_job(job))
+                    save_job(self.path, job)
                     return
                 # 发送前先预留，失败、中断或过期的调用仍计入预算。
                 if job.get("retry_output_tokens", 0) > MAX_DREAM_OUTPUT_TOKENS:
                     job["retry_output_tokens"] = MAX_DREAM_OUTPUT_TOKENS
                 job["requests"] += 1
                 job["remaining_requests"] -= 1
-            tx.write(self.path, encode_job(job))
+            save_job(self.path, job)
         if phase == "profile":
             profile = (
                 self._generate(
@@ -258,11 +275,8 @@ class Dream:
             )
             if any(not set(p.source_ids).issubset(ids) for p in proposals):
                 raise ValueError("Dream proposed evidence outside its source batch.")
-        with vault_transaction(self.paths) as tx:
+        with self.service.work.write():
             if stop.is_set() or read_job(self.path) != job:
-                return
-            _, _, latest_inferences, latest_version = _state(self.service)
-            if latest_version != version:
                 return
             job["batch"] += 1
             job["cursor"] = next_cursor
@@ -270,34 +284,32 @@ class Dream:
             if phase == "profile":
                 job["partial"] = profile
                 if finished:
-                    path: Path = self.paths.vault_dir / "profile.md"
-                    tx.write(path, (profile.rstrip() + "\n").encode("utf-8") if profile else b"")
-                    tx.write(
-                        self.metadata,
-                        encode_job(
-                            {
-                                "version": version,
-                                "generated_at": utc_timestamp(),
-                                "fact_count": len(facts),
-                                "unique_count": len({f["text"] for f in facts}),
-                            }
-                        ),
+                    self.service.profile.publish(
+                        profile.strip(),
+                        {
+                            "version": version,
+                            "evidence_commit": commit,
+                            "generated_at": utc_timestamp(),
+                            "fact_count": len(facts),
+                            "unique_count": len({f["text"] for f in facts}),
+                        },
                     )
                     job.update(phase="hypotheses", batch=0, cursor=[0, 0], partial="")
                     if not facts:
                         job["state"] = "completed"
             else:
-                known = {
-                    (i.text.strip().casefold(), frozenset(i.source_ids)) for i in latest_inferences
-                }
-                for proposal in proposals:
-                    key = (proposal.text.strip().casefold(), frozenset(proposal.source_ids))
-                    if key not in known:
-                        self.service.propose_inference(
-                            proposal.text, proposal.source_ids, proposal.kind
+                if proposals:
+                    known = {item.id for item in self.service.list_inferences()}
+                    for proposal in proposals:
+                        saved = self.service.propose_inference(
+                            proposal.text,
+                            proposal.source_ids,
+                            proposal.kind,
+                            evidence_commit=commit,
                         )
-                        known.add(key)
-                        job["proposed"] += 1
+                        if saved.id not in known:
+                            known.add(saved.id)
+                            job["proposed"] += 1
                 if finished:
                     job["state"] = "completed"
             if not job["remaining_requests"] and job["state"] == "queued":
@@ -307,10 +319,10 @@ class Dream:
             # 本阶段的下一批沿用上次成功取得有效响应时的额度。
             if job["phase"] != phase or job["state"] == "completed":
                 job.pop("retry_output_tokens", None)
-            tx.write(self.path, encode_job(job))
+            save_job(self.path, job)
 
     def failed(self, error: Exception, expected: str, generation: int) -> None:
-        with vault_transaction(self.paths) as tx:
+        with self.service.work.write():
             job = read_job(self.path)
             if job and (job["id"], job["generation"], job["state"]) == (
                 expected,
@@ -331,4 +343,4 @@ class Dream:
                     job["retry_at"] = 0
                     if not job["remaining_requests"] or error.next_limit <= error.used_limit:
                         job["state"] = "paused"
-                tx.write(self.path, encode_job(job))
+                save_job(self.path, job)

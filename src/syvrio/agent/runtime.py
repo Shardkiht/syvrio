@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Iterator
+from contextlib import nullcontext
 from copy import copy
 from dataclasses import asdict, dataclass, field, replace
 from datetime import date
 from itertools import groupby, islice
-from threading import Event
+from threading import Event, Lock
 
 from ..infra.config import ChatConfig, Config, LLMConfig, load_config
 from ..infra.llm import (
@@ -23,11 +24,10 @@ from ..infra.observability.latency import TurnLatency, elapsed_ms, track_turn
 from ..infra.security.secrets import redact_secrets
 from ..infra.session import Session, SessionStore, new_message_id
 from ..infra.session.attachments import AttachmentBatch
-from ..infra.storage.transaction import vault_transaction
 from ..infra.vault.files import load_persona
 from ..memory.background.titles import rename_session
 from ..memory.service import MemoryService
-from ..memory.turn_undo import TurnFileJournal, TurnUndoError
+from ..memory.turn_undo import TurnJournal, TurnUndoError
 from .context import (
     CompactionPhase,
     ContextManager,
@@ -130,6 +130,8 @@ class AgentRuntime:
         config: ChatConfig | None = None,
     ):
         self.service = service
+        self.app_config = service.config
+        self.config_path = service.config_path
         self.model = model
         self.model_config = service.config.llm
         self.sessions = sessions
@@ -150,7 +152,8 @@ class AgentRuntime:
             request_distillation=self._request_distillation,
             model_config=model.config if isinstance(model, LiteLLMChatModel) else None,
         )
-        self.session: Session | None = None
+        self._selection: str | Session | None = None
+        self._selection_lock = Lock()
         self.last_plan = None
         self.last_plan_session: str | None = None
         self._meter_tools: tuple[tuple[dict, dict, int], int] | None = None
@@ -169,22 +172,59 @@ class AgentRuntime:
 
     def turn_settings(self) -> TurnSettings:
         context = copy(self.context)
-        window = effective_context_window(self.service.config.llm, self.config.context_window)
+        window = effective_context_window(self.app_config.llm, self.config.context_window)
         context.config = replace(self.config, context_window=window)
         return TurnSettings(self.model, self.model_config, context, self.recall_queries)
 
+    @property
+    def session(self) -> Session | None:
+        """仅返回已装载的工作会话，后台查询不能因为读取此属性而装载历史。"""
+        selected = self._selection
+        return selected if isinstance(selected, Session) else None
+
+    @session.setter
+    def session(self, value: Session | None) -> None:
+        with self._selection_lock:
+            self._selection = value
+
+    @property
+    def session_id(self) -> str | None:
+        selected = self._selection
+        return selected.id if isinstance(selected, Session) else selected
+
+    def browse(self, session_id: str) -> None:
+        if self.session_id == session_id:
+            return
+        self.close(distill=False)
+        with self._selection_lock:
+            self._selection = session_id
+        self.last_plan = None
+        self.last_plan_session = None
+        self._closed = False
+
     def ensure_session(self) -> Session:
-        if self.session is None:
-            self.session = self.sessions.create()
+        selected = self._selection
+        if isinstance(selected, Session):
+            return selected
+        if selected is None:
+            self.session = created = self.sessions.create()
             self._closed = False
-        return self.session
+            return created
+        # 只在业务操作确实需要历史时装载；并发请求必须共享同一工作对象。
+        loaded = self.sessions.load_snapshot(selected)
+        with self._selection_lock:
+            if self._selection == selected:
+                self._selection = loaded
+            if isinstance(self._selection, Session) and self._selection.id == selected:
+                return self._selection
+        raise RuntimeError("会话在装载时已切换。")
 
     @property
     def has_session(self) -> bool:
-        return self.session is not None
+        return self._selection is not None
 
     def resume(self, session_id: str, *, close_current: bool = False) -> Session:
-        with self.service.write_lock:
+        with self.service.work.write():
             if close_current and self.session is not None and self.session.id == session_id:
                 return self.session
             active = self._active_ask
@@ -210,10 +250,10 @@ class AgentRuntime:
         避免落盘与重读之间的竞态把切换回滚。
         """
         if config is None:
-            path = self.service.config_path
+            path = self.config_path
             config = load_config(path) if path else load_config()
-        self.service.config.llm = config.llm
-        self.service.config.chat = config.chat
+        self.app_config.llm = config.llm
+        self.app_config.chat = config.chat
         self.model = LiteLLMChatModel(config.llm)
         self.model_config = config.llm
         self.summarizer = LLMSummarizer(config.llm)
@@ -230,13 +270,13 @@ class AgentRuntime:
 
     @property
     def model_label(self) -> str:
-        return f"{self.service.config.llm.provider}/{self.service.config.llm.model}"
+        return f"{self.app_config.llm.provider}/{self.app_config.llm.model}"
 
     @property
     def current(self) -> Session:
-        if self.session is None:
+        if not self.has_session:
             raise RuntimeError("会话尚未开始")
-        return self.session
+        return self.ensure_session()
 
     def ask(
         self,
@@ -267,7 +307,7 @@ class AgentRuntime:
         if not text:
             raise ValueError("消息为空。")
         settings = turn_settings or self.turn_settings()
-        with self.service.write_lock:
+        with self.service.work.write():
             if session is None:
                 session = self.ensure_session()
             self._active_ask = session
@@ -306,7 +346,7 @@ class AgentRuntime:
             )
             raise
         finally:
-            with self.service.write_lock:
+            with self.service.work.write():
                 self._active_ask = None
                 deferred = self._deferred_close
                 self._deferred_close = None
@@ -346,22 +386,16 @@ class AgentRuntime:
                 raise GenerationCancelled("Stopped by user")
 
         message_id = new_message_id()
-        journal = TurnFileJournal(
-            self.service.paths, session.id, message_id, self.service.memory_references
-        )
+        journal = TurnJournal(self.service.paths, session.id, message_id)
         record = {"type": "message", "id": message_id, "role": "user", "content": text}
         if attachments:
-            attachments.bind(session.id, message_id)
             record["attachments"] = [asdict(item) for item in attachments.files]
-        try:
-            if replace_message_id is None:
-                self.sessions.append(session, record)
-            else:
-                self.undo(session, expected_latest=replace_message_id, replacement=record)
-        except BaseException:
-            if attachments:
-                attachments.discard()
-            raise
+        with attachments.sending(self.service.paths) if attachments else nullcontext():
+            with self.service.work.write():
+                if replace_message_id is None:
+                    self.sessions.append(session, record)
+                else:
+                    self.undo(session, expected_latest=replace_message_id, replacement=record)
         if on_user_message is not None:
             # 立即上报本条用户消息 ID；生成期间 /undo 用它精确撤销当前回合。
             on_user_message(message_id)
@@ -389,6 +423,7 @@ class AgentRuntime:
         tools = build_tools(
             self.service,
             session,
+            config=self.app_config,
             timeout=config.tool_timeout,
             file_paths=paths,
             evidence=evidence,
@@ -508,6 +543,7 @@ class AgentRuntime:
             next_tools = build_tools(
                 self.service,
                 session,
+                config=self.app_config,
                 timeout=config.tool_timeout,
                 file_paths=document_paths(supplement) if self.allow_local_paths else [],
                 evidence=evidence,
@@ -527,7 +563,7 @@ class AgentRuntime:
             insertion.settle(applied=True)
             if on_inserted is not None:
                 on_inserted(message["id"], text)
-            evidence.invalidate()
+            evidence.invalidate(new_message=True)
             tools = next_tools
             return True
 
@@ -628,7 +664,7 @@ class AgentRuntime:
     def force_compact(
         self, on_compaction: Callable[[CompactionPhase], None] | None = None
     ) -> list[str]:
-        if self.session is None:
+        if not self.has_session:
             return ["This session has no records to compact."]
         context = self.turn_settings().context
         plan = context.prepare(
@@ -659,10 +695,15 @@ class AgentRuntime:
     def close(self, distill: bool = True) -> dict:
         """将剩余工作加入队列，切换或退出时无需等待记忆提取。"""
         result = {"admitted": 0, "queued": 0, "duplicates": 0, "blocked": 0, "error": None}
-        if self.session is None or self._closed:
+        session_id = self.session_id
+        if session_id is None or self._closed:
             return result
         session = self.session
-        if self._active_ask is not None and session.id == self._active_ask.id:
+        if session is None:
+            latest = self.sessions.close_browsed(session_id)
+            if not distill or self.config.extract_on_exit:
+                self._request_distillation(session_id, latest)
+        elif self._active_ask is not None and session.id == self._active_ask.id:
             self._deferred_close = self._active_ask
         else:
             self.sessions.append(session, {"type": "closed"})
@@ -695,9 +736,9 @@ class AgentRuntime:
 
     def context_usage(self) -> int:
         """当前会话的上下文占用；无会话或尚未发送消息时为 0。"""
-        if self.session is None:
+        if not self.has_session:
             return 0
-        return self.estimate_usage(self.session)
+        return self.estimate_usage(self.current)
 
     def estimate_usage(
         self,
@@ -713,18 +754,31 @@ class AgentRuntime:
             active_message_id=active_message_id,
         )
 
-    def _ordinary_tool_tokens(self, session: Session) -> int:
+    def estimate_saved_usage(
+        self, session_id: str, context: ContextManager, *, active_message_id: str | None
+    ) -> int:
+        # 计量只读取工具规格，绑定的会话仅在工具真正执行时才需要装载。
+        return context.estimate_saved_usage(
+            session_id,
+            self._system_prompt(),
+            self._ordinary_tool_tokens(lambda: self.sessions.load(session_id)),
+            active_message_id=active_message_id,
+        )
+
+    def _ordinary_tool_tokens(self, session: Session | Callable[[], Session]) -> int:
         # 附件和文件工具的授权仅对单次输入有效。空闲时，
         # 用下一次普通请求估算会话的上下文用量。
         settings = self._tool_settings()
         cached = self._meter_tools
         if cached is None or cached[0] != settings:
-            tools = build_tools(self.service, session, timeout=self.config.tool_timeout)
+            tools = build_tools(
+                self.service, session, config=self.app_config, timeout=self.config.tool_timeout
+            )
             cached = self._meter_tools = settings, estimate_tool_tokens(tools.schemas())
         return cached[1]
 
     def _tool_settings(self) -> tuple[dict, dict, int]:
-        config = self.service.config
+        config = self.app_config
         return asdict(config.search), asdict(config.fetch), config.retrieval.default_limit
 
     def rename(self, title: str) -> None:
@@ -742,7 +796,7 @@ class AgentRuntime:
 
         传入 message_id 时校验该条消息所属回合。编辑重发时在同一事务中保存替代消息。
         """
-        with self.service.write_lock:
+        with self.service.work.write():
             target_session = session or self.current
             # 在追加和回滚使用的同一把锁内重新核对已保存的末尾记录。
             live = self.sessions.load(target_session.id)
@@ -750,9 +804,9 @@ class AgentRuntime:
                 raise TurnUndoError(
                     "This message is no longer the latest. Refresh the conversation."
                 )
-            target_session.records = live.records
-            target_session.damaged_tail_line = live.damaged_tail_line
-            return self._undo_locked(target_session, message_id, replacement)
+            result = self._undo_locked(live, message_id, replacement)
+            self.sessions.publish_records(target_session, live)
+            return result
 
     def _undo_locked(
         self, target_session: Session, message_id: str | None, replacement: dict | None
@@ -787,32 +841,29 @@ class AgentRuntime:
         events = [{"type": "undo", "id": new_message_id(), "message_id": root_id}]
         if replacement is not None:
             events.append(replacement)
-        journal = TurnFileJournal(
-            self.service.paths, target_session.id, root_id, self.service.memory_references
-        )
-        with self.service.write_lock:
+        journal = TurnJournal(self.service.paths, target_session.id, root_id)
+        with self.service.work.write():
             first = records.index(inputs[0])
-            if not journal.path.is_file() and any(
+            if not journal.has_effects() and any(
                 record.get("turn_undo_recorded") is True for record in records[first:]
             ):
                 raise TurnUndoError(
-                    "This turn's local undo journal is missing. Restore the matching Runtime to undo it."
+                    "This turn's undo records are missing. Restore a complete backup to undo it."
                 )
-            files = journal.plan()
-            with vault_transaction(self.service.paths) as transaction:
-                for path, original in files.items():
-                    transaction.write(path, original)
-                if files:
-                    self.service.audit.write(
-                        "undo_tool_writes",
-                        session=target_session.id,
-                        message=root_id,
-                        paths=len(files),
-                    )
-                self.sessions.append_event_transactionally(target_session, *events)
-                live = self.sessions.load(target_session.id)
+            live = self.sessions.load(target_session.id)
+            if live.latest_turn_inputs() != inputs:
+                raise TurnUndoError("The latest turn changed; refresh before undoing.")
+            restored = journal.restore()
+            if restored:
+                self.service.audit.write(
+                    "undo_tool_writes",
+                    session=target_session.id,
+                    message=root_id,
+                    entities=restored,
+                )
+            self.sessions.append_event_transactionally(target_session, *events)
+            live = self.sessions.load(target_session.id)
             target_session.records = live.records
-            target_session.damaged_tail_line = live.damaged_tail_line
         if self.session is not None and target_session.id == self.session.id:
             self.last_plan = None
             self.last_plan_session = None
@@ -820,8 +871,8 @@ class AgentRuntime:
 
     def _system_prompt(self) -> str:
         """每轮读 vault/SOUL.md，人设改动下一轮即生效；拼接规则见 prompts.py。"""
-        prompt = build_system_prompt(load_persona(self.service.config.vault))
-        if self.service.config.search.enabled:
+        prompt = build_system_prompt(load_persona(self.app_config.vault))
+        if self.app_config.search.enabled:
             prompt += "\n联网能力已启用：search 搜索公开信息，HTTP 传输下 fetch_web 可读取公开网页。用户提供网页时应尝试可用工具，不要声称没有联网能力。实际可调用能力以本轮工具定义为准。"
         # 联网结果常只给到月/日；给出当前日期，模型才能判断“最新”是否成立。
         return f"{prompt}\n\n当前日期：{date.today().isoformat()}"

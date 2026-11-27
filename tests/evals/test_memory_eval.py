@@ -39,8 +39,8 @@ def test_evaluation_preserves_inherited_runtime_and_vault(tmp_path, monkeypatch)
     }
     for key, path in existing.items():
         monkeypatch.setenv(key, str(path))
-    index = outside.index_dir / "vectors.npz"
-    index.parent.mkdir(parents=True)
+    index = outside.vault_dir / "syvrio.sqlite3"
+    index.parent.mkdir(parents=True, exist_ok=True)
     index.write_bytes(b"synthetic index")
     binding = outside.state_dir / "vault-binding.json"
     previous = binding.read_bytes()
@@ -56,7 +56,7 @@ def test_evaluation_preserves_inherited_runtime_and_vault(tmp_path, monkeypatch)
     assert all(os.environ[key] == str(path) for key, path in existing.items())
     assert index.read_bytes() == b"synthetic index"
     assert binding.read_bytes() == previous
-    assert not outside.vault_dir.exists()
+    assert list(outside.vault_dir.iterdir()) == [index]
 
 
 def test_memory_cli_rejects_a_failed_filter_contract(monkeypatch):

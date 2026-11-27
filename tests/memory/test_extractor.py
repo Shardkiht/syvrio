@@ -96,7 +96,7 @@ def test_extraction_preserves_only_the_stated_emotions(wording):
 def test_empty_emotion_is_omitted(empty):
     context = MemoryContext(emotion=empty)
     assert context.emotion is None
-    assert context.markdown_fields() == []
+    assert context.model_dump(exclude_none=True) == {}
 
 
 @pytest.mark.parametrize("adapter", ["chat", "import"])
