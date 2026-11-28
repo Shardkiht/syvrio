@@ -215,7 +215,7 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
     const snapshot = confirmed ?? prior;
     update(() => snapshot?.sessionId === sessionId ? snapshot : { ...initialChatState, sessionId });
     if (sessionId !== null && latest && !confirmed) loadSelectionHistory(sessionId);
-  }, [changeQueue, detach, finishPreview, loadSelectionHistory, update]);
+  }, [changeQueue, detach, finishPreview, loadSelectionHistory, setDialog, update]);
   const onNavigationFailure = useCallback((error: unknown) => {
     finishPreview(false);
     const selected = chatRef.current;
@@ -254,7 +254,7 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
       const loadError = error instanceof Error ? error.message : 'Unable to load the list.';
       setPanel(current => current === opening ? { ...opening, loading: false, loadError } : current);
     }
-  }, []);
+  }, [setPanel]);
 
   const runCommand = useCallback(async (
     line: string,
@@ -430,7 +430,7 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
     } finally {
       finishEdit?.();
     }
-  }, [beginEdit, catalog, dialog, open, checkingSelection, navigate, openFiles, openReview, refreshHealth, refreshSessions, reloadHistory, update]);
+  }, [beginEdit, catalog, dialog, editing, navigation, open, setPanel, checkingSelection, navigate, openFiles, openReview, refreshHealth, refreshSessions, reloadHistory]);
 
   const syncQueue = useCallback(async (receipt?: TurnReceipt) => {
     if (navigation.current) return;
@@ -584,7 +584,7 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
     }
     // 将失败的草稿保存在原消息行之外，因为其他客户端或本端已受理的请求可能已移除该行。
     return true;
-  }, [beginEdit, checkingSelection, discardFailedEdit, reloadHistory, runCommand, showFailedEdit, stream, syncQueue]);
+  }, [beginEdit, checkingSelection, discardFailedEdit, editing, navigation, reloadHistory, runCommand, showFailedEdit, stream, syncQueue]);
 
   const showReceipt = useCallback(async (receipt: TurnReceipt) => {
     if (!chatRef.current.sessionId) {
@@ -665,7 +665,7 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
       }
       return false;
     }
-  }, [checkingSelection, navigation, stream, update]);
+  }, [checkingSelection, editing, navigation, stream, update]);
 
   const stop = useCallback(async () => {
     if (navigation.current || checkingSelection) return;
@@ -739,7 +739,7 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
         ? { kind: 'delete', target: { ...target, notice: error instanceof Error ? error.message : 'Deletion failed.' } }
         : current);
     }
-  }, [deleteTarget, discardFailedEdit, forget, refreshSessions, requestDeleteSession]);
+  }, [deleteTarget, discardFailedEdit, forget, open, refreshSessions, requestDeleteSession, setDialog]);
 
   useEffect(() => {
     let alive = true;
@@ -831,7 +831,7 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
     const { line } = confirm;
     setDialog(null);
     await runCommand(line, true);
-  }, [confirm, runCommand]);
+  }, [confirm, runCommand, setDialog]);
 
   const reviewMemory = useCallback(async (
     kind: ReviewPanel['kind'], action: PendingAction, id: string, text?: string,

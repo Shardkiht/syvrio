@@ -63,6 +63,23 @@ describe('thinking scroll', () => {
     expect(body().scrollTop).toBe(0);
   });
 
+  it('keeps the reading position when the open trace finishes', () => {
+    const { rerender } = render(
+      <Thinking segment={segment({ expanded: true, text: 'thought' })} onToggle={() => {}} />,
+    );
+    const element = body();
+    element.scrollTop = 100;
+    fireEvent.scroll(element);
+
+    rerender(
+      <Thinking
+        segment={segment({ expanded: true, done: true, text: 'thought' })}
+        onToggle={() => {}}
+      />,
+    );
+    expect(element.scrollTop).toBe(100);
+  });
+
   it('follows reasoning text that streams in while expanded', () => {
     const { rerender } = render(
       <Thinking segment={segment({ expanded: true, text: 'line one' })} onToggle={() => {}} />,

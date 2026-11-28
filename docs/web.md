@@ -64,7 +64,7 @@ uv run python scripts/build_web.py --wheel dist/*.whl  # 校验实际 wheel 内�
 - wheel 的 `artifacts = ["src/syvrio/app/web/static/**"]` 把产物打进 wheel；
 - sdist 的 `force-include` 把同一个目录打进 sdist。**`uv build` 默认从 sdist 构建 wheel**，而 `static/` 被 `.gitignore` 忽略，普通 `include` 会被 hatchling 的 VCS 规则过滤掉；只配 `artifacts` 会静默产出不含 Web 资源的 wheel。`force-include` 同时保证：未先执行 `scripts/build_web.py` 时 `uv build` 直接报 `Forced include not found` 而非发布半成品。
 
-通过 PyPI 安装后静态资源已在包内，运行时不需要 Node.js。CI 与手动发布流程都按「`scripts/build_web.py` → `--check` → 前端测试 → `uv build` → `--wheel`」顺序执行，最后一步在发布前拦截缺资源的包。
+通过 PyPI 安装后静态资源已在包内，运行时不需要 Node.js。CI 与手动发布流程都按「`scripts/build_web.py` → `--check` → 前端 lint 与测试 → `uv build` → `--wheel`」顺序执行，最后一步在发布前拦截缺资源的包。
 
 ### 环境变量
 
@@ -375,6 +375,7 @@ Web 面向单用户私有部署。附件可用文件选择器添加，也可在�
 
 ```bash
 uv run pytest -m web -q              # 后端 API / SSE / 并发 / 安全 / 命令目录与分发
+(cd web && corepack pnpm lint)       # ESLint、TypeScript 与 React Hooks 规则
 (cd web && corepack pnpm test)       # 前端单元测试、组件交互、补全与快捷键
 (cd web && corepack pnpm build)      # 类型检查 + 生产构建
 uv run python scripts/build_web.py --check  # 校验已暂存静态资源
