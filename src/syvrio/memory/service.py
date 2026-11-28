@@ -124,6 +124,10 @@ class MemoryTargetError(SyvrioError, ValueError):
     """目标记忆不存在或当前状态不允许本次操作。"""
 
 
+class MemoryRevisionConflict(MemoryTargetError):
+    """写入时目标记忆的修订已与调用方审阅的修订不同。"""
+
+
 class MemoryService:
     def __init__(
         self,
@@ -248,7 +252,7 @@ class MemoryService:
             old = self.require_entry(entry_id)
             patch = MemoryCorrection.model_validate(draft.model_dump(exclude_unset=True))
             if patch.expected_revision is not None and patch.expected_revision != old.revision:
-                raise MemoryTargetError("The memory changed. Refresh before correcting it.")
+                raise MemoryRevisionConflict("The memory changed. Refresh before correcting it.")
             merged = patch.apply_to(old)
             self.validate_draft(merged)
             query = f"{old.text} {patch.text}" if patch.text else old.text

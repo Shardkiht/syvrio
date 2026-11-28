@@ -16,6 +16,7 @@ import type {
   ModelSearchResponse,
   PendingEvidence,
   MemoryPage,
+  MemoryRow,
   InferenceSource,
   ChatSearchHit,
   SessionDeletionPreview,
@@ -81,6 +82,8 @@ export function attachmentUrl(sessionId: string, messageId: string, fileId: stri
 export const api = {
   memories: (topic: string, q: string, after: string, signal: AbortSignal) =>
     jsonRequest<MemoryPage>('/api/memories?' + new URLSearchParams({ topic, q, after }), { signal, cache: 'no-store' }),
+  memory: (id: string, signal: AbortSignal) =>
+    jsonRequest<MemoryRow>(`/api/memories/${encodeURIComponent(id)}`, { signal, cache: 'no-store' }),
   addMemory: (topic: string, text: string, requestId: string) =>
     jsonRequest<{ id: string }>('/api/memories', { method: 'POST', headers: jsonHeaders,
       body: JSON.stringify({ topic, text, request_id: requestId, confirmed: true }) }),
