@@ -5,6 +5,7 @@ from threading import Event
 
 from pydantic import BaseModel, Field
 
+from ...infra.llm.client import ChatModelError, request_api_key
 from ...infra.llm.tokens import truncate_to_tokens
 from ...infra.observability.diagnostics import record_event
 from ...infra.session import Session, SessionStore
@@ -55,7 +56,9 @@ def _exchange(sessions: SessionStore, job: dict):
 
 def generate(service, user: str, answer: str) -> str:
     config = service.config.llm
-    if config.requires_api_key() and not config.api_key():
+    try:
+        api_key = request_api_key(config)
+    except ChatModelError:
         return ""
     # 分别限制对话两侧的长度，避免一次长粘贴挤掉回答。
     budget = min(480, max(32, service.config.chat.context_window // 8))
@@ -63,7 +66,7 @@ def generate(service, user: str, answer: str) -> str:
         "question": truncate_to_tokens(user, budget),
         "answer": truncate_to_tokens(answer, budget),
     }
-    result = ask(service.config, PROMPT, payload, Title)
+    result = ask(service.config, PROMPT, payload, Title, api_key=api_key)
     return " ".join(result.title.split())
 
 

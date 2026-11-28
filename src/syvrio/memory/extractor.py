@@ -8,7 +8,7 @@ from pydantic import ValidationError
 
 from ..infra.config import LLMConfig
 from ..infra.errors import SyvrioError
-from ..infra.llm.client import complete
+from ..infra.llm.client import ChatModelError, complete, request_api_key
 from .models import Candidate, ExtractionResult, MemoryContext, MemoryEmotion
 
 
@@ -114,40 +114,57 @@ def _keep_quoted_emotions(result: ExtractionResult, source: str) -> ExtractionRe
     return result
 
 
+def _extraction_key(config: LLMConfig) -> str:
+    try:
+        return request_api_key(config)
+    except ChatModelError as exc:
+        raise ExtractorError(
+            "未配置 LLM API Key，请运行 syvrio setup 将密钥保存到系统凭据。"
+        ) from exc
+
+
+def _extract_response(completer, config, messages, api_key):
+    options = {"temperature": config.temperature, "api_key": api_key}
+    try:
+        return completer(config, messages, response_format={"type": "json_object"}, **options)
+    except Exception as exc:
+        # 仅对明确拒绝 JSON 输出格式的请求重试，鉴权、超时等故障直接上报。
+        message = str(exc).lower()
+        format_error = any(
+            token in message for token in ("response_format", "json_object", "json mode")
+        )
+        rejected = any(
+            token in message
+            for token in (
+                "unsupported",
+                "not support",
+                "doesn't support",
+                "invalid",
+                "unknown",
+                "unrecognized",
+                "not permitted",
+                "not allowed",
+            )
+        )
+        if getattr(exc, "status_code", None) not in {None, 400, 422} or not (
+            format_error and rejected
+        ):
+            raise ExtractorError(f"LLM 调用失败：{exc}") from exc
+    return completer(config, messages, **options)
+
+
 class LLMExtractor:
     def __init__(self, config: LLMConfig):
         self.config = config
 
     def extract(self, text: str, context: str = "") -> ExtractionResult:
-        if self.config.requires_api_key() and not self.config.api_key():
-            raise ExtractorError("未配置 LLM API Key，请运行 syvrio setup 将密钥保存到系统凭据。")
+        api_key = _extraction_key(self.config)
         user_content = f"既有记忆：\n{context or '（暂无）'}\n\n对话内容：\n{text}"
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_content},
         ]
-        try:
-            response = complete(
-                self.config,
-                messages,
-                temperature=self.config.temperature,
-                response_format={"type": "json_object"},
-            )
-        except Exception as exc:
-            message = str(exc).lower()
-            if not any(
-                token in message
-                for token in (
-                    "response_format",
-                    "json_object",
-                    "json mode",
-                    "unsupported",
-                    "invalid parameter",
-                )
-            ):
-                raise ExtractorError(f"LLM 调用失败：{exc}") from exc
-            # 部分 OpenAI 兼容服务不支持 JSON mode，退回普通对话。
-            response = complete(self.config, messages, temperature=self.config.temperature)
+        response = _extract_response(complete, self.config, messages, api_key)
         content = response.choices[0].message.content or ""
         return _keep_quoted_emotions(parse_extraction(content), text)
 
@@ -219,8 +236,7 @@ class ImportExtractor:
         self.topics = [topic for topic in (topics or []) if topic]
 
     def extract(self, text: str, context: str = "") -> ExtractionResult:
-        if self.config.requires_api_key() and not self.config.api_key():
-            raise ExtractorError("未配置 LLM API Key，请运行 syvrio setup 将密钥保存到系统凭据。")
+        api_key = _extraction_key(self.config)
         topic_hint = (
             f"\n\nvault 已有主题（新条目优先归入这里的既有主题，确属新领域才新建）：\n{'、'.join(self.topics)}"
             if self.topics
@@ -236,41 +252,17 @@ class ImportExtractor:
                 if not feedback
                 else f"{user_content}\n\n上一轮输出被拒绝：{feedback}\n请修正后重新输出完整 JSON。"
             )
-            response = self._complete(content)
+            messages = [
+                {"role": "system", "content": IMPORT_PROMPT},
+                {"role": "user", "content": content},
+            ]
+            response = _extract_response(self.completer, self.config, messages, api_key)
             try:
                 result = parse_import(response.choices[0].message.content or "")
                 return _keep_quoted_emotions(result, text)
             except (ExtractorError, json.JSONDecodeError) as exc:
                 feedback = str(exc)[:300]
         raise ExtractorError(f"导入抽取连续 {self.max_attempts} 次未通过格式校验：{feedback}")
-
-    def _complete(self, content: str):
-        messages = [
-            {"role": "system", "content": IMPORT_PROMPT},
-            {"role": "user", "content": content},
-        ]
-        try:
-            return self.completer(
-                self.config,
-                messages,
-                temperature=self.config.temperature,
-                response_format={"type": "json_object"},
-            )
-        except Exception as exc:
-            message = str(exc).lower()
-            if not any(
-                token in message
-                for token in (
-                    "response_format",
-                    "json_object",
-                    "json mode",
-                    "unsupported",
-                    "invalid parameter",
-                )
-            ):
-                raise ExtractorError(f"LLM 调用失败：{exc}") from exc
-            # 部分 OpenAI 兼容服务不支持 JSON mode，退回普通对话。
-            return self.completer(self.config, messages, temperature=self.config.temperature)
 
 
 def split_chunks(text: str, max_chars: int = 6000) -> list[str]:
