@@ -34,6 +34,16 @@ it('shows the drawer before loading and requires direction, boundaries and a sec
   fireEvent.change(screen.getByLabelText('Later fact valid from'),{target:{value:'2026-09'}});
   fireEvent.click(review);
   expect(apply).not.toHaveBeenCalled();
+  expect(screen.getByText('Previous fact “Travels by bus” is valid through 2026-08.')).toBeTruthy();
+  expect(screen.getByText('Later fact “Travels by bike” is valid from 2026-09.')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button',{name:'Back'}));
+  fireEvent.change(screen.getByLabelText('Later fact'),{target:{value:'a'}});
+  fireEvent.click(screen.getByRole('button',{name:'Review change'}));
+  expect(screen.getByText('Previous fact “Travels by bike” is valid through 2026-08.')).toBeTruthy();
+  expect(screen.getByText('Later fact “Travels by bus” is valid from 2026-09.')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button',{name:'Back'}));
+  fireEvent.change(screen.getByLabelText('Later fact'),{target:{value:'b'}});
+  fireEvent.click(screen.getByRole('button',{name:'Review change'}));
   fireEvent.click(screen.getByRole('button',{name:'Confirm'}));
   await waitFor(() => expect(apply).toHaveBeenCalledWith(42,{action:'transition',selected_id:'b',previous_end:'2026-08',current_start:'2026-09'}));
   expect(await screen.findByText('No maintenance suggestions on this page.')).toBeTruthy();
