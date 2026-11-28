@@ -288,6 +288,9 @@ class ScoreBreakdown:
         )
 
 
+_CORE_WEIGHTS = {"latin_phrase": (6.0, 2.0), "cjk_gram": (1.0, 0.5)}
+
+
 def score_entry(
     result: SearchResult,
     analysis: QueryAnalysis,
@@ -297,17 +300,16 @@ def score_entry(
     title = result.title.lower()
     snippet = result.snippet.lower()
     title_core = snippet_core = 0.0
+    covered = 0
     for term in analysis.core_terms:
-        if term.kind == "latin_phrase":
-            if _match(term, title):
-                title_core += 6.0
-            elif _match(term, snippet):
-                snippet_core += 2.0
-        elif _match(term, title):
-            title_core += 3.0 if term.kind != "cjk_gram" else 1.0
+        title_weight, snippet_weight = _CORE_WEIGHTS.get(term.kind, (3.0, 1.0))
+        if _match(term, title):
+            title_core += title_weight
         elif _match(term, snippet):
-            snippet_core += 1.0 if term.kind != "cjk_gram" else 0.5
-    covered = sum(1 for term in analysis.core_terms if _match(term, title) or _match(term, snippet))
+            snippet_core += snippet_weight
+        else:
+            continue
+        covered += 1
     core_coverage = 2.0 if analysis.core_terms and covered == len(analysis.core_terms) else 0.0
     intent = sum(
         0.5
