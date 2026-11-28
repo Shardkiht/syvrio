@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { api, ApiError, newRequestId } from '../../api/client';
 import type { MemoryRow } from '../../types';
 import { usePanelRead } from './usePanelRead';
+import { Highlight, literalPattern } from '../../shared/Highlight';
 
 function MemoryEditor({ entry, topic, onCancel, onSaved }: {
   entry?: MemoryRow; topic: string; onCancel: (refresh: boolean) => void; onSaved: () => void;
@@ -78,6 +79,7 @@ type PageProps = {
 
 function MemoryPage({ topic, query, after, page, editing, setEditing, previous, next, changed }: PageProps) {
   const { value, error, retry } = usePanelRead(undefined, signal => api.memories(topic, query, after, signal));
+  const pattern = literalPattern(query, 'ascii');
   return <>
     <div className="memory-actions"><button type="button" disabled={editing !== null}
       onClick={() => setEditing('')}>Add memory</button></div>
@@ -90,7 +92,8 @@ function MemoryPage({ topic, query, after, page, editing, setEditing, previous, 
           {!topic && <small>{row.topic}</small>}
           {editing === row.id ? <MemoryEditor entry={row} topic={row.topic}
             onCancel={refresh => { setEditing(null); if (refresh) retry(); }} onSaved={changed} />
-            : <><p>{row.text}</p><button disabled={editing !== null} onClick={() => setEditing(row.id)}>Edit</button></>}
+            : <><p><Highlight text={row.text} pattern={pattern} /></p>
+              <button disabled={editing !== null} onClick={() => setEditing(row.id)}>Edit</button></>}
         </li>)}</ul>}
     </div>
     {(page > 1 || value?.next) && <nav className="memory-pages" aria-label="Memory pages">

@@ -38,6 +38,21 @@ it('waits for committed IME input, cancels the previous read and clears the resu
   expect(document.activeElement).toBe(input);
 });
 
+it('keeps the first literal title match separate from the ellipsized context', async () => {
+  const title = 'A long session title before the match — 玻璃[A] and 玻璃[a]';
+  vi.spyOn(api, 'searchChats').mockResolvedValue({ results: [{
+    title, session_id: 's', role: 'user', message_id: 'm', excerpt: '玻璃[a] appears twice: 玻璃[A].',
+  }] });
+  const input = openSearch();
+  fireEvent.change(input, { target: { value: '玻璃[a]' } });
+  fireEvent.submit(input.closest('form')!);
+  const heading = await screen.findByTitle(title);
+  expect(heading.textContent).toBe(title);
+  expect(heading.querySelector(':scope > mark')?.textContent).toBe('玻璃[A]');
+  expect(Array.from(heading.closest('button')!.querySelectorAll('mark'), mark => mark.textContent))
+    .toEqual(['玻璃[A]', '玻璃[a]', '玻璃[a]', '玻璃[A]']);
+});
+
 it('dismisses on an outside click without taking focus or leaving a pending search', async () => {
   vi.useFakeTimers();
   const search = vi.spyOn(api, 'searchChats');

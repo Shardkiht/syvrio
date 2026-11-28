@@ -1,5 +1,4 @@
 .command-panel.topics-browser {
-  width: min(540px, 100%);
   padding: 0;
   gap: 0;
 }
@@ -7,7 +6,9 @@
 .topics-view {
   display: flex;
   flex-direction: column;
+  flex: 1;
   min-height: 0;
+  overflow-y: auto;
 }
 
 .topics-view[hidden] { display: none; }
@@ -25,6 +26,18 @@
   background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--radius-sm);
 }
 .memory-editor p { flex-basis: 100%; }
+.memory-conflict {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+  padding: 10px 12px;
+  border-inline-start: 3px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--panel-2);
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.memory-conflict strong { color: var(--muted); font-size: 13px; }
 .memory-notice { color: var(--muted); }
 .topics-view h2,
 .topics-view h3,
@@ -54,7 +67,13 @@
 .topics-search > svg,
 .topics-row > svg { flex: none; }
 .topics-search input { min-height: 36px; }
-.topics-scroll { min-height: 0; overflow: auto; overscroll-behavior: contain; }
+.topics-scroll {
+  flex: 1 0 4rem;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
 .topics-catalog { padding: 2px 10px 12px; }
 .topics-group + .topics-group { margin-top: 8px; }
 .topics-group h3 {
@@ -81,6 +100,7 @@
 }
 
 .topics-row-title { flex: 1; min-width: 0; font-size: 15px; line-height: 1.4; overflow-wrap: anywhere; }
+.topics-match-path { display: block; margin-block-start: 2px; color: var(--muted); font-size: 13px; }
 .topics-row > svg { color: var(--muted); }
 .topics-count { flex: none; }
 .topics-chevron {

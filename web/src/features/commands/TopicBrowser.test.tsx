@@ -33,11 +33,16 @@ describe('TopicBrowser', () => {
     const input = screen.getByRole<HTMLInputElement>('searchbox');
     fireEvent.change(input, { target: { value: 'CRAFTS' } });
     expect(screen.queryByRole('button', { name: /Reading notes/ })).toBeNull();
+    expect(screen.getByRole('heading', { name: 'crafts' }).querySelector('mark')?.textContent).toBe('crafts');
+    fireEvent.change(input, { target: { value: 'TS/REA' } });
+    const pathMatch = screen.getByRole('button', { name: /Pattern reading/ });
+    expect(pathMatch.querySelector('small mark')?.textContent).toBe('ts/rea');
     fireEvent.change(input, { target: { value: 'Reading notes' } });
     const list = screen.getByRole('region', { name: 'Topic list' });
     list.scrollTop = 115;
     fireEvent.keyDown(input, { key: 'ArrowDown' });
     const row = screen.getByRole('button', { name: 'Reading notes 2 entries' });
+    expect(row.querySelector('mark')?.textContent).toBe('Reading notes');
     expect(document.activeElement).toBe(row);
     fireEvent.click(row);
     expect(readTopic).toHaveBeenCalledWith(topics[0].topic, '', '', expect.any(AbortSignal));
@@ -116,6 +121,21 @@ describe('TopicBrowser', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Previous' }));
     expect(read).toHaveBeenLastCalledWith('', 'seed', '', expect.any(AbortSignal));
     expect(await screen.findByText('Keep **literal markers**.')).toBeTruthy();
+  });
+
+  it('marks literal memory matches in the original text and keeps editing plain text', async () => {
+    const text = '玻璃[A].É\n  玻璃[a].É <mark>玻璃[a].é</mark>';
+    vi.spyOn(api, 'memories').mockReset().mockResolvedValue({
+      next: null, entries: [{ ...reading.entries[0], text }],
+    });
+    render(<TopicBrowser initialTopic="" readTopics={vi.fn()} onClose={vi.fn()} />);
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: ' 玻璃[a].É ' } });
+    const item = await screen.findByRole('listitem');
+    const body = item.querySelector('p')!;
+    expect(body.textContent).toBe(text);
+    expect([...body.querySelectorAll('mark')].map(mark => mark.textContent)).toEqual(['玻璃[A].É', '玻璃[a].É']);
+    fireEvent.click(within(item).getByRole('button', { name: 'Edit' }));
+    expect(screen.getByLabelText<HTMLTextAreaElement>('Memory text').value).toBe(text);
   });
 
   it('keeps a manual edit inline and only writes after confirmation', async () => {

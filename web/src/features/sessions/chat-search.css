@@ -53,12 +53,16 @@
 }
 .chat-search-result-head { min-width: 0; }
 .chat-search-result-head strong { min-width: 0; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; }
+.chat-search-matched-title { display: inline-flex; }
+.chat-search-matched-title > span, .chat-search-matched-title > mark {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: pre;
+}
+.chat-search-matched-title > mark { flex: none; max-width: 100%; }
 .chat-search-result-head small { flex: none; color: var(--muted); }
 .chat-search-excerpt {
   color: var(--muted); font-size: .875rem; line-height: 1.5; overflow-wrap: anywhere;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
 }
-.sidebar-chat-search mark { color: var(--text); background: var(--accent-soft); border-radius: 2px; font-weight: 600; }
 @media (max-width: 767px) {
   .sidebar-head {
     display: grid; grid-template-columns: 1fr auto auto; grid-template-rows: 44px 0;
