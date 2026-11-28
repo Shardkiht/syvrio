@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { api } from '../../api/client';
 import type { EditedDraft, FailedEdit } from './editRecovery';
 import type { MessageDraft } from '../../types';
@@ -73,7 +73,14 @@ export function RecoveredEdit({ edit, busy, onChange, onRetry, onDiscard }: {
   const text = draft.text.trim();
   const [copied, setCopied] = useState(false);
   useEffect(() => setCopied(false), [draft]);
-  const input = <textarea aria-label={composing ? 'Edit last message' : 'Saved edit text'} autoFocus={composing}
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  useLayoutEffect(() => {
+    const field = inputRef.current;
+    if (!composing || !field) return;
+    const end = field.value.length;
+    field.setSelectionRange(end, end);
+  }, [composing]);
+  const input = <textarea ref={inputRef} aria-label={composing ? 'Edit last message' : 'Saved edit text'} autoFocus={composing}
       onKeyDown={event => {
         if (composing && event.key === 'Escape' && !busy && !event.nativeEvent.isComposing) {
           event.stopPropagation();

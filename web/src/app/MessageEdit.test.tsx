@@ -116,12 +116,19 @@ describe('recovering a message edit', () => {
     expect(editor.getAttribute('rows')).toBe('1');
     expect(bubble()?.contains(within(row).getByRole('button', { name: 'Resend' }))).toBe(false);
     expect(editor).toHaveProperty('value', 'original question');
+    expect(editor).toHaveProperty('selectionStart', 'original question'.length);
+    expect(editor).toHaveProperty('selectionEnd', 'original question'.length);
+
     expect(within(row).getByRole('link', { name: 'notes.txt' })).toBeTruthy();
     expect(screen.queryByRole('region', { name: 'Saved message edit' })).toBeNull();
 
     fireEvent.change(editor, { target: { value: 'first line\nsecond line\n' } });
     expect(bubble()?.querySelector('.bubble-edit-measure')?.textContent).toBe('first line\nsecond line\n\u200b');
     expect(document.activeElement).toBe(editor);
+    (editor as HTMLTextAreaElement).setSelectionRange(2, 2);
+    fireEvent.change(editor, { target: { value: 'fixrst line\nsecond line\n', selectionStart: 3, selectionEnd: 3 } });
+    expect(editor).toHaveProperty('selectionStart', 3);
+
     fireEvent.keyDown(editor, { key: 'Escape' });
     expect(bubble()?.textContent).toBe('original question');
     expect(within(row).queryByRole('textbox')).toBeNull();
