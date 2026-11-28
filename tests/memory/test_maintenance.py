@@ -11,7 +11,7 @@ from syvrio.memory.background import BackgroundMemory
 from syvrio.memory.background import maintenance as scanner
 from syvrio.memory.background.jobs import list_jobs
 from syvrio.memory.maintenance_review import ReviewConflict, ReviewDecision
-from syvrio.memory.models import MemoryContext, MemoryCorrection, MemoryDraft
+from syvrio.memory.models import Entry, MemoryContext, MemoryCorrection, MemoryDraft
 from syvrio.memory.turn_undo import TurnJournal
 
 
@@ -91,13 +91,73 @@ def test_disjoint_effective_dates_excluded_before_model(service, monkeypatch):
             MemoryDraft(
                 topic="schedule",
                 text="Alice works Tuesdays",
-                context=MemoryContext(event_time=year),
+                context=MemoryContext(valid_from=year, valid_to=year),
             )
         )
     calls = fake_model(monkeypatch, lambda *_: "conflict")
     task = scanner.Maintenance(service)
     scan(task)
     assert not calls and not task.reviews.pending()["items"]
+
+
+@pytest.mark.parametrize(
+    "state_context",
+    [
+        MemoryContext(event_time="2025-01-01", valid_from="2025-01"),
+        MemoryContext(event_time="2025-01-01"),
+    ],
+)
+def test_recorded_event_does_not_expire_ongoing_claim(service, monkeypatch, state_context):
+    for body, context in (
+        ("Station kettle is offline indefinitely", state_context),
+        ("Station kettle is online", MemoryContext(event_time="2025-02-01")),
+    ):
+        service.add(MemoryDraft(topic="station", text=body, context=context))
+    calls = fake_model(monkeypatch, lambda *_: "conflict")
+    task = scanner.Maintenance(service)
+    scan(task)
+    assert calls and len(task.reviews.pending()["items"]) == 1
+
+
+def test_different_event_dates_reach_model_with_original_precision(service, monkeypatch):
+    for date in ("2024", "2025-09"):
+        service.add(
+            MemoryDraft(
+                topic="station",
+                text="Station kettle inspection",
+                context=MemoryContext(event_time=date),
+            )
+        )
+    calls = fake_model(monkeypatch, lambda *_: None)
+    task = scanner.Maintenance(service)
+    scan(task)
+    assert calls
+    pair = [calls[0]["target"], *calls[0]["candidates"]]
+    assert {fact["context"]["event_time"] for fact in pair} == {"2024", "2025-09"}
+    assert not task.reviews.pending()["items"]
+
+
+def test_common_terms_find_distant_match_with_bounded_shortlist(monkeypatch):
+    words = ["station", "kettle", "offline"]
+    texts = [" ".join(words), *(words[i % 3] for i in range(600)), "offline station kettle"]
+    rows = [
+        Entry(id=f"id{i:04}", topic="station", timestamp="", text=t) for i, t in enumerate(texts)
+    ]
+    index = scanner.CandidateIndex(SimpleNamespace(active_entries_at=lambda _: rows), 1)
+    search = index.retriever.search
+    sizes = []
+
+    def measure(query, *, limit, snapshot):
+        sizes.append(len(snapshot.records))
+        assert limit == 4
+        return search(query, limit=limit, snapshot=snapshot)
+
+    monkeypatch.setattr(index.retriever, "search", measure)
+    for target, match in ((rows[0], rows[-1]), (rows[-1], rows[0])):
+        hits = index.candidates(target)
+        assert match.id in hits
+        assert len(hits) <= 4
+    assert len(sizes) == 2 and max(sizes) <= 128
 
 
 def test_ignore_is_version_specific_and_stale_confirmation_is_refused(service, monkeypatch):
