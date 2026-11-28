@@ -51,7 +51,7 @@ python evals/recall_gold_eval.py --keyword
 
 ## 从历史文件 Vault 导入
 
-在仓库根目录运行 `uv sync --frozen`。用 `scripts/import_legacy_vault.py` 迁移历史文件库。先配置并初始化使用当前表结构的目标 SQLite Vault，再停服导入。下例在副本上预演，参数顺序从最新来源排到最旧来源。
+使用与目标程序同版本的 `scripts/import_legacy_vault.py` 迁移历史文件库。通过 PyPI 部署时，从该版本的 PyPI 源码包解压 `scripts/`，用已安装该版本 wheel 的 Python 执行脚本。使用 Git 工作树时，在仓库根目录运行 `uv sync --frozen`。先配置并初始化使用当前表结构的目标 SQLite Vault，再停服导入。下例在副本上预演，参数顺序从最新来源排到最旧来源。
 
 ```sh
 uv run python scripts/import_legacy_vault.py --source /data/vault-v2 /data/runtime-v2 --source /data/old-vault /data/old-runtime --target /data/sqlite-vault --timezone Asia/Shanghai
