@@ -6,7 +6,13 @@ from pathlib import Path
 
 import pytest
 
-from syvrio.infra.config import ConfigError, load_config, write_config
+from syvrio.infra.config import (
+    ConfigError,
+    WebShareConfig,
+    load_config,
+    update_config,
+    write_config,
+)
 from syvrio.infra.config import files as config_files
 
 pytestmark = pytest.mark.config
@@ -124,6 +130,28 @@ def test_config_read_completes_interrupted_save(tmp_path, monkeypatch):
     saved = load_config(entry)
     assert saved.chat.context_window == 90000 and saved.llm.model == "new-model"
     assert not (tmp_path / ".syvrio-config-transaction.json").exists()
+
+
+def test_live_settings_advance_baseline_without_overwriting_other_writers(tmp_path):
+    entry = tmp_path / "config.toml"
+    config = load_config(entry)
+    chat = config.chat
+    update_config(entry, config, llm=replace(config.llm, model="first-model"))
+    update_config(
+        entry, config, web_share=WebShareConfig(domain="first.example", github_user_id="42")
+    )
+    other = load_config(entry)
+    assert other.llm.model == "first-model" and other.web_share == config.web_share
+    other.llm.model = "external-model"
+    other.web_share.domain = "external.example"
+    write_config(entry, other)
+
+    update_config(entry, config, context_window=125_000)
+    assert chat is config.chat and chat.context_window == 125_000
+    saved = load_config(entry)
+    assert saved.llm.model == "external-model"
+    assert saved.web_share.domain == "external.example"
+    assert saved.chat.context_window == chat.context_window
 
 
 def test_restore_default_after_dataclass_replace(tmp_path):

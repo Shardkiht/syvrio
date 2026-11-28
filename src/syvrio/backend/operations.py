@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
-from dataclasses import asdict, replace
+from dataclasses import asdict
 from threading import RLock
 
 from pydantic import TypeAdapter
@@ -12,7 +12,7 @@ from pydantic import TypeAdapter
 from ..application.contracts import ImportDocument
 from ..application.memory import MemoryUseCases
 from ..application.reflection import ReflectionUseCases
-from ..infra.config import WebShareConfig, write_config
+from ..infra.config import WebShareConfig, update_config
 from ..infra.search import SearchQuery, build_search_router
 from ..infra.search.tool_request import run_tool_search
 from ..infra.session import SessionStore
@@ -97,9 +97,7 @@ class ResidentOperations:
                 raise ValueError("请用 --github-id 指定唯一允许登录的 GitHub 数字账号 ID。")
             share = WebShareConfig(domain=host, github_user_id=account)
             if save and cfg.web_share != share:
-                pending = replace(cfg, web_share=share)
-                write_config(self.service.config_path, pending)
-                cfg.web_share, cfg._baseline = share, pending._baseline
+                update_config(self.service.config_path, cfg, web_share=share)
             return asdict(share)
 
     def import_documents(self, upload, apply: bool):
