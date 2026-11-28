@@ -49,22 +49,52 @@ class InferenceStore:
                 for row in rows
             ]
 
+    @staticmethod
+    def _references(db, item_id):
+        return [
+            (row[0], row[1])
+            for row in db.execute(
+                """SELECT memory_id,memory_version FROM inference_sources
+                   WHERE inference_id=? ORDER BY position""",
+                (item_id,),
+            )
+        ]
+
+    def get(self, item_id: str) -> Inference | None:
+        with transaction(self.paths, write=False) as db:
+            row = db.execute(
+                "SELECT id,kind,status,text,created_at,updated_at FROM inferences WHERE id=?",
+                (item_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            refs = self._references(db, item_id)
+            return Inference(
+                **dict(row),
+                source_ids=[key for key, _ in refs],
+                source_versions={key: version for key, version in refs if version is not None},
+            )
+
+    def candidates_for_source(self, kind: str, key: str, version: int) -> list[tuple[str, str]]:
+        with transaction(self.paths, write=False) as db:
+            return [
+                (row[0], row[1])
+                for row in db.execute(
+                    """SELECT i.id, i.text FROM inference_sources s JOIN inferences i ON i.id=s.inference_id
+                   WHERE s.memory_id=? AND s.memory_version=? AND i.kind=? ORDER BY i.id""",
+                    (key, version, kind),
+                )
+            ]
+
     def source_references(self, item_id: str) -> list[tuple[str, int | None]]:
         with transaction(self.paths, write=False) as db:
             if not db.execute("SELECT 1 FROM inferences WHERE id=?", (item_id,)).fetchone():
                 raise KeyError(item_id)
-            return [
-                (row[0], row[1])
-                for row in db.execute(
-                    """SELECT memory_id,memory_version FROM inference_sources
-                       WHERE inference_id=? ORDER BY position""",
-                    (item_id,),
-                )
-            ]
+            return self._references(db, item_id)
 
     def add(self, item):
         with transaction(self.paths):
-            old = next((x for x in self.all() if x.id == item.id), None)
+            old = self.get(item.id)
             if old is not None and old != item:
                 raise ValueError("Duplicate inference id.")
             self.record(item)
