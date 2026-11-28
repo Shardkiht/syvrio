@@ -217,7 +217,7 @@ class Records:
         key = row["id"]
         if key in self.inferences:
             return
-        fields = {k: row[k] for k in Inference.model_fields}
+        fields = {k: row[k] for k in Inference.model_fields if k in row}
         for k in ("created_at", "updated_at"):
             fields[k] = instant(fields[k], self.zone)
         item = Inference.model_validate(fields)

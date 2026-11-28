@@ -15,6 +15,49 @@ from syvrio.infra.storage.paths import SyvrioPaths
 pytestmark = pytest.mark.memory
 
 
+def test_import_legacy_inference_without_evidence_version(tmp_path, monkeypatch):
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2] / "scripts"))
+    from vault_import.records import Records
+    from vault_import.snapshot import Snapshot
+    from vault_import.target import transfer
+
+    old = tmp_path / "old"
+    facts = old / "memories" / "notes"
+    facts.mkdir(parents=True)
+    stamp = "2024-02-03T01:02:03+00:00"
+    (facts / "test.md").write_text(
+        "# Notes\n\n* **Core**\n  * `id`: `mem-one`\n  * `status`: `active`\n"
+        "  * `text`: `Example fact`\n\n  **Extensions**\n"
+        f"  * `recorded_at`: `{stamp}`\n"
+    )
+    hypotheses = old / "inferences"
+    hypotheses.mkdir()
+    (hypotheses / "example.md").write_text(
+        "# Example\n\n* **Core**\n  * `id`: `inf-one`\n  * `kind`: `habit`\n"
+        "  * `text`: `Example inference`\n  * `status`: `confirmed`\n"
+        "  * `source_ids`:\n    * `id`: `mem-one`\n\n  **Extensions**\n"
+        f"  * `created_at`: `{stamp}`\n  * `updated_at`: `{stamp}`\n"
+    )
+    paths = SyvrioPaths(tmp_path / "target", tmp_path / "runtime")
+    with closing(sqlite3.connect(":memory:")) as db:
+        archive = Snapshot(db)
+        archive.capture([(old, None)])
+        records = Records(archive, ZoneInfo("UTC"))
+        assert transfer(records, paths)["inferences"] == 1
+        assert not transfer(records, paths)
+    with transaction(paths, write=False) as target:
+        assert tuple(target.execute("SELECT id,status FROM inferences").fetchone()) == (
+            "inf-one",
+            "confirmed",
+        )
+        assert tuple(
+            target.execute("SELECT memory_id,memory_version FROM inference_sources").fetchone()
+        ) == (
+            "mem-one",
+            None,
+        )
+
+
 def test_import_session_and_rollback(tmp_path, monkeypatch):
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2] / "scripts"))
     from vault_import.records import Records
