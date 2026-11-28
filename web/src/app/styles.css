@@ -2079,15 +2079,9 @@ button.fold-summary:hover {
   .sidebar { position: relative; margin-inline-start: 0; transition: margin-inline-start var(--sidebar-motion); }
   .sidebar-divider {
     position: absolute; inset-block: 0; inset-inline-end: -1px; width: 10px;
-    display: grid; place-items: center; cursor: col-resize; touch-action: none; user-select: none;
+    cursor: ew-resize; touch-action: none; user-select: none;
   }
-  .sidebar-divider::after {
-    content: ''; width: 3px; height: 30px; border-radius: 2px; background: var(--border-strong);
-  }
-  .sidebar-divider:hover::after, .sidebar-divider:focus-visible::after, .sidebar-divider[data-dragging]::after {
-    background: var(--accent);
-  }
-  .sidebar-divider:focus-visible { outline: none; }
+  .sidebar-divider:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
   .app:has(.sidebar-divider[data-dragging]) { user-select: none; }
   .app.sidebar-collapsed .sidebar { margin-inline-start: calc(0px - var(--sidebar-w)); }
   .sessions-toggle {

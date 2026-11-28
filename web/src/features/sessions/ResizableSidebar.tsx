@@ -45,7 +45,7 @@ export function ResizableSidebar({ open, children }: { open: boolean; children: 
     {resizable && <div className="sidebar-divider" role="separator" tabIndex={0}
       aria-label="Chat sidebar width" aria-orientation="vertical" aria-controls="session-sidebar"
       aria-valuemin={MIN_WIDTH} aria-valuemax={max} aria-valuenow={width} aria-valuetext={`${width} pixels`}
-      title="Drag to resize · Double-click to reset" data-dragging={!!drag || undefined}
+      data-dragging={!!drag || undefined}
       onPointerDown={event => {
         if (drag || !event.isPrimary || event.button !== 0) return;
         event.currentTarget.setPointerCapture(event.pointerId);
