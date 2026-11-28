@@ -1,4 +1,4 @@
-"""LLM 首选 Provider 的离线回归：排序提示、回退、供应商暂停与缓存隔离。"""
+"""LLM 首选 Provider 的离线回归：优先级、回退、供应商暂停与缓存隔离。"""
 
 from __future__ import annotations
 
@@ -69,25 +69,28 @@ def test_auto_keeps_configured_order():
     first = _Provider("first", [_strong("first", "https://example.com/1")])
     second = _Provider("second", [_strong("second", "https://example.com/2")])
     router = SearchRouter({"first": first, "second": second}, order=["first", "second"])
-    outcome = router.search(SearchQuery("tibo"))
+    outcome = router.search(SearchQuery("tibo", limit=1))
     assert outcome.provider == "first"
     assert not second.calls
 
 
 def test_requested_provider_is_tried_first_and_not_locked():
-    weak = _Provider(
+    first = _Provider(
         "searxng",
-        [SearchResult("Unrelated page", "https://example.com/x", "")],
+        [SearchResult("First page", "https://example.com/x", "", None, "searxng")],
     )
-    strong = _Provider("anysearch", [_strong("anysearch", "https://example.com/a")])
+    second = _Provider("anysearch", [_strong("anysearch", "https://example.com/a")])
     router = SearchRouter(
-        {"searxng": weak, "anysearch": strong},
+        {"searxng": first, "anysearch": second},
         order=["anysearch", "searxng"],
     )
-    outcome = router.search(SearchQuery("tibo", providers=("searxng",)))
-    assert weak.calls and strong.calls
-    assert outcome.provider == "anysearch"
-    assert outcome.results[0].url == "https://example.com/a"
+    outcome = router.search(SearchQuery("tibo", providers=("searxng",), limit=2))
+    assert first.calls and second.calls
+    assert [item.provider for item in outcome.results] == ["searxng", "anysearch"]
+    assert [item.url for item in outcome.results] == [
+        "https://example.com/x",
+        "https://example.com/a",
+    ]
 
 
 def test_unavailable_requested_provider_degrades_with_diagnostics():
@@ -158,9 +161,9 @@ def test_cache_key_separates_preferred_and_auto(tmp_path):
         order=["first", "second"],
         cache=SearchCache(vault_paths(tmp_path / "vault"), 60),
     )
-    preferred = router.search(SearchQuery("tibo", providers=("second",)))
+    preferred = router.search(SearchQuery("tibo", providers=("second",), limit=1))
     assert preferred.provider == "second" and not preferred.cached
-    auto = router.search(SearchQuery("tibo"))
+    auto = router.search(SearchQuery("tibo", limit=1))
     assert auto.provider == "first"
     assert not auto.cached
     assert len(first.calls) == 1 and len(second.calls) == 1
@@ -198,7 +201,7 @@ def test_tool_schema_exposes_enabled_providers(tmp_path):
     assert "官方公告" in spec.description
     assert "个人爆料" in spec.description
 
-    outcome = tools.execute("search", {"query": "tibo", "providers": ["anysearch"]})
+    outcome = tools.execute("search", {"query": "tibo", "providers": ["anysearch"], "limit": 1})
     assert outcome.ok is True
     assert first.calls == []
     assert second.calls
@@ -213,31 +216,37 @@ def test_llm_multiple_providers_run_in_requested_order():
         {"first": first, "second": second, "third": third},
         order=["first", "second", "third"],
     )
-    outcome = router.search(SearchQuery("tibo", providers=("second", "third"), strategy="auto"))
+    outcome = router.search(
+        SearchQuery("tibo", providers=("second", "third"), strategy="auto", limit=1)
+    )
     assert outcome.attempted == ["second"]
     assert not first.calls and not third.calls
     assert outcome.provider == "second"
 
 
-def test_auto_falls_back_after_llm_list_quality_is_weak():
-    weak = _Provider("searxng", [SearchResult("Unrelated", "https://example.com/w", "")])
-    strong = _Provider("anysearch", [_strong("anysearch", "https://example.com/a")])
-    router = SearchRouter({"searxng": weak, "anysearch": strong}, order=["searxng", "anysearch"])
-    outcome = router.search(SearchQuery("tibo", providers=("searxng",), strategy="auto"))
+def test_auto_falls_back_when_deduped_results_are_short():
+    first = _Provider(
+        "searxng", [SearchResult("First page", "https://example.com/w", "", None, "searxng")]
+    )
+    second = _Provider("anysearch", [_strong("anysearch", "https://example.com/a")])
+    router = SearchRouter({"searxng": first, "anysearch": second}, order=["searxng", "anysearch"])
+    outcome = router.search(SearchQuery("tibo", providers=("searxng",), strategy="auto", limit=2))
     assert outcome.attempted == ["searxng", "anysearch"]
-    assert outcome.results[0].provider == "anysearch"
+    assert [item.provider for item in outcome.results] == ["searxng", "anysearch"]
 
 
 def test_auto_appends_remaining_configured_providers():
-    weak = _Provider("searxng", [SearchResult("Unrelated", "https://example.com/w", "")])
-    backup = _Provider("open_websearch", [_strong("open_websearch", "https://example.com/o")])
+    first = _Provider(
+        "searxng", [SearchResult("First page", "https://example.com/w", "", None, "searxng")]
+    )
+    second = _Provider("open_websearch", [_strong("open_websearch", "https://example.com/o")])
     router = SearchRouter(
-        {"searxng": weak, "open_websearch": backup},
+        {"searxng": first, "open_websearch": second},
         order=["open_websearch", "searxng"],
     )
-    outcome = router.search(SearchQuery("tibo", providers=("searxng",), strategy="auto"))
+    outcome = router.search(SearchQuery("tibo", providers=("searxng",), strategy="auto", limit=2))
     assert outcome.attempted == ["searxng", "open_websearch"]
-    assert outcome.provider == "open_websearch"
+    assert [item.provider for item in outcome.results] == ["searxng", "open_websearch"]
 
 
 def test_compare_reaches_at_least_two_providers():
@@ -335,9 +344,9 @@ def test_cache_key_separates_compare_and_auto(tmp_path):
         order=["first", "second"],
         cache=SearchCache(vault_paths(tmp_path / "vault"), 60),
     )
-    compared = router.search(SearchQuery("tibo", strategy="compare"))
+    compared = router.search(SearchQuery("tibo", strategy="compare", limit=1))
     assert set(compared.attempted) == {"first", "second"}
-    auto = router.search(SearchQuery("tibo", strategy="auto"))
+    auto = router.search(SearchQuery("tibo", strategy="auto", limit=1))
     assert auto.provider == "first"
     assert not auto.cached
     assert len(first.calls) == 2 and len(second.calls) == 1
@@ -383,7 +392,7 @@ def test_compare_budget_truncation_is_not_cached(tmp_path):
 
 
 def test_compare_truncation_keeps_actual_contributor_verification(tmp_path):
-    # 两家都已贡献结果但质量门控未达标，第三家被请求预算截断：
+    # 两家都已贡献非空结果，第三家被请求预算截断：
     # 截断结果不缓存，但验证状态必须如实反映已有两家来源。
     first = _Provider(
         "searxng",
@@ -424,9 +433,9 @@ def test_cache_isolates_auto_and_compare_strategies(tmp_path):
         cache=SearchCache(vault_paths(tmp_path / "vault"), 60),
     )
 
-    auto = router.search(SearchQuery("tibo"))
-    compare = router.search(SearchQuery("tibo", strategy="compare"))
-    cached_auto = router.search(SearchQuery("tibo"))
+    auto = router.search(SearchQuery("tibo", limit=1))
+    compare = router.search(SearchQuery("tibo", strategy="compare", limit=1))
+    cached_auto = router.search(SearchQuery("tibo", limit=1))
 
     assert auto.cached is False and auto.strategy == "auto"
     assert compare.cached is False and compare.strategy == "compare"

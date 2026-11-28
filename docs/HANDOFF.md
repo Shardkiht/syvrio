@@ -71,7 +71,7 @@ Dream 状态包含暂停原因、当前能否手动运行及操作提示。状�
 - 回复失败时，会话保存本回合已经收到的内容和脱敏错误，刷新后可查看。刷新恰逢回合结束会从磁盘读取历史。会话默认归档。只读视图可立即释放；目标会话的写入、队列和后台任务会阻止归档。会话归档由 `sessions.archived` 标记，拒绝的候选由 `candidates.state` 保存。检索、Git 导出和后台调度排除归档内容。
 - 终端编辑待审记忆或推断后通过常驻后端保存。编辑推断后选中新建的已确认记录，保留原记录及其来源。`/profile` 展示完整的已发布画像，重新生成使用 `/dream`。
 
-搜索适配器保留厂商实际返回的全部摘要。指定引擎时由路由选择支持该引擎操作的服务，多引擎结果只记录可确定的来源。抓取结果通过 `content_kind` 和 `truncated` 区分正文、摘录与截断。排查全文抓取时应同时检查后备服务是否被尝试。
+搜索适配器保留厂商实际返回的全部摘要。路由不做自定义相关性评分或内容重排：单 provider 保持适配器顺序，多 provider 按优先级逐轮交错，URL 规范化后稳定去重再截断；普通搜索按去重后的数量决定停止或回退，compare 仍争取两家非空返回。指定引擎时由路由选择支持该引擎操作的服务，多引擎结果只记录可确定的来源。抓取结果通过 `content_kind` 和 `truncated` 区分正文、摘录与截断。排查全文抓取时应同时检查后备服务是否被尝试。
 
 Vault 的手动提交从 Git 层读取完整的活动文件差异。`infra/vault/commit_summary.py` 按当前模型窗口保留文件统计、分配各文件的节选空间。自动 Git 同步使用本地提交说明。
 
@@ -116,6 +116,7 @@ uv run python -m evals.recall_gold_eval
 uv run python -m evals.conversation_recall_eval --method hybrid
 uv run python -m evals.retrieval_eval --keyword
 cd web
+corepack pnpm lint
 corepack pnpm test
 corepack pnpm build
 ```

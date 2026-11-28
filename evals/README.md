@@ -43,16 +43,16 @@ uv run python -m evals.memory_eval
 | [短字段](short_facts_eval.py)与[字段重叠](field_lookup_eval.py) | 在大量干扰记录中查姓名、设备等短值和相近标签。短字段的 9 个有明确答案的问法单独计分，“我是谁”作为观察项。 |
 | [解析与裁决](memory_eval.py) | 固定合成抽取结果，核对候选入库、重复、冲突、低置信与敏感内容、时间、地点、情绪以及历史状态检索。 |
 
-## 联网搜索质量评测
+## 联网搜索聚合评测
 
-[web_search_eval.py](web_search_eval.py) 使用固定候选和人工相关性标注，在不联网的情况下复现路由、去重、排序、回退和提前停止。可运行：
+[web_search_eval.py](web_search_eval.py) 使用固定候选和人工相关性标注，在不联网的情况下复现路由、URL 去重、provider 顺序、回退和数量停止。人工标注只用于离线测量最终返回的相关性，不参与生产路由，也不会触发自定义评分或重排。可运行：
 
 ```sh
 uv run python -m evals.web_search_eval
 uv run python -m evals.web_search_eval --compare evals/web_search_baseline.json
 ```
 
-基线 JSON 保存当时的离线结果，不代表当前线上供应商质量。分析结果变差时，先固定候选比较重排前后，再用相同请求预算对照是否启用早停，避免把上游漏查、名次变化和早停混在一起。真实供应商是否可用单独做低频冒烟，标明空结果、超时和限流，不把受限样本当作排序失败。
+基线 JSON 保存当时的离线结果，不代表当前线上供应商质量。分析结果变化时，固定候选比较适配器原始顺序、跨 provider 交错和最终输出，再用相同请求预算核对去重后补足与停止位置，避免把上游漏查和回退不足混在一起。确定性契约由 `tests/infra/search/test_search_aggregation.py` 的 fake provider 回归覆盖；真实供应商可用性单独做低频冒烟，标明空结果、超时和限流。
 
 ## 历史评测：2026-11-20 至 21 日 · 统一后端重构与默认召回条数
 

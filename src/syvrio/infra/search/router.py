@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import dataclasses
 import hashlib
 from collections.abc import Callable, Sequence
 from contextlib import closing
-from dataclasses import dataclass
 from pathlib import Path
 
 from ..config import SearchConfig, read_api_key
@@ -24,14 +22,6 @@ from .cache import SearchCache
 from .pauses import ProviderPauses
 from .providers.catalog import OPEN_WEBSEARCH, PROVIDERS
 from .providers.open_websearch import OpenWebSearchProvider
-from .quality import (
-    QueryAnalysis,
-    ScoreBreakdown,
-    analyze_query,
-    has_core_hit,
-    quality_gate,
-    score_entry,
-)
 
 SEARCH_STRATEGIES = ("auto", "compare", "strict")
 MAX_SELECTED_PROVIDERS = 8
@@ -95,6 +85,27 @@ def _build_external_provider(name: str, api_key: str, timeout: float) -> SearchP
 # 空结果与时效性查询的缓存短命 TTL；成功结果沿用配置的 cache_ttl。
 EMPTY_RESULT_TTL = 300.0
 FRESHNESS_TTL = 600.0
+_FRESHNESS_WORDS = (
+    "今天",
+    "最新",
+    "最近",
+    "刚刚",
+    "昨日",
+    "昨天",
+    "本周",
+    "上周",
+    "latest",
+    "news",
+    "today",
+    "now",
+    "breaking",
+)
+
+
+def _freshness_query(text: str) -> bool:
+    """只用于缓存寿命，不参与结果筛选或排序。"""
+    lowered = text.lower()
+    return any(word in lowered for word in _FRESHNESS_WORDS)
 
 
 def query_variants(text: str, context_terms: Sequence[str] = ()) -> list[str]:
@@ -117,84 +128,26 @@ def query_variants(text: str, context_terms: Sequence[str] = ()) -> list[str]:
     return variants
 
 
-@dataclass(slots=True)
-class PoolEntry:
-    result: SearchResult
-    # (provider, engine, rank_in_engine) 证据列表：同一页面被多个来源返回时
-    # 全部保留；provider 与 engine 是两层身份，交叉统计按 (provider, engine) 计。
-    ranks: list[tuple[str, str, int]]
-    # 最近一次 ranked 计算的逐特征贡献，供解释与调试。
-    score: ScoreBreakdown = dataclasses.field(default_factory=ScoreBreakdown)
+def _result_key(result: SearchResult) -> str:
+    return normalize_url(result.url) or f"{result.title}\x00{result.snippet}"
 
 
-class CandidatePool:
-    """跨引擎/变体的统一候选池：URL 去重合并，保留各路排名证据。"""
-
-    def __init__(self) -> None:
-        self._entries: dict[str, PoolEntry] = {}
-        self._order: list[str] = []
-
-    @property
-    def size(self) -> int:
-        return len(self._order)
-
-    def has_provider(self, name: str) -> bool:
-        """该 Provider 是否为本池贡献过结果（即使 URL 与已有条目重复）。"""
-        return any(
-            any(provider == name for provider, _, _ in entry.ranks)
-            for entry in self._entries.values()
-        )
-
-    def providers(self) -> list[str]:
-        """实际贡献过结果的 Provider，按首次贡献顺序排列。"""
-        names: list[str] = []
-        for entry in self._entries.values():
-            for provider, _, _ in entry.ranks:
-                if provider not in names:
-                    names.append(provider)
-        return names
-
-    def add(self, results: list[SearchResult]) -> None:
-        for rank, result in enumerate(results, 1):
-            url = normalize_url(result.url)
-            key = url or f"{result.title}\x00{result.snippet}"
-            entry = self._entries.get(key)
-            if entry is None:
-                self._entries[key] = PoolEntry(result, [(result.provider, result.engine, rank)])
-                self._order.append(key)
-                continue
-            entry.ranks.append((result.provider, result.engine, rank))
-            # 同一页面多来源合并时保留更完整的标题/摘要。
-            if len(result.title) > len(entry.result.title):
-                entry.result.title = result.title
-            if len(result.snippet) > len(entry.result.snippet):
-                entry.result.snippet = result.snippet
-
-    def ranked_entries(self, analysis: QueryAnalysis) -> list[PoolEntry]:
-        """确定性多特征排序；平分保持首次入池顺序（稳定可复现）。"""
-        entries = [self._entries[key] for key in self._order]
-        for entry in entries:
-            entry.score = score_entry(entry.result, analysis, entry.ranks)
-        if analysis.core_terms:
-            entries.sort(key=lambda entry: -entry.score.total)
-        return entries
-
-    def ranked(self, analysis: QueryAnalysis) -> list[SearchResult]:
-        return [entry.result for entry in self.ranked_entries(analysis)]
-
-
-def weak_share_hint(merged: list[SearchResult], analysis: QueryAnalysis) -> str:
-    """输出中多数条目与核心词无关时如实提示，避免整批被当作相关结果。
-
-    上游单字切词（如 bing 把「智谱」拆成「智」）会让候选池混入大量噪音；
-    少数弱候选是常态，不提示，过半才提示。
-    """
-    if len(merged) < 2:
-        return ""
-    weak = sum(1 for result in merged if not has_core_hit(result, analysis))
-    if weak * 2 > len(merged):
-        return "部分结果与查询核心词无关，仅供参考。"
-    return ""
+def _merge_provider_results(
+    batches: dict[str, dict[int, list[SearchResult]]], provider_order: Sequence[str]
+) -> list[SearchResult]:
+    """按 Provider 优先级逐轮交错，再以首次出现为准稳定去重。"""
+    rows_by_provider: list[list[SearchResult]] = []
+    for name in provider_order:
+        rows: list[SearchResult] = []
+        for _, batch in sorted(batches.get(name, {}).items()):
+            rows.extend(batch)
+        rows_by_provider.append(rows)
+    interleaved: list[SearchResult] = []
+    for index in range(max((len(rows) for rows in rows_by_provider), default=0)):
+        for rows in rows_by_provider:
+            if index < len(rows):
+                interleaved.append(rows[index])
+    return normalize_results(interleaved)
 
 
 def build_registry(
@@ -334,9 +287,7 @@ class SearchRouter:
             names = eligible
         # 缓存必须区分实际使用的上游引擎，否则改配置后会命中旧引擎的结果。
         engines = tuple(query.engines) or self.engines
-        analysis = analyze_query(text, query.context_terms)
-        # 向上游多拉候选（展示条数的 3 倍，10~30），重排后仍只输出 limit；
-        # 不能为了默认展示 5 条就只向上游要 5 条。
+        # 上游多拉用于降低去重损耗；后续请求只用于失败、空结果或数量不足时补足。
         fetch_limit = min(30, max(10, limit * 3))
         cache_key = self._cache_key(
             text,
@@ -355,11 +306,7 @@ class SearchRouter:
                 # 缓存命中没有调用上游，本轮不再报告历史额度告警。
                 cached_failures = [item for item in cached.failed if item.kind != "quota"]
                 results = cached.results
-                hint = "未找到相关结果。"
-                if results:
-                    hint = weak_share_hint(results, analysis)
-                    if not any(has_core_hit(result, analysis) for result in results):
-                        hint = "候补引擎未找到与查询核心词直接相关的结果，以下为各引擎返回的候选。"
+                hint = "" if results else "未找到相关结果。"
                 if cached.strategy == "compare":
                     hint = f"{hint} {self._compare_note(cached.verification, cached.contributors, cached_failures)}".strip()
                 return SearchOutcome(
@@ -374,7 +321,7 @@ class SearchRouter:
                 )
 
         failures = list(selection_failures)
-        pool = CandidatePool()
+        batches: dict[str, dict[int, list[SearchResult]]] = {}
         attempts: list[SearchAttempt] = []
         variants = query_variants(text, query.context_terms) if not query.engines else []
         for name in names:
@@ -409,8 +356,9 @@ class SearchRouter:
         run = SearchRun(
             attempts, self.timeout_budget, self.max_requests, self.provider_pauses, failures
         )
+        attempt_indices = {id(attempt): index for index, attempt in enumerate(attempts)}
         successful: list[str] = []
-        name_hint = names[-1] if names else ""
+        unique_keys: set[str] = set()
         with closing(run.results()) as responses:
             for attempt, raw in responses:
                 results = normalize_results(raw)
@@ -419,32 +367,34 @@ class SearchRouter:
                         result.engine = attempt.query.engines[0]
                 if not results:
                     continue
-                pool.add(results)
-                name_hint = attempt.name
-                if pool.has_provider(attempt.name) and attempt.name not in successful:
+                batches.setdefault(attempt.name, {})[attempt_indices[id(attempt)]] = results
+                unique_keys.update(_result_key(result) for result in results)
+                if attempt.name not in successful:
                     successful.append(attempt.name)
-                if run.timed_out or not quality_gate(pool.ranked(analysis), analysis).should_stop:
+                if run.timed_out or len(unique_keys) < limit:
                     continue
                 if strategy == "compare" and len(successful) < 2:
                     run.skip_provider(attempt.name)
                     continue
                 break
 
+        contributors = [name for name in names if name in successful]
         outcome = self._final_outcome(
             failures,
-            pool,
-            analysis,
+            batches,
+            names,
             limit,
             cache_key,
-            name_hint=name_hint,
+            name_hint=contributors[-1] if contributors else (names[-1] if names else ""),
             budget_exhausted=run.budget_exhausted,
             timed_out=run.timed_out,
             attempted=run.attempted,
             strategy=strategy,
-            contributors=successful if strategy == "compare" else pool.providers(),
+            contributors=contributors,
+            freshness=_freshness_query(text),
         )
         if strategy == "compare":
-            return self._with_compare_hint(outcome, successful, failures)
+            return self._with_compare_hint(outcome, contributors, failures)
         return outcome
 
     def _compare_note(
@@ -478,8 +428,8 @@ class SearchRouter:
     def _final_outcome(
         self,
         failures: list[SearchFailure],
-        pool: CandidatePool,
-        analysis: QueryAnalysis,
+        batches: dict[str, dict[int, list[SearchResult]]],
+        provider_order: Sequence[str],
         limit: int,
         cache_key: str,
         name_hint: str = "",
@@ -488,68 +438,38 @@ class SearchRouter:
         attempted: list[str] | None = None,
         strategy: str = "auto",
         contributors: list[str] | None = None,
+        freshness: bool = False,
     ) -> SearchOutcome:
         failures = _dedupe_failures(failures)
-        merged = pool.ranked(analysis)[:limit]
+        merged = _merge_provider_results(batches, provider_order)[:limit]
         truncated = budget_exhausted or timed_out
         contributors = list(dict.fromkeys(contributors or []))
         verification = ""
         if strategy == "compare":
             verification = "complete" if len(contributors) >= 2 else "incomplete"
-        # 预算/超时截断时如实告知，且绝不当成完整成功结果写入缓存。
         truncation_hint = ""
         if budget_exhausted:
-            truncation_hint = "已达到单次搜索的请求次数上限，以下为当前最佳候选。"
+            truncation_hint = "已达到单次搜索的请求次数上限，以下为当前候选。"
         elif timed_out:
-            truncation_hint = "搜索总超时预算已用尽，以下为当前最佳候选。"
-        if merged and any(has_core_hit(result, analysis) for result in merged):
-            # 池里至少有核心词命中：正常完成才按成功语义缓存（时效查询短 TTL）。
-            if not truncated:
-                self._cache_put(
-                    cache_key,
-                    merged,
-                    name_hint,
-                    analysis,
-                    strategy=strategy,
-                    attempted=attempted,
-                    contributors=contributors,
-                    verification=verification,
-                    failures=failures,
-                )
-            weak = weak_share_hint(merged, analysis)
-            hints = [item for item in (truncation_hint, weak) if item]
-            return SearchOutcome(
-                results=merged,
-                provider=name_hint,
-                failed=failures,
-                hint=" ".join(hints),
-                attempted=list(attempted or []),
-                strategy=strategy,
-                verification=verification,
-            )
+            truncation_hint = "搜索总超时预算已用尽，以下为当前候选。"
         if merged:
-            # 候补都没命中核心词：返回候选但如实提示低相关，不伪装成精准命中；
-            # 正常完成时低相关候选只短 TTL 缓存，给之后的回退留机会。
             if not truncated:
                 self._cache_put(
                     cache_key,
                     merged,
                     name_hint,
-                    analysis,
-                    short=True,
+                    short=freshness,
                     strategy=strategy,
                     attempted=attempted,
                     contributors=contributors,
                     verification=verification,
                     failures=failures,
                 )
-            base = "候补引擎未找到与查询核心词直接相关的结果，以下为各引擎返回的候选。"
-            hint = f"{base} {truncation_hint}".strip() if truncation_hint else base
             return SearchOutcome(
                 results=merged,
                 provider=name_hint,
                 failed=failures,
-                hint=hint,
+                hint=truncation_hint,
                 attempted=list(attempted or []),
                 strategy=strategy,
                 verification=verification,
@@ -611,7 +531,6 @@ class SearchRouter:
         cache_key: str,
         results: list[SearchResult],
         name: str,
-        analysis: QueryAnalysis,
         short: bool = False,
         *,
         strategy: str = "auto",
@@ -629,8 +548,7 @@ class SearchRouter:
             "verification": verification,
             "failed": list(failures or []),
         }
-        # 时效性查询（今天/最新/latest...）成功结果也只短缓存。
-        if short or analysis.freshness_requested:
+        if short:
             self.cache.set(cache_key, results, name, ttl=FRESHNESS_TTL, **metadata)
         else:
             self.cache.set(cache_key, results, name, **metadata)
@@ -668,7 +586,7 @@ class SearchRouter:
         context_sig = "\x1e".join(term.strip() for term in query.context_terms if term.strip())
         raw = "\x1f".join(
             [
-                "search-v9",
+                "search-v10",
                 text,
                 str(limit),
                 lang or "",
@@ -693,8 +611,8 @@ def normalize_results(results: list[SearchResult]) -> list[SearchResult]:
     seen: set[str] = set()
     normalized: list[SearchResult] = []
     for result in results:
+        key = _result_key(result)
         url = normalize_url(result.url)
-        key = url or f"{result.title}\x00{result.snippet}"
         if key in seen:
             continue
         seen.add(key)

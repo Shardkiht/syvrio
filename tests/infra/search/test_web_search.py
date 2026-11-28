@@ -761,7 +761,7 @@ def test_strict_unknown_provider_does_not_fall_back():
     assert outcome.failed[0].provider == "brave"
 
 
-def test_slow_preferred_provider_overlaps_candidates_and_early_stop_releases_caller():
+def test_enough_results_early_stop_releases_caller_while_slow_provider_finishes():
     from threading import Event
 
     started = Event()
@@ -788,7 +788,13 @@ def test_slow_preferred_provider_overlaps_candidates_and_early_stop_releases_cal
             assert started.is_set()
             assert not finished.is_set()
             return [
-                SearchResult("Tibo roadmap", "https://example.com/tibo", "details", provider="fast")
+                SearchResult(
+                    f"Tibo roadmap {index}",
+                    f"https://example.com/tibo/{index}",
+                    "details",
+                    provider="fast",
+                )
+                for index in range(5)
             ]
 
     router = SearchRouter({"slow": SlowProvider(), "fast": FastProvider()})
@@ -955,8 +961,8 @@ def test_global_timeout_truncated_results_are_not_cached(tmp_path, monkeypatch):
     assert "超时预算已用尽" in second.hint
 
 
-def test_high_quality_result_returned_after_timeout_is_not_cached(tmp_path, monkeypatch):
-    """Provider 超时返回高质量结果也不能走早停缓存：先判预算，再判质量。"""
+def test_result_returned_after_timeout_is_not_cached(tmp_path, monkeypatch):
+    """Provider 超时返回结果也不能按完成结果缓存。"""
     from syvrio.infra.search import attempts as attempts_module
 
     clock = [0.0]
@@ -1046,7 +1052,7 @@ def test_provider_timeout_after_partial_candidates_is_not_cached(tmp_path, monke
     assert weak.calls == 2 and slow.calls == 2
 
 
-def test_normal_quality_early_stop_is_cached(tmp_path):
+def test_completed_result_is_cached(tmp_path):
     """预算内正常早停仍按原规则写缓存，第二次直接命中。"""
     provider = FakeProvider(
         [SearchResult("Tibo roadmap", "https://example.com/tibo", "details", None, "fake")]
@@ -1124,9 +1130,9 @@ def test_cache_key_separates_search_engines(tmp_path):
     cache = SearchCache(vault_paths(tmp_path / "vault"), ttl=60)
     router = SearchRouter({"fake": provider}, order=["fake"], cache=cache, engines=["bing"])
 
-    router.search(SearchQuery("q"))
-    router.search(SearchQuery("q", engines=("baidu",)))
-    router.search(SearchQuery("q"))
+    router.search(SearchQuery("q", limit=1))
+    router.search(SearchQuery("q", engines=("baidu",), limit=1))
+    router.search(SearchQuery("q", limit=1))
 
     assert provider.calls == 2
     assert provider.queries[1].engines == ("baidu",)
@@ -1683,15 +1689,15 @@ def test_default_engine_failure_falls_back_once():
 
     provider = mock_provider(handler, engines=["bing"])
     router = SearchRouter({"open_websearch": provider}, order=["open_websearch"], engines=["bing"])
-    results = router.search(SearchQuery("synthetic"))
+    results = router.search(SearchQuery("synthetic", limit=1))
     assert len(results.results) == 1
     assert [item["engines"] for item in requests] == [["bing"], ["baidu"]]
 
 
-# ---------- 引擎候补链、查询变体与相关性（搜索增强） ----------
+# ---------- 引擎候补链、查询变体与数量停止 ----------
 
 
-def test_relevant_results_return_without_fallback_requests():
+def test_enough_results_return_without_fallback_requests():
     calls = []
 
     def handler(request):
@@ -1701,9 +1707,9 @@ def test_relevant_results_return_without_fallback_requests():
         )
 
     router = SearchRouter({"open_websearch": mock_provider(handler)}, engines=["bing"])
-    outcome = router.search(SearchQuery("tibo codex"))
+    outcome = router.search(SearchQuery("tibo codex", limit=1))
     assert len(outcome.results) == 1
-    assert len(calls) == 1  # 相关结果直接返回，不触发候补请求
+    assert len(calls) == 1  # 去重后达到 limit，不触发候补请求
 
 
 def test_empty_first_result_falls_back_to_candidate_engine():
@@ -1719,31 +1725,30 @@ def test_empty_first_result_falls_back_to_candidate_engine():
         )
 
     router = SearchRouter({"open_websearch": mock_provider(handler)}, engines=["bing"])
-    outcome = router.search(SearchQuery("tibo"))
+    outcome = router.search(SearchQuery("tibo", limit=1))
     assert len(outcome.results) == 1
     assert outcome.results[0].engine == "baidu"
     assert [item["engines"] for item in requests] == [["bing"], ["baidu"]]
 
 
-def test_irrelevant_results_trigger_candidate_engine():
+def test_nonempty_results_do_not_trigger_candidate_engine_when_limit_is_met():
     requests = []
 
     def handler(request):
         body = json.loads(request.content)
         requests.append(body)
         if body["engines"] == ["bing"]:
-            # 有结果但与查询词元零命中 → 触发候补，原候选不丢弃。
             return httpx.Response(
-                200, json=envelope([raw_result("完全无关的内容", "https://example.com/other")])
+                200, json=envelope([raw_result("任意上游结果", "https://example.com/other")])
             )
         return httpx.Response(
             200, json=envelope([raw_result("Tibo Codex 重置", "https://example.com/tibo")])
         )
 
     router = SearchRouter({"open_websearch": mock_provider(handler)}, engines=["bing"])
-    outcome = router.search(SearchQuery("tibo"))
-    assert outcome.results[0].engine == "baidu"
-    assert [item["engines"] for item in requests] == [["bing"], ["baidu"]]
+    outcome = router.search(SearchQuery("tibo", limit=1))
+    assert outcome.results[0].engine == "bing"
+    assert [item["engines"] for item in requests] == [["bing"]]
 
 
 def test_context_terms_generate_variant_queries():
@@ -1808,7 +1813,7 @@ def test_generic_provider_without_engines_capability_runs_once():
     assert provider.calls == 1  # 无 engines 能力的 provider 不做引擎回退
 
 
-def test_multi_engine_candidates_dedupe_and_hint():
+def test_multi_engine_candidates_dedupe_and_stop_at_limit():
     def handler(request):
         body = json.loads(request.content)
         engines = body["engines"]
@@ -1835,33 +1840,36 @@ def test_multi_engine_candidates_dedupe_and_hint():
         return httpx.Response(200, json=envelope([]))
 
     router = SearchRouter({"open_websearch": mock_provider(handler)}, engines=["bing"])
-    outcome = router.search(SearchQuery("xyzabc"))
-    # 三个引擎各试一次，跨引擎 URL 去重后保留候选并如实提示。
+    outcome = router.search(SearchQuery("xyzabc", limit=3))
+    # 去重后够数即停，不再因内容判断追加弱候选提示。
     assert len(outcome.results) == 3
     assert {item.url for item in outcome.results} == {
         "https://example.com/dup",
         "https://example.com/b",
         "https://example.com/d",
     }
-    assert "候补" in outcome.hint
-    assert [item.engine for item in outcome.results][:3] == ["bing", "bing", "baidu"]
+    assert outcome.hint == ""
+    assert [item.engine for item in outcome.results] == ["bing", "bing", "baidu"]
 
 
-def test_results_ranked_title_before_snippet():
+def test_results_preserve_provider_order():
     def handler(request):
         return httpx.Response(
             200,
             json=envelope(
                 [
-                    raw_result("无关标题", "https://example.com/1", "这里提到 tibo codex 的转述"),
+                    raw_result("第一条", "https://example.com/1", "这里提到 tibo codex 的转述"),
                     raw_result("Tibo Codex 指南", "https://example.com/2"),
                 ]
             ),
         )
 
     router = SearchRouter({"open_websearch": mock_provider(handler)}, engines=["bing"])
-    outcome = router.search(SearchQuery("tibo codex"))
-    assert outcome.results[0].url == "https://example.com/2"  # 标题命中的排前
+    outcome = router.search(SearchQuery("tibo codex", limit=2))
+    assert [item.url for item in outcome.results] == [
+        "https://example.com/1",
+        "https://example.com/2",
+    ]
 
 
 def test_freshness_query_success_cache_is_short(tmp_path):
@@ -1897,16 +1905,16 @@ def test_cache_key_distinguishes_context_strategy_and_fallback(tmp_path):
     cache = SearchCache(vault_paths(tmp_path / "vault"), ttl=3600)
     router = SearchRouter({"open_websearch": mock_provider(handler)}, engines=["bing"], cache=cache)
     # context 参与键且保留顺序：换序即视为新查询，重新消歧。
-    router.search(SearchQuery("tibo", context_terms=("Codex", "OpenAI")))
+    router.search(SearchQuery("tibo", context_terms=("Codex", "OpenAI"), limit=1))
     assert len(calls) == 2  # 空结果 + 变体
-    router.search(SearchQuery("tibo", context_terms=("OpenAI", "Codex")))
+    router.search(SearchQuery("tibo", context_terms=("OpenAI", "Codex"), limit=1))
     assert len(calls) == 4
     # 相同 context（同序）命中缓存，不再打上游。
-    router.search(SearchQuery("tibo", context_terms=("Codex", "OpenAI")))
+    router.search(SearchQuery("tibo", context_terms=("Codex", "OpenAI"), limit=1))
     assert len(calls) == 4
     # auto 与显式同引擎不共用键：显式请求必须真的打到该引擎。
-    router.search(SearchQuery("litellm docs"))
-    router.search(SearchQuery("litellm docs", engines=("bing",)))
+    router.search(SearchQuery("litellm docs", limit=1))
+    router.search(SearchQuery("litellm docs", engines=("bing",), limit=1))
     assert len(calls) == 6
     # 回退配置不同（候补链变化）视为新查询，不命中旧策略缓存。
     other = SearchRouter(
@@ -1915,7 +1923,7 @@ def test_cache_key_distinguishes_context_strategy_and_fallback(tmp_path):
         cache=cache,
         fallback_engines=("sogou",),
     )
-    other.search(SearchQuery("tibo", context_terms=("Codex", "OpenAI")))
+    other.search(SearchQuery("tibo", context_terms=("Codex", "OpenAI"), limit=1))
     assert len(calls) == 8
 
 

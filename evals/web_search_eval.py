@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
-"""离线联网搜索质量基准（合成数据，不访问真实网络）。
+"""离线联网搜索聚合基准（合成数据，不访问真实网络）。
 
-两套基准：
-- 固定候选池：每个查询给定各引擎的固定候选（人工标注 0/1/2 三级相关性），
-  端到端跑 SearchRouter，衡量"候选池质量"与"管线输出质量"的差距。
-- mock 策略场景：脚本化各引擎响应，统计请求数、早停行为与高置信误接受。
+固定候选池为每个查询给定各引擎的候选和人工标注的 0/1/2 三级相关性，
+端到端跑 SearchRouter，测量原始候选顺序与最终聚合输出的差异。标注仅用于
+离线报告，不参与生产路由、回退或停止判断；另记录每个查询的请求数。
 
 用法：
     uv run python evals/web_search_eval.py                # 打印当前指标
@@ -298,7 +297,7 @@ CASES: tuple[Case, ...] = (
             ),
         ),
     ),
-    # ---- 技术名词（应一次请求早停） ----
+    # ---- 技术名词 ----
     Case(
         "tt1",
         "LiteLLM tool calling documentation",
@@ -559,7 +558,7 @@ CASES: tuple[Case, ...] = (
             it("Taylor Swift tour", "https://music.example/swift", "Concert information.", 0),
         ),
     ),
-    # ---- 泛查询（不应被实体门控误杀） ----
+    # ---- 泛查询 ----
     Case(
         "gn1",
         "python 教程",
@@ -666,7 +665,7 @@ class PoolProvider:
 
 
 def run_pipeline(case: Case) -> tuple[list[SearchResult], int, bool, str]:
-    """端到端跑一个 case，返回 (top_results, 请求次数, 是否高置信通过, hint)。"""
+    """端到端跑一个 case，返回 (最终结果, 请求次数, hint)。"""
     provider = PoolProvider(case.pool)
     router = SearchRouter(
         {"open_websearch": provider},
