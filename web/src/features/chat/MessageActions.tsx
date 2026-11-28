@@ -73,18 +73,25 @@ export function RecoveredEdit({ edit, busy, onChange, onRetry, onDiscard }: {
   const text = draft.text.trim();
   const [copied, setCopied] = useState(false);
   useEffect(() => setCopied(false), [draft]);
-  return <section className="message-editor" aria-label={composing ? 'Edit last message' : 'Saved message edit'}>
-    {edit.error && <div role="alert">{edit.error}</div>}
-    {edit.warning && <div role="status">{edit.warning}</div>}
-    <textarea aria-label={composing ? 'Edit last message' : 'Saved edit text'} autoFocus={composing}
+  const input = <textarea aria-label={composing ? 'Edit last message' : 'Saved edit text'} autoFocus={composing}
       onKeyDown={event => {
         if (composing && event.key === 'Escape' && !busy && !event.nativeEvent.isComposing) {
           event.stopPropagation();
           onDiscard();
         }
       }}
-      readOnly={mode === 'retry'} rows={composing ? 3 : 2} maxLength={100000}
-      disabled={busy} value={draft.text} onChange={event => onChange({ ...draft, text: event.target.value })} />
+      readOnly={mode === 'retry'} rows={composing ? 1 : 2} maxLength={100000}
+      disabled={busy} value={draft.text} onChange={event => onChange({ ...draft, text: event.target.value })} />;
+  return <section className={composing ? 'message-editor-inline' : 'message-editor'}
+    aria-label={composing ? 'Edit last message' : 'Saved message edit'}>
+    {composing && <div className="bubble bubble-editing">
+      {/* 用实际文字撑出气泡大小，透明输入层负责光标、换行与输入法。 */}
+      <span className="bubble-edit-measure" aria-hidden="true">{draft.text || '\u00a0'}{draft.text.endsWith('\n') && '\u200b'}</span>
+      {input}
+    </div>}
+    {edit.error && <div role="alert">{edit.error}</div>}
+    {edit.warning && <div role="status">{edit.warning}</div>}
+    {!composing && input}
     {draft.attachments.map((file, index) => (
       <span key={file.id} className="attachment-chip">
         {draft.files?.[index] ? <DownloadEditFile file={draft.files[index]} /> : file.name}
