@@ -7,7 +7,7 @@ from typing import Literal
 from ...infra.storage.database import encode, transaction
 from ...infra.storage.paths import SyvrioPaths
 
-JobKind = Literal["context", "distillation", "dream", "title"]
+JobKind = Literal["context", "distillation", "dream", "title", "maintenance"]
 
 
 @dataclass(frozen=True)
@@ -84,3 +84,24 @@ def enqueue_context_fill(paths, memory_id, version):
     with transaction(paths):
         if (read_job(key) or {}).get("version") != version:
             save_job(key, {"id": memory_id, "version": version})
+
+
+def defer_maintenance(db, memory_id, commit):
+    db.execute(
+        """INSERT INTO maintenance_rechecks VALUES(?,?) ON CONFLICT(memory_id)
+                  DO UPDATE SET after_commit=max(after_commit,excluded.after_commit)""",
+        (memory_id, commit),
+    )
+
+
+def next_maintenance_recheck(db, commit):
+    row = db.execute(
+        "SELECT memory_id FROM maintenance_rechecks WHERE after_commit<? LIMIT 1", (commit,)
+    ).fetchone()
+    return row[0] if row else None
+
+
+def finish_maintenance_recheck(db, memory_id, commit):
+    db.execute(
+        "DELETE FROM maintenance_rechecks WHERE memory_id=? AND after_commit<?", (memory_id, commit)
+    )

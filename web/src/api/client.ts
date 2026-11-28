@@ -16,6 +16,9 @@ import type {
   ModelSearchResponse,
   PendingEvidence,
   MemoryPage,
+  MaintenanceDecision,
+  MaintenanceJob,
+  MaintenancePage,
   MemoryRow,
   InferenceSource,
   ChatSearchHit,
@@ -80,6 +83,12 @@ export function attachmentUrl(sessionId: string, messageId: string, fileId: stri
 }
 
 export const api = {
+  maintenance: (after: number, signal: AbortSignal) =>
+    jsonRequest<MaintenancePage>(`/api/maintenance?after=${after}`, { signal, cache: 'no-store' }),
+  runMaintenance: () => jsonRequest<MaintenanceJob>('/api/maintenance/run', { method: 'POST' }),
+  reviewMaintenance: (id: number, decision: MaintenanceDecision) =>
+    jsonRequest<{state: string}>(`/api/maintenance/${id}/review`, { method: 'POST', headers: jsonHeaders,
+      body: JSON.stringify({ ...decision, confirmed: true }) }),
   memories: (topic: string, q: string, after: string, signal: AbortSignal) =>
     jsonRequest<MemoryPage>('/api/memories?' + new URLSearchParams({ topic, q, after }), { signal, cache: 'no-store' }),
   memory: (id: string, signal: AbortSignal) =>

@@ -28,6 +28,7 @@ _EVENTS = frozenset(
         "search.failed",
         "search.quota_exhausted",
         "catchup.failed",
+        "maintenance.failed",
         "session.failed",
         "session.title_failed",
         "session.reload_failed",

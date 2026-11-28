@@ -357,6 +357,23 @@ def dream(
     console.print(result["message"], markup=False)
 
 
+@app.command("maintenance")
+def memory_maintenance(
+    action: Annotated[str, typer.Argument(help="run / status")] = "status",
+    config: Path | None = CONFIG_OPTION,
+) -> None:
+    """排队检查正式记忆，或查看进度；在 Web Pending 中审核建议。"""
+    if action not in ("run", "status"):
+        raise typer.BadParameter("Use run or status.")
+    client = _service(config)
+    job = (
+        client.request("POST", "/api/maintenance/run")
+        if action == "run"
+        else client.request("GET", "/api/maintenance/status")
+    )
+    console.print(job)
+
+
 @app.command("inferences")
 def inferences(
     inference_id: str | None = typer.Argument(None),

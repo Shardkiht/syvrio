@@ -34,6 +34,7 @@ from .audit import AuditLog
 from .background.jobs import enqueue_context_fill
 from .extractor import ImportExtractor
 from .inference import InferenceStore, source_version
+from .maintenance_review import MaintenanceReviews
 from .models import (
     Candidate,
     Entry,
@@ -143,6 +144,7 @@ class MemoryService:
         self.store = MemoryStore(self.paths)
         self.session_query = SessionQuery(self.paths)
         self.queue = PendingQueue(self.paths)
+        self.maintenance_reviews = MaintenanceReviews(self)
         self.inferences = InferenceStore(self.paths)
         self.audit = AuditLog(self.paths)
         if retriever is not None:
@@ -286,6 +288,24 @@ class MemoryService:
         return self.apply(updates=[MemoryUpdate(id=entry_id, status=STATUS_DEPRECATED)], **source)[
             0
         ]
+
+    def transition_existing(self, previous_id: str, current_id: str, end: str, start: str) -> Entry:
+        """两条事实均存在时，沿用状态变化的有效期和前序关系，保留各自来源。"""
+        with self.work.write():
+            self.require_entry(previous_id)
+            self.require_entry(current_id)
+            old_boundary = MemoryContext(valid_to=end)
+            new_boundary = MemoryContext(valid_from=start)
+            if previous_id == current_id or date_bounds(end)[0] > date_bounds(start)[1]:
+                raise MemoryTargetError("Check the order of the facts and their effective dates.")
+            self.store.save_revision(
+                previous_id, MemoryUpdate(id=previous_id, context=old_boundary)
+            )
+            return self.store.save_revision(
+                current_id,
+                MemoryUpdate(id=current_id, context=new_boundary),
+                supersedes=previous_id,
+            )
 
     def note(self, text: str, topic: str = "uncategorized") -> Entry:
         return self.add(MemoryDraft(text=text, topic=topic))

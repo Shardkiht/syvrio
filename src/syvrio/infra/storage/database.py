@@ -60,11 +60,12 @@ def _check_layout(db: sqlite3.Connection) -> None:
         db.execute("""SELECT e.distilled, e.reasoning, e.tool_preview, e.tool_length, s.ready,
                         a.size, u.reason, u.resume_at, g.state,
                         v.reserved, m.commit_id, i.commit_id, tv.commit_id, l.memory_version,
-                        log.reverts, log.memory_change, j.checkpoint, j.evidence_commit
+                        log.reverts, log.memory_change, j.checkpoint, j.evidence_commit,
+                        ms.first_revision, ms.second_revision, ms.kind, ms.state
                    FROM session_events e, search_signatures s, attachments a,
                         provider_pauses u, git_sync g, revisions v, memory_versions m,
                         inference_versions i, topic_versions tv, inference_sources l,
-                        audit log, jobs j LIMIT 0""")
+                        audit log, jobs j, maintenance_suggestions ms LIMIT 0""")
     except sqlite3.OperationalError as exc:
         if exc.sqlite_errorcode != sqlite3.SQLITE_ERROR:
             raise

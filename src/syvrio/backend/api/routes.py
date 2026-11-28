@@ -31,6 +31,7 @@ from ...infra.session.attachments import AttachmentBatch
 from ...infra.session.errors import ConversationError
 from ...infra.storage.documents import DocumentError
 from ...infra.system.gitops import GitError
+from ...memory.maintenance_review import ReviewConflict, ReviewDecision
 from ...memory.service import MemoryRevisionConflict, MemoryTargetError
 from ..updates import service as software_update
 from ..updates.installer import UpdateError
@@ -332,6 +333,33 @@ def create_api(
         except ValueError as exc:
             raise APIError("invalid_memory", str(exc), 422) from exc
         return {"id": entry.id, "revision": entry.revision}
+
+    @app.get("/api/maintenance", tags=["web"])
+    def maintenance(after: int = Query(0, ge=0), limit: int = Query(20, ge=1, le=50)):
+        with owner._service.work.read():
+            return {
+                "job": owner._background.maintenance.status(),
+                **owner._service.maintenance_reviews.pending(after, limit),
+            }
+
+    @app.get("/api/maintenance/status", tags=["web"])
+    def maintenance_status():
+        return owner._background.maintenance.status()
+
+    @app.post("/api/maintenance/run", tags=["web"])
+    def run_maintenance():
+        return owner._background.request_maintenance()
+
+    @app.post("/api/maintenance/{suggestion_id}/review", tags=["web"])
+    def review_maintenance(suggestion_id: int, body: ReviewDecision):
+        try:
+            return owner._service.maintenance_reviews.resolve(suggestion_id, body)
+        except KeyError as exc:
+            raise APIError("not_found", "Maintenance suggestion not found.", 404) from exc
+        except ReviewConflict as exc:
+            raise APIError("maintenance_changed", str(exc), 409) from exc
+        except ValueError as exc:
+            raise APIError("invalid_decision", str(exc), 422) from exc
 
     @app.get("/api/pending/{item_id}/evidence", tags=["web"])
     def pending_evidence(item_id: str):

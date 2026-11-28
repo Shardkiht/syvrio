@@ -1,5 +1,24 @@
 /** 与 src/syvrio/backend/api/models.py 的协议结构保持一致。 */
 
+export interface MaintenanceJob {
+  state: 'idle' | 'queued' | 'failed' | 'completed';
+  cursor: number;
+  through?: number;
+  error?: string;
+}
+export interface MaintenanceFact {
+  id: string; revision: number; text: string; topic: string; recorded_at: string;
+  context: Record<string, unknown>; session_id: string | null; message_id: string | null;
+  source: string | null; source_at: string | null; source_archived: boolean;
+}
+export interface MaintenanceSuggestion {
+  id: number; kind: 'conflict' | 'duplicate'; reason: string; facts: [MaintenanceFact, MaintenanceFact];
+}
+export interface MaintenancePage { job: MaintenanceJob; items: MaintenanceSuggestion[]; next: number | null }
+export interface MaintenanceDecision {
+  action: 'ignore' | 'deprecate' | 'transition'; selected_id?: string; previous_end?: string; current_start?: string;
+}
+
 export type EventType =
   | 'start'
   | 'message_saved'
