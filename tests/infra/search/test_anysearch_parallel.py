@@ -340,7 +340,7 @@ def test_parallel_uses_real_fastmcp_protocol_in_memory():
 
 
 def test_optional_providers_register_without_keys(monkeypatch):
-    monkeypatch.setattr("syvrio.infra.search.router.read_api_key", lambda env_name: "")
+    monkeypatch.setattr("syvrio.infra.config.stored_key", lambda env_name: "")
     registry = build_registry(
         SearchConfig(providers=["anysearch", "parallel_mcp", "open_websearch"])
     )
@@ -356,7 +356,7 @@ def test_optional_providers_use_keys_when_present(monkeypatch):
         seen[env_name] = "configured"
         return ""
 
-    monkeypatch.setattr("syvrio.infra.search.router.read_api_key", fake_read)
+    monkeypatch.setattr("syvrio.infra.config.stored_key", fake_read)
     registry = build_registry(SearchConfig(providers=["anysearch", "parallel_mcp"]))
     assert set(registry) == {"anysearch", "parallel_mcp"}
     assert set(seen) == {"ANYSEARCH_API_KEY", "PARALLEL_API_KEY"}

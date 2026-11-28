@@ -392,7 +392,8 @@ def _provider_catalog(
     refresh: bool = False,
     api_key: str | None = None,
 ) -> ModelCatalog:
-    api_key = api_key or config.api_key()
+    if api_key is None:
+        api_key = config.api_key()
     key = _model_cache_key(config, api_key)
     with _MODEL_LOCK:
         if key not in _MODEL_FETCH_LOCKS:
@@ -411,9 +412,11 @@ def _model_cache_key(config: LLMConfig, api_key: str | None) -> tuple[str, str, 
     return config.provider, config.base_url, hashlib.sha256((api_key or "").encode()).digest()
 
 
-def cached_provider_models(config: LLMConfig) -> list[str] | None:
+def cached_provider_models(config: LLMConfig, *, api_key: str | None = None) -> list[str] | None:
     """返回当前进程里最近一次成功获取的模型列表，不发起网络请求。"""
-    cached = _MODEL_CACHE.get(_model_cache_key(config, config.api_key()))
+    if api_key is None:
+        api_key = config.api_key()
+    cached = _MODEL_CACHE.get(_model_cache_key(config, api_key))
     return list(cached[1]) if cached and cached[1] else None
 
 

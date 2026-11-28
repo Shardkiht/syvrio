@@ -61,17 +61,6 @@ def provider_label(provider: str) -> str:
     return PROVIDER_LABELS.get(provider, provider)
 
 
-def has_api_key(preset: ProviderPreset) -> bool:
-    if preset.key == "custom":
-        return False
-    llm = LLMConfig(
-        provider=preset.key,
-        base_url=preset.base_url,
-        api_key_env=preset.api_key_env,
-    )
-    return bool(llm.api_key())
-
-
 def provider_base_url(config: LLMConfig, preset: ProviderPreset) -> str:
     fallback = config.base_url if config.provider == preset.key else preset.base_url
     return config.provider_urls.get(preset.key, fallback)

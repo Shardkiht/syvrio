@@ -218,7 +218,8 @@ def test_discover_models_for_inactive_provider_at_saved_endpoint(
 
     seen = {}
 
-    def fetch(source, *, refresh=False):
+    def fetch(source, *, api_key, refresh=False):
+        assert api_key == isolate_llm_credentials[source.api_key_env]
         seen[source.provider] = (source.base_url, source.api_key_env, refresh)
         return ["deepseek-v4.1-flash-1017"] if source.provider == "dashscope" else []
 
@@ -234,6 +235,35 @@ def test_discover_models_for_inactive_provider_at_saved_endpoint(
     assert settings.apply_model("deepseek", "deepseek-flash").ok
     assert settings.apply_model("dashscope", "deepseek-v4.1-flash-1017").ok
     assert service.config.llm.base_url == endpoint
+
+
+def test_model_catalog_resolves_each_credential_once_and_observes_rotation(tmp_path, monkeypatch):
+    from syvrio.infra import config
+    from syvrio.infra.llm import client
+
+    _, _, settings = build(tmp_path)
+    settings.config.llm.provider = "custom"
+    settings.config.llm.api_key_env = "DEEPSEEK_API_KEY"
+    names = []
+    value = "synthetic-first"
+
+    def read(name):
+        names.append(name)
+        return value if name == "DEEPSEEK_API_KEY" else ""
+
+    monkeypatch.setattr(config, "stored_key", read)
+    monkeypatch.setattr(client, "_MODEL_CACHE", {})
+    monkeypatch.setattr(
+        client, "_fetch_provider_models_uncached", lambda cfg, timeout, key: {key: None}
+    )
+    for cached in (False, True):
+        names.clear()
+        result = settings.model_catalog(cached_only=cached)
+        assert result == {"custom": [value], "deepseek": [value]}
+        assert len(names) == len(set(names)) and "DEEPSEEK_API_KEY" in names
+    value = "synthetic-rotated"
+    assert settings.model_catalog(cached_only=True) == {"custom": [], "deepseek": []}
+    assert settings.model_catalog() == {"custom": [value], "deepseek": [value]}
 
 
 def test_provider_options_mark_configured_and_current(tmp_path, isolate_llm_credentials):

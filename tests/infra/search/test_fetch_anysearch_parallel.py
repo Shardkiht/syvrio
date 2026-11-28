@@ -347,7 +347,7 @@ def test_registry_preserves_order_and_keeps_keys_optional(monkeypatch):
         requested.append(name)
         return "dummy" if name in keys else ""
 
-    monkeypatch.setattr(config, "read_api_key", read_key)
+    monkeypatch.setattr(config, "stored_key", read_key)
     registry = build_fetch_registry(FetchConfig(providers=providers), SearchConfig())
     assert list(registry) == providers
     assert {"ANYSEARCH_API_KEY", "PARALLEL_API_KEY"} <= set(requested)
