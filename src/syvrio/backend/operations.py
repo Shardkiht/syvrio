@@ -3,35 +3,46 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import asdict, replace
+from threading import RLock
 
 from pydantic import TypeAdapter
 
 from ..application.contracts import ImportDocument
+from ..application.memory import MemoryUseCases
+from ..application.reflection import ReflectionUseCases
 from ..infra.config import WebShareConfig, write_config
 from ..infra.search import SearchQuery, build_search_router
 from ..infra.search.tool_request import run_tool_search
+from ..infra.session import SessionStore
+from ..infra.vault.sync import GitSyncService
 from ..memory.models import MemoryCorrection, MemoryDraft
 from .client_contracts import UploadedImportDocument
 from .hosts import normalize_domain
 
 
 class ResidentOperations:
-    def __init__(self, owner):
-        self.owner = owner
-        self.service = owner._service
+    def __init__(
+        self,
+        *,
+        memory: MemoryUseCases,
+        memory_history: Callable[[str], list[dict]],
+        read_profile: Callable[[], str],
+        sessions: SessionStore,
+        reflection: ReflectionUseCases,
+        git: GitSyncService,
+        settings_lock: RLock,
+    ) -> None:
+        service = memory.service
+        self.service = service
+        self.memory = memory
+        self.settings_lock = settings_lock
         self.search_router = None
-
-    def dispatch(self, name: str, data: dict):
-        service = self.service
-        if name == "correct":
-            data = {**data, "draft": MemoryCorrection.model_validate(data.get("draft"))}
-        elif name in {"memorize", "transition"}:
-            data = {**data, "draft": MemoryDraft.model_validate(data.get("draft"))}
-        operations = {
+        self._operations = {
             "web_share": self.web_share,
             "memorize": service.memorize,
-            "verify_attachments": self.verify_attachments,
+            "verify_attachments": sessions.verify_attachments,
             "mcp_capabilities": lambda: {
                 "search": service.config.search.enabled,
                 "max_results": service.config.search.max_results,
@@ -40,7 +51,7 @@ class ResidentOperations:
             "read_topic": service.read_topic,
             "deprecate": service.deprecate,
             "correct": service.correct,
-            "memory_history": service.store.version_history,
+            "memory_history": memory_history,
             "read_memory_source": service.read_memory_source,
             "transition": service.transition,
             "topics": service.topics,
@@ -50,24 +61,30 @@ class ResidentOperations:
                 service.approve(item_id).as_recall().model_dump(exclude_none=True)
             ),
             "reject": service.reject,
-            "history": self.owner.git.history,
-            "commit": self.owner.git.commit,
-            "status": lambda: {**service.status(), "dirty": self.owner.git.is_dirty()},
+            "history": git.history,
+            "commit": git.commit,
+            "status": lambda: {**service.status(), "dirty": git.is_dirty()},
             "inferences": service.list_inferences,
             "review_inference": service.review_inference,
-            "profile": service.profile.read_text,
-            "sessions": self.owner._sessions.list,
-            "inference_review": self.owner._app_service.memory.load_inference_review,
-            "dream": lambda action="run": self.owner._app_service.reflection.command(action),
+            "profile": read_profile,
+            "sessions": sessions.list,
+            "inference_review": memory.load_inference_review,
+            "dream": lambda action="run": reflection.command(action),
             "search": self.search,
             "tool_search": self.tool_search,
         }
-        if name not in operations:
+
+    def dispatch(self, name: str, data: dict):
+        if name == "correct":
+            data = {**data, "draft": MemoryCorrection.model_validate(data.get("draft"))}
+        elif name in {"memorize", "transition"}:
+            data = {**data, "draft": MemoryDraft.model_validate(data.get("draft"))}
+        if name not in self._operations:
             raise KeyError("Unknown backend operation.")
-        return operations[name](**data)
+        return self._operations[name](**data)
 
     def web_share(self, domain: str, github_id: str | None, save: bool = False) -> dict:
-        with self.owner.scheduling.settings_lock:
+        with self.settings_lock:
             cfg = self.service.config
             try:
                 host = normalize_domain(domain or cfg.web_share.domain)
@@ -85,9 +102,6 @@ class ResidentOperations:
                 cfg.web_share, cfg._baseline = share, pending._baseline
             return asdict(share)
 
-    def verify_attachments(self):
-        return self.owner._sessions.verify_attachments()
-
     def import_documents(self, upload, apply: bool):
         def documents():
             upload.seek(0)
@@ -97,9 +111,7 @@ class ResidentOperations:
 
         # 在开始任何写入前验证上传的每条记录；遍历二次以免一次性载入整个目录。
         count = sum(1 for _ in documents())
-        return self.owner._app_service.memory.import_documents(
-            documents(), apply, total_files=count
-        )
+        return self.memory.import_documents(documents(), apply, total_files=count)
 
     def _router(self):
         if not self.service.config.search.enabled:
