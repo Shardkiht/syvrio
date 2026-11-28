@@ -99,7 +99,7 @@ uv run python scripts/build_web.py --wheel dist/*.whl  # 校验实际 wheel 内�
 | POST | `/api/settings/providers/{provider}` | 添加、更新或删除凭据，以及修改端点 |
 | GET | `/api/commands` | 共享命令目录（名称、用法、能力标记、子命令、快捷键） |
 | POST | `/api/commands` | 执行斜杠命令，返回结构化结果，不经过 LLM |
-| POST | `/api/chat?receipt=1` | 将消息放入当前会话队列，返回 202 和回合 ID。省略参数时直接返回该回合的 SSE 流 |
+| POST | `/api/chat?receipt=1` | 将消息放入当前会话队列，返回 202 和回合 ID。携带提交 ID 的新回合在回执和队列中返回同一 ID。Web 提交时立即显示用户气泡，左侧三点表示正在发送。投递失败时可点红色圆形按钮，以原提交 ID 重试。省略回执参数时直接返回该回合的 SSE 流 |
 | GET | `/api/chat/queue` | 查询本会话的活动回合、队列、暂停状态和修订号，以及正在回复的会话 ID 列表 `replying_session_ids` |
 | DELETE | `/api/chat/queue/{turn_id}` | 移除尚未开始的排队消息 |
 | GET | `/api/chat/turns/{turn_id}?after=<seq>` | 订阅回合更新，从指定序号后重放已发出的事件 |

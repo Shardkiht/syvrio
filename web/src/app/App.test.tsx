@@ -210,6 +210,7 @@ afterEach(() => {
     value: () => {},
   });
   window.localStorage.clear();
+  window.sessionStorage.clear();
   document.documentElement.removeAttribute('data-theme');
   Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 1024 });
 });
@@ -766,6 +767,38 @@ describe('Web client interactions', () => {
     expect(calls.filter(call => call.includes('/api/sessions/s-1'))).toEqual(['POST /api/sessions/s-1/switch?include_history=true']);
   });
 
+  it('shows the first bubble before admission and keeps it until queue lookup hands it to the stream', async () => {
+    installFetch();
+    let admit!: (r: Response) => void;
+    let queue!: (r: Response) => void;
+    let requestId = '';
+    const baseFetch = window.fetch;
+    vi.stubGlobal('fetch', (url: string, init?: RequestInit) => {
+      if (url === '/api/chat?receipt=1') {
+        requestId = JSON.parse(String(init?.body)).submission_id;
+        return new Promise<Response>(done => { admit = done; });
+      }
+      if (url === '/api/chat/queue' && requestId) return new Promise<Response>(done => { queue = done; });
+      if (url.startsWith('/api/chat/turns/')) return new Promise<Response>(() => {});
+      return baseFetch(url, init);
+    });
+    render(<App />);
+    await ready();
+    send('Synthetic delayed delivery');
+    const list = within(screen.getByTestId('message-list'));
+    expect(list.getAllByText('Synthetic delayed delivery')).toHaveLength(1);
+    expect(list.getByRole('status', { name: 'Sending message' })).toBeTruthy();
+    expect(list.queryByRole('heading', { name: 'Syvrio' })).toBeNull();
+    await waitFor(() => expect(requestId).toBeTruthy());
+    const receipt = { session_id: 's-1', turn_id: 7, submission_id: requestId, text: 'Synthetic delayed delivery' };
+    await act(async () => admit(json(receipt, 202)));
+    expect(list.getAllByText(receipt.text)).toHaveLength(1);
+    expect(list.queryByRole('status', { name: 'Sending message' })).toBeNull();
+    await act(async () => queue(json({ session_id: 's-1', active: receipt, waiting: [], paused: false, revision: 1 })));
+    await waitFor(() => expect(list.getByTestId('assistant-message')).toBeTruthy());
+    expect(list.getAllByText(receipt.text)).toHaveLength(1);
+  });
+
   it('shows a browser-safe error when the request fails', async () => {
     installFetch({
       '/api/chat': () => json({ error: { code: 'model_error', message: 'Model unavailable' } }, 500),
@@ -773,7 +806,9 @@ describe('Web client interactions', () => {
     render(<App />);
     await ready();
     send('hi');
-    await waitFor(() => expect(screen.getByTestId('error-banner').textContent).toContain('Model unavailable'));
+    const row = within(screen.getByTestId('user-message'));
+    expect(await row.findByRole('button', { name: 'Retry delivery' })).toBeTruthy();
+    expect(row.getByRole('status').textContent).toBe('Model unavailable');
     // HTTP 500 表示服务器仍可访问，只有传输失败才视为离线。
     expect(screen.getByTestId('connection').textContent).toContain('Connected');
   });
@@ -785,7 +820,9 @@ describe('Web client interactions', () => {
     render(<App />);
     await ready();
     send('hi');
-    await waitFor(() => expect(screen.getByTestId('error-banner').textContent).toContain('Failed to fetch'));
+    const row = within(screen.getByTestId('user-message'));
+    expect(await row.findByRole('button', { name: 'Retry delivery' })).toBeTruthy();
+    expect(row.getByRole('status').textContent).toContain('Failed to fetch');
     expect(screen.getByTestId('connection').textContent).toContain('Offline');
   });
 

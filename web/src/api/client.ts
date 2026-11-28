@@ -210,6 +210,7 @@ export const api = {
 
 export interface TurnReceipt {
   turn_id: number;
+  submission_id?: string;
   history_only?: boolean;
   session_id: string;
   text: string;

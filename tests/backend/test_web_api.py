@@ -153,6 +153,7 @@ def test_concurrent_redelivery_returns_one_turn_even_if_first_receipt_was_lost(
         first, retry = list(pool.map(lambda _: post(body), range(2)))
     assert first.status_code == retry.status_code == 202
     receipt = first.json()
+    assert receipt["submission_id"] == retry.json()["submission_id"] == body["submission_id"]
     assert retry.json()["turn_id"] == receipt["turn_id"]
     assert client.get(f"/api/chat/turns/{receipt['turn_id']}").status_code == 200
     sid = receipt["session_id"]

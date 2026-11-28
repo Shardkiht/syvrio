@@ -5,6 +5,7 @@ import type { MeterReading } from '../features/chat/ContextMeter';
 import { CommandsIcon, FileIcon, InboxIcon, PanelIcon, SettingsIcon } from '../shared/Icons';
 import { RecoveredEdit } from '../features/chat/MessageActions';
 import { MessageList } from '../features/chat/MessageList';
+import { OutgoingMessage } from '../features/chat/OutgoingMessage';
 import { PendingReview } from '../features/commands/PendingReview';
 import { SettingsPanel } from '../features/settings/SettingsPanel';
 import { SurfacePresence } from '../shared/SurfacePresence';
@@ -84,7 +85,8 @@ export default function App() {
 
   const chat = preview ?? boundChat;
   const model = health ? `${health.provider}/${health.model}` : 'Loading...';
-  const empty = chat.messages.length === 0 && !loadingHistory;
+  const outgoing = preview ? [] : deliveries.items.filter(item => (item.displaySessionId ?? item.sessionId) === chat.sessionId);
+  const empty = chat.messages.length === 0 && !loadingHistory && !outgoing.length;
   const currentSession = sessions.find(session => session.id === chat.sessionId);
   const title = currentSession?.title || 'New chat';
   const titleEditor = useSessionTitleEdits(renameSession);
@@ -253,19 +255,8 @@ export default function App() {
           )}
           <div className="thread">
             <MessageList sendRevision={sendRevision} messages={chat.messages} sessionId={chat.sessionId} selectionVersion={selectionVersion} onToggle={toggle} loading={loadingHistory}
+              outgoing={outgoing.map(item => <OutgoingMessage key={item.id} item={item} retry={deliveries.retry} discard={deliveries.discard} />)}
               undoing={checkingSelection || undoing || Boolean(failedEdit)} onMessageAction={checkingSelection ? undefined : actOnLastMessage} onEdit={openMessageEditor} />
-            {!preview && deliveries.items.filter(item => item.error && item.sessionId === chat.sessionId).map(item => (
-              <section key={item.id} className="delivery-notice" aria-label="Unconfirmed delivery">
-                <strong>Delivery needs attention</strong>
-                <p>{item.text}</p>
-                {item.attachments.length > 0 && <small>{item.attachments.map(file => file.name).join(' · ')}</small>}
-                {item.error !== chat.error && <div role="status">{item.error}</div>}
-                <div className="confirm-actions">
-                  <button type="button" onClick={() => deliveries.discard(item.id)}>Dismiss</button>
-                  <button type="button" className="confirm-ok" onClick={() => void deliveries.retry(item)}>Retry delivery</button>
-                </div>
-              </section>
-            ))}
             {!preview && failedEdit && <RecoveredEdit edit={failedEdit} busy={undoing}
               onChange={draft => reviseFailedEdit(failedEdit.sessionId, draft)}
               onRetry={() => void actOnLastMessage(failedEdit.sessionId, failedEdit.messageId, failedEdit.draft)}

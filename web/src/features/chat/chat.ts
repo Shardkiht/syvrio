@@ -27,7 +27,7 @@ export type Segment =
   | { kind: 'event'; id: string; text: string };
 
 export type ChatMessage =
-  | { id: string; savedId?: string; role: 'user'; content: string; at?: string; attachments?: HistoryItem['attachments'] }
+  | { id: string; savedId?: string; submissionId?: string; role: 'user'; content: string; at?: string; attachments?: HistoryItem['attachments'] }
   | {
       id: string;
       role: 'assistant';
@@ -59,12 +59,12 @@ export const initialChatState: ChatState = {
   progress: '',
 };
 
-export function startTurn(state: ChatState, text: string, sessionId: string | null, savedId?: string): ChatState {
+export function startTurn(state: ChatState, text: string, sessionId: string | null, savedId?: string, submissionId?: string): ChatState {
   return {
     ...state,
     messages: [
       ...state.messages,
-      { id: nextId('u'), role: 'user', content: text, savedId },
+      { id: nextId('u'), role: 'user', content: text, savedId, submissionId },
       { id: nextId('a'), role: 'assistant', segments: [], streaming: true, interrupted: false },
     ],
     busy: true,
