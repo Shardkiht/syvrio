@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import tomllib
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
+from threading import Event
 
 import pytest
 
+from syvrio.infra import config as config_module
 from syvrio.infra.config import (
     ConfigError,
     WebShareConfig,
@@ -152,6 +155,51 @@ def test_live_settings_advance_baseline_without_overwriting_other_writers(tmp_pa
     assert saved.llm.model == "external-model"
     assert saved.web_share.domain == "external.example"
     assert saved.chat.context_window == chat.context_window
+
+
+def test_shared_config_publishes_concurrent_updates_in_save_order(tmp_path, monkeypatch):
+    entry = tmp_path / "config.toml"
+    config = load_config(entry)
+    share = WebShareConfig(domain="share.example", github_user_id="42")
+    llm = replace(config.llm, model="new-model")
+    first_saved = Event()
+    publish_first = Event()
+    second_started = Event()
+    second_done = Event()
+
+    def pause_after_first_save(path, pending):
+        write_config(path, pending)
+        if pending.llm.model != llm.model:
+            first_saved.set()
+            assert publish_first.wait(10)
+
+    def change_model():
+        second_started.set()
+        update_config(entry, config, llm=llm)
+        second_done.set()
+
+    monkeypatch.setattr(config_module, "write_config", pause_after_first_save)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(update_config, entry, config, web_share=share)
+        try:
+            assert first_saved.wait(5)
+            second = pool.submit(change_model)
+            assert second_started.wait(5)
+            published_out_of_order = second_done.wait(0.5)
+        finally:
+            publish_first.set()
+        first.result(timeout=5)
+        second.result(timeout=5)
+
+    saved = load_config(entry)
+    assert config.llm.model == saved.llm.model == llm.model
+    assert config.web_share == saved.web_share == share
+    assert not published_out_of_order
+
+    saved.llm.model = "external-model"
+    write_config(entry, saved)
+    update_config(entry, config, context_window=125_000)
+    assert load_config(entry).llm.model == "external-model"
 
 
 def test_restore_default_after_dataclass_replace(tmp_path):

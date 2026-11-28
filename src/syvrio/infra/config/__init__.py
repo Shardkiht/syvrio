@@ -5,6 +5,7 @@ import os
 import re
 from dataclasses import asdict, dataclass, field, fields, replace
 from pathlib import Path
+from threading import Lock
 
 from ..security.credentials import KEYRING_SERVICE as KEYRING_SERVICE
 from ..security.credentials import stored_key
@@ -214,6 +215,7 @@ class Config:
     web_share: WebShareConfig = field(default_factory=WebShareConfig, kw_only=True)
     dream: DreamConfig = field(default_factory=DreamConfig, kw_only=True)
     _baseline: dict | None = field(default=None, repr=False, compare=False, kw_only=True)
+    _update_lock: Lock = field(default_factory=Lock, init=False, repr=False, compare=False)
 
     def paths(self, config_file: Path | None = None) -> SyvrioPaths:
         return SyvrioPaths(
@@ -479,21 +481,23 @@ def update_config(
     context_window: int | None = None,
     web_share: WebShareConfig | None = None,
 ) -> None:
-    pending = replace(
-        config,
-        llm=config.llm if llm is None else llm,
-        chat=config.chat
-        if context_window is None
-        else replace(config.chat, context_window=context_window),
-        web_share=config.web_share if web_share is None else web_share,
-    )
-    if path is not None:
-        write_config(path, pending)
-        config._baseline = pending._baseline
-    # 已启动的会话共用 ChatConfig 引用，保存成功后原位发布预算变更。
-    config.llm = pending.llm
-    config.chat.context_window = pending.chat.context_window
-    config.web_share = pending.web_share
+    # 同一实例按保存顺序发布，防止较早的快照恢复已更新的设置或基线。
+    with config._update_lock:
+        pending = replace(
+            config,
+            llm=config.llm if llm is None else llm,
+            chat=config.chat
+            if context_window is None
+            else replace(config.chat, context_window=context_window),
+            web_share=config.web_share if web_share is None else web_share,
+        )
+        if path is not None:
+            write_config(path, pending)
+            config._baseline = pending._baseline
+        # 已启动的会话共用 ChatConfig 引用，保存成功后原位发布预算变更。
+        config.llm = pending.llm
+        config.chat.context_window = pending.chat.context_window
+        config.web_share = pending.web_share
 
 
 def write_example_config(path: Path, vault: Path) -> None:
