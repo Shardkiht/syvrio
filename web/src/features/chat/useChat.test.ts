@@ -69,6 +69,49 @@ it('keeps the receipt queue when an older poll returns last in the same session'
   }
 });
 
+it.each(['streaming', 'finished'])('keeps a %s turn when an older history refresh arrives', async phase => {
+  vi.useFakeTimers();
+  const original = sessionHistory('a', 'Earlier question');
+  const lateHistory = deferred<HistoryResponse>();
+  const history = vi.spyOn(api, 'history').mockReturnValueOnce(lateHistory.promise)
+    .mockResolvedValue(sessionHistory('a', 'New question'));
+  const empty = { session_id: 'a', active: null, waiting: [], paused: false, revision: 1 };
+  const receipt = { session_id: 'a', turn_id: 51, text: 'New question' };
+  const queue = vi.spyOn(client, 'queueState').mockResolvedValue(empty);
+  vi.spyOn(api, 'switchSession').mockResolvedValue(switchResponse(original));
+  vi.spyOn(api, 'health').mockRejectedValue(new Error('unused'));
+  vi.spyOn(api, 'commands').mockResolvedValue({ items: [] });
+  vi.spyOn(api, 'listSessions').mockResolvedValue({ items: [] });
+  vi.spyOn(client, 'submitChat').mockResolvedValue(receipt);
+  const finish = deferred<void>();
+  vi.spyOn(client, 'replayTurn').mockImplementation(async (_turn, _after, receive) => {
+    await finish.promise;
+    receive({ type: 'done', seq: 1, session_id: 'a', turn_id: 51, text: 'Saved reply' });
+  });
+  const { result, unmount } = renderHook(() => useChat());
+  try {
+    await act(async () => { await result.current.selectSession('a'); });
+    queue.mockResolvedValue({ ...empty, revision: 2 });
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(history).toHaveBeenCalledOnce();
+    queue.mockResolvedValue({ ...empty, revision: 2, active: receipt });
+    await act(async () => { await result.current.send(receipt.text); });
+    expect(result.current.chat.busy).toBe(true);
+    if (phase === 'finished') {
+      queue.mockResolvedValue({ ...empty, revision: 2 });
+      await act(async () => { finish.resolve(); });
+      expect(history).toHaveBeenCalledTimes(2);
+    }
+    await act(async () => { lateHistory.resolve(original); });
+    expect(result.current.chat.messages).toContainEqual(expect.objectContaining({ role: 'user', content: receipt.text }));
+    expect(result.current.chat.busy).toBe(phase === 'streaming');
+  } finally {
+    unmount();
+    finish.resolve();
+    vi.useRealTimers();
+  }
+});
+
 it('serializes switches, skips superseded requests, and ignores stale history', async () => {
   vi.spyOn(api, 'health').mockRejectedValue(new Error('probe unavailable'));
   vi.spyOn(api, 'commands').mockResolvedValue({ items: [] });
@@ -91,6 +134,97 @@ it('serializes switches, skips superseded requests, and ignores stale history', 
   expect(switchSession.mock.calls).toEqual([['a'], ['c']]);
   expect(result.current.chat.messages[0]).toMatchObject({ content: 'Latest' });
   expect(history).not.toHaveBeenCalled();
+});
+
+it.each([
+  ['done', 'queue'], ['cancelled', 'queue'], ['failed', 'queue'], ['done', 'post'], ['done', 'queue-error'],
+] as const)('keeps a %s turn settled when its %s response arrives late', async (terminal, delayed) => {
+  vi.useFakeTimers();
+  const empty = { session_id: 'a', active: null, waiting: [], revision: 1, paused: false };
+  const turn: client.TurnReceipt = { session_id: 'a', turn_id: 41, message_id: 'm41', text: 'Question' };
+  const post = deferred<void>();
+  const late = deferred<client.QueueState>();
+  const secondReplay = deferred<void>();
+  vi.spyOn(api, 'health').mockRejectedValue(new Error('unused'));
+  vi.spyOn(api, 'commands').mockResolvedValue({ items: [] });
+  vi.spyOn(api, 'listSessions').mockResolvedValue({ items: [] });
+  vi.spyOn(api, 'switchSession').mockResolvedValue(switchResponse(sessionHistory('a')));
+  const transcript = sessionHistory('a', turn.text);
+  transcript.items[0].id = 'm41';
+  transcript.items.push({ ...transcript.items[0], id: 'assistant', role: 'assistant', content: 'Saved reply' });
+  vi.spyOn(api, 'history').mockResolvedValue(transcript);
+  const queue = vi.spyOn(client, 'queueState').mockResolvedValue(empty);
+  const submit = vi.spyOn(client, 'submitChat').mockImplementation(async body => {
+    turn.submission_id = body.submission_id;
+    if (delayed === 'post') await post.promise;
+    return turn;
+  });
+  const replay = vi.spyOn(client, 'replayTurn')
+    .mockImplementationOnce(async (id, _after, emit) => {
+      emit({ type: 'start', seq: 1, turn_id: id, session_id: 'a' });
+      emit({ type: terminal, seq: 2, turn_id: id, session_id: 'a', text: 'Saved reply' });
+    })
+    .mockImplementation(() => secondReplay.promise);
+  const { result, unmount } = renderHook(() => useChat());
+  try {
+    await act(async () => { await result.current.selectSession('a'); });
+    queue.mockClear();
+    if (delayed !== 'post') queue.mockImplementationOnce(async () => {
+      const state = await late.promise;
+      if (delayed === 'queue-error') throw new client.NetworkError('Response lost');
+      return state;
+    });
+    queue.mockResolvedValueOnce({ ...empty, active: turn }).mockResolvedValue({ ...empty, revision: 2 });
+    await act(async () => { void result.current.send(turn.text); });
+    expect(submit).toHaveBeenCalledOnce();
+    expect(queue).toHaveBeenCalledTimes(delayed === 'post' ? 0 : 1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    const saved = result.current.chat.messages;
+    expect(JSON.stringify(saved)).toContain('Saved reply');
+    await act(async () => {
+      if (delayed === 'post') post.resolve();
+      else late.resolve({ ...empty, waiting: [turn], paused: true });
+    });
+    expect(replay).toHaveBeenCalledTimes(1);
+    expect(result.current.chat.busy).toBe(false);
+    expect(result.current.chat.messages).toEqual(saved);
+  } finally {
+    unmount();
+    secondReplay.resolve();
+    vi.useRealTimers();
+  }
+});
+
+it('applies the newer queue revision even when its request started first', async () => {
+  vi.useFakeTimers();
+  const empty = { session_id: 'a', active: null, waiting: [], revision: 1, paused: false };
+  const ongoing = { session_id: 'a', turn_id: 40, text: 'Current' };
+  const next = { session_id: 'a', turn_id: 41, text: 'Queued' };
+  const earlierPoll = deferred<client.QueueState>();
+  const stream = deferred<void>();
+  vi.spyOn(api, 'health').mockRejectedValue(new Error('unused'));
+  vi.spyOn(api, 'commands').mockResolvedValue({ items: [] });
+  vi.spyOn(api, 'listSessions').mockResolvedValue({ items: [] });
+  vi.spyOn(api, 'switchSession').mockResolvedValue(switchResponse(sessionHistory('a')));
+  vi.spyOn(client, 'submitChat').mockResolvedValue(next);
+  vi.spyOn(client, 'replayTurn').mockReturnValue(stream.promise);
+  const queue = vi.spyOn(client, 'queueState').mockResolvedValue(empty);
+  const { result, unmount } = renderHook(() => useChat());
+  try {
+    await act(async () => { await result.current.selectSession('a'); });
+    queue.mockClear().mockReturnValueOnce(earlierPoll.promise)
+      .mockResolvedValueOnce({ ...empty, active: ongoing, waiting: [next] });
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(queue).toHaveBeenCalledTimes(1);
+    await act(async () => { await result.current.send(next.text); });
+    expect(result.current.queued).toEqual([next.text]);
+    await act(async () => { earlierPoll.resolve({ ...empty, revision: 2, active: next }); });
+    expect(result.current.queued).toEqual([]);
+  } finally {
+    unmount();
+    stream.resolve();
+    vi.useRealTimers();
+  }
 });
 
 it('keeps the current turn when the server reports /new is busy', async () => {

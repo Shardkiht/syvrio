@@ -8,7 +8,8 @@ type Options = {
   selectionHistory: MutableRefObject<Promise<void> | null>;
   syncQueue: MutableRefObject<() => Promise<void>>;
   update: (fn: (state: ChatState) => ChatState) => void;
-  reloadHistory: (id: string) => Promise<void>;
+  reloadHistory: (id: string, reason: 'stream-ended') => Promise<void>;
+  invalidateHistoryRefresh: () => void;
   refreshSessions: () => Promise<void>;
   setCompaction: Dispatch<SetStateAction<CompactionPhase | null>>;
   setOnline: (online: boolean) => void;
@@ -16,9 +17,15 @@ type Options = {
 
 const terminal = new Set(['done', 'cancelled', 'failed']);
 
-export function useTurnStream({ chat, selectionHistory, syncQueue, update, reloadHistory,
+export function useTurnStream({ chat, selectionHistory, syncQueue, update, reloadHistory, invalidateHistoryRefresh,
   refreshSessions, setCompaction, setOnline }: Options) {
   const stream = useRef<{ controller: AbortController; turnId: number } | null>(null);
+  // 只保留从提交到回执处理完毕的窗口。断流或切换会话都不代表生成结束。
+  const deliveries = useRef(new Map<string, boolean>());
+  const trackDelivery = useCallback((id: string) => {
+    deliveries.current.set(id, false);
+    return () => { deliveries.current.delete(id); };
+  }, []);
   const detach = useCallback(() => {
     stream.current?.controller.abort();
     stream.current = null;
@@ -27,6 +34,7 @@ export function useTurnStream({ chat, selectionHistory, syncQueue, update, reloa
 
   const observe = useCallback(async (receipt: TurnReceipt) => {
     if (stream.current || chat.current.sessionId !== receipt.session_id) return;
+    if (receipt.submission_id && deliveries.current.get(receipt.submission_id)) return;
     const controller = new AbortController();
     const subscription = { controller, turnId: receipt.turn_id };
     stream.current = subscription;
@@ -55,6 +63,9 @@ export function useTurnStream({ chat, selectionHistory, syncQueue, update, reloa
         setCompaction(value => value === 'running' ? 'failed' : value);
       }
       ended = terminal.has(event.type);
+      if (ended && receipt.submission_id && deliveries.current.has(receipt.submission_id)) {
+        deliveries.current.set(receipt.submission_id, true);
+      }
       pending.push(event);
       if (event.type === 'message_saved') {
         flush();
@@ -67,6 +78,8 @@ export function useTurnStream({ chat, selectionHistory, syncQueue, update, reloa
       // 在所选会话的历史之上重放事件。视图之前切换到别处时，当前用户消息可能已经保存。
       if (selectionHistory.current) await selectionHistory.current;
       if (!current()) return;
+      // 同一会话先前发出的历史刷新不能覆盖此回合，即使它在回合结束后才返回。
+      invalidateHistoryRefresh();
       update(prev => {
         const saved = receipt.message_id
           ? prev.messages.findIndex(m => m.role === 'user' && m.savedId === receipt.message_id) : -1;
@@ -86,7 +99,7 @@ export function useTurnStream({ chat, selectionHistory, syncQueue, update, reloa
     } finally {
       flush();
       if (current()) {
-        await reloadHistory(receipt.session_id);
+        await reloadHistory(receipt.session_id, 'stream-ended');
         void refreshSessions();
         if (current()) setOnline(true);
       }
@@ -95,6 +108,6 @@ export function useTurnStream({ chat, selectionHistory, syncQueue, update, reloa
         if (current()) void syncQueue.current().catch(() => undefined);
       }
     }
-  }, [chat, selectionHistory, syncQueue, refreshSessions, reloadHistory, setCompaction, setOnline, update]);
-  return { stream, detach, observe };
+  }, [chat, selectionHistory, syncQueue, refreshSessions, reloadHistory, invalidateHistoryRefresh, setCompaction, setOnline, update]);
+  return { stream, detach, observe, trackDelivery };
 }

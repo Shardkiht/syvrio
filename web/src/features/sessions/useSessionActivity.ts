@@ -9,13 +9,21 @@ export function useSessionActivity(sessions: SessionInfo[], refreshSessions: () 
   const latest = useRef<{ request: number; state: Awaited<ReturnType<typeof queueState>> }>();
   const readQueue = useCallback(async () => {
     const request = ++lastRequest.current;
+    const atStart = latest.current;
     const state = await queueState().catch(error => {
       if (latest.current && request < latest.current.request) return latest.current.state;
       throw error;
     });
-    // 回执、轮询和重新打开页面共用读取顺序；迟到的读取只能看到更新的结果。
-    if (latest.current && request < latest.current.request) return { state: latest.current.state, stale: true };
-    latest.current = { request, state };
+    const prior = latest.current;
+    if (prior) {
+      // 重叠请求在服务端的取样顺序可能相反。串行读取允许后端重启后从零计数。
+      const comparable = prior !== atStart && prior.state.session_id === state.session_id
+        && state.revision !== prior.state.revision;
+      if (comparable ? state.revision < prior.state.revision : request < prior.request) {
+        return { state: prior.state, stale: true };
+      }
+    }
+    latest.current = { request: Math.max(request, prior?.request ?? 0), state };
     const ids = state.replying_session_ids;
     if (ids &&
         (ids.length !== lastReplying.current.size || ids.some(id => !lastReplying.current.has(id)))) {

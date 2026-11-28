@@ -176,12 +176,12 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
   const toggleChat = useCallback((id: string) => update(prev => toggleSegment(prev, id)), [update]);
   const onHistoryRefresh = useCallback(() => setHistoryRevision(value => value + 1), []);
   const { preview, startPreview, finishPreview, togglePreview, switchHistory, remember, forget, loadSelectionHistory,
-    reloadHistory, committedKey, blankDraftId, loadingHistory } =
+    reloadHistory, invalidateHistoryRefresh, committedKey, blankDraftId, loadingHistory } =
     useSelectionHistory(chatRef, navigationVersion, navigationHistory, update, onHistoryRefresh);
 
-  const { stream, detach, observe } = useTurnStream({
+  const { stream, detach, observe, trackDelivery } = useTurnStream({
     chat: chatRef, selectionHistory: navigationHistory, syncQueue: syncRef, update,
-    refreshSessions, reloadHistory, setCompaction, setOnline,
+    refreshSessions, reloadHistory, invalidateHistoryRefresh, setCompaction, setOnline,
   });
 
   const onRequested = useCallback((id: string | null, waiting: boolean) => {
@@ -603,7 +603,7 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
   const onSendFailure = useCallback((error: unknown) => {
     if (error instanceof NetworkError) setOnline(false);
   }, []);
-  const deliveries = useDeliveries(currentSession, showReceipt, onSendFailure, queueSubmission);
+  const deliveries = useDeliveries(currentSession, showReceipt, onSendFailure, queueSubmission, trackDelivery);
   // 队列轮询可能先于 POST 回执返回。按提交 ID 交接，同文的不同消息各自保留。
   const { items: outbox, discard } = deliveries;
   const represented = useMemo(() => outbox.filter(item =>

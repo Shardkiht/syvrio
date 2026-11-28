@@ -15,6 +15,8 @@ export function useSelectionHistory(
   const [preview, setPreview] = useState<Preview | null>(null);
   const [reading, setReading] = useState(false);
   const sequence = useRef(0);
+  const refreshSequence = useRef(0);
+  const invalidateHistoryRefresh = useCallback(() => { ++refreshSequence.current; }, []);
   const committedKey = useRef(0);
   const blankDraftId = useRef('new/0');
   const active = useRef<Preview | null>(null);
@@ -88,12 +90,13 @@ export function useSelectionHistory(
     setPreview(active.current);
   }, []);
 
-  const reloadHistory = useCallback(async (id: string | null) => {
-    if (!id) return;
+  const reloadHistory = useCallback(async (id: string | null, reason: 'refresh' | 'stream-ended' = 'refresh') => {
+    if (!id || chat.current.sessionId !== id || (chat.current.busy && reason !== 'stream-ended')) return;
+    const request = ++refreshSequence.current;
     const selection = version.current;
     try {
       const data = await api.history(id);
-      if (selection === version.current && chat.current.sessionId === id && data.session_id === id) {
+      if (request === refreshSequence.current && selection === version.current && chat.current.sessionId === id && data.session_id === id) {
         update(() => remember(data));
         onRefresh();
       }
@@ -119,6 +122,6 @@ export function useSelectionHistory(
     history.current = loading;
   }, [chat, history, remember, update, version]);
 
-  return { preview, startPreview, finishPreview, togglePreview, switchHistory, remember, forget, loadSelectionHistory, reloadHistory, committedKey, blankDraftId,
+  return { preview, startPreview, finishPreview, togglePreview, switchHistory, remember, forget, loadSelectionHistory, reloadHistory, invalidateHistoryRefresh, committedKey, blankDraftId,
     loadingHistory: preview ? preview.chat.sessionId !== null && !preview.source : reading && history.current !== null };
 }
