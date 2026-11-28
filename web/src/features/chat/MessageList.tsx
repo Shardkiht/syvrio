@@ -225,6 +225,7 @@ export function MessageList({
   undoing = false,
   archived = false,
   loading = false,
+  outgoing,
 }: {
   messages: ChatMessage[];
   sessionId: string | null;
@@ -236,6 +237,7 @@ export function MessageList({
   undoing?: boolean;
   archived?: boolean;
   loading?: boolean;
+  outgoing?: ReactNode[];
 }) {
   const latestUser = [...messages].reverse().find((message) => message.role === 'user');
   const ref = useRef<HTMLDivElement>(null);
@@ -407,7 +409,7 @@ export function MessageList({
       >
         <div className="messages-content" ref={contentRef}>
           {!contentReady && <HistoryLoading key={selectionVersion ?? sessionId} />}
-          {messages.length === 0 && !loading && (
+          {messages.length === 0 && !loading && !outgoing?.length && (
             <h1 className="welcome">
               <picture>
                 <source media="(prefers-reduced-motion: reduce)" srcSet="/syvrio-wordmark.svg#still" />
@@ -430,6 +432,7 @@ export function MessageList({
             }
             return <InfoLine key={message.id} message={message} />;
           })}
+          {outgoing}
         </div>
       </div>
       <div className="jump-to-bottom">

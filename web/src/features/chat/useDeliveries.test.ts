@@ -5,6 +5,30 @@ import { useDeliveries } from './useDeliveries';
 
 afterEach(() => { sessionStorage.clear(); vi.restoreAllMocks(); });
 
+it('publishes two identical sends immediately and binds the second request to the newly assigned session', async () => {
+  let session: string | null = null;
+  let release!: () => void;
+  const gate = new Promise<void>(done => { release = done; });
+  const submit = vi.spyOn(api, 'submitChat').mockImplementation(async body => {
+    await gate;
+    return { turn_id: 7, session_id: 'assigned', text: body.message };
+  });
+  let serial = Promise.resolve();
+  const schedule = (task: () => Promise<void>) => serial = serial.then(task);
+  const { result } = renderHook(() => useDeliveries(() => session, r => { session = r.session_id; }));
+  act(() => {
+    void result.current.send(null, 'same text', [], schedule);
+    void result.current.send(null, 'same text', [], schedule);
+  });
+  expect(result.current.items).toHaveLength(2);
+  await waitFor(() => expect(submit).toHaveBeenCalledTimes(1));
+  await act(async () => { release(); await serial; });
+  const requests = submit.mock.calls.map(([body]) => body);
+  expect(requests.map(r => r.session_id)).toEqual([null, 'assigned']);
+  expect(new Set(requests.map(r => r.submission_id)).size).toBe(2);
+  expect(result.current.items).toHaveLength(0);
+});
+
 it.each([false, true])('recovers a lost receipt without duplicating a send (accepted=%s)', async acceptedFirst => {
   const receipt = { turn_id: 12, session_id: 'review', text: 'First message' };
   const accepted = vi.fn().mockResolvedValue(undefined);

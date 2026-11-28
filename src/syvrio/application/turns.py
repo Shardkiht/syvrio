@@ -100,6 +100,7 @@ class ConversationTurn:
     _events: list[TurnEvent] = field(default_factory=list)
     message_id: str | None = None
     edit: MessageEdit | None = None
+    submission_id: str | None = None
     edit_conflict: str | None = None
     _closed: bool = False
     _lock: threading.Lock = field(default_factory=threading.Lock)
@@ -154,6 +155,7 @@ class ConversationTurn:
             "session_id": self.session_id,
             "text": self.line,
             "message_id": self.message_id,
+            **({"submission_id": self.submission_id} if self.submission_id else {}),
         }
 
 
@@ -234,6 +236,7 @@ class TurnRegistry:
                     return turn.receipt()
                 return {
                     "session_id": sid,
+                    "submission_id": submission_id,
                     "turn_id": stored.turn_id,
                     "text": message,
                     "history_only": True,
@@ -245,6 +248,7 @@ class TurnRegistry:
             except ConversationError:
                 receipts.release(submission_id)
                 raise
+            turn.submission_id = submission_id
             receipts.complete(submission_id, turn.session_id, turn.turn_id)
             return turn.receipt()
 

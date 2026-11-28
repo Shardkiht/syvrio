@@ -91,13 +91,13 @@ export function useSessionNavigation({ currentSession, onRequested, switchHistor
     return next;
   }, [currentSession, onFailure, onRequested, onSelected, onSettled, switchHistory]);
 
-  const queueSubmission = useCallback((task: () => Promise<void>) => {
+  const queueSubmission = useCallback((task: () => Promise<void>, onFailure = onDeliveryError) => {
     const preceding = navigation.current;
     const next = (submissions.current ?? Promise.resolve()).then(async () => {
       if (preceding && !await preceding) throw new Error('会话未能切换，请在目标会话重新发送');
       if (unconfirmed.current) throw new Error('等待重新连接以确认当前会话');
       await task();
-    }).catch(onDeliveryError);
+    }).catch(onFailure);
     submissions.current = next;
     void next.then(() => { if (submissions.current === next) submissions.current = null; });
     return next;

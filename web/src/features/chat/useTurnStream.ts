@@ -71,7 +71,7 @@ export function useTurnStream({ chat, selectionHistory, syncQueue, update, reloa
         const saved = receipt.message_id
           ? prev.messages.findIndex(m => m.role === 'user' && m.savedId === receipt.message_id) : -1;
         const baseline = saved < 0 ? prev : { ...prev, messages: prev.messages.slice(0, saved) };
-        return startTurn(baseline, receipt.text, receipt.session_id, receipt.message_id ?? undefined);
+        return startTurn(baseline, receipt.text, receipt.session_id, receipt.message_id ?? undefined, receipt.submission_id);
       });
       while (current() && !ended) {
         try {

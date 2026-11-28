@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, ApiError, NetworkError, newRequestId, removeQueuedTurn, submitChat, type TurnReceipt } from '../../api/client';
 import { useDialogNavigation, type DeleteTarget } from '../commands/useDialogNavigation';
 import { useDeliveries } from './useDeliveries';
@@ -578,29 +578,45 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
     return true;
   }, [beginEdit, checkingSelection, discardFailedEdit, reloadHistory, runCommand, showFailedEdit, stream, syncQueue]);
 
-  const showReceipt = useCallback((receipt: TurnReceipt) => {
+  const showReceipt = useCallback(async (receipt: TurnReceipt) => {
     if (!chatRef.current.sessionId) {
       assignDraft?.(blankDraftId.current, receipt.session_id);
       update(prev => ({ ...prev, sessionId: receipt.session_id }));
     }
     if (navigation.current) return; // 目标会话会自行同步队列。
     if (receipt.history_only) {
-      void reloadHistory(receipt.session_id);
+      await reloadHistory(receipt.session_id);
       return;
     }
     const version = navigationVersion.current;
     const current = () => !navigation.current && version === navigationVersion.current && chatRef.current.sessionId === receipt.session_id;
-    void readQueue().then(state => {
+    await navigationHistory.current;
+    await readQueue().then(state => {
       if (!current() || state.session_id !== receipt.session_id) return;
       changeQueue(state.waiting);
       setQueuePaused(state.paused);
-      if (!stream.current) void observe(state.active ?? receipt);
+      const active = state.active ?? (state.waiting.some(item => item.turn_id === receipt.turn_id) ? null : receipt);
+      if (!stream.current && active) void observe(active);
     }).catch(() => {
       // 请求已受理，重新连接事件流即可，避免重复提交。
       if (current() && !stream.current) void observe(receipt);
     });
   }, [assignDraft, blankDraftId, changeQueue, navigation, observe, readQueue, reloadHistory, stream, update]);
-  const deliveries = useDeliveries(currentSession, showReceipt, deliveryFailed, queueSubmission);
+  const onSendFailure = useCallback((error: unknown) => {
+    if (error instanceof NetworkError) setOnline(false);
+  }, []);
+  const deliveries = useDeliveries(currentSession, showReceipt, onSendFailure, queueSubmission);
+  // 队列轮询可能先于 POST 回执返回。按提交 ID 交接，同文的不同消息各自保留。
+  const { items: outbox, discard } = deliveries;
+  const represented = useMemo(() => outbox.filter(item =>
+    queued.some(r => r.submission_id === item.id) ||
+    chat.messages.some(m => m.role === 'user' && (m.submissionId === item.id ||
+      (item.receipt?.message_id && m.savedId === item.receipt.message_id)))),
+  [outbox, queued, chat.messages]);
+  const outgoing = outbox.filter(item => !represented.includes(item));
+  useEffect(() => {
+    for (const item of represented) discard(item.id);
+  }, [represented, discard]);
   const deliver = deliveries.send;
   const sendDelivery = useCallback((...args: Parameters<typeof deliver>) => {
     setSendRevision(value => value + 1);
@@ -618,7 +634,7 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
     const trimmed = text.trim();
     if (!trimmed) return Promise.resolve();
     if (isCommandLine(trimmed)) return runCommand(trimmed).then(() => {});
-    return queueSubmission(() => sendDelivery(chatRef.current.sessionId, trimmed, files));
+    return sendDelivery(chatRef.current.sessionId, trimmed, files, queueSubmission);
   }, [queueSubmission, runCommand, sendDelivery]);
 
   useEffect(() => {
@@ -833,7 +849,7 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
     sendRevision, preview: preview?.chat, loadingHistory, selectionVersion: preview?.key ?? committedKey.current, sendAfterSelection,
     composerDraftId: preview?.draftId ?? chat.sessionId ?? blankDraftId.current,
     checkingSelection,
-    deliveries,
+    deliveries: { items: outgoing, retry: deliveries.retry, discard },
     contextUsage: usage?.sessionId === chat.sessionId ? usage.value : undefined,
     compaction,
     sessions,
