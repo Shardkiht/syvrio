@@ -108,6 +108,31 @@ def test_backups_restore_vault_without_runtime_caches(tmp_path):
             assert db.execute(f"SELECT count(*) FROM {table}").fetchone()[0] == 1
 
 
+def test_restore_reads_manifest_once_and_rejects_redirected_manifest(tmp_path, monkeypatch):
+    paths = SyvrioPaths(tmp_path / "vault", tmp_path / "runtime")
+    with transaction(paths):
+        pass
+    backup = assemble(paths.vault_dir, tmp_path / "backup")
+    manifest = backup / "manifest.json"
+    opened = []
+    original_open = Path.open
+
+    def track(path, *args, **kwargs):
+        if path == manifest:
+            opened.append(path)
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", track)
+    assemble(backup, tmp_path / "restored", restore=True)
+    assert opened == [manifest]
+    original = manifest.rename(tmp_path / "external.json")
+    manifest.symlink_to(original)
+    with pytest.raises(ValueError, match="redirected"):
+        assemble(backup, tmp_path / "rejected", restore=True)
+    assert opened == [manifest]
+    assert not (tmp_path / "rejected").exists()
+
+
 def test_backup_includes_provider_pause_from_committed_wal(tmp_path):
     paths = SyvrioPaths(tmp_path / "vault", tmp_path / "runtime")
     with transaction(paths):

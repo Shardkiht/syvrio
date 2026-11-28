@@ -14,9 +14,13 @@ from ..session.attachment_objects import original_path
 from .database import encode, require_current_schema
 
 
-def _digest(path):
+def _require_regular_file(path: Path) -> None:
     if not path.is_file() or path.is_symlink() or path.resolve() != path:
         raise ValueError("Missing or redirected backup member.")
+
+
+def _digest(path: Path) -> str:
+    _require_regular_file(path)
     with path.open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
@@ -58,7 +62,7 @@ def assemble(source: Path, destination: Path, *, restore: bool = False):
     checksums = None
     manifest = source / "manifest.json"
     if restore:
-        _digest(manifest)
+        _require_regular_file(manifest)
         ledger = json.loads(manifest.read_text(encoding="utf-8"))
         if ledger.get("version") != 1 or not isinstance(ledger.get("files"), dict):
             raise ValueError("Invalid backup manifest.")
