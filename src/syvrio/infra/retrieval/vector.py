@@ -6,6 +6,7 @@ import sqlite3
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import cache
 from threading import Lock
 
 import numpy as np
@@ -120,7 +121,7 @@ class VectorRetriever:
                 )
             ):
                 return index
-            built = self._build(snapshot, expected_dim=expected_dim)
+            built = self._build(snapshot, expected_dim=expected_dim, digest_for=cache(text_hash))
             if built is None:
                 return None
             index, fresh, removed = built
@@ -143,7 +144,9 @@ class VectorRetriever:
             after_commit(persist)
         return index
 
-    def _build(self, snapshot: RecordSnapshot, *, expected_dim: int | None):
+    def _build(
+        self, snapshot: RecordSnapshot, *, expected_dim: int | None, digest_for: Callable[[str], str]
+    ):
         entries = snapshot.records
         # 同 ID 条目只保留首个：历史数据若存在重复 ID，去重避免矩阵行错位。
         unique: dict[str, SearchRecord] = {}
@@ -159,7 +162,7 @@ class VectorRetriever:
             cache_available = False
             cached = self._index.matrix
             ids = [entry.id for entry in self._index.entries]
-            hashes = [text_hash(entry.embedding_text) for entry in self._index.entries]
+            hashes = [digest_for(entry.embedding_text) for entry in self._index.entries]
         removed = set(ids).difference(unique)
         if expected_dim is not None and cached is not None and cached.shape[1] != expected_dim:
             cached = None
@@ -170,7 +173,7 @@ class VectorRetriever:
         fresh = []
         missing = {}
         for entry in entries:
-            digest = text_hash(entry.embedding_text)
+            digest = digest_for(entry.embedding_text)
             if current.get(entry.id) == digest:
                 kept.append((entry, digest))
             else:
@@ -201,7 +204,9 @@ class VectorRetriever:
                     return
                 if dimensions is not None and dimensions != values.shape[1]:
                     if uses_cached and expected_dim is None:
-                        return self._build(snapshot, expected_dim=values.shape[1])
+                        return self._build(
+                            snapshot, expected_dim=values.shape[1], digest_for=digest_for
+                        )
                     raise ValueError("embedding 返回维度与已有向量不一致")
                 dimensions = values.shape[1]
                 vectors.update(zip((digest for digest, _ in batch), _unit(values), strict=True))
@@ -215,7 +220,7 @@ class VectorRetriever:
         index = _VectorIndex(snapshot.revision, [entry for entry, _ in ordered], matrix)
         if not cache_available:
             return index, [], set()
-        return index, [entry for entry, _ in fresh], removed
+        return index, fresh, removed
 
     def search(
         self, query: str, limit: int = 10, *, snapshot: RecordSnapshot | None = None
@@ -303,10 +308,10 @@ class VectorRetriever:
                         (
                             e.id,
                             self.embedder.model_id,
-                            text_hash(e.embedding_text),
+                            digest,
                             len(v),
                             v.astype("<f4").tobytes(),
                         )
-                        for e, v in zip(entries, matrix, strict=True)
+                        for (e, digest), v in zip(entries, matrix, strict=True)
                     ),
                 )
