@@ -410,7 +410,7 @@ class APIChannel(ResidentChannel):
     def provider_action(self, provider: str, body: ProviderActionRequest) -> ActionResponse:
         """供应商凭据只保存在服务器端，接口仅返回是否已配置。"""
         settings = self._app_service.settings
-        if provider not in {option.key for option in settings.provider_options()}:
+        if not settings.supports_provider(provider):
             raise APIError("unknown_provider", "Unknown provider.", 404)
         with (
             self.scheduling.operation("provider", require_idle=body.action != "set_endpoint"),

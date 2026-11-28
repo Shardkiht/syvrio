@@ -381,7 +381,7 @@ export function SettingsPanel({
 
             {section === 'providers' && (
               <ProvidersSection
-                onChanged={onChanged}
+                onChanged={() => { catalog.invalidate(); onChanged(); }}
                 refreshControl={<div className="providers-actions">
                   {refreshButton}
                   <FeedbackMessage feedback={catalog.feedback} />
