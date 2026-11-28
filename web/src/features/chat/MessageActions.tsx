@@ -42,11 +42,13 @@ export function MessageActions({ sessionId, messageId, undoing, onAction, onEdit
   return <>
     <div className="message-actions" role="group" aria-label="Last message actions">
       <button type="button" className="icon-button" aria-label="Edit and resend last message"
-        title="Edit and resend last message" disabled={disabled} onClick={() => void edit()}><EditIcon size={16} /></button>
+        title="Edit and resend last message" disabled={disabled} aria-busy={working} onClick={() => void edit()}>
+        {working ? <span className="message-draft-spinner" aria-hidden="true" /> : <EditIcon size={16} />}
+      </button>
       <button type="button" className="icon-button" aria-label="Undo last turn" title="Undo last turn"
         disabled={disabled} onClick={() => void onAction(sessionId, messageId)}><UndoIcon size={16} /></button>
     </div>
-    {working && <div className="message-action-status" role="status">Loading message draft…</div>}
+    {working && <div className="sr-only" role="status">Loading message draft…</div>}
     {error && <div className="message-action-error" role="alert">{error}</div>}
   </>;
 }
@@ -77,10 +79,11 @@ export function RecoveredEdit({ edit, busy, onChange, onRetry, onDiscard }: {
   useLayoutEffect(() => {
     const field = inputRef.current;
     if (!composing || !field) return;
+    field.focus({ preventScroll: true });
     const end = field.value.length;
     field.setSelectionRange(end, end);
   }, [composing]);
-  const input = <textarea ref={inputRef} aria-label={composing ? 'Edit last message' : 'Saved edit text'} autoFocus={composing}
+  const input = <textarea ref={inputRef} aria-label={composing ? 'Edit last message' : 'Saved edit text'}
       onKeyDown={event => {
         if (composing && event.key === 'Escape' && !busy && !event.nativeEvent.isComposing) {
           event.stopPropagation();

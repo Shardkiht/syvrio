@@ -647,7 +647,13 @@ textarea, input, select { touch-action: manipulation; }
 .image-viewport { min-height: 0; min-width: 0; max-height: 76dvh; overflow: auto; overscroll-behavior: contain; }
 .image-viewport img { display: block; margin-inline: auto; max-width: 100%; max-height: 76dvh; object-fit: contain; }
 .image-viewport[data-actual-size] img { max-width: none; max-height: none; }
-.message-actions { display: flex; gap: 4px; }
+.message-actions { display: flex; height: 32px; gap: 4px; }
+.message-draft-spinner {
+  width: 14px; height: 14px; border: 2px solid currentColor;
+  border-inline-end-color: transparent; border-radius: 50%; animation: message-draft-spin .8s linear infinite;
+}
+@keyframes message-draft-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .message-draft-spinner { animation: none; } }
 .message-actions .icon-button { width: 32px; height: 32px; }
 @media (hover: hover) and (pointer: fine) {
   .message-actions { opacity: 0; pointer-events: none; }
@@ -687,8 +693,9 @@ textarea, input, select { touch-action: manipulation; }
   border: 1px solid var(--border); border-radius: 8px; background: var(--panel);
   color: var(--text); padding: 5px 12px; cursor: pointer;
 }
+.message-editor-inline .message-editor-buttons { height: 32px; margin-top: 0; flex-wrap: nowrap; }
+.message-editor-inline .message-editor-buttons button { white-space: nowrap; line-height: 1; }
 .message-editor-buttons button[type=submit] { background: var(--text); color: var(--panel); }
-.message-action-status { color: var(--muted); font-size: .875rem; }
 .message-action-error { color: var(--text); overflow-wrap: anywhere; }
 
 .bubble {

@@ -7,7 +7,7 @@ import { loadEdits } from '../features/chat/editRecovery';
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status });
 const file = { id: 'file', name: 'notes.txt', media_type: 'text/plain', message_id: 'original' };
 
-function fixture(outcome: 'lost' | 'invalid' | 'stale' | 'inflight' | 'not-saved') {
+function fixture(outcome: 'lost' | 'invalid' | 'stale' | 'inflight' | 'not-saved', draftReady?: Promise<void>) {
   window.sessionStorage.clear();
   let selected = 'one';
   let accepted = false;
@@ -23,7 +23,10 @@ function fixture(outcome: 'lost' | 'invalid' | 'stale' | 'inflight' | 'not-saved
     })) });
     if (path === '/api/health') return json({ provider: 'test', model: 'test', static_ready: true });
     if (path === '/api/commands') return json({ items: [] });
-    if (path.endsWith('/draft')) return json({ text: 'original question', attachments: [file] });
+    if (path.endsWith('/draft')) {
+      await draftReady;
+      return json({ text: 'original question', attachments: [file] });
+    }
     if (path.endsWith('/attachments/file')) { reads++; return new Response('retained bytes'); }
     if (path === '/api/sessions/one' || path === '/api/sessions/two' || path.endsWith('/switch')) {
       const id = path.split('/')[3];
@@ -101,6 +104,24 @@ afterEach(() => {
 });
 
 describe('recovering a message edit', () => {
+  it('keeps draft loading in the existing actions row and focuses without scrolling', async () => {
+    let resolveDraft!: () => void;
+    fixture('lost', new Promise<void>(resolve => { resolveDraft = resolve; }));
+    mockFileStore();
+    const focus = vi.spyOn(HTMLTextAreaElement.prototype, 'focus');
+    render(<App />);
+    const button = await screen.findByRole('button', { name: 'Edit and resend last message' });
+    const row = screen.getByTestId('user-message');
+    fireEvent.click(button);
+    expect(button.getAttribute('aria-busy')).toBe('true');
+    expect(within(row).getByRole('status').classList.contains('sr-only')).toBe(true);
+    expect(within(row).queryByRole('textbox')).toBeNull();
+
+    resolveDraft();
+    await within(row).findByRole('textbox', { name: 'Edit last message' });
+    expect(focus).toHaveBeenLastCalledWith({ preventScroll: true });
+  });
+
   it('replaces the original bubble with the edit form and restores it on cancel', async () => {
     const { requests } = fixture('lost');
     mockFileStore();
