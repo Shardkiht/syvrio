@@ -177,6 +177,7 @@ README 面向用户，必须始终与 `src/syvrio` 的当前架构一致。以�
 
 ## 提交
 
+- 修改任何代码（包括前端、后端和 MCP）后，提交前必须运行并通过 `uv run --frozen pytest -q tests/application/test_application_architecture.py`。架构测试是独立验收项，不得用功能测试替代；无法运行时须明确说明，不能当作通过。
 - 提交信息一律使用英文，沿用现有提交风格：`feat(scope): ...`、`fix(scope): ...`、`refactor(scope): ...`、`style(scope): ...`，主题行简短。
 - 不提交生成物、本地配置或用户数据。
 - **`main` 是唯一长期开发分支。** 功能、修复和文档更新从 `main` 或其短期任务分支开展。执行前确认当前分支，合入 `main` 遵循分支保护与 PR 审核要求。
