@@ -17,7 +17,7 @@ class PendingQueue:
         self.paths = vault if isinstance(vault, SyvrioPaths) else vault_paths(vault)
 
     @staticmethod
-    def _item(db, row):
+    def _item(row, related_ids):
         return PendingItem(
             **{
                 k: row[k]
@@ -32,23 +32,35 @@ class PendingQueue:
                 )
             },
             context=json.loads(row["context"]) if row["context"] else None,
-            related_ids=[
-                r[0]
-                for r in db.execute(
-                    "SELECT memory_id FROM candidate_related WHERE candidate_id=? ORDER BY position",
-                    (row["id"],),
-                )
-            ],
+            related_ids=related_ids,
         )
+
+    def _items(self, db, rows):
+        if not rows:
+            return []
+        ids = [row["id"] for row in rows]
+        related = {key: [] for key in ids}
+        for key, memory in db.execute(
+            """SELECT candidate_id,memory_id FROM candidate_related
+               WHERE candidate_id IN (SELECT value FROM json_each(?)) ORDER BY candidate_id,position""",
+            (encode(ids),),
+        ):
+            related[key].append(memory)
+        return [self._item(row, related[row["id"]]) for row in rows]
+
+    def _single(self, db, row):
+        related = db.execute(
+            "SELECT memory_id FROM candidate_related WHERE candidate_id=? ORDER BY position",
+            (row["id"],),
+        )
+        return self._item(row, [ref[0] for ref in related])
 
     def all(self):
         with transaction(self.paths, write=False) as db:
-            return [
-                self._item(db, row)
-                for row in db.execute(
-                    "SELECT * FROM candidates WHERE state='pending' ORDER BY rowid"
-                )
-            ]
+            rows = db.execute(
+                "SELECT * FROM candidates WHERE state='pending' ORDER BY rowid"
+            ).fetchall()
+            return self._items(db, rows)
 
     def count(self) -> int:
         with transaction(self.paths, write=False) as db:
@@ -59,7 +71,7 @@ class PendingQueue:
             row = db.execute(
                 "SELECT * FROM candidates WHERE id=? AND state='pending'", (item_id,)
             ).fetchone()
-            return self._item(db, row) if row else None
+            return self._single(db, row) if row else None
 
     def add_unique(self, item: PendingItem) -> PendingItem:
         with transaction(self.paths) as db:
@@ -86,7 +98,7 @@ class PendingQueue:
                     MemoryContext.model_validate_json(row["context"]) if row["context"] else None
                 )
                 if context == item.context:
-                    return self._item(db, row)
+                    return self._single(db, row)
             self.add(item)
             return item
 
@@ -137,13 +149,23 @@ class PendingQueue:
                 "SELECT * FROM candidates WHERE state='pending' AND session_id=? ORDER BY id",
                 (session_id,),
             ).fetchall()
-            return [self._item(db, r) for r in rows], hashlib.sha256(
-                encode([(r["id"], r["revision"]) for r in rows]).encode()
-            ).hexdigest() if rows else ""
+            return self._items(db, rows), self._deletion_revision(rows)
+
+    @staticmethod
+    def _deletion_revision(rows):
+        return (
+            hashlib.sha256(encode([(r["id"], r["revision"]) for r in rows]).encode()).hexdigest()
+            if rows
+            else ""
+        )
 
     def remove_for_session(self, session_id, revision):
         with transaction(self.paths) as db:
-            if self.deletion_preview(session_id)[1] != revision:
+            rows = db.execute(
+                "SELECT id,revision FROM candidates WHERE state='pending' AND session_id=? ORDER BY id",
+                (session_id,),
+            ).fetchall()
+            if self._deletion_revision(rows) != revision:
                 raise SessionDeletionChanged(
                     "The related pending items changed. Review the updated list."
                 )

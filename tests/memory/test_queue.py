@@ -158,3 +158,55 @@ def test_duplicate_only_reads_matching_candidates(tmp_path):
         result = queue.add_unique(make_item("other").model_copy(update={"text": "item 11"}))
     assert result.id == "11"
     assert sum(sql.startswith("SELECT memory_id FROM candidate_related") for sql in statements) == 1
+
+
+def test_bulk_list_and_delete_revision_only_read_required_rows(tmp_path):
+    queue = PendingQueue(tmp_path)
+    for i in range(20):
+        row = make_item(f"p-{i:02}").model_copy(
+            update={
+                "session_id": "s-test",
+                "message_id": "m-test",
+                "related_ids": ["mem-b", "mem-a"],
+            }
+        )
+        queue.add(row)
+    statements = []
+    with transaction(queue.paths) as db:
+        db.set_trace_callback(statements.append)
+
+        def selects():
+            return [sql for sql in statements if sql.lstrip().startswith("SELECT")]
+
+        items = queue.all()
+        assert len(selects()) == 2 and len(items) == 20
+        assert all(item.related_ids == ["mem-b", "mem-a"] for item in items)
+        statements.clear()
+        preview, revision = queue.deletion_preview("s-test")
+        assert preview == items and len(selects()) == 2
+        statements.clear()
+        queue.remove_for_session("s-test", revision)
+        assert len(selects()) == 1 and "SELECT id,revision" in selects()[0]
+
+
+@pytest.mark.parametrize("change", ["add", "edit", "remove"])
+def test_delete_rechecks_revision_in_write_transaction(tmp_path, change):
+    from syvrio.infra.session.errors import SessionDeletionChanged
+
+    queue = PendingQueue(tmp_path)
+    item = make_item().model_copy(update={"session_id": "s-test", "message_id": "m-test"})
+    queue.add(item)
+    _, revision = queue.deletion_preview("s-test")
+    if change == "add":
+        queue.add(item.model_copy(update={"id": "p-other"}))
+    elif change == "edit":
+        with transaction(queue.paths) as db:
+            db.execute(
+                "UPDATE candidates SET text='edited',revision=revision+1 WHERE id=?", (item.id,)
+            )
+    else:
+        queue.resolve(item.id, "rejected")
+    before = queue.all()
+    with pytest.raises(SessionDeletionChanged):
+        queue.remove_for_session("s-test", revision)
+    assert queue.all() == before
