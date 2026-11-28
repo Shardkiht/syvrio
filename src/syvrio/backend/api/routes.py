@@ -31,7 +31,7 @@ from ...infra.session.attachments import AttachmentBatch
 from ...infra.session.errors import ConversationError
 from ...infra.storage.documents import DocumentError
 from ...infra.system.gitops import GitError
-from ...memory.service import MemoryTargetError
+from ...memory.service import MemoryRevisionConflict, MemoryTargetError
 from ..updates import service as software_update
 from ..updates.installer import UpdateError
 from .channel import HISTORY_ITEM_LIMIT, APIChannel, APIError
@@ -311,6 +311,13 @@ def create_api(
             raise APIError("invalid_memory", str(exc), 422) from exc
         return {"id": entry.id, "revision": entry.revision}
 
+    @app.get("/api/memories/{entry_id}", tags=["web"])
+    def read_memory(entry_id: str):
+        try:
+            return owner._app_service.memory.read_memory(entry_id)
+        except MemoryTargetError as exc:
+            raise APIError("memory_unavailable", str(exc), 404) from exc
+
     @app.put("/api/memories/{entry_id}", tags=["web"])
     def edit_memory(entry_id: str, body: EditMemoryRequest):
         if not body.confirmed:
@@ -319,8 +326,10 @@ def create_api(
             entry = owner._app_service.memory.edit_memory(
                 entry_id, body.text, body.expected_revision
             )
-        except MemoryTargetError as exc:
+        except MemoryRevisionConflict as exc:
             raise APIError("memory_changed", str(exc), 409) from exc
+        except MemoryTargetError as exc:
+            raise APIError("memory_unavailable", str(exc), 404) from exc
         except ValidationError as exc:
             raise APIError("invalid_memory", "Check the memory text.", 422) from exc
         except ValueError as exc:

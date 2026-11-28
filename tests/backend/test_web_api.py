@@ -278,6 +278,34 @@ def test_manual_memory_browser_and_source_comparison(client, backend):
     assert client.get("/api/inferences/missing/sources").status_code == 404
 
 
+def test_memory_edit_conflict_reloads_only_the_active_entry(client, backend):
+    added = client.post(
+        "/api/memories",
+        json=dict(topic="notes", text="Original text", request_id=uuid4().hex, confirmed=True),
+    ).json()
+    url = "/api/memories/" + added["id"]
+    original = client.get(url).json()
+
+    def save(revision, text):
+        return client.put(url, json=dict(text=text, expected_revision=revision, confirmed=True))
+
+    latest = save(original["revision"], "Updated elsewhere").json()
+    stale = save(original["revision"], "My draft")
+    assert stale.status_code == 409
+    assert stale.json()["error"]["code"] == "memory_changed"
+    assert "Updated elsewhere" not in stale.text and "My draft" not in stale.text
+    reread = client.get(url).json()
+    assert reread == {**latest, "text": "Updated elsewhere", "topic": original["topic"]}
+    assert save(reread["revision"], "Merged draft").status_code == 200
+    assert client.get(url).json()["text"] == "Merged draft"
+
+    backend._service.deprecate(added["id"])
+    for unavailable in (client.get(url), save(latest["revision"], "Must not restore the entry")):
+        assert unavailable.status_code == 404
+        assert unavailable.json()["error"]["code"] == "memory_unavailable"
+    assert client.get("/api/memories/missing").status_code == 404
+
+
 def collect(client, message="hi", session_id=None):
     with client.stream(
         "POST",

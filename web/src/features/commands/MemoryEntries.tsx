@@ -1,10 +1,10 @@
 import { useState } from 'react';
-import { api, newRequestId } from '../../api/client';
+import { api, ApiError, newRequestId } from '../../api/client';
 import type { MemoryRow } from '../../types';
 import { usePanelRead } from './usePanelRead';
 
 function MemoryEditor({ entry, topic, onCancel, onSaved }: {
-  entry?: MemoryRow; topic: string; onCancel: () => void; onSaved: () => void;
+  entry?: MemoryRow; topic: string; onCancel: (refresh: boolean) => void; onSaved: () => void;
 }) {
   const [name, setName] = useState(entry?.topic ?? topic);
   const [text, setText] = useState(entry?.text ?? '');
@@ -12,19 +12,47 @@ function MemoryEditor({ entry, topic, onCancel, onSaved }: {
   const [confirm, setConfirm] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [conflict, setConflict] = useState(false);
+  const [missing, setMissing] = useState(false);
+  const { value: latest, error: loadError, retry } = usePanelRead(undefined, async signal => {
+    try { return await api.memory(entry!.id, signal); }
+    catch (err) {
+      if (err instanceof ApiError && err.code === 'memory_unavailable') return null;
+      throw err;
+    }
+  }, conflict && !!entry && !missing);
+  const unavailable = missing || latest === null;
+  const base = latest ?? entry;
   async function save() {
     setBusy(true);
     setError('');
     try {
-      if (entry) await api.editMemory(entry.id, text, entry.revision);
+      if (base) await api.editMemory(base.id, text, base.revision);
       else await api.addMemory(name, text, requestId);
       onSaved();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Save failed.');
+      if (entry && err instanceof ApiError && err.code === 'memory_changed') {
+        if (conflict) retry();
+        else setConflict(true);
+      } else if (err instanceof ApiError && err.code === 'memory_unavailable') setMissing(true);
+      else setError(err instanceof Error ? err.message : 'Save failed.');
       setConfirm(false);
     } finally { setBusy(false); }
   }
   return <div className="memory-editor">
+    {unavailable && <p role="alert">This memory is no longer available to edit. You can copy your draft before closing.</p>}
+    {conflict && !unavailable && <section className="memory-conflict">
+      {latest ? <>
+        <p role="alert">This memory changed while you were editing. {text === latest.text
+          ? `Your draft already matches saved revision ${latest.revision}.`
+          : `Compare your draft with revision ${latest.revision} before saving.`}</p>
+        <strong>Latest saved text</strong>
+        <p>{latest.text}</p>
+      </> : loadError ? <>
+        <p role="alert">Could not load the latest text. {loadError}</p>
+        <button type="button" onClick={retry}>Retry loading</button>
+      </> : <p role="status">Memory changed. Loading the latest text…</p>}
+    </section>}
     {!entry && <label>Topic<input autoFocus value={name} disabled={confirm}
       onChange={e => setName(e.target.value)} /></label>}
     <label>Memory text<textarea autoFocus={!!entry} rows={4} value={text} readOnly={confirm}
@@ -35,8 +63,8 @@ function MemoryEditor({ entry, topic, onCancel, onSaved }: {
       <button autoFocus disabled={busy} onClick={() => setConfirm(false)}>Back</button>
       <button disabled={busy} onClick={() => void save()}>{busy ? 'Saving…' : 'Confirm save'}</button>
     </div> : <div>
-      <button onClick={onCancel}>Cancel</button>
-      <button disabled={!name.trim() || !text.trim() || text === entry?.text}
+      <button onClick={() => onCancel(conflict || unavailable)}>Cancel</button>
+      <button disabled={unavailable || (conflict && !latest) || !name.trim() || !text.trim() || text === base?.text}
         onClick={() => setConfirm(true)}>Save</button>
     </div>}
   </div>;
@@ -61,7 +89,7 @@ function MemoryPage({ topic, query, after, page, editing, setEditing, previous, 
         : <ul className="topics-entries">{value.entries.map(row => <li key={row.id}>
           {!topic && <small>{row.topic}</small>}
           {editing === row.id ? <MemoryEditor entry={row} topic={row.topic}
-            onCancel={() => setEditing(null)} onSaved={changed} />
+            onCancel={refresh => { setEditing(null); if (refresh) retry(); }} onSaved={changed} />
             : <><p>{row.text}</p><button disabled={editing !== null} onClick={() => setEditing(row.id)}>Edit</button></>}
         </li>)}</ul>}
     </div>

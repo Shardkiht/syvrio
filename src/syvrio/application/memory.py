@@ -107,6 +107,10 @@ class MemoryUseCases:
     def browse_memories(self, topic: str, query: str, after: str, limit: int) -> dict:
         return self.service.store.browse_page(topic, query, after, limit)
 
+    def read_memory(self, entry_id: str) -> dict:
+        entry = self.service.require_entry(entry_id)
+        return entry.model_dump(include={"id", "topic", "text", "revision"})
+
     def add_memory(self, topic: str, text: str, request_id: str):
         return self.service.memorize(
             MemoryDraft(topic=topic, text=text), entry_id=f"mem-{request_id}"
