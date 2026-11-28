@@ -46,6 +46,7 @@ export function MessageActions({ sessionId, messageId, undoing, onAction, onEdit
       <button type="button" className="icon-button" aria-label="Undo last turn" title="Undo last turn"
         disabled={disabled} onClick={() => void onAction(sessionId, messageId)}><UndoIcon size={16} /></button>
     </div>
+    {working && <div className="message-action-status" role="status">Loading message draft…</div>}
     {error && <div className="message-action-error" role="alert">{error}</div>}
   </>;
 }

@@ -663,7 +663,15 @@ textarea, input, select { touch-action: manipulation; }
   background: var(--panel);
 }
 .thread > .message-editor { align-self: center; width: min(calc(100% - 2rem), 38rem); max-height: 46%; overflow-y: auto; }
-.turn.user:has(.message-editor) > .bubble, .turn.user:has(.message-editor) > .message-attachments { display: none; }
+.bubble.bubble-editing {
+  box-sizing: border-box;
+  width: min(100%, 38rem);
+  max-width: 100%;
+  padding: 10px;
+  white-space: normal;
+}
+.bubble-editing .message-editor { width: 100%; padding: 0; border: 0; background: transparent; }
+.bubble-editing .message-editor textarea { max-height: min(50dvh, 24rem); }
 .message-editor textarea {
   display: block; width: 100%; box-sizing: border-box; resize: vertical; min-height: 4.5rem;
   padding: 10px 14px; border: 1px solid var(--border); border-radius: 12px;
@@ -679,6 +687,7 @@ textarea, input, select { touch-action: manipulation; }
   color: var(--text); padding: 5px 12px; cursor: pointer;
 }
 .message-editor-buttons button[type=submit] { background: var(--text); color: var(--panel); }
+.message-action-status { color: var(--muted); font-size: .875rem; }
 .message-action-error { color: var(--text); overflow-wrap: anywhere; }
 
 .bubble {

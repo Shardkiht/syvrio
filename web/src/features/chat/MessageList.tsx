@@ -102,16 +102,17 @@ function ToolGroup({
   );
 }
 
-const UserRow = memo(function UserRow({ message, sessionId, archived, children }: {
+const UserRow = memo(function UserRow({ message, sessionId, archived, editor, children }: {
   message: Extract<ChatMessage, { role: 'user' }>;
   sessionId: string | null;
   archived: boolean;
+  editor?: ReactNode;
   children?: ReactNode;
 }) {
   return (
     <div className="turn user" data-testid="user-message">
-      <div className="bubble">{message.content}</div>
-      {sessionId && !!message.attachments?.length && (
+      <div className={editor ? "bubble bubble-editing" : "bubble"}>{editor ?? message.content}</div>
+      {!editor && sessionId && !!message.attachments?.length && (
         <ul className="message-attachments" aria-label="Message attachments">
           {message.attachments.map(file => {
             const messageId = message.savedId || message.id;
@@ -222,6 +223,7 @@ export function MessageList({
   onToggle,
   onMessageAction,
   onEdit,
+  inlineEditor,
   undoing = false,
   archived = false,
   loading = false,
@@ -234,6 +236,7 @@ export function MessageList({
   onToggle: (segmentId: string) => void;
   onMessageAction?: MessageActionHandler;
   onEdit?: OpenEditor;
+  inlineEditor?: { messageId: string; content: ReactNode };
   undoing?: boolean;
   archived?: boolean;
   loading?: boolean;
@@ -419,8 +422,10 @@ export function MessageList({
           )}
           {messages.map(message => {
             if (message.role === 'user') {
-              return <UserRow key={message.id} message={message} sessionId={sessionId} archived={archived}>
-                {message === latestUser && message.savedId && sessionId && onMessageAction && (
+              const editor = !archived && inlineEditor && inlineEditor.messageId === message.savedId
+                ? inlineEditor.content : undefined;
+              return <UserRow key={message.id} message={message} sessionId={sessionId} archived={archived} editor={editor}>
+                {!editor && message === latestUser && message.savedId && sessionId && onMessageAction && (
                   <MessageActions key={sessionId + '/' + message.savedId} sessionId={sessionId}
                     messageId={message.savedId} undoing={undoing} onAction={onMessageAction} onEdit={onEdit} />
                 )}
