@@ -40,6 +40,35 @@ it('refreshes a pending title and stops polling once the generated title arrives
   }
 });
 
+it('keeps the receipt queue when an older poll returns last in the same session', async () => {
+  vi.useFakeTimers();
+  const oldPoll = deferred<Awaited<ReturnType<typeof client.queueState>>>();
+  const empty = { session_id: 'a', active: null, waiting: [], paused: false, revision: 1 };
+  const receipt = { session_id: 'a', turn_id: 41, text: 'Queued message' };
+  const queue = vi.spyOn(client, 'queueState').mockResolvedValue(empty);
+  vi.spyOn(api, 'health').mockRejectedValue(new Error('unused'));
+  vi.spyOn(api, 'commands').mockResolvedValue({ items: [] });
+  vi.spyOn(api, 'listSessions').mockResolvedValue({ items: [] });
+  vi.spyOn(api, 'switchSession').mockResolvedValue(switchResponse(sessionHistory('a')));
+  vi.spyOn(client, 'submitChat').mockResolvedValue(receipt);
+  const { result, unmount } = renderHook(() => useChat());
+  try {
+    await act(async () => { await result.current.selectSession('a'); });
+    queue.mockClear().mockReturnValueOnce(oldPoll.promise)
+      .mockResolvedValue({ ...empty, waiting: [receipt], paused: true });
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(queue).toHaveBeenCalledTimes(1);
+    await act(async () => { await result.current.send(receipt.text); });
+    expect(result.current.queued).toEqual([receipt.text]);
+    await act(async () => { oldPoll.resolve(empty); });
+    expect(result.current.queued).toEqual([receipt.text]);
+    expect(result.current.queuePaused).toBe(true);
+  } finally {
+    unmount();
+    vi.useRealTimers();
+  }
+});
+
 it('serializes switches, skips superseded requests, and ignores stale history', async () => {
   vi.spyOn(api, 'health').mockRejectedValue(new Error('probe unavailable'));
   vi.spyOn(api, 'commands').mockResolvedValue({ items: [] });
