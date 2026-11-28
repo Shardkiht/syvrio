@@ -231,13 +231,15 @@ search:
 
 适配器只访问配置里的实例地址，不接受查询内容中的 URL；不跟随 HTTP 重定向，响应体限制 2 MiB，单次超时同时受 `searxng_timeout` 与全局 `timeout_budget` 约束。`SearchQuery.lang` 会映射为 `language`，`freshness` 仅映射为 SearXNG 支持的 `time_range`（day/week/month/year）；无法等价映射的值不传递。SearXNG 内部的多个引擎仍共享 Syvrio 的统一 URL 去重、请求预算和结果条数上限；内部引擎部分失败的诊断保留在 `failed` 中。它只提供搜索，不提供 `web_fetch`；网页抓取仍走 `[fetch]` 配置。
 
-Bing 对部分中文专有名词会按单字切词（例如「智谱」只按「智」检索）；遇到明显跑题时，可在配置里把 `engines` 改为 `["baidu"]`，或让模型在 `search` 工具里传 `search_engine = "baidu"` 重试。`search_engine` 也接受数组，例如 `["baidu", "bing", "sogou"]`，结果会在同一请求中合并，默认不限制引擎数量；可用 `search.max_search_engines` 设置显式列表上限（0 表示不限）；MCP 的 `search` 同样支持。
+Bing 对部分中文专有名词会按单字切词（例如「智谱」只按「智」检索）；遇到明显跑题时，可在配置里把 `engines` 改为 `["baidu"]`，或仅在明确要走 OpenWebSearch 的百度上游时，传 `search_engine = "baidu"` 重试。选择百度千帆或火山引擎时只传 `providers`，省略 `search_engine` 或保留 `auto`；显式指定上游引擎会过滤掉不支持该能力的供应商。`search_engine` 也接受数组，例如 `["baidu", "bing", "sogou"]`，结果会在同一请求中合并，默认不限制引擎数量；可用 `search.max_search_engines` 设置显式列表上限（0 表示不限）；MCP 的 `search` 同样支持。
 
 自动回退：每次请求向上游拉取比展示条数更多的候选（展示数的 3 倍，10–30 条）。单 provider 保留适配器返回顺序；多 provider 按优先级逐轮交错为 A1、B1、A2、B2。路由只做字段与 URL 规范化、稳定去重和条数截断：重复 URL 保留交错序列中第一次出现的位置，先去重再截断，不按标题、摘要、核心词或日期评分，不做内容相似度去重，也不为了排序额外发请求。失败、空结果或去重后数量不足时，按 `fallback_engines` 和 provider 优先级继续请求；达到展示条数或预算即停，最多尝试 `max_engines` 个引擎。所有回退共享 `timeout_budget`，单次请求的超时不超过剩余预算；达到总预算时返回当前已去重结果并跳过缓存。全部 provider 合计还受 `max_requests` 约束，超出即返回当前结果并附截断提示，该结果不缓存。查询短人物名、英文账号、产品代号时，`search` 工具可传 `context`（对话中能确认的专有名词），可派生最多 2 个查询变体，和候补引擎共同纳入请求预算；显式指定 `search_engine` 时保持单次请求语义，不自动换引擎。
 
 LLM 可以在 `search` 调用里用 `providers` 指定多个已启用来源的优先顺序，并用 `strategy` 选择调度方式（Agent Function Calling 与 MCP 参数一致）：
 
-- `auto`（默认）：按 `providers` 顺序请求，失败、空结果或去重后数量不足时继续下一家；够数或预算耗尽即停。列表耗尽后允许按用户配置的剩余 provider 顺序回退。
+供应商按目标信源选择，不按提问语言选择；普通查询或拿不准时省略 `providers`，沿用用户配置顺序。工具说明只推荐当前已启用的供应商：中文热点优先火山，国内官网和政策原文优先百度，AnySearch 可补查中文资料；英文技术资料优先 Exa，Tavily 可补查，复杂资料查找可用 Parallel MCP 补充。
+
+- `auto`（默认）：按 `providers` 顺序请求，去重后的结果数量够了就停；失败、空结果或数量不足时继续，直到预算用完或没有可试的来源。列表耗尽后允许按用户配置的剩余 provider 顺序回退。
 - `compare`：用于最新新闻、重要事实等需要交叉验证的场景。预算允许时至少尝试拿到两家非空 provider 返回，不因第一家够数而立即停止；结果按 provider 优先级交错并统一去重，同一页面被多家返回只保留第一次出现的位置，不构成独立证据。若受额度、超时或可用性限制无法完成两家，`hint` 会明确写“交叉验证未完成”及失败类型，不会伪称已验证。缓存会同时保存验证状态、实际尝试顺序、贡献来源和失败诊断；命中缓存仍恢复同一提示，缺少验证字段时会重新搜索。所有超时或请求次数预算截断的结果都不写入缓存，下次搜索会重新请求。
 - `strict`：只调用 `providers` 明确列出的来源，不扩展到配置中的其他 provider；`providers` 为空时拒绝执行，全部不可用时如实返回失败。
 

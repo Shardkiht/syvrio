@@ -1617,6 +1617,33 @@ async def test_mcp_exposes_search_when_enabled(resident_backend, monkeypatch):
         assert provider.queries[-1].engines == ("baidu", "bing")
 
 
+async def test_mcp_search_guidance_uses_enabled_providers(resident_backend, monkeypatch):
+    router = SearchRouter(
+        {"exa": FakeProvider(), "tavily": FakeProvider(), "parallel_mcp": FakeProvider()},
+        order=["exa", "tavily", "parallel_mcp"],
+    )
+    owner, resident = resident_backend
+    owner._service.config.search.enabled = True
+    monkeypatch.setattr("syvrio.backend.operations.build_search_router", lambda *_: router)
+    server = build_server(client=resident)
+
+    from fastmcp import Client
+
+    async with Client(server) as client:
+        tools = await client.list_tools()
+        description = next(tool for tool in tools if tool.name == "search").description
+        assert "英文技术资料优先 exa" in description
+        assert "复杂资料用 parallel_mcp" in description
+        assert "省略则用配置顺序" in description
+        assert "去重后结果够了就停" in description
+        assert "质量达标即停" not in description
+        assert "英文补查用 tavily" in description
+        assert "只选供应商时保留 auto" in description
+        assert "排除不支持它的供应商" in description
+        for name in ("baidu_search", "volcengine", "anysearch"):
+            assert name not in description
+
+
 async def test_mcp_omits_search_when_disabled(resident_backend):
     owner, resident = resident_backend
     owner._service.config.search.enabled = False
