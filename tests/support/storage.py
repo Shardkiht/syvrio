@@ -15,7 +15,7 @@ def rows(paths, table):
 
 def rejected(queue):
     with transaction(queue.paths, write=False) as db:
-        return [
-            queue._item(db, row)
-            for row in db.execute("SELECT * FROM candidates WHERE state='rejected' ORDER BY rowid")
-        ]
+        rows = db.execute(
+            "SELECT * FROM candidates WHERE state='rejected' ORDER BY rowid"
+        ).fetchall()
+        return queue._items(db, rows)
