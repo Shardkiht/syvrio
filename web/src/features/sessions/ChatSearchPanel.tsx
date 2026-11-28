@@ -2,12 +2,17 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type Keyboar
 import { api } from '../../api/client';
 import { usePanelRead } from '../commands/usePanelRead';
 import { isComposing } from '../../shared/shortcuts';
+import { Highlight, literalPattern } from '../../shared/Highlight';
 import './chat-search.css';
 
-function Highlight({ text, query }: { text: string; query: string }) {
-  const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return <>{text.split(new RegExp('(' + escaped + ')', 'ig')).map((part, i) =>
-    i % 2 ? <mark key={i}>{part}</mark> : part)}</>;
+function ResultTitle({ text, pattern }: { text: string; pattern: RegExp | null }) {
+  const hit = pattern?.exec(text);
+  if (!hit) return <strong>{text}</strong>;
+  return <strong className="chat-search-matched-title" title={text}>
+    <span>{text.slice(0, hit.index)}</span>
+    <mark>{hit[0]}</mark>
+    <span><Highlight text={text.slice(hit.index + hit[0].length)} pattern={pattern} /></span>
+  </strong>;
 }
 
 function ReadNotice({ message, retry }: { message: string; retry: () => void }) {
@@ -21,15 +26,16 @@ function Matches({ query, onSelect }: { query: string; onSelect: (sessionId: str
   const { value, error, retry } = usePanelRead(undefined, signal => api.searchChats(query, signal));
   if (error || value?.results.length === 0) return <ReadNotice message="No results to display." retry={retry} />;
   if (!value) return <p className="chat-search-status" role="status">Searching…</p>;
+  const pattern = literalPattern(query);
   return <>
     <p className="chat-search-status" role="status">{value.results.length} {value.results.length === 1 ? 'match' : 'matches'}</p>
     <ul className="chat-search-results" aria-label="Search results">{value.results.map(hit =>
       <li key={hit.session_id + ':' + hit.message_id}><button type="button" className="chat-search-result" onClick={() => onSelect(hit.session_id)}>
         <span className="chat-search-result-head">
-          <strong><Highlight text={hit.title} query={query} /></strong>
+          <ResultTitle text={hit.title} pattern={pattern} />
           <small>{hit.role === 'title' ? 'Title' : hit.role === 'user' ? 'You' : 'Syvrio'}</small>
         </span>
-        {hit.role !== 'title' && <span className="chat-search-excerpt"><Highlight text={hit.excerpt} query={query} /></span>}
+        {hit.role !== 'title' && <span className="chat-search-excerpt"><Highlight text={hit.excerpt} pattern={pattern} /></span>}
       </button></li>)}</ul>
   </>;
 }

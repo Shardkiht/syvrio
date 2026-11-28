@@ -178,7 +178,7 @@ export function SettingsPanel({
   );
 
   return (
-    <CommandDialog title="Settings" className="settings-dialog" overlayClass="settings-overlay"
+    <CommandDialog title="Settings" className="settings-dialog" overlayClass="fixed-panel-overlay"
       testId="settings-overlay" onClose={onClose} onKeyDown={event => {
         if (section === 'model' && event.altKey && !event.ctrlKey && !event.metaKey && event.key.toLowerCase() === 's') {
           event.preventDefault();

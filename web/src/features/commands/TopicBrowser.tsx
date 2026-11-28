@@ -4,6 +4,7 @@ import type { TopicListItem } from './commands';
 import { MemoryEntries } from './MemoryEntries';
 import { CommandDialog, moveOption } from './CommandUI';
 import { ArrowUpIcon, FileIcon, SearchIcon } from '../../shared/Icons';
+import { Highlight, literalPattern } from '../../shared/Highlight';
 import './topics.css';
 
 function topicLabels(topic: string, title?: string) {
@@ -56,12 +57,12 @@ export function TopicBrowser({ initialTopics, initialTopic, readTopics, onClose 
     }
   }, [selected]);
 
-  const needle = filter.trim().toLowerCase();
+  const pattern = literalPattern(filter);
   const groups = new Map<string, TopicListItem[]>();
   let matches = 0;
   for (const row of topics ?? []) {
     const { category, path, title } = topicLabels(row.topic, row.title);
-    if (!title.toLowerCase().includes(needle) && !path.toLowerCase().includes(needle)) continue;
+    if (pattern && !pattern.test(title) && !pattern.test(path)) continue;
     const group = groups.get(category);
     if (group) group.push(row);
     else groups.set(category, [row]);
@@ -73,7 +74,7 @@ export function TopicBrowser({ initialTopics, initialTopic, readTopics, onClose 
     title="Close topics" onClick={onClose}>×</button>;
 
   return (
-    <CommandDialog title="Topics" className="command-panel topics-browser" onClose={onClose}
+    <CommandDialog title="Topics" className="command-panel topics-browser" overlayClass="fixed-panel-overlay" onClose={onClose}
       onKeyDown={(event) => {
         if (selected === null) {
           moveOption(event, Array.from(list.current?.querySelectorAll<HTMLButtonElement>('.topics-row') ?? []));
@@ -83,7 +84,7 @@ export function TopicBrowser({ initialTopics, initialTopic, readTopics, onClose 
         <header className="topics-head">
           <div className="topics-title">
             <h2>Topics</h2>
-            {topics && <span aria-live="polite">{needle ? `${matches} of ${topics.length}` : topics.length}</span>}
+            {topics && <span aria-live="polite">{pattern ? `${matches} of ${topics.length}` : topics.length}</span>}
           </div>
           {closeButton}
         </header>
@@ -106,7 +107,7 @@ export function TopicBrowser({ initialTopics, initialTopic, readTopics, onClose 
             </p>
             : Array.from(groups, ([category, rows]) => (
               <section className="topics-group" key={category}>
-                {category && <h3>{category}</h3>}
+                {category && <h3><Highlight text={category} pattern={pattern} /></h3>}
                 <ul>
                   {rows.map((row) => {
                     const { title, path } = topicLabels(row.topic, row.title);
@@ -117,7 +118,11 @@ export function TopicBrowser({ initialTopics, initialTopic, readTopics, onClose 
                         setSelected(row.topic);
                       }}>
                       <FileIcon size={16} />
-                      <span className="topics-row-title">{title}</span>
+                      <span className="topics-row-title">
+                        <Highlight text={title} pattern={pattern} />
+                        {pattern && !pattern.test(title) && !pattern.test(category) &&
+                          <small className="topics-match-path"><Highlight text={path} pattern={pattern} /></small>}
+                      </span>
                       {row.entries !== undefined && <span className="topics-count">{entryCount(row.entries)}</span>}
                       <span className="topics-chevron" aria-hidden="true" />
                     </button></li>;

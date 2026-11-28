@@ -20,6 +20,8 @@
   --muted: #626b7a;
   --accent: #3a56d4;
   --accent-soft: rgba(58, 86, 212, .10);
+  --search-match-bg: #ffe19a;
+  --search-match-line: #935900;
   --accent-contrast: #ffffff;
   --danger: #c0392b;
   --danger-soft: rgba(192, 57, 43, .09);
@@ -55,6 +57,8 @@
     --muted: #b8c0cd;
     --accent: #aabaff;
     --accent-soft: rgba(151, 170, 255, .17);
+    --search-match-bg: #745521;
+    --search-match-line: #ffc465;
     --accent-contrast: #202432;
     --danger: #ffaaa3;
     --danger-soft: rgba(255, 170, 163, .14);
@@ -82,6 +86,8 @@
   --muted: #626b7a;
   --accent: #3a56d4;
   --accent-soft: rgba(58, 86, 212, .10);
+  --search-match-bg: #ffe19a;
+  --search-match-line: #935900;
   --accent-contrast: #ffffff;
   --danger: #c0392b;
   --danger-soft: rgba(192, 57, 43, .09);
@@ -108,6 +114,8 @@
   --muted: #b8c0cd;
   --accent: #aabaff;
   --accent-soft: rgba(151, 170, 255, .17);
+  --search-match-bg: #745521;
+  --search-match-line: #ffc465;
   --accent-contrast: #202432;
   --danger: #ffaaa3;
   --danger-soft: rgba(255, 170, 163, .14);
@@ -1420,16 +1428,37 @@ button.fold-summary:hover {
 }
 .dream-panel button:disabled { opacity: .6; }
 
-/* 设置面板 */
-
-.settings-overlay {
+.fixed-panel-overlay {
   align-items: flex-start;
   padding-block-start: max(var(--overlay-top), min(8dvh, 72px));
   padding-block-end: var(--overlay-bottom);
 }
-.settings-dialog {
+.fixed-panel-overlay > [role='dialog'] {
   width: min(680px, 100%);
   height: min(656px, 100%);
+  max-height: 100%;
+}
+
+.sidebar-chat-search mark, .topics-browser mark {
+  color: var(--text);
+  background: var(--search-match-bg);
+  border-radius: 2px;
+  font-weight: 600;
+  text-decoration: underline solid var(--search-match-line) 2px;
+  text-underline-offset: 2px;
+  text-decoration-skip-ink: none;
+}
+@media (forced-colors: active) {
+  .sidebar-chat-search mark, .topics-browser mark {
+    forced-color-adjust: none;
+    color: MarkText;
+    background: Mark;
+    text-decoration-color: currentColor;
+  }
+}
+
+/* 设置面板 */
+.settings-dialog {
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -1966,7 +1995,7 @@ button.fold-summary:hover {
   }
   .command-palette, .command-panel, .confirm-dialog { max-height: min(78dvh, 100%); }
   .confirm-actions button { min-height: 38px; }
-  .settings-overlay { padding-block-start: max(var(--overlay-top), min(8dvh, 56px)); }
+  .fixed-panel-overlay { padding-block-start: max(var(--overlay-top), min(8dvh, 56px)); }
   .settings-head { padding: 4px 8px 0 16px; }
   .settings-head .confirm-title { font-size: 18px; }
   .settings-head .icon-button { width: 44px; height: 44px; }
@@ -2009,7 +2038,7 @@ button.fold-summary:hover {
 @media (max-height: 520px) and (orientation: landscape) {
   .main.is-empty .thread { padding-bottom: 0; }
   .overlay { --overlay-lift: 12px; }
-  .settings-overlay { padding-block-start: var(--overlay-top); }
+  .fixed-panel-overlay { padding-block-start: var(--overlay-top); }
   .command-palette, .command-panel, .confirm-dialog { max-height: min(92dvh, 100%); }
 }
 
