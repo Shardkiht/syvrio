@@ -284,6 +284,17 @@ def truncate_fetch_content(content: str, max_chars: int | None) -> tuple[str, bo
     return content[:max_chars], True
 
 
+def page_result(
+    provider: str, query: FetchQuery, *, body: object, url: object, title: object
+) -> FetchResult:
+    content = str(body or "").strip()
+    if not content:
+        raise ProviderError(provider, ProviderErrorKind.BAD_RESPONSE, "未返回正文")
+    final_url = str(url or "").strip() or query.url
+    text, truncated = truncate_fetch_content(content, query.max_chars)
+    return FetchResult(query.url, final_url, str(title or "").strip() or final_url, text, truncated)
+
+
 def normalize_url(url: str) -> str:
     """保守 URL 规范化：只合并 www.、utm_* 与普通锚点差异。
 
