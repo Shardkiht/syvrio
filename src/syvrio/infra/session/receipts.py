@@ -38,9 +38,12 @@ class ReceiptStore:
         with transaction(self.paths) as db:
             db.execute("DELETE FROM receipts WHERE submission_id=?", (key,))
 
-    def complete(self, key: str, session_id: str | None, turn_id: int) -> None:
+    def complete(self, key: str, session_id: str, turn_id: int) -> None:
         with transaction(self.paths) as db:
-            db.execute(
-                "UPDATE receipts SET session_id=?,turn_id=? WHERE submission_id=?",
+            updated = db.execute(
+                """UPDATE receipts SET session_id=?,turn_id=? WHERE submission_id=?
+                   AND session_id IS NULL AND turn_id IS NULL""",
                 (session_id, turn_id, key),
             )
+            if updated.rowcount != 1:
+                raise ValueError("A pending delivery reservation is required.")

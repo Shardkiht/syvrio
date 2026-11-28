@@ -286,6 +286,7 @@ class AgentRuntime:
         turn_settings: TurnSettings | None = None,
         attachments: AttachmentBatch | None = None,
         replace_message_id: str | None = None,
+        delivery: tuple[str, int] | None = None,
         on_session: Callable[[Session], None] | None = None,
         on_user_message: Callable[[str], None] | None = None,
         on_event: Callable[[str], None] | None = None,
@@ -332,6 +333,7 @@ class AgentRuntime:
                     attachments,
                     settings=settings,
                     replace_message_id=replace_message_id,
+                    delivery=delivery,
                 )
         except GenerationCancelled as exc:
             partial = getattr(exc, "partial_content", "")
@@ -373,6 +375,7 @@ class AgentRuntime:
         *,
         settings: TurnSettings,
         replace_message_id: str | None = None,
+        delivery: tuple[str, int] | None = None,
     ) -> AgentReply:
         model, context, recall_queries = settings.model, settings.context, settings.recall_queries
         config = context.config
@@ -392,10 +395,12 @@ class AgentRuntime:
             record["attachments"] = [asdict(item) for item in attachments.files]
         with attachments.sending(self.service.paths) if attachments else nullcontext():
             with self.service.work.write():
-                if replace_message_id is None:
-                    self.sessions.append(session, record)
-                else:
+                if replace_message_id is not None:
                     self.undo(session, expected_latest=replace_message_id, replacement=record)
+                elif delivery is not None:
+                    self.sessions.append_delivery(session, record, *delivery)
+                else:
+                    self.sessions.append(session, record)
         if on_user_message is not None:
             # 立即上报本条用户消息 ID；生成期间 /undo 用它精确撤销当前回合。
             on_user_message(message_id)

@@ -337,6 +337,7 @@ class ConversationUseCases:
         attachments: AttachmentBatch | None = None,
         *,
         replace_message_id: str | None = None,
+        submission_id: str | None = None,
     ) -> TurnResult:
         bound = {"session_id": session_id, "user_message_id": None}
 
@@ -387,6 +388,7 @@ class ConversationUseCases:
                     if replace_message_id is not None
                     else {}
                 ),
+                **({"delivery": (submission_id, turn_id)} if submission_id is not None else {}),
                 on_session=on_session,
                 on_user_message=on_user_message,
                 on_event=callbacks.on_event,

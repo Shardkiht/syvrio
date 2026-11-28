@@ -274,27 +274,65 @@ def test_redelivery_after_restart_uses_only_confirmed_history(tmp_path):
     assert runtime.sessions.load(sid).user_texts() == ["first"]
 
 
-def test_failed_receipt_write_keeps_saved_message_and_prevents_duplicate(tmp_path, monkeypatch):
-    runtime, conv = build(tmp_path, [AssistantTurn(content="answer") for _ in range(11)])
+def test_delivery_receipt_survives_restart_before_the_reply_finishes(tmp_path):
+    runtime, conv = build(tmp_path, [])
+    runtime.model = GatedModel([AssistantTurn(content="answer")])
     scheduler = conv.scheduling
     sid = runtime.ensure_session().id
+    key = "e1" * 16
+    accepted = scheduler.submit_once(key, "Hello", sid)
+    turn = scheduler.registry.get(accepted["turn_id"], sid)
+
+    def should_not_submit():
+        pytest.fail("Recovery must not resubmit a saved user message.")
+
+    try:
+        assert turn is not None and turn.saved_or_closed.wait(5)
+        assert runtime.model.entered.wait(5) and not turn.finished.is_set()
+        assert turn.message_id is not None
+        assert runtime.sessions.load(sid).user_texts() == ["Hello"]
+        recovered = TurnRegistry().submit_once(
+            runtime.sessions.receipts, key, "Hello", sid, None, should_not_submit
+        )
+        assert recovered == {
+            "session_id": sid,
+            "submission_id": key,
+            "turn_id": accepted["turn_id"],
+            "text": "Hello",
+            "history_only": True,
+        }
+    finally:
+        runtime.model.release.set()
+        scheduler.shutdown()
+
+
+def test_failed_receipt_write_rolls_back_message_and_does_not_report_delivery(
+    tmp_path, monkeypatch
+):
+    runtime, conv = build(tmp_path, [])
+    scheduler = conv.scheduling
+    session = runtime.ensure_session()
     key = "ef" * 16
 
     def fail_receipt_write(*args):
         raise OSError("synthetic receipt write failure")
 
     monkeypatch.setattr(runtime.sessions.receipts, "complete", fail_receipt_write)
-    receipt = scheduler.submit_once(key, "first", sid)
-    turn = scheduler.registry.get(receipt["turn_id"], sid)
-    assert turn is not None and turn.finished.wait(5)
-    assert turn.message_id is not None
-    assert scheduler.submit_once(key, "first", sid)["message_id"] == turn.message_id
-    for index in range(10):
-        assert scheduler.submit(f"later {index}", sid).finished.wait(5)
-    with pytest.raises(ConversationError) as unknown:
-        scheduler.submit_once(key, "first", sid)
-    assert unknown.value.code == "delivery_unknown"
-    assert runtime.sessions.load(sid).user_texts().count("first") == 1
+    try:
+        receipt = scheduler.submit_once(key, "Hello", session.id)
+        turn = scheduler.registry.get(receipt["turn_id"], session.id)
+        assert turn is not None and turn.finished.wait(5)
+        assert turn.message_id is None
+        assert runtime.model.calls == 0
+        assert session.user_texts() == []
+        assert runtime.sessions.load(session.id).user_texts() == []
+        held = runtime.sessions.receipts.reserve(key, "", "read-only")
+        assert held is not None and held.session_id is None and held.turn_id is None
+        with pytest.raises(ConversationError) as unknown:
+            scheduler.submit_once(key, "Hello", session.id)
+        assert unknown.value.code == "delivery_unknown"
+    finally:
+        scheduler.shutdown()
 
 
 def test_turn_settings_are_fixed_before_the_worker_starts(tmp_path, monkeypatch):
