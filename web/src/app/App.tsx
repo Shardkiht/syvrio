@@ -35,7 +35,10 @@ export default function App() {
   const onComposerMount = useCallback((input: HTMLTextAreaElement) => {
     if (initialFocusHandled.current) return;
     initialFocusHandled.current = true;
-    if (document.activeElement === document.body) input.focus({ preventScroll: true });
+    const desktopPointer = window.matchMedia('(pointer: fine)').matches;
+    if (desktopPointer && document.activeElement === document.body) {
+      input.focus({ preventScroll: true });
+    }
   }, []);
   const assignDraft = useCallback((blank: string, id: string) => {
     const draft = drafts.current.get(blank);

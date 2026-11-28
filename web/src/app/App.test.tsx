@@ -232,6 +232,19 @@ describe('Web client interactions', () => {
     expect(document.activeElement).not.toBe(screen.getByRole('textbox', { name: 'Message' }));
   });
 
+  it('does not focus the composer on touch-first devices', async () => {
+    const media = window.matchMedia;
+    vi.spyOn(window, 'matchMedia').mockImplementation(query => ({
+      ...media(query),
+      matches: query === '(pointer: fine)' ? false : media(query).matches,
+    }));
+    installFetch();
+    render(<App />);
+
+    expect(document.activeElement).toBe(document.body);
+    await ready();
+  });
+
   it('edits the selected title inline, previews it in the sidebar and saves to that session only', async () => {
     const titles: string[] = [];
     const calls = installFetch({

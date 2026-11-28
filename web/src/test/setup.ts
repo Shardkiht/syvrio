@@ -25,7 +25,7 @@ Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
 Object.defineProperty(window, 'matchMedia', {
   writable: true,
   value: (query: string) => ({
-    matches: false,
+    matches: query === '(pointer: fine)',
     media: query,
     onchange: null,
     addListener: () => {},
