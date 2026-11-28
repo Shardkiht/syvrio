@@ -432,10 +432,16 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
     }
   }, [beginEdit, catalog, dialog, open, checkingSelection, navigate, openFiles, openReview, refreshHealth, refreshSessions, reloadHistory, update]);
 
-  const syncQueue = useCallback(async () => {
+  const syncQueue = useCallback(async (receipt?: TurnReceipt) => {
     if (navigation.current) return;
     const version = navigationVersion.current;
-    const state = await readQueue();
+    const response = await readQueue().catch(error => {
+      if (!receipt) throw error;
+      if (version === navigationVersion.current && !navigation.current) void observe(receipt);
+      return null;
+    });
+    if (!response || (response.stale && !receipt)) return;
+    const { state } = response;
     if (version !== navigationVersion.current || navigation.current) return;
     reconcileSelection(state.session_id);
     if (state.archived_session_id && state.archived_session_id === chatRef.current.sessionId) {
@@ -449,7 +455,9 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
     if (state.session_id === null || state.session_id !== chatRef.current.sessionId) return;
     changeQueue(state.waiting);
     setQueuePaused(state.paused);
-    if (state.active) void observe(state.active);
+    const active = state.active ?? (receipt?.session_id === state.session_id &&
+      !state.waiting.some(item => item.turn_id === receipt.turn_id) ? receipt : null);
+    if (active) void observe(active);
     else if (!stream.current && revision.current?.session === state.session_id && revision.current.value !== state.revision) {
       revision.current = { session: state.session_id, value: state.revision };
       await reloadHistory(state.session_id);
@@ -461,7 +469,7 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
   syncRef.current = syncQueue;
   const removeQueued = useCallback((index: number) => {
     const item = queueRef.current[index];
-    if (item) void removeQueuedTurn(item.turn_id).then(syncQueue).catch(() => undefined);
+    if (item) void removeQueuedTurn(item.turn_id).then(() => syncQueue()).catch(() => undefined);
   }, [syncQueue]);
 
   const discardFailedEdit = useCallback((sessionId: string, editId?: string) => {
@@ -570,7 +578,7 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
     } finally {
       finishEdit();
       if (chatRef.current.sessionId === sessionId) {
-        if (!stream.current) void reloadHistory(sessionId).then(syncQueue).catch(() => undefined);
+        if (!stream.current) void reloadHistory(sessionId).then(() => syncQueue()).catch(() => undefined);
         else void syncQueue().catch(() => undefined);
       }
     }
@@ -589,19 +597,9 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
       return;
     }
     const version = navigationVersion.current;
-    const current = () => !navigation.current && version === navigationVersion.current && chatRef.current.sessionId === receipt.session_id;
     await navigationHistory.current;
-    await readQueue().then(state => {
-      if (!current() || state.session_id !== receipt.session_id) return;
-      changeQueue(state.waiting);
-      setQueuePaused(state.paused);
-      const active = state.active ?? (state.waiting.some(item => item.turn_id === receipt.turn_id) ? null : receipt);
-      if (!stream.current && active) void observe(active);
-    }).catch(() => {
-      // 请求已受理，重新连接事件流即可，避免重复提交。
-      if (current() && !stream.current) void observe(receipt);
-    });
-  }, [assignDraft, blankDraftId, changeQueue, navigation, observe, readQueue, reloadHistory, stream, update]);
+    if (version === navigationVersion.current && chatRef.current.sessionId === receipt.session_id) await syncQueue(receipt);
+  }, [assignDraft, blankDraftId, navigation, reloadHistory, syncQueue, update]);
   const onSendFailure = useCallback((error: unknown) => {
     if (error instanceof NetworkError) setOnline(false);
   }, []);
@@ -775,7 +773,7 @@ export function useChat(openFiles?: () => void, assignDraft?: (blankId: string, 
         }
         let historyId = listing.items.find((item) => item.current)?.id;
         if (info.active_turn_id != null && version === navigationVersion.current) {
-          const state = await readQueue();
+          const { state } = await readQueue();
           if (!alive || version !== navigationVersion.current) return;
           if (state.active) {
             update(prev => ({ ...prev, sessionId: state.session_id }));
