@@ -14,7 +14,15 @@ from ..application.memory import MemoryUseCases
 from ..application.reflection import ReflectionUseCases
 from ..infra.config import WebShareConfig, update_config
 from ..infra.search import SearchQuery, build_search_router, provider_selection_guidance
-from ..infra.search.tool_request import run_tool_search
+from ..infra.search.tool_request import (
+    SEARCH_CONTEXT_DESCRIPTION,
+    SEARCH_DESCRIPTION,
+    SEARCH_ENGINE_DESCRIPTION,
+    SEARCH_PROVIDERS_DESCRIPTION,
+    SEARCH_QUOTA_GUIDANCE,
+    SEARCH_STRATEGY_DESCRIPTION,
+    run_tool_search,
+)
 from ..infra.session import SessionStore
 from ..infra.vault.sync import GitSyncService
 from ..memory.models import MemoryCorrection, MemoryDraft
@@ -123,7 +131,17 @@ class ResidentOperations:
             "search": enabled,
             "max_results": self.service.config.search.max_results,
             "search_providers": providers,
-            "search_provider_guidance": provider_selection_guidance(providers),
+            "search_description": "\n".join(
+                (
+                    SEARCH_DESCRIPTION + SEARCH_QUOTA_GUIDANCE,
+                    f"providers：{SEARCH_PROVIDERS_DESCRIPTION}{provider_selection_guidance(providers)}",
+                    f"strategy：{SEARCH_STRATEGY_DESCRIPTION}",
+                    f"search_engine：{SEARCH_ENGINE_DESCRIPTION}",
+                    f"context：{SEARCH_CONTEXT_DESCRIPTION}",
+                )
+            )
+            if enabled
+            else "",
         }
 
     def _router(self):

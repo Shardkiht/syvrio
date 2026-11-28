@@ -4,14 +4,6 @@ from fastmcp import FastMCP
 
 from ..backend.client import ResidentClient
 from ..backend.client_contracts import MemoryContext, MemoryCorrection, MemoryDraft
-from ..infra.search.tool_request import (
-    SEARCH_CONTEXT_DESCRIPTION,
-    SEARCH_DESCRIPTION,
-    SEARCH_ENGINE_DESCRIPTION,
-    SEARCH_PROVIDERS_DESCRIPTION,
-    SEARCH_QUOTA_GUIDANCE,
-    SEARCH_STRATEGY_DESCRIPTION,
-)
 
 
 def build_server(client: ResidentClient | None = None) -> FastMCP:
@@ -152,21 +144,9 @@ def build_server(client: ResidentClient | None = None) -> FastMCP:
         """查看记忆库状态：主题数、条目数、待确认数、未提交变更。"""
         return svc.status()
 
-    provider_guidance = capabilities.get("search_provider_guidance", "")
-
     if capabilities["search"]:
 
-        @mcp.tool(
-            description="\n".join(
-                (
-                    SEARCH_DESCRIPTION + SEARCH_QUOTA_GUIDANCE,
-                    f"providers：{SEARCH_PROVIDERS_DESCRIPTION}{provider_guidance}",
-                    f"strategy：{SEARCH_STRATEGY_DESCRIPTION}",
-                    f"search_engine：{SEARCH_ENGINE_DESCRIPTION}",
-                    f"context：{SEARCH_CONTEXT_DESCRIPTION}",
-                )
-            )
-        )
+        @mcp.tool(description=capabilities["search_description"])
         def search(
             query: str,
             limit: int = capabilities["max_results"],
