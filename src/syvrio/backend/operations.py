@@ -34,15 +34,26 @@ class ResidentOperations:
         git: GitSyncService,
         settings_lock: RLock,
     ) -> None:
-        service = memory.service
-        self.service = service
+        self.service = memory.service
         self.memory = memory
+        self.memory_history = memory_history
+        self.read_profile = read_profile
+        self.sessions = sessions
+        self.reflection = reflection
+        self.git = git
         self.settings_lock = settings_lock
         self.search_router = None
-        self._operations = {
+
+    def dispatch(self, name: str, data: dict):
+        service = self.service
+        if name == "correct":
+            data = {**data, "draft": MemoryCorrection.model_validate(data.get("draft"))}
+        elif name in {"memorize", "transition"}:
+            data = {**data, "draft": MemoryDraft.model_validate(data.get("draft"))}
+        operations = {
             "web_share": self.web_share,
             "memorize": service.memorize,
-            "verify_attachments": sessions.verify_attachments,
+            "verify_attachments": self.sessions.verify_attachments,
             "mcp_capabilities": lambda: {
                 "search": service.config.search.enabled,
                 "max_results": service.config.search.max_results,
@@ -51,7 +62,7 @@ class ResidentOperations:
             "read_topic": service.read_topic,
             "deprecate": service.deprecate,
             "correct": service.correct,
-            "memory_history": memory_history,
+            "memory_history": self.memory_history,
             "read_memory_source": service.read_memory_source,
             "transition": service.transition,
             "topics": service.topics,
@@ -61,27 +72,21 @@ class ResidentOperations:
                 service.approve(item_id).as_recall().model_dump(exclude_none=True)
             ),
             "reject": service.reject,
-            "history": git.history,
-            "commit": git.commit,
-            "status": lambda: {**service.status(), "dirty": git.is_dirty()},
+            "history": self.git.history,
+            "commit": self.git.commit,
+            "status": lambda: {**service.status(), "dirty": self.git.is_dirty()},
             "inferences": service.list_inferences,
             "review_inference": service.review_inference,
-            "profile": read_profile,
-            "sessions": sessions.list,
-            "inference_review": memory.load_inference_review,
-            "dream": lambda action="run": reflection.command(action),
+            "profile": self.read_profile,
+            "sessions": self.sessions.list,
+            "inference_review": self.memory.load_inference_review,
+            "dream": lambda action="run": self.reflection.command(action),
             "search": self.search,
             "tool_search": self.tool_search,
         }
-
-    def dispatch(self, name: str, data: dict):
-        if name == "correct":
-            data = {**data, "draft": MemoryCorrection.model_validate(data.get("draft"))}
-        elif name in {"memorize", "transition"}:
-            data = {**data, "draft": MemoryDraft.model_validate(data.get("draft"))}
-        if name not in self._operations:
+        if name not in operations:
             raise KeyError("Unknown backend operation.")
-        return self._operations[name](**data)
+        return operations[name](**data)
 
     def web_share(self, domain: str, github_id: str | None, save: bool = False) -> dict:
         with self.settings_lock:
