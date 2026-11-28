@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import os
 import re
-from dataclasses import asdict, dataclass, field, fields
+from dataclasses import asdict, dataclass, field, fields, replace
 from pathlib import Path
 
 from ..security.credentials import KEYRING_SERVICE as KEYRING_SERVICE
@@ -469,6 +469,31 @@ def write_config(path: Path, config: Config) -> None:
         _build(local, defaults, layout)
         layout.write(local, initialize=not path.exists())
     config._baseline = current
+
+
+def update_config(
+    path: Path | None,
+    config: Config,
+    *,
+    llm: LLMConfig | None = None,
+    context_window: int | None = None,
+    web_share: WebShareConfig | None = None,
+) -> None:
+    pending = replace(
+        config,
+        llm=config.llm if llm is None else llm,
+        chat=config.chat
+        if context_window is None
+        else replace(config.chat, context_window=context_window),
+        web_share=config.web_share if web_share is None else web_share,
+    )
+    if path is not None:
+        write_config(path, pending)
+        config._baseline = pending._baseline
+    # 已启动的会话共用 ChatConfig 引用，保存成功后原位发布预算变更。
+    config.llm = pending.llm
+    config.chat.context_window = pending.chat.context_window
+    config.web_share = pending.web_share
 
 
 def write_example_config(path: Path, vault: Path) -> None:

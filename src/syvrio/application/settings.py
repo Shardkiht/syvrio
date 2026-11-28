@@ -13,7 +13,7 @@ from ..infra.config import (
     LLMConfig,
     context_window_options,
     read_api_key,
-    write_config,
+    update_config,
 )
 from ..infra.formatting import format_tokens
 from ..infra.llm import (
@@ -249,11 +249,7 @@ class SettingsUseCases:
             provider_urls={**current.provider_urls, provider: endpoint},
         )
         config = self.config
-        if self.config_path:
-            pending = replace(config, llm=llm)
-            write_config(self.config_path, pending)
-            config._baseline = pending._baseline
-        config.llm = llm
+        update_config(self.config_path, config, llm=llm)
         if active and self.runtime is not None:
             self.runtime.reload_llm(config)
         message = f"{provider_label(provider)} Base URL saved."
@@ -360,15 +356,8 @@ class SettingsUseCases:
 
     def _save_turn_settings(self, llm: LLMConfig, context_window: int) -> None:
         config = self.config
-        if self.config_path:
-            pending = replace(
-                config, llm=llm, chat=replace(config.chat, context_window=context_window)
-            )
-            write_config(self.config_path, pending)
-            config._baseline = pending._baseline
         model_changed = config.llm is not llm
-        config.llm = llm
-        config.chat.context_window = context_window
+        update_config(self.config_path, config, llm=llm, context_window=context_window)
         if model_changed and self.runtime is not None:
             self.runtime.reload_llm(config)
 

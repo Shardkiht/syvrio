@@ -376,7 +376,7 @@ def test_failed_save_keeps_the_current_model_and_context(tmp_path, monkeypatch):
     def fail_write(path, config):
         raise OSError("write failed")
 
-    monkeypatch.setattr(settings_module, "write_config", fail_write)
+    monkeypatch.setattr("syvrio.infra.config.write_config", fail_write)
     with pytest.raises(OSError, match="write failed"):
         settings.apply_model("deepseek", "new-model")
     with pytest.raises(OSError, match="write failed"):
