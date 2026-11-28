@@ -37,6 +37,19 @@ class EngineProvider:
         return list(self.by_engine.get(engine, []))
 
 
+def test_score_counts_coverage_from_the_first_match():
+    from unittest.mock import patch
+
+    from syvrio.infra.search import quality
+
+    analysis = analyze_query("alpha beta")
+    row = SearchResult(title="alpha beta", url="https://example.invalid", snippet="")
+    with patch.object(quality, "_match", wraps=quality._match) as matcher:
+        score = quality.score_entry(row, analysis)
+    assert score.title_core == 6 and score.core_coverage == 2
+    assert matcher.call_count == len(analysis.core_terms) == 2
+
+
 def test_context_hit_alone_does_not_stop_engine_fallback():
     """T01：只含 context 词的结果不能让首选引擎早停，必须继续候补。"""
     provider = EngineProvider(
