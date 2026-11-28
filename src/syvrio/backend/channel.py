@@ -21,6 +21,8 @@ from ..infra.vault.sync import GitSyncService
 from ..memory.background import BackgroundMemory
 from ..memory.service import MemoryService, get_service
 from .maintenance import prepare_vault_runtime
+from .mcp_writes import MCPWrites
+from .operations import ResidentOperations
 from .ownership import BackendLease
 from .scheduler import GitScheduler
 from .updates.activity import ResidentActivity
@@ -88,6 +90,17 @@ class ResidentChannel:
     @property
     def conversation(self) -> ConversationUseCases:
         return self._conversation
+
+    def local_operations(self) -> tuple[ResidentOperations, MCPWrites]:
+        return ResidentOperations(
+            memory=self._app_service.memory,
+            memory_history=self._service.store.version_history,
+            read_profile=self._service.profile.read_text,
+            sessions=self._sessions,
+            reflection=self._app_service.reflection,
+            git=self.git,
+            settings_lock=self.scheduling.settings_lock,
+        ), MCPWrites(self._service)
 
     # 生命周期
 

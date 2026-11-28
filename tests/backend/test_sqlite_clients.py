@@ -180,6 +180,10 @@ async def test_four_clients_share_one_database(tmp_path, monkeypatch):
                     assert "Hello local model" in browser.get(f"/api/sessions/{sid}").text
                     client = ResidentClient(config)
                     assert client.base == base
+                    assert sid in {row["id"] for row in client.call("sessions")}
+                    entry = client.read_topic("demo")["entries"][0]
+                    versions = client.call("memory_history", entry_id=entry["id"])
+                    assert [row["memory_id"] for row in versions] == [entry["id"]]
                     tui = ResidentChatApp(client, sid)
                     async with tui.run_test() as pilot:
                         tui.query_one("#input", Input).value = "TUI synthetic message"

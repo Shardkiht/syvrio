@@ -157,12 +157,9 @@ def create_api(
         return error_response("internal_error", "Internal server error.", 500)
 
     if resident_token:
-        from ..mcp_writes import MCPWrites
-        from ..operations import ResidentOperations
         from .update_admission import guard_update_writes
 
-        operations = ResidentOperations(owner)
-        mcp_writes = MCPWrites(owner._service)
+        operations, mcp_writes = owner.local_operations()
         guard_update_writes(app, owner.activity)
 
         def authenticate(request: Request) -> None:
