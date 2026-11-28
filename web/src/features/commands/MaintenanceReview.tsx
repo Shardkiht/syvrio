@@ -14,6 +14,7 @@ function Suggestion({ item, onResolved }: { item: MaintenanceSuggestion; onResol
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const chosen = item.facts.find(fact => fact.id === selected);
+  const previous = item.facts.find(fact => fact.id !== selected);
   async function confirm() {
     if (!decision || busy) return;
     setBusy(true);
@@ -45,8 +46,12 @@ function Suggestion({ item, onResolved }: { item: MaintenanceSuggestion; onResol
     {error && <p role="alert">{error}</p>}
     {decision ? <div className="maintenance-confirm">
       <p>{decision.action === 'ignore' ? 'Ignore this pair at these versions?' :
-        decision.action === 'transition' ? `Link both facts? The previous one ends ${end}, and the selected one starts ${start}.` :
+        decision.action === 'transition' ? 'Link both facts as a change over time?' :
         `Keep “${chosen?.text}” and deprecate the other fact?`}</p>
+      {decision.action === 'transition' && <ul>
+        <li>Previous fact “{previous?.text}” is valid through {decision.previous_end}.</li>
+        <li>Later fact “{chosen?.text}” is valid from {decision.current_start}.</li>
+      </ul>}
       <button disabled={busy} onClick={() => setDecision(null)}>Back</button>
       <button disabled={busy} onClick={() => void confirm()}>{busy ? 'Saving…' : 'Confirm'}</button>
     </div> : <>
