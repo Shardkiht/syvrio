@@ -33,7 +33,7 @@ function installFetch(initialBudget = 100000) {
         { provider: 'deepseek', model: 'deepseek-flash', label: 'deepseek/deepseek-flash', current: true },
         { provider: 'deepseek', model: 'deepseek-pro', label: 'deepseek/deepseek-pro', current: false },
       ];
-      if (query.toLowerCase() === 'distant') rows.push({ provider: 'other', model: 'distant', label: 'Distant', current: false });
+      rows.push({ provider: 'other', model: 'distant', label: 'Distant', current: false });
       return json({ items: rows.filter(row => row.label.toLowerCase().includes(query.toLowerCase())), unavailable_providers: [] });
     }
     if (url === '/api/settings/providers') {
@@ -97,9 +97,9 @@ describe('settings panel', () => {
     fireEvent.change(search, { target: { value: '  PRO  ' } });
     expect(screen.queryByTestId('model-deepseek-deepseek-flash')).toBeNull();
     expect(await screen.findByTestId('model-deepseek-deepseek-pro')).toBeTruthy();
-    expect(lines).toContain('search:PRO');
+    expect(lines.filter(line => line.startsWith('search:'))).toEqual(['search:']);
     fireEvent.click(refresh);
-    await waitFor(() => expect(lines).toContain('refresh:PRO'));
+    await waitFor(() => expect(lines).toContain('refresh:'));
     expect((search as HTMLInputElement).value).toBe('  PRO  ');
     fireEvent.change(search, { target: { value: 'distant' } });
     expect(await screen.findByTestId('model-other-distant')).toBeTruthy();
@@ -357,9 +357,32 @@ describe('settings panel', () => {
     vi.spyOn(api, 'searchModels').mockReturnValueOnce(pending.promise);
     fireEvent.click(screen.getByRole('button', { name: 'Refresh model list' }));
     fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'distant' } });
-    pending.resolve({ items: [], unavailable_providers: [] });
+    pending.resolve({ items: [{ provider: 'other', model: 'distant', label: 'Distant', current: false }], unavailable_providers: [] });
     expect(await screen.findByTestId('model-other-distant')).toBeTruthy();
-    expect(lines).toContain('search:distant');
+    expect(lines.filter(line => line.startsWith('search:'))).toEqual(['search:']);
+  });
+
+  it('discards a late catalog after changing the provider key', async () => {
+    installFetch();
+    const late = deferred<ModelSearchResponse>();
+    const next = { provider: 'deepseek', model: 'new', label: 'New', current: false };
+    const read = vi.spyOn(api, 'searchModels').mockReturnValueOnce(late.promise)
+      .mockResolvedValue({ items: [next], unavailable_providers: [] });
+    render(<SettingsPanel health={HEALTH} theme="auto" onTheme={() => {}} onClose={() => {}} onChanged={() => {}} />);
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByTestId('settings-tab-providers'));
+    const row = within(await screen.findByTestId('provider-deepseek'));
+    fireEvent.click(row.getByRole('button', { name: 'Update key' }));
+    fireEvent.change(row.getByLabelText('DeepSeek API key'), { target: { value: 'synthetic-value' } });
+    fireEvent.click(row.getByRole('button', { name: 'Save' }));
+    await row.findByText('Key saved.');
+    fireEvent.click(screen.getByTestId('settings-tab-model'));
+    await screen.findByTestId('model-deepseek-new');
+    expect(read.mock.calls[0][2]?.aborted).toBe(true);
+    late.resolve({ items: [{ ...next, model: 'old' }], unavailable_providers: [] });
+    await late.promise;
+    expect(screen.queryByTestId('model-deepseek-old')).toBeNull();
+    expect(screen.getByTestId('model-deepseek-new')).toBeTruthy();
   });
 
   it('offers automatic, light and dark appearance choices', async () => {

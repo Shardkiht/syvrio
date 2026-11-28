@@ -175,6 +175,9 @@ class SettingsUseCases:
             )
         return options
 
+    def supports_provider(self, provider: str) -> bool:
+        return self._preset(provider) is not None
+
     def supports_reasoning(self) -> bool:
         return bool(self.reasoning_options())
 

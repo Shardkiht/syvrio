@@ -1,74 +1,75 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../../api/client';
 import type { ActionFeedback } from '../../shared/ActionFeedback';
 import type { HealthResponse, ModelSearchResponse } from '../../types';
 
 export function useModelCatalog(visible: boolean, query: string, health: HealthResponse | null) {
-  const [catalog, setCatalog] = useState<(ModelSearchResponse & { query: string }) | null>(null);
+  const [catalog, setCatalog] = useState<ModelSearchResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [feedback, setFeedback] = useState<ActionFeedback | null>(null);
-  const refreshRequest = useRef<AbortController | null>(null);
-  const refreshed = useRef<{ query: string; result?: ModelSearchResponse } | null>(null);
+  const [generation, setGeneration] = useState(0);
+  const active = useRef<AbortController | null>(null);
+  const refreshActive = useRef(false);
 
-  useEffect(() => () => refreshRequest.current?.abort(), []);
-
-  async function refresh() {
-    if (refreshRequest.current) return;
-    const request = new AbortController();
-    refreshRequest.current = request;
-    const filter = visible ? query : '';
-    setError('');
-    setFeedback({ kind: 'pending', message: 'Refreshing model list…' });
-    try {
-      const result = await api.searchModels(filter, true, request.signal);
-      if (request.signal.aborted) return;
-      refreshed.current = { query: filter, result };
-      const unavailable = result.unavailable_providers;
-      setFeedback(unavailable.length
-        ? { kind: 'warning', message: `Catalog unavailable for ${unavailable.join(', ')}. Try refreshing again.` }
-        : { kind: 'success', message: 'Model list refreshed.' });
-    } catch (failure) {
-      if (request.signal.aborted) return;
-      refreshed.current = { query: filter };
-      const reason = failure instanceof Error ? failure.message : 'Request failed.';
-      setFeedback({ kind: 'error', message: `Could not refresh the model list. ${reason}` });
-    } finally {
-      refreshRequest.current = null;
-    }
-  }
-
-  useEffect(() => {
-    if (feedback?.kind === 'pending') return;
-    // 手动请求的响应只消费一次，后续搜索使用最新输入的筛选条件。
-    const completed = refreshed.current;
-    refreshed.current = null;
-    if (!visible) return;
-    if (completed?.query === query) {
-      if (completed.result) setCatalog({ ...completed.result, query });
-      setLoading(false);
-      return;
-    }
-    const request = new AbortController();
+  const invalidate = useCallback(() => {
+    active.current?.abort();
+    active.current = null;
+    refreshActive.current = false;
+    setGeneration(value => value + 1);
+    setCatalog(null);
     setLoading(true);
     setError('');
-    const timer = window.setTimeout(async () => {
-      try {
-        const result = await api.searchModels(query, false, request.signal);
-        if (!request.signal.aborted) setCatalog({ ...result, query });
-      } catch (failure) {
-        if (!request.signal.aborted) {
-          setError(failure instanceof Error ? failure.message : 'Could not load models');
-        }
-      } finally {
-        if (!request.signal.aborted) setLoading(false);
-      }
-    }, query ? 160 : 0);
-    return () => {
-      window.clearTimeout(timer);
-      request.abort();
-    };
-  }, [visible, query, health?.provider, health?.model, feedback]);
+    setFeedback(null);
+  }, []);
 
-  return { results: catalog?.query === query ? catalog : null, loading, error, refresh, feedback };
+  const load = useCallback(async (refresh: boolean) => {
+    if (active.current && (!refresh || refreshActive.current)) return;
+    active.current?.abort();
+    const request = new AbortController();
+    active.current = request;
+    refreshActive.current = refresh;
+    setError('');
+    if (refresh) setFeedback({ kind: 'pending', message: 'Refreshing model list…' });
+    try {
+      const result = await api.searchModels('', refresh, request.signal);
+      if (request.signal.aborted) return;
+      setCatalog(result);
+      if (refresh) {
+        const unavailable = result.unavailable_providers;
+        setFeedback(unavailable.length
+          ? { kind: 'warning', message: `Catalog unavailable for ${unavailable.join(', ')}. Try refreshing again.` }
+          : { kind: 'success', message: 'Model list refreshed.' });
+      }
+    } catch (failure) {
+      if (request.signal.aborted) return;
+      const message = failure instanceof Error ? failure.message : 'Could not load models';
+      if (refresh) setFeedback({ kind: 'error', message: `Could not refresh the model list. ${message}` });
+      else setError(message);
+    } finally {
+      if (!request.signal.aborted) {
+        active.current = null;
+        refreshActive.current = false;
+        setLoading(false);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    invalidate();
+    return () => active.current?.abort();
+  }, [health?.provider, health?.model, invalidate]);
+
+  useEffect(() => {
+    if (visible && loading && !active.current) void load(false);
+  }, [visible, loading, health?.provider, health?.model, generation, load]);
+
+  const results = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    if (!catalog || !needle) return catalog;
+    return { ...catalog, items: catalog.items.filter(item =>
+      `${item.provider}/${item.model}`.toLowerCase().includes(needle) || item.label.toLowerCase().includes(needle)) };
+  }, [catalog, query]);
+
+  return { results, loading, error, feedback, invalidate, refresh: () => load(true) };
 }
