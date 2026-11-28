@@ -45,6 +45,17 @@ def test_repeated_evidence_is_idempotent_without_confidence_inflation(service):
     assert "confidence" not in item.model_dump()
 
 
+def test_propose_and_review_without_loading_inference_list(service, monkeypatch):
+    sources = [service.note(f"synthetic fact {i}").id for i in range(2)]
+    monkeypatch.setattr(service.inferences, "all", lambda: pytest.fail("full inference scan"))
+    proposal = service.propose_inference_with_status
+    item, created = proposal("Synthetic idea", sources, "habit")
+    assert created
+    assert proposal("synthetic  idea", list(reversed(sources)), "habit") == (item, False)
+    assert proposal("Synthetic idea", sources[:1], "habit")[1]
+    assert service.review_inference(item.id, "confirm").status == "confirmed"
+
+
 def test_changed_evidence_creates_distinct_hypothesis(service):
     first = service.note("偏好纸质阅读", topic="preferences")
     second = service.note("常看合成读书笔记", topic="events")

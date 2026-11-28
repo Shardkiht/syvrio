@@ -299,16 +299,14 @@ class Dream:
                         job["state"] = "completed"
             else:
                 if proposals:
-                    known = {item.id for item in self.service.list_inferences()}
                     for proposal in proposals:
-                        saved = self.service.propose_inference(
+                        _, created = self.service.propose_inference_with_status(
                             proposal.text,
                             proposal.source_ids,
                             proposal.kind,
                             evidence_commit=commit,
                         )
-                        if saved.id not in known:
-                            known.add(saved.id)
+                        if created:
                             job["proposed"] += 1
                 if finished:
                     job["state"] = "completed"

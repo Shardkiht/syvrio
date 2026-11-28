@@ -439,6 +439,19 @@ class MemoryService:
         *,
         evidence_commit: int | None = None,
     ) -> Inference:
+        item, _ = self.propose_inference_with_status(
+            text, source_ids, kind, evidence_commit=evidence_commit
+        )
+        return item
+
+    def propose_inference_with_status(
+        self,
+        text: str,
+        source_ids: list[str],
+        kind: InferenceKind,
+        *,
+        evidence_commit: int | None = None,
+    ) -> tuple[Inference, bool]:
         text = text.strip()
         if not text or contains_secret(text) or contains_secret(kind):
             raise ValueError("Inference text and kind must be nonempty and free of credentials.")
@@ -460,15 +473,17 @@ class MemoryService:
             if set(versions) != set(item.source_ids):
                 raise ValueError("Unknown source memory in the selected revision.")
             item.source_versions = versions
-            for record in self.inferences.all():
-                if (record.kind, normalize_text(record.text), record.source_versions) == (
-                    item.kind,
-                    normalize_text(item.text),
-                    versions,
-                ):
-                    return record
+            anchor = item.source_ids[0]
+            normalized = normalize_text(item.text)
+            for key, candidate_text in self.inferences.candidates_for_source(
+                item.kind, anchor, versions[anchor]
+            ):
+                if normalize_text(candidate_text) == normalized:
+                    record = self.inferences.get(key)
+                    if record is not None and record.source_versions == versions:
+                        return record, False
             self.inferences.add(item)
-            return item
+            return item, True
 
     def list_inferences(self) -> list[Inference]:
         return self.inferences.all()
@@ -479,7 +494,7 @@ class MemoryService:
         if action not in {"confirm", "reject", "correct"}:
             raise ValueError("操作须为 confirm、reject 或 correct。")
         with self.work.write():
-            old = next((item for item in self.inferences.all() if item.id == inference_id), None)
+            old = self.inferences.get(inference_id)
             if old is None:
                 raise KeyError("推断不存在。")
             target = "confirmed" if action == "confirm" else "deprecated"
