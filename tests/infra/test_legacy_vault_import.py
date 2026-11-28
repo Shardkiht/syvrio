@@ -45,6 +45,7 @@ def test_import_legacy_inference_without_evidence_version(tmp_path, monkeypatch)
         records = Records(archive, ZoneInfo("UTC"))
         assert transfer(records, paths)["inferences"] == 1
         assert not transfer(records, paths)
+
     with transaction(paths, write=False) as target:
         assert tuple(target.execute("SELECT id,status FROM inferences").fetchone()) == (
             "inf-one",
@@ -56,6 +57,52 @@ def test_import_legacy_inference_without_evidence_version(tmp_path, monkeypatch)
             "mem-one",
             None,
         )
+
+
+def test_import_topic_dates_scan_memories_once(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2] / "scripts"))
+    from vault_import.target import transfer
+
+    class Counted(dict):
+        visits = 0
+
+        def values(self):
+            for row in super().values():
+                self.visits += 1
+                yield row
+
+    memories = Counted()
+    for i in reversed(range(100)):
+        memories[f"mem-{i}"] = (
+            f"topic-{i % 10}",
+            "active",
+            f"sample {i}",
+            f"2026-01-{i // 10 + 1:02}T00:00:00+00:00",
+            None,
+            None,
+            None,
+            None,
+            {},
+        )
+    records = SimpleNamespace(
+        sessions={},
+        candidates={},
+        inferences={},
+        logs={},
+        profile=None,
+        soul=None,
+        topics={f"topic-{i}": (f"Topic {i}", False) for i in range(11)},
+        memories=memories,
+    )
+    paths = SyvrioPaths(tmp_path / "target", tmp_path / "runtime")
+    assert transfer(records, paths)["topics"] == 11 and memories.visits == 100
+    assert not transfer(records, paths) and memories.visits == 100
+    with transaction(paths, write=False) as db:
+        dates = dict(db.execute("SELECT name,updated_at FROM topics"))
+    assert dates.pop("topic-10") == ""
+    assert set(dates.values()) == {"2026-01-10T00:00:00+00:00"}
 
 
 def test_import_session_and_rollback(tmp_path, monkeypatch):
