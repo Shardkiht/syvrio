@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 OPEN_WEBSEARCH = "open_websearch"
@@ -30,6 +31,21 @@ PROVIDERS = {
     "you": ProviderSpec("You.com", "YDC_API_KEY"),
     "volcengine": ProviderSpec("火山引擎豆包搜索", "VOLCENGINE_SEARCH_API_KEY"),
 }
+
+
+def provider_selection_guidance(providers: Sequence[str]) -> str:
+    """按实际启用的供应商生成场景说明；不参与路由或结果排序。"""
+    enabled = set(providers)
+    scenarios = (
+        ("volcengine", "中文热点用 volcengine"),
+        ("baidu_search", "国内官网和政策用 baidu_search"),
+        ("anysearch", "中文补查用 anysearch"),
+        ("exa", "英文技术资料优先 exa"),
+        ("tavily", "英文补查用 tavily"),
+        ("parallel_mcp", "复杂资料用 parallel_mcp"),
+    )
+    hints = "；".join(hint for name, hint in scenarios if name in enabled)
+    return f"按目标信源选择：{hints}。" if hints else ""
 
 
 def uses_websearch_daemon(transport: str) -> bool:
