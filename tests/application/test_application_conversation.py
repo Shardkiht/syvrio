@@ -13,7 +13,7 @@ from syvrio.application.channels import ConversationDirectory
 from syvrio.application.contracts import TurnCallbacks
 from syvrio.application.conversation import ConversationUseCases
 from syvrio.application.service import ApplicationService
-from syvrio.application.turns import ConversationTurn
+from syvrio.application.turns import ConversationTurn, TurnRegistry
 from syvrio.infra.config import ChatConfig, Config, LLMConfig, RetrievalConfig
 from syvrio.infra.llm import AssistantTurn
 from syvrio.infra.session import SessionStore
@@ -239,6 +239,39 @@ def test_evicted_unsaved_submission_is_not_reported_in_history(tmp_path, monkeyp
     finally:
         runtime.model.release.set()
         scheduler.shutdown()
+
+
+def test_redelivery_after_restart_uses_only_confirmed_history(tmp_path):
+    runtime, conv = build(tmp_path, [AssistantTurn(content="answer")])
+    sid = runtime.ensure_session().id
+    scheduler = conv.scheduling
+    saved_key, reserved_key = "bc" * 16, "de" * 16
+    receipt = scheduler.submit_once(saved_key, "first", sid)
+    turn = scheduler.registry.get(receipt["turn_id"], sid)
+    assert turn is not None and turn.finished.wait(5)
+    assert turn.message_id is not None
+    scheduler.shutdown()
+
+    restarted = TurnRegistry()
+    receipts = runtime.sessions.receipts
+
+    def should_not_submit():
+        pytest.fail("a retry must not start another turn")
+
+    saved = receipts.reserve(saved_key, "", "unused")
+    assert saved is not None
+    assert receipts.reserve(reserved_key, saved.request_digest, saved.instance) is None
+    assert restarted.submit_once(receipts, saved_key, "first", sid, None, should_not_submit) == {
+        "session_id": sid,
+        "submission_id": saved_key,
+        "turn_id": receipt["turn_id"],
+        "text": "first",
+        "history_only": True,
+    }
+    with pytest.raises(ConversationError) as unknown:
+        restarted.submit_once(receipts, reserved_key, "first", sid, None, should_not_submit)
+    assert unknown.value.code == "delivery_unknown"
+    assert runtime.sessions.load(sid).user_texts() == ["first"]
 
 
 def test_failed_receipt_write_keeps_saved_message_and_prevents_duplicate(tmp_path, monkeypatch):
