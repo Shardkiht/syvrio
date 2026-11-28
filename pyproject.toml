@@ -86,6 +86,7 @@ artifacts = ["src/syvrio/app/web/static/**"]
 include = [
     "/src", "/tests", "/evals", "/docs", "/web", "/README.md", "/README.en.md",
     "/LICENSE", "/AGENTS.md", "/config.example.toml", "/pyproject.toml", "/uv.lock",
+    "/scripts/import_legacy_vault.py", "/scripts/vault_import/*.py",
 ]
 exclude = ["/web/node_modules", "/web/dist"]
 

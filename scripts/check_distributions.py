@@ -29,7 +29,7 @@ def verify_distributions(directory: Path, version: str) -> None:
     installed_files = {
         path.relative_to(package_root).as_posix()
         for path in (package_root / "syvrio").rglob("*")
-        if path.is_file() and path.suffix in {".py", ".toml"}
+        if path.is_file() and path.suffix in {".py", ".toml", ".sql"}
     }
     web_sources = {
         path.relative_to(ROOT).as_posix()
@@ -70,6 +70,11 @@ def verify_distributions(directory: Path, version: str) -> None:
         expected = {source + name for name in installed_files} | {
             f"{stem}/{name}" for name in web_sources
         }
+        migration_files = [
+            ROOT / "scripts/import_legacy_vault.py",
+            *(ROOT / "scripts/vault_import").glob("*.py"),
+        ]
+        expected.update(f"{stem}/{path.relative_to(ROOT).as_posix()}" for path in migration_files)
         if missing := expected.difference(names):
             raise ValueError(f"Source distribution is missing project files: {sorted(missing)}")
         if source + "syvrio/__init__.py" not in names or any(
