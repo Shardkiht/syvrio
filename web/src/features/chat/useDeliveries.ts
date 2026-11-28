@@ -37,6 +37,7 @@ export function useDeliveries(
   accepted: (receipt: TurnReceipt) => Promise<void> | void,
   failed?: (error: unknown) => void,
   scheduleRetry: Schedule = immediately,
+  trackDelivery?: (submissionId: string) => () => void,
 ) {
   const [items, setItems] = useState<Delivery[]>(recover);
   const pending = useRef(items);
@@ -60,6 +61,8 @@ export function useDeliveries(
   const deliver = useCallback(async (item: Delivery, fresh: boolean, schedule: Schedule) => {
     if (active.current.has(item.id) || (!fresh && !pending.current.some(row => row.id === item.id && row.error))) return;
     active.current.add(item.id);
+    const stopTracking = trackDelivery?.(item.id);
+    let presenting = false;
     const update = (value: Delivery) => publish(pending.current.map(row => row.id === item.id ? { ...row, ...value } : row));
     if (fresh) publish([...pending.current, item]);
     else update({ ...item, error: undefined });
@@ -100,13 +103,18 @@ export function useDeliveries(
           return row;
         }));
         // 队列和历史接手之前保留已受理气泡，后续发送无需等待回放。
+        presenting = true;
         void Promise.resolve().then(() => accepted(receipt))
-          .catch(error => failed?.(error)).finally(() => discard(item.id));
+          .catch(error => failed?.(error)).finally(() => {
+            stopTracking?.();
+            discard(item.id);
+          });
       }, onFailure);
     } finally {
+      if (!presenting) stopTracking?.();
       active.current.delete(item.id);
     }
-  }, [accepted, currentSession, discard, failed, publish]);
+  }, [accepted, currentSession, discard, failed, publish, trackDelivery]);
 
   const retry = useCallback(async (item: Delivery) => {
     if ((item.displaySessionId ?? item.sessionId) === currentSession()) await deliver(item, false, scheduleRetry);
