@@ -145,7 +145,11 @@ class VectorRetriever:
         return index
 
     def _build(
-        self, snapshot: RecordSnapshot, *, expected_dim: int | None, digest_for: Callable[[str], str]
+        self,
+        snapshot: RecordSnapshot,
+        *,
+        expected_dim: int | None,
+        digest_for: Callable[[str], str],
     ):
         entries = snapshot.records
         # 同 ID 条目只保留首个：历史数据若存在重复 ID，去重避免矩阵行错位。
