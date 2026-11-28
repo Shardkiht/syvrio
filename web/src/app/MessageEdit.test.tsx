@@ -101,6 +101,29 @@ afterEach(() => {
 });
 
 describe('recovering a message edit', () => {
+  it('replaces the original bubble with the edit form and restores it on cancel', async () => {
+    const { requests } = fixture('lost');
+    mockFileStore();
+    render(<App />);
+    const editButton = await screen.findByRole('button', { name: 'Edit and resend last message' });
+    const row = screen.getByTestId('user-message');
+    const bubble = () => row.querySelector('.bubble');
+    expect(bubble()?.textContent).toBe('original question');
+
+    fireEvent.click(editButton);
+    const editor = await within(row).findByRole('textbox', { name: 'Edit last message' });
+    expect(bubble()?.contains(editor)).toBe(true);
+    expect(editor).toHaveProperty('value', 'original question');
+    expect(within(row).getByRole('link', { name: 'notes.txt' })).toBeTruthy();
+    expect(screen.queryByRole('region', { name: 'Saved message edit' })).toBeNull();
+
+    fireEvent.change(editor, { target: { value: 'cancel this revision' } });
+    fireEvent.keyDown(editor, { key: 'Escape' });
+    expect(bubble()?.textContent).toBe('original question');
+    expect(within(row).queryByRole('textbox')).toBeNull();
+    expect(requests).toHaveLength(0);
+  });
+
   it('keeps the original exchange and an editable draft with its file after a storage failure and reload', async () => {
     const { requests, tokens } = fixture('not-saved');
     mockFileStore();

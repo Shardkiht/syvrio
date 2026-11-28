@@ -93,6 +93,11 @@ export default function App() {
   } = useChat(openFiles, assignDraft);
 
   const chat = preview ?? boundChat;
+  const messageEdit = !preview && failedEdit?.sessionId === chat.sessionId ? failedEdit : null;
+  const editor = messageEdit && <RecoveredEdit edit={messageEdit} busy={undoing}
+    onChange={draft => reviseFailedEdit(messageEdit.sessionId, draft)}
+    onRetry={() => void actOnLastMessage(messageEdit.sessionId, messageEdit.messageId, messageEdit.draft)}
+    onDiscard={() => discardFailedEdit(messageEdit.sessionId)} />;
   const model = health ? `${health.provider}/${health.model}` : 'Loading...';
   const outgoing = preview ? [] : deliveries.items.filter(item => (item.displaySessionId ?? item.sessionId) === chat.sessionId);
   const empty = chat.messages.length === 0 && !loadingHistory && !outgoing.length;
@@ -265,11 +270,9 @@ export default function App() {
           <div className="thread">
             <MessageList sendRevision={sendRevision} messages={chat.messages} sessionId={chat.sessionId} selectionVersion={selectionVersion} onToggle={toggle} loading={loadingHistory}
               outgoing={outgoing.map(item => <OutgoingMessage key={item.id} item={item} retry={deliveries.retry} discard={deliveries.discard} />)}
-              undoing={checkingSelection || undoing || Boolean(failedEdit)} onMessageAction={checkingSelection ? undefined : actOnLastMessage} onEdit={openMessageEditor} />
-            {!preview && failedEdit && <RecoveredEdit edit={failedEdit} busy={undoing}
-              onChange={draft => reviseFailedEdit(failedEdit.sessionId, draft)}
-              onRetry={() => void actOnLastMessage(failedEdit.sessionId, failedEdit.messageId, failedEdit.draft)}
-              onDiscard={() => discardFailedEdit(failedEdit.sessionId)} />}
+              undoing={checkingSelection || undoing || Boolean(failedEdit)} onMessageAction={checkingSelection ? undefined : actOnLastMessage} onEdit={openMessageEditor}
+              inlineEditor={messageEdit?.mode === 'compose' ? { messageId: messageEdit.messageId, content: editor } : undefined} />
+            {messageEdit?.mode !== 'compose' && editor}
             <Composer
               key={selectionVersion}
               sessionId={composerDraftId}
