@@ -18,7 +18,7 @@ from ..base import (
     SearchQuery,
     SearchResult,
     join_search_snippets,
-    truncate_fetch_content,
+    page_result,
 )
 from ..http_client import JsonApiClient
 
@@ -113,17 +113,8 @@ class ExaFetchProvider:
         if not isinstance(results, list) or not results:
             raise ProviderError(NAME, ProviderErrorKind.BAD_RESPONSE, "contents 结果为空")
         item = results[0] if isinstance(results[0], dict) else {}
-        content = str(item.get("text") or "").strip()
-        if not content:
-            raise ProviderError(NAME, ProviderErrorKind.BAD_RESPONSE, "未返回正文")
-        url = str(item.get("url") or "").strip() or query.url
-        text, truncated = truncate_fetch_content(content, query.max_chars)
-        return FetchResult(
-            url=query.url,
-            final_url=url,
-            title=str(item.get("title") or "").strip() or url,
-            content=text,
-            truncated=truncated,
+        return page_result(
+            NAME, query, body=item.get("text"), url=item.get("url"), title=item.get("title")
         )
 
 
