@@ -864,6 +864,7 @@ class _FakeQuestion:
         self.kind = kind
         self.message = message
         self.choices = choices or []
+        self.default = kwargs.get("default")
 
 
 class _FakeQuestionary:
@@ -1021,6 +1022,53 @@ def test_setup_uses_only_entered_or_saved_credentials(tmp_path, monkeypatch, cap
     assert keys == ["synthetic-preview", "synthetic-updated", "synthetic-updated"]
     assert setup.remove_key(env_name)
     assert not setup.has_key(env_name)
+
+
+@pytest.mark.parametrize(
+    ("provider", "previous_url", "expected_default"),
+    [
+        ("openai", "https://api.openai.com/v1", ""),
+        ("custom", "https://old.example.invalid/v1", ""),
+        ("custom", "https://new.example.invalid/v1/", "CURRENT_KEY"),
+    ],
+)
+def test_custom_wizard_only_defaults_to_current_credentials_for_the_same_endpoint(
+    monkeypatch, provider, previous_url, expected_default
+):
+    import sys
+    from unittest.mock import Mock
+
+    from syvrio.app import setup as wizard
+
+    custom = next(preset for preset in PRESETS if preset.key == "custom")
+    setup = Mock()
+    setup.model_settings.return_value = {
+        "provider": provider,
+        "base_url": previous_url,
+        "api_key_env": "CURRENT_KEY",
+        "model": "existing-model",
+    }
+    monkeypatch.setitem(sys.modules, "questionary", _FakeQuestionary())
+    endpoint = "https://new.example.invalid/v1"
+
+    def answer(question):
+        if question.kind == "select":
+            return custom
+        if question.message == "Base URL":
+            return endpoint
+        assert question.default == expected_default
+        return question.default or "NEW_ENDPOINT_KEY"
+
+    monkeypatch.setattr(wizard, "ask", answer)
+    monkeypatch.setattr(wizard, "_prompt_api_key", lambda _message: "")
+    monkeypatch.setattr(wizard, "_choose_model", Mock(side_effect=KeyboardInterrupt))
+    with pytest.raises(KeyboardInterrupt):
+        wizard._run_llm_setup(setup)
+
+    setup.model_list.assert_called_once_with(
+        "custom", endpoint, expected_default or "NEW_ENDPOINT_KEY", ""
+    )
+    setup.set_key.assert_not_called()
 
 
 def test_mcp_fetch_can_be_removed_but_not_reenabled(tmp_path, monkeypatch):

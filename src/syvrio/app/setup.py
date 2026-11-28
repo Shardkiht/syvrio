@@ -352,12 +352,7 @@ def _run_llm_setup(setup: SetupSession) -> dict:
 
     provider = preset.key
     base_url = ask(questionary.text("Base URL", default=setup.default_url(preset)))
-    env_name = (
-        ask(questionary.text("API Key 凭据条目名", default=current["api_key_env"]))
-        if provider == "custom"
-        else preset.api_key_env
-    )
-    if base_url is None or env_name is None:
+    if base_url is None:
         raise KeyboardInterrupt
     while True:
         try:
@@ -368,7 +363,21 @@ def _run_llm_setup(setup: SetupSession) -> dict:
             base_url = ask(questionary.text("Base URL", default=base_url))
             if base_url is None:
                 raise KeyboardInterrupt from None
-    env_name = env_name.strip()
+    env_name = preset.api_key_env
+    if provider == "custom":
+        same_endpoint = current["provider"] == "custom" and base_url == current["base_url"].rstrip(
+            "/"
+        )
+        env_name = ask(
+            questionary.text(
+                "此端点的 API Key 凭据条目名（仅在有意共用时填写其他端点的名称）",
+                default=current["api_key_env"] if same_endpoint else "",
+                validate=lambda value: bool(value.strip()) or "请为此端点指定凭据条目名。",
+            )
+        )
+        if env_name is None:
+            raise KeyboardInterrupt
+        env_name = env_name.strip()
     api_key = _prompt_api_key("API Key（留空使用凭据库中的密钥）")
     if api_key is None:
         raise KeyboardInterrupt
