@@ -102,10 +102,15 @@ def _transfer(records, paths, changes, store, cleanup):
                 store._insert(db, sid, event)
             if archived:
                 db.execute("UPDATE sessions SET archived=1 WHERE id=?", (sid,))
+        latest_by_topic = None
         for name, (title, archived) in records.topics.items():
             if not fresh("topics", name, (title, archived)):
                 continue
-            at = max((m[3] for m in records.memories.values() if m[0] == name), default="")
+            if latest_by_topic is None:
+                latest_by_topic = {}
+                for topic, _, _, timestamp, *_ in records.memories.values():
+                    latest_by_topic[topic] = max(timestamp, latest_by_topic.get(topic, ""))
+            at = latest_by_topic.get(name, "")
             old = db.execute("SELECT title,archived FROM topics WHERE name=?", (name,)).fetchone()
             if old and bool(old[1]) != archived:
                 raise ValueError(f"已有主题归档状态冲突: {name}")
