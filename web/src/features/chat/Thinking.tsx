@@ -21,14 +21,17 @@ export function Thinking({
   // 设有高度上限的折叠正文容器负责滚动，内部文本节点只显示内容。
   const bodyRef = useRef<HTMLDivElement>(null);
   const following = useRef(true);
+  const positionedBody = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     const body = bodyRef.current;
-    if (!segment.expanded || !body) return;
+    if (body === positionedBody.current) return;
+    positionedBody.current = body;
+    if (!body) return;
     // 已完成的思考从头阅读，正在生成的思考打开时定位到最新一行。
     following.current = !segment.done;
     body.scrollTop = segment.done ? 0 : body.scrollHeight;
-  }, [segment.expanded]);
+  }, [segment.expanded, segment.done]);
 
   // 思考内容按增量到达，用户未向上滚动时让末尾保持可见。
   useEffect(() => {

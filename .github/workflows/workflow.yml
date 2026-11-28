@@ -48,6 +48,10 @@ jobs:
       - name: Verify staged Web assets
         run: uv run python scripts/build_web.py --check
 
+      - name: Frontend lint
+        working-directory: web
+        run: corepack pnpm lint
+
       - name: Frontend tests
         working-directory: web
         run: corepack pnpm test
