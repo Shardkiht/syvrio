@@ -1,6 +1,6 @@
 # SQLite 存储与恢复
 
-首次启动使用空 Vault。业务主库位于 Vault 根目录。初始化在一个事务内建立主库的表、索引和触发器，并写入应用标识。已有数据库直接按当前结构打开。打开这个分支前请为它配置专用的 Vault 和 Runtime。
+首次部署使用空 Vault。业务主库为 `Vault/syvrio.sqlite3`。初始化在一个事务内建立表、索引与触发器，并写入应用标识。已有数据库须符合当前结构，服务启动不会自动迁移历史格式；历史文件 Vault 见[导入步骤](#从历史文件-vault-导入)。每个部署使用配对的 Vault 和 Runtime。
 
 ## 数据布局
 
@@ -9,8 +9,8 @@
 | 事实及来源 | `memories` 保存当前正文，`memory_versions` 以 `(memory_id, commit_id)` 保存各次提交的完整版本、来源和时间。`correct` 沿用 ID，`transition` 用 `supersedes` 关联新旧事实。Context 保存已知精度、地点和感受。 |
 | 待审与推断 | `candidates`、`candidate_related`、`inferences`、`inference_sources`。拒绝保留记录，审核推断独立于事实状态。 |
 | 会话 | `sessions` 保存会话信息。`session_events` 一行保存一条消息的正文、可选思考、工具预览和原文长度。历史分页按需读列。稳定消息 ID 用于定位引用；事件顺序、会话历史版本和归档标志入库。 |
-| 业务记录 | `audit` 为每次事实变更保存一条操作记录及变更详情。撤销成功后追加一条指向原操作的审计。事实写入时将变更内容存入 `audit.memory_change`。普通操作的同名详情保留在 `details`。Git 从同一个已提交快照读取公开审计和仍然生效的变更，新增操作名称无需调整导出。`undo_effects` 保存回合撤销依据，`receipts` 防止重复发送。 |
-| 后台与检索 | `jobs` 保存沉淀、Dream 和 Context 任务的检查点；`profile` 保存已发布结果。Dream 在排队时将 `revisions` 中 `evidence` 的提交号保存为 `evidence_commit`，两阶段均按该提交号读取事实、主题归档状态和推断版本。每批在短事务内一起提交结果与游标，重启后按同一版本恢复。模型请求发送前扣减预算，已发出但未提交结果的批次恢复时会重试。`revisions` 跟踪索引依赖的数据版本。 |
+| 业务记录 | `audit` 为每次事实变更保存一条操作记录及变更详情。撤销成功后追加一条指向原操作的审计。事实写入时将变更内容存入 `audit.memory_change`。普通操作的同名详情保留在 `details`。Git 从同一个已提交快照读取公开审计和仍然生效的变更，新增操作名称无需调整导出。`undo_effects` 保存回合撤销依据，`receipts` 用于按提交 ID 确认送达并去重。已保存的用户消息与回执同事务提交，回复独立保存。 |
+| 后台与检索 | `jobs` 保存沉淀、Dream、Context 补全与记忆维护的检查点；`profile` 保存已发布结果。Dream 在排队时将 `revisions` 中 `evidence` 的提交号保存为 `evidence_commit`，两阶段均按该提交号读取事实、主题归档状态和推断版本。每批在短事务内一起提交结果与游标，重启后按同一版本恢复。模型请求发送前扣减预算，已发出但未提交结果的批次恢复时会重试。`revisions` 跟踪索引依赖的数据版本。 |
 | 搜索供应商暂停 | 主库的 `provider_pauses` 按 `provider` 保存供应商返回的暂停原因（`reason`）和可选恢复时间（`resume_at`）。搜索和网页抓取都只读检查当前暂停状态，手动恢复时删除该供应商的记录。 |
 | 本机 Git 同步 | 主库的 `git_sync` 记录本机同步状态。恢复到新部署时清空此表。 |
 | 可重建缓存 | `Runtime/cache/vectors.sqlite3` 保存按模型、记忆 ID 和输入摘要核验的向量。`Runtime/cache/web-search.sqlite3` 保存有有效期的网页搜索结果。停服后可单独清理其中一个缓存库及其同名 WAL 附属文件，下次使用时会重新生成。 |

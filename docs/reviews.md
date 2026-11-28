@@ -220,7 +220,7 @@ path.write_text(f"---\n{front}\n---\n\n{body.lstrip()}", encoding="utf-8")
 
 #### D2 README 侧栏键盘描述与实现不符
 
-[`README.md:130`](../README.md#L130) 与 [`README.en.md:130`](../README.en.md#L130) 写“左侧会话列表：↑↓ 选择、Enter 恢复、Del 删除”，但侧栏在 [`chat_app.py:194`](https://github.com/Shardkiht/syvrio/blob/86262cfdba11f30c7cb242dd3d105e25e0b7c1ef/src/quiet_memo/app/chat_app.py#L194) 被设为 `can_focus = False`（测试 [`test_chat_app.py:440`](../tests/test_chat_app.py#L440) 也固定了该行为），键盘事件无法进入侧栏；[`on_key` 的删除分支](https://github.com/Shardkiht/syvrio/blob/86262cfdba11f30c7cb242dd3d105e25e0b7c1ef/src/quiet_memo/app/chat_app.py#L375) 要求 `view.has_focus`，实际不可达。
+[`README.md:130`](https://github.com/Shardkiht/syvrio/blob/86262cfdba11f30c7cb242dd3d105e25e0b7c1ef/README.md#L130) 与 [`README.en.md:130`](https://github.com/Shardkiht/syvrio/blob/86262cfdba11f30c7cb242dd3d105e25e0b7c1ef/README.en.md#L130) 写“左侧会话列表：↑↓ 选择、Enter 恢复、Del 删除”，但侧栏在 [`chat_app.py:194`](https://github.com/Shardkiht/syvrio/blob/86262cfdba11f30c7cb242dd3d105e25e0b7c1ef/src/quiet_memo/app/chat_app.py#L194) 被设为 `can_focus = False`（测试 [`test_chat_app.py:440`](https://github.com/Shardkiht/syvrio/blob/86262cfdba11f30c7cb242dd3d105e25e0b7c1ef/tests/test_chat_app.py#L440) 也固定了该行为），键盘事件无法进入侧栏；[`on_key` 的删除分支](https://github.com/Shardkiht/syvrio/blob/86262cfdba11f30c7cb242dd3d105e25e0b7c1ef/src/quiet_memo/app/chat_app.py#L375) 要求 `view.has_focus`，实际不可达。
 
 实际行为：侧栏仅支持鼠标点击切换；键盘操作在 `/sessions` 选择器内。建议二选一——修正 README，或让侧栏可聚焦并移除“焦点固定在输入栏”的约束。
 

@@ -99,7 +99,7 @@ uv run python scripts/build_web.py --wheel dist/*.whl  # 校验实际 wheel 内�
 | POST | `/api/settings/providers/{provider}` | 添加、更新或删除凭据，以及修改端点 |
 | GET | `/api/commands` | 共享命令目录（名称、用法、能力标记、子命令、快捷键） |
 | POST | `/api/commands` | 执行斜杠命令，返回结构化结果，不经过 LLM |
-| POST | `/api/chat?receipt=1` | 将消息放入当前会话队列，返回 202 和回合 ID。携带提交 ID 的新回合在回执和队列中返回同一 ID。Web 提交时立即显示用户气泡，左侧三点表示正在发送。投递失败时可点红色圆形按钮，以原提交 ID 重试。省略回执参数时直接返回该回合的 SSE 流 |
+| POST | `/api/chat?receipt=1` | 将消息放入当前会话队列，返回 202 和回合 ID。提交 ID 随回执和队列返回；202 表示已接收请求或入队，不等同于已持久化。正式送达回执与保存用户消息同事务提交。Web 提交时立即显示用户气泡，左侧三点表示正在发送。投递失败时可点红色圆形按钮，以原提交 ID 重试。省略回执参数时直接返回该回合的 SSE 流 |
 | GET | `/api/chat/queue` | 查询本会话的活动回合、队列、暂停状态和修订号，以及正在回复的会话 ID 列表 `replying_session_ids` |
 | DELETE | `/api/chat/queue/{turn_id}` | 移除尚未开始的排队消息 |
 | GET | `/api/chat/turns/{turn_id}?after=<seq>` | 订阅回合更新，从指定序号后重放已发出的事件 |
@@ -298,7 +298,7 @@ sudo systemctl stop syvrio-web
 
 - **systemd enabled 不等于 Windows 开机后一定可访问**：WSL 实例没启动时，unit 不会运行。
 - 登录后启动：`wsl.exe -d <发行版> --exec systemctl is-system-running` 会拉起实例；Windows 任务计划程序可在登录时触发。
-- 无人值守（用户未登录）：需用任务计划程序以「不管用户是否登录都要运行」和最高权限启动 `wsl.exe -d <发行版> --exec /bin/true` 保持实例存活。该方式仍受 WSL VM 生命周期影响，不能等同于 Windows 服务。
+- 无人值守（用户未登录）：使用可访问该 WSL 发行版的 Windows 账号配置开机任务，并从另一台机器验证启动后能持续访问。像 `wsl.exe -d <发行版> --exec /bin/true` 这样立即结束的命令只能触发启动，不能作为常驻保活。WSL 仍受 Windows 的电源与实例生命周期影响。
 - `wsl --shutdown`、`wsl --terminate <发行版>`、Windows 重启都会停止服务；Windows 睡眠/休眠期间 WSL 虚拟机会暂停或被回收，唤醒后需重新检查 `systemctl status syvrio-web`。
 - localhost 转发验证：WSL 内 `curl -fsS http://127.0.0.1:8765/api/health`；Windows PowerShell `curl.exe http://127.0.0.1:8765/api/health` 应返回同一结果。WSL2 默认开启 `localhostForwarding`，若不通再检查 `C:\Users\<用户>\.wslconfig`。
 
