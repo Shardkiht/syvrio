@@ -157,7 +157,7 @@ def _litellm():
     return litellm
 
 
-def _request_api_key(config: LLMConfig) -> str:
+def request_api_key(config: LLMConfig) -> str:
     key = config.api_key()
     if key:
         return key
@@ -177,9 +177,11 @@ def complete(
     response_format: dict | None = None,
     temperature: float | None = None,
     max_tokens: int | None = None,
+    api_key: str | None = None,
 ):
     """统一的 LiteLLM 调用入口；provider/base_url/retry 都由配置决定。"""
-    api_key = _request_api_key(config)
+    if api_key is None:
+        api_key = request_api_key(config)
     litellm = _litellm()
     kwargs: dict = {
         "model": config.litellm_model(),
@@ -221,7 +223,7 @@ def embed_texts(config: LLMConfig, texts: list[str], batch_size: int = 32) -> li
     """调用 embedding 接口；返回顺序与输入一致。"""
     if not texts:
         return []
-    api_key = _request_api_key(config)
+    api_key = request_api_key(config)
     litellm = _litellm()
     vectors: list[list[float]] = []
     for start in range(0, len(texts), batch_size):
@@ -555,7 +557,7 @@ class LiteLLMChatModel:
         kwargs: dict = {
             "model": self.config.litellm_model(),
             "messages": messages,
-            "api_key": _request_api_key(self.config),
+            "api_key": request_api_key(self.config),
             "timeout": self.config.timeout,
             "num_retries": self.config.num_retries,
             "temperature": self.config.temperature,

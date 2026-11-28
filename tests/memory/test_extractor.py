@@ -126,6 +126,49 @@ def test_model_extraction_keeps_only_emotions_quoted_in_the_source(adapter, word
         assert candidate.context is None
 
 
+@pytest.mark.parametrize("adapter", ["chat", "import"])
+def test_json_retry_reuses_one_credential(adapter, monkeypatch):
+    from syvrio.infra import config
+    from syvrio.infra.llm import client
+    from syvrio.memory import extractor
+
+    reads, requests = [], []
+
+    def key(name):
+        reads.append(name)
+        return "synthetic-current"
+
+    def send(**kwargs):
+        requests.append((kwargs["api_key"], "response_format" in kwargs))
+        if "response_format" in kwargs:
+            raise ValueError("Unsupported parameter: response_format")
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content='{"memories":[]}'))]
+        )
+
+    monkeypatch.setattr(config, "stored_key", key)
+    monkeypatch.setattr(client, "_litellm", lambda: SimpleNamespace(completion=send))
+    llm = config.LLMConfig()
+    model = extractor.LLMExtractor(llm) if adapter == "chat" else extractor.ImportExtractor(llm)
+    model.extract("synthetic")
+    assert reads == [llm.api_key_env]
+    assert requests == [("synthetic-current", True), ("synthetic-current", False)]
+
+
+@pytest.mark.parametrize("failure", [TimeoutError("timed out"), RuntimeError("invalid API key")])
+def test_extract_does_not_retry_transport_or_auth_failures(monkeypatch, failure):
+    from unittest.mock import Mock
+
+    from syvrio.infra.config import LLMConfig
+    from syvrio.memory import extractor
+
+    send = Mock(side_effect=failure)
+    monkeypatch.setattr(extractor, "complete", send)
+    with pytest.raises(extractor.ExtractorError):
+        extractor.LLMExtractor(LLMConfig(provider="local")).extract("sample")
+    assert send.call_count == 1
+
+
 def test_llm_extractor_requests_optional_context_without_current_date(monkeypatch):
     from syvrio.infra.config import LLMConfig
     from syvrio.memory import extractor

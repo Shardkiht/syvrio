@@ -2223,7 +2223,8 @@ def test_background_title_and_manual_rename_across_views(
     generated, manual = "道路结冰原因", "完整标题" * 19 + "保留结尾"
     question, answer = "道路为什么会结冰？", "路面温度低于冰点时，水会凝固。"
 
-    def ask(service, prompt, payload, schema):
+    def ask(service, prompt, payload, schema, *, api_key):
+        assert api_key == "synthetic"
         seen.append(payload)
         entered.set()
         assert release.wait(10)

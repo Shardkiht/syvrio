@@ -135,6 +135,7 @@ def ask(
     schema: type[BaseModel],
     *,
     output_limit: int | None = None,
+    api_key: str | None = None,
 ):
     config = replace(settings.llm, num_retries=0)
     content = encode_payload(payload)
@@ -164,6 +165,7 @@ def ask(
         [{"role": "system", "content": prompt}, {"role": "user", "content": content}],
         response_format={"type": "json_object"},
         max_tokens=budget,
+        api_key=api_key,
     )
     choice = response.choices[0]
     if dream and getattr(choice, "finish_reason", None) == "length":
