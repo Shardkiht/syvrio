@@ -37,6 +37,7 @@ export function Composer({
   onStop,
   catalog = [],
   focusSignal = 0,
+  onInputMount,
   hero = false,
 }: {
   sessionId?: string | null;
@@ -62,6 +63,7 @@ export function Composer({
   onStop: () => void;
   catalog?: CommandInfo[];
   focusSignal?: number;
+  onInputMount?: (input: HTMLTextAreaElement) => void;
   /** 首页使用居中布局，较窄的输入框下方是一行快捷命令。 */
   hero?: boolean;
 }) {
@@ -92,6 +94,9 @@ export function Composer({
   const [dismissed, setDismissed] = useState(false);
   const ref = useRef<HTMLTextAreaElement>(null);
   const lastFocusSignal = useRef(focusSignal);
+  useLayoutEffect(() => {
+    if (ref.current) onInputMount?.(ref.current);
+  }, [onInputMount]);
 
   // 从当前布局的默认高度开始测量，内容放不下时再增高。
   // overflow-y 也由同一测量值控制，空闲输入框无需显示滚动条。

@@ -216,6 +216,22 @@ afterEach(() => {
 });
 
 describe('Web client interactions', () => {
+  it('focuses the composer on page load without refocusing when another control takes over', async () => {
+    installFetch({ '/api/sessions/s-1/switch': () => json(switchResponse(sessionHistory('s-1'))) });
+    render(<App />);
+    expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Message' }));
+    await ready();
+    fireEvent.click(screen.getByRole('button', { name: 'Open commands' }));
+    const palette = await screen.findByPlaceholderText('Search commands');
+    expect(document.activeElement).toBe(palette);
+    fireEvent.keyDown(palette, { key: 'Escape' });
+
+    const row = await screen.findByTestId('session-s-1');
+    fireEvent.click(row);
+    await screen.findByRole('textbox', { name: 'Conversation title' });
+    expect(document.activeElement).not.toBe(screen.getByRole('textbox', { name: 'Message' }));
+  });
+
   it('edits the selected title inline, previews it in the sidebar and saves to that session only', async () => {
     const titles: string[] = [];
     const calls = installFetch({

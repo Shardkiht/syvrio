@@ -31,6 +31,12 @@ export default function App() {
   const picker = useRef<HTMLInputElement>(null);
   const drafts = useRef(new Map<string | null, ComposerDraft>());
   const meterReading = useRef<MeterReading | null>(null);
+  const initialFocusHandled = useRef(false);
+  const onComposerMount = useCallback((input: HTMLTextAreaElement) => {
+    if (initialFocusHandled.current) return;
+    initialFocusHandled.current = true;
+    if (document.activeElement === document.body) input.focus({ preventScroll: true });
+  }, []);
   const assignDraft = useCallback((blank: string, id: string) => {
     const draft = drafts.current.get(blank);
     if (draft) { drafts.current.set(id, draft); drafts.current.delete(blank); }
@@ -286,6 +292,7 @@ export default function App() {
               onStop={() => void stop()}
               catalog={catalog}
               focusSignal={focusSignal}
+              onInputMount={onComposerMount}
               hero={empty}
             />
           </div>
