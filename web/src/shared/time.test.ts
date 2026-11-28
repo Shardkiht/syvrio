@@ -15,4 +15,12 @@ describe('formatLocalTimestamp', () => {
   it('rejects a timestamp without an offset', () => {
     expect(() => formatLocalTimestamp('2026-11-11T09:05:03')).toThrow(RangeError);
   });
+
+  it('uses the current system zone for local times, also across offset transitions', () => {
+    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    for (const stamp of ['2026-03-08T06:59:00Z', '2026-03-08T07:01:00Z', '2026-11-01T06:05:00Z']) {
+      expect(formatLocalTimestamp(stamp)).toBe(formatLocalTimestamp(stamp, zone));
+    }
+    expect(() => formatLocalTimestamp('invalidZ')).toThrow(RangeError);
+  });
 });
