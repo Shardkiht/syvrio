@@ -68,14 +68,13 @@ def test_systemd_key_survives_native_backend_changes_and_stays_deleted(
 ):
     import keyring
 
-    # 自定义密钥名可能包含不适合文件名或凭据标识符的字符。
-    name = "../../synthetic/provider"
+    name = "SYNTHETIC_PROVIDER_KEY"
     llm = LLMConfig(api_key_env=name)
     assert save_api_key(name, "fake-first-key")
     path = credentials._credential_path(name)
     assert path.parent.name == "credentials"
     assert path.parent.parent.name == "syvrio"
-    assert path.stem == "syvrio-" + hashlib.sha256(name.encode()).hexdigest()
+    assert path.name == f"{name}.cred"
     assert b"fake-first-key" not in path.read_bytes()
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
     assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
@@ -151,3 +150,38 @@ def test_failed_encryption_preserves_last_saved_value(encrypted_store, monkeypat
         assert not save_api_key(name, "fake-replacement")
     assert path.read_bytes() == saved_bytes
     assert read_api_key(name) == "fake-working-key"
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="user-scoped systemd credentials")
+def test_custom_names_stay_distinct_and_inside_directory(encrypted_store):
+    for name, expected in [
+        ("../../synthetic/provider", "..%2F..%2Fsynthetic%2Fprovider"),
+        ("a/b", "a%2Fb"),
+        ("a%2Fb", "a%252Fb"),
+    ]:
+        assert save_api_key(name, "synthetic-value")
+        path = credentials._credential_path(name)
+        assert path.parent == credentials._credential_path("OTHER").parent
+        assert path.stem == expected
+        assert read_api_key(name) == "synthetic-value"
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="user-scoped systemd credentials")
+@pytest.mark.parametrize("value", [b"synthetic-original", b""])
+def test_offline_migration_rebinds_and_preserves_tombstones(encrypted_store, value):
+    from syvrio.infra.security.migrate_credential_names import migrate
+
+    name = "SYNTHETIC_MIGRATION"
+    target = credentials._credential_path(name)
+    target.parent.mkdir(parents=True, mode=0o700)
+    old = target.with_name(f"syvrio-{hashlib.sha256(name.encode()).hexdigest()}.cred")
+    credentials._write_encrypted(old, value)
+    credentials._write_encrypted(target, b"other-value")
+    with pytest.raises(credentials.CredentialStoreError, match="Both files"):
+        migrate(name)
+    assert old.is_file() and read_api_key(name) == "other-value"
+    target.unlink()
+    assert migrate(name)
+    assert target.is_file() and not old.exists()
+    assert read_api_key(name) == (value.decode() or "")
+    assert not migrate(name)

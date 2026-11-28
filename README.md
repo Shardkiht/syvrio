@@ -70,6 +70,8 @@ Syvrio 只维护 `main` 正式版，安装和更新共用 PyPI 的 `syvrio` 包�
 
 模型配置中的 `api_key_env` 指定凭据库里的条目名。密钥默认保存在系统钥匙串。在没有可用钥匙串的 Linux 或 WSL 上，Syvrio 可调用 `systemd-creds --user` 加密保存。密文默认放在用户数据目录下的 `syvrio/credentials/`，也可用 `SYVRIO_CREDENTIALS_DIR` 指定专用绝对路径。换机器或系统账号后需要重新添加密钥。
 
+每个条目单独保存，例如 `EXA_API_KEY.cred`。文件名可读，文件内容绑定到该名称加密。升级使用过哈希文件名的安装时，先停止凭据写入、备份凭据目录，再用新版安装环境的 Python 在原账号下运行 `python -m syvrio.infra.security.migrate_credential_names EXA_API_KEY`。参数可列出多个条目名，只填写名称。工具逐项验证新密文后移除旧文件，可以重复运行。系统钥匙串中的条目无需迁移。
+
 例如在本地 `memory.toml` 写入以下内容，可将显式检索默认返回数改为 15。聊天自动召回数量由同一文件的 `[recall].auto_recall` 单独控制。
 
 ```toml

@@ -70,6 +70,8 @@ Save model API keys in Settings → Providers or `syvrio setup`. Manage search a
 
 The `api_key_env` model setting names an entry in the credential store. Keys are saved in the system keyring by default. On Linux or WSL without a keyring backend, Syvrio can encrypt keys with `systemd-creds --user`. Encrypted credentials are stored under `syvrio/credentials/` in the user data directory. Set `SYVRIO_CREDENTIALS_DIR` to use a dedicated absolute path. Add your keys again when moving to another machine or OS account.
 
+Each entry has its own file, such as `EXA_API_KEY.cred`. Its name is readable and its encrypted value is bound to that name. To upgrade an installation with hashed filenames, stop credential writes, back up the directory and run `python -m syvrio.infra.security.migrate_credential_names EXA_API_KEY` under the original account using the upgraded Python environment. Pass one or more entry names. The tool verifies each new file before removing its predecessor and can be run again. System keyring entries need no migration.
+
 For example, set `default_limit = 15` under `[retrieval]` in `memory.toml` to request up to 15 results by default. Chat prefetch uses `[recall].auto_recall` independently.
 
 Dream has its own `[dream].context_window` in `memory.toml`, defaulting to 200,000 tokens. It generates the profile first, then proposes inferences. Each stage sends all its evidence in one request when its input and output allowance fit. Larger inputs resume in batches. A smaller advertised model window takes precedence.
