@@ -112,12 +112,16 @@ describe('recovering a message edit', () => {
 
     fireEvent.click(editButton);
     const editor = await within(row).findByRole('textbox', { name: 'Edit last message' });
-    expect(bubble()?.contains(editor)).toBe(true);
+    expect(editor.parentElement).toBe(bubble());
+    expect(editor.getAttribute('rows')).toBe('1');
+    expect(bubble()?.contains(within(row).getByRole('button', { name: 'Resend' }))).toBe(false);
     expect(editor).toHaveProperty('value', 'original question');
     expect(within(row).getByRole('link', { name: 'notes.txt' })).toBeTruthy();
     expect(screen.queryByRole('region', { name: 'Saved message edit' })).toBeNull();
 
-    fireEvent.change(editor, { target: { value: 'cancel this revision' } });
+    fireEvent.change(editor, { target: { value: 'first line\nsecond line\n' } });
+    expect(bubble()?.querySelector('.bubble-edit-measure')?.textContent).toBe('first line\nsecond line\n\u200b');
+    expect(document.activeElement).toBe(editor);
     fireEvent.keyDown(editor, { key: 'Escape' });
     expect(bubble()?.textContent).toBe('original question');
     expect(within(row).queryByRole('textbox')).toBeNull();

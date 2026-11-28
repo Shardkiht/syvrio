@@ -111,7 +111,7 @@ const UserRow = memo(function UserRow({ message, sessionId, archived, editor, ch
 }) {
   return (
     <div className="turn user" data-testid="user-message">
-      <div className={editor ? "bubble bubble-editing" : "bubble"}>{editor ?? message.content}</div>
+      {editor ?? <div className="bubble">{message.content}</div>}
       {!editor && sessionId && !!message.attachments?.length && (
         <ul className="message-attachments" aria-label="Message attachments">
           {message.attachments.map(file => {
