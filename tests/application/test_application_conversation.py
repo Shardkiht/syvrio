@@ -13,6 +13,7 @@ from syvrio.application.channels import ConversationDirectory
 from syvrio.application.contracts import TurnCallbacks
 from syvrio.application.conversation import ConversationUseCases
 from syvrio.application.service import ApplicationService
+from syvrio.application.turns import ConversationTurn
 from syvrio.infra.config import ChatConfig, Config, LLMConfig, RetrievalConfig
 from syvrio.infra.llm import AssistantTurn
 from syvrio.infra.session import SessionStore
@@ -130,7 +131,10 @@ def test_application_owns_admitted_turns_across_views(tmp_path, monkeypatch, fai
         _, third = directory.submit("alice", "third", sid)
         assert owner.conversation.active_turn is first
         assert scheduling.registry.get(second.turn_id, sid) is second
-        assert owner.conversation.queue == [second, third]
+        assert [row["turn_id"] for row in scheduling.queue_state()["waiting"]] == [
+            second.turn_id,
+            third.turn_id,
+        ]
         assert [item.line for item in owner.conversation.queue_snapshot().items] == [
             "second",
             "third",
@@ -199,12 +203,12 @@ def test_fifo_queue_keeps_submit_order_and_session(tmp_path):
     undo = conv.submit_during_ask("/undo")
 
     assert a.kind == b.kind == "queued"
-    assert [item.line for item in conv.queue] == ["first", "second"]
-    assert {item.session_id for item in conv.queue} == {second.id}
+    assert [item.line for item in conv.queue_snapshot().items] == ["first", "second"]
+    assert {item.session_id for item in conv.queue_snapshot().items} == {second.id}
     assert safe.kind == "command"
     assert undo.kind == "undo"
     assert conv.undo_requested is True
-    assert [item.line for item in conv.queue] == ["first", "second"]
+    assert [item.line for item in conv.queue_snapshot().items] == ["first", "second"]
     assert conv.cancel_event is not None and conv.cancel_event.is_set()
     assert first.id != second.id
 
@@ -274,6 +278,24 @@ def test_undo_without_bound_message_keeps_earlier_turn(tmp_path):
 
     assert outcome.restored is None
     assert runtime.sessions.load(session.id).user_texts() == ["earlier"]
+
+
+def test_removing_paused_turns_resumes_only_when_the_last_one_leaves(tmp_path):
+    runtime, conv = build(tmp_path, [])
+    sid = runtime.ensure_session().id
+    first, second = (ConversationTurn(sid, text) for text in ("first", "second"))
+    for turn in (first, second):
+        conv.enqueue_turn(turn)
+    conv.pause_after_undo(True)
+
+    conv.scheduling.remove_queued(first.turn_id)
+    assert first.finished.is_set()
+    assert conv.queue_snapshot().paused
+    assert [item.line for item in conv.queue_snapshot().items] == ["second"]
+    conv.scheduling.remove_queued(second.turn_id)
+    assert second.finished.is_set()
+    assert not conv.queue_snapshot().paused
+    assert not conv.has_queued
 
 
 def test_queue_pauses_after_successful_undo(tmp_path):

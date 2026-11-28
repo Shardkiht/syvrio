@@ -83,8 +83,8 @@ class ConversationUseCases:
         self._undo_target_session_id: str | None = None
         self._undo_target_message_id: str | None = None
         self._undo_expected_message_id: str | None = None
-        self.queue: list[QueuedLine] = []
-        self.queue_paused_after_undo = False
+        self._queue: list[QueuedLine] = []
+        self._paused = False
         self.scheduling = ConversationScheduler(self, self._lock, registry, settings_lock)
 
     # ---------- 状态查询 ----------
@@ -157,10 +157,22 @@ class ConversationUseCases:
             return QueueSnapshot(
                 tuple(
                     QueuedItem(item.session_id, item.line, index)
-                    for index, item in enumerate(self.queue)
+                    for index, item in enumerate(self._queue)
                 ),
                 self.queue_paused_after_undo,
             )
+
+    @property
+    def has_queued(self) -> bool:
+        return bool(self._queue)
+
+    @property
+    def queue_paused_after_undo(self) -> bool:
+        return self._paused
+
+    def queued_receipts(self) -> list[dict]:
+        with self._lock:
+            return [turn.receipt() for turn in self._queue]
 
     # ---------- 提交路由 ----------
 
@@ -176,39 +188,50 @@ class ConversationUseCases:
             self.runtime.ensure_session()
         session_id = self.current_id
         item = QueuedLine(session_id=session_id, line=line, attachments=attachments)
-        with self._lock:
-            self.queue.append(item)
-            index = len(self.queue) - 1
         return Submission(
             "queued",
             session_id=session_id,
-            item=QueuedItem(session_id, line, index),
+            item=self.enqueue_turn(item),
         )
 
     def enqueue(self, session_id: str, line: str) -> QueuedItem:
+        return self.enqueue_turn(QueuedLine(session_id, line))
+
+    def enqueue_turn(self, turn: ConversationTurn) -> QueuedItem:
         with self._lock:
-            item = QueuedLine(session_id, line)
-            self.queue.append(item)
-            return QueuedItem(session_id, line, len(self.queue) - 1)
+            self._queue.append(turn)
+            return QueuedItem(turn.session_id, turn.line, len(self._queue) - 1)
+
+    def _pop_queued(self, index: int) -> QueuedLine:
+        item = self._queue.pop(index)
+        if not self._queue:
+            self._paused = False
+        return item
+
+    def remove_queued(self, turn_id: int) -> ConversationTurn:
+        with self._lock:
+            for index, turn in enumerate(self._queue):
+                if turn.turn_id == turn_id:
+                    return self._pop_queued(index)
+        raise ConversationError("inactive_turn", "This message is no longer queued.")
 
     def take_next(self) -> QueuedLine | None:
         with self._lock:
-            return self.queue.pop(0) if self.queue else None
+            return self._pop_queued(0) if self._queue else None
 
     def take_next_command(self) -> QueuedLine | None:
         with self._lock:
-            for index, item in enumerate(self.queue):
+            for index, item in enumerate(self._queue):
                 if item.line.startswith("/"):
-                    return self.queue.pop(index)
+                    return self._pop_queued(index)
         return None
 
     def pause_after_undo(self, restored: bool) -> None:
         with self._lock:
-            self.queue_paused_after_undo = restored and bool(self.queue)
+            self._paused = restored and self.has_queued
 
     def resume_after_undo(self) -> None:
-        with self._lock:
-            self.queue_paused_after_undo = False
+        self.pause_after_undo(False)
 
     @staticmethod
     def _is_undo(line: str) -> bool:
@@ -295,9 +318,11 @@ class ConversationUseCases:
             self._undo_expected_message_id = expected_message_id
             if self._cancel is not None:
                 self._cancel.set()
-            kept = [item for item in self.queue if not self._is_undo(item.line)]
-            total = len(self.queue) - len(kept)
-            self.queue[:] = kept
+            kept = [item for item in self._queue if not self._is_undo(item.line)]
+            total = len(self._queue) - len(kept)
+            self._queue = kept
+            if not kept:
+                self._paused = False
         message = "Stopping generation and undoing this turn…"
         if total:
             message += f" Discarded {total} queued /undo."
@@ -465,8 +490,8 @@ class ConversationUseCases:
                 public_error = str(exc) if isinstance(exc, TurnUndoError) else None
                 error = error or str(exc)
         with self._lock:
-            queued_count = len(self.queue)
-            self.queue_paused_after_undo = restored is not None and bool(self.queue)
+            queued_count = len(self._queue)
+            self.pause_after_undo(restored is not None)
             self._undo_requested = False
             self._undo_target_session_id = None
             self._undo_target_message_id = None
@@ -530,7 +555,7 @@ class ConversationUseCases:
 
     def archive_guard(self, session_id: str) -> tuple[bool, str | None]:
         if self.scheduling.session_busy(session_id) or any(
-            item.session_id == session_id for item in self.queue
+            item.session_id == session_id for item in self._queue
         ):
             return False, "Session is generating or has queued tasks; try again later."
         if self._background_job and (job := self._background_job(session_id)):

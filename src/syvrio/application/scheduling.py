@@ -47,7 +47,7 @@ class ConversationScheduler:
     def busy(self) -> bool:
         return bool(
             self.conversation.active_turn
-            or self.conversation.queue
+            or self.conversation.has_queued
             or self._editing
             or self._operation
         )
@@ -93,7 +93,7 @@ class ConversationScheduler:
                 self._require_open()
                 if require_idle and self.conversation.active_turn:
                     raise ConversationError("busy", "A reply is being generated. Stop it or wait.")
-                if require_idle and self.conversation.queue:
+                if require_idle and self.conversation.has_queued:
                     raise ConversationError("busy", "This session still has queued messages.")
                 if require_idle:
                     self._operation = name
@@ -144,7 +144,7 @@ class ConversationScheduler:
         with self._lock:
             self._require_open()
             self.check_session(session_id)
-            if name == "new" and self.conversation.queue:
+            if name == "new" and self.conversation.has_queued:
                 raise ConversationError("busy", "This session still has queued messages.")
             active = self.conversation.active_turn
             if name == "undo" and active is not None:
@@ -226,9 +226,9 @@ class ConversationScheduler:
                 session_id = self.conversation.runtime.ensure_session().id
             turn = ConversationTurn(session_id, text, attachments)
             if self.conversation.active_turn or (
-                self.conversation.queue and not self.conversation.queue_paused_after_undo
+                self.conversation.has_queued and not self.conversation.queue_paused_after_undo
             ):
-                self.conversation.queue.append(turn)
+                self.conversation.enqueue_turn(turn)
             else:
                 self._launch(turn)
                 self.conversation.resume_after_undo()
@@ -426,21 +426,14 @@ class ConversationScheduler:
             return {
                 "session_id": self.conversation.current_id,
                 "active": active.receipt() if active else None,
-                "waiting": [turn.receipt() for turn in self.conversation.queue],
+                "waiting": self.conversation.queued_receipts(),
                 "paused": self.conversation.queue_paused_after_undo,
                 "revision": self._revision,
             }
 
     def remove_queued(self, turn_id: int) -> None:
         with self._lock:
-            for turn in self.conversation.queue:
-                if turn.turn_id == turn_id:
-                    self.conversation.queue.remove(turn)
-                    self._cancel_queued(turn)
-                    if not self.conversation.queue:
-                        self.conversation.resume_after_undo()
-                    return
-        raise ConversationError("inactive_turn", "This message is no longer queued.")
+            self._cancel_queued(self.conversation.remove_queued(turn_id))
 
     def _cancel_queued(self, turn: ConversationTurn) -> None:
         events = TurnEvents(turn)
