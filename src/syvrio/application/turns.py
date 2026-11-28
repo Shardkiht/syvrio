@@ -250,14 +250,17 @@ class TurnRegistry:
                     turn = self._submitted_turn(submission_id, stored.turn_id)
                     if turn and (not turn.finished.is_set() or turn.message_id is not None):
                         return turn.receipt()
-                    if stored.turn_id is not None:
-                        return {
-                            "session_id": stored.session_id,
-                            "submission_id": submission_id,
-                            "turn_id": stored.turn_id,
-                            "text": message,
-                            "history_only": True,
-                        }
+                if stored.turn_id is not None:
+                    # 旧进程的编号不能查本进程的回合，只能指向已确认的历史。
+                    if stored.instance != self._instance and attachments:
+                        attachments.discard()
+                    return {
+                        "session_id": stored.session_id,
+                        "submission_id": submission_id,
+                        "turn_id": stored.turn_id,
+                        "text": message,
+                        "history_only": True,
+                    }
                 raise ConversationError(
                     "delivery_unknown",
                     "Delivery could not be confirmed. Check the conversation before sending again.",
