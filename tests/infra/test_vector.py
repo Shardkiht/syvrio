@@ -117,6 +117,25 @@ def test_vector_cache_writes_only_changed_rows(tmp_path):
         assert [r[0] for r in db.execute("SELECT id FROM updated_vectors")] == [changed.id]
 
 
+def test_vector_cache_reuses_each_input_digest_when_persisting(tmp_path, monkeypatch):
+    from syvrio.infra.retrieval import vector
+
+    store = seeded_store(tmp_path)
+    original = vector.text_hash
+    inputs = []
+
+    def counted(text):
+        inputs.append(text)
+        return original(text)
+
+    monkeypatch.setattr(vector, "text_hash", counted)
+    persisted_vector(store, FakeEmbedder(GROUPS)).sync()
+    assert len(inputs) == len(set(inputs)) == 2
+    assert {row["input_digest"] for row in vector_rows(store.paths)} == {
+        original(text) for text in inputs
+    }
+
+
 def test_query_embedding_does_not_hold_index_lock(tmp_path):
     store = seeded_store(tmp_path)
     simultaneous = Barrier(3)
