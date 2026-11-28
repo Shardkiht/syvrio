@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+from functools import cache
 from urllib.parse import urlsplit
 
-from ..infra.config import FetchConfig, SearchConfig
+from ..infra.config import FetchConfig, SearchConfig, read_api_key
 from ..infra.search import (
     SEARCH_ENGINES,
     ProviderError,
@@ -39,12 +40,13 @@ def register_network_tools(
     search_router: SearchRouter | None = None,
     fetch_router: FetchRouter | None = None,
 ) -> None:
+    read_key = cache(read_api_key)
     search_router = search_router or (
-        build_search_router(search_config, paths) if search_config.enabled else None
+        build_search_router(search_config, paths, read_key) if search_config.enabled else None
     )
     # 抓取与搜索的配置相互独立；未显式注入时按 [fetch] 配置构建。
     if fetch_router is None:
-        fetch_router = build_fetch_router(fetch_config, search_config, paths)
+        fetch_router = build_fetch_router(fetch_config, search_config, paths, read_key)
 
     if search_router is not None:
 

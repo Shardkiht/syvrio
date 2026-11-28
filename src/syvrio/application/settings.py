@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from functools import cache
 from pathlib import Path
 
 from ..infra.config import (
@@ -25,7 +26,6 @@ from ..infra.llm import (
 from ..infra.llm.providers import (
     PRESETS,
     ProviderPreset,
-    has_api_key,
     normalize_provider_url,
     provider_base_url,
     provider_label,
@@ -42,37 +42,46 @@ class SettingsUseCases:
 
     # ---------- 查询 ----------
 
-    def model_sources(self) -> dict[str, LLMConfig]:
+    def _model_sources(self) -> dict[str, tuple[LLMConfig, str]]:
         current = self.config.llm
+        read_key = cache(read_api_key)
         sources = {}
-        if current.api_key() or not current.requires_api_key():
-            sources[current.provider] = replace(
-                current, base_url=self.provider_endpoint(current.provider)
+        key = read_key(current.api_key_env)
+        if key or not current.requires_api_key():
+            sources[current.provider] = (
+                replace(current, base_url=self.provider_endpoint(current.provider)),
+                key,
             )
         for preset in PRESETS:
-            if preset.key not in {"custom", current.provider} and has_api_key(preset):
-                sources[preset.key] = replace(
+            if preset.key in {"custom", current.provider}:
+                continue
+            if key := read_key(preset.api_key_env):
+                source = replace(
                     current,
                     provider=preset.key,
                     base_url=provider_base_url(current, preset),
                     api_key_env=preset.api_key_env,
                 )
+                sources[preset.key] = (source, key)
         return sources
 
     def model_catalog(
         self, *, cached_only: bool = False, refresh: bool = False
     ) -> dict[str, list[str]]:
-        sources = self.model_sources()
+        sources = self._model_sources()
         if cached_only:
-            return {key: cached_provider_models(source) or [] for key, source in sources.items()}
+            return {
+                name: cached_provider_models(source, api_key=key) or []
+                for name, (source, key) in sources.items()
+            }
         if not sources:
             return {}
         with ThreadPoolExecutor(
             max_workers=len(sources), thread_name_prefix="syvrio-models"
         ) as pool:
             requests = {
-                key: pool.submit(fetch_provider_models, source, refresh=refresh)
-                for key, source in sources.items()
+                name: pool.submit(fetch_provider_models, source, refresh=refresh, api_key=key)
+                for name, (source, key) in sources.items()
             }
             return {key: request.result() for key, request in requests.items()}
 

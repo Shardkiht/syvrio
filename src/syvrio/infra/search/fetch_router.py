@@ -6,10 +6,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol
 
-from ..config import FetchConfig, SearchConfig
+from ..config import FetchConfig, SearchConfig, read_api_key
 from ..storage.paths import SyvrioPaths, vault_paths
 from .base import (
     FetchQuery,
@@ -101,7 +102,9 @@ class FetchRouter:
 
 
 def build_fetch_registry(
-    fetch_config: FetchConfig, search_config: SearchConfig
+    fetch_config: FetchConfig,
+    search_config: SearchConfig,
+    read_key: Callable[[str], str] = read_api_key,
 ) -> dict[str, FetchProvider]:
     registry: dict[str, FetchProvider] = {}
     for name in fetch_config.providers:
@@ -116,10 +119,8 @@ def build_fetch_registry(
                 fetch_timeout=search_config.fetch_timeout,
             )
         else:
-            from ..config import read_api_key
-
             spec = PROVIDERS[name]
-            api_key = read_api_key(spec.key_env) if spec.key_env else ""
+            api_key = read_key(spec.key_env) if spec.key_env else ""
             if not api_key and not spec.optional_key:
                 # 未配置 Key 的厂商直接跳过：不参与尝试，也不报错。
                 continue
@@ -161,6 +162,7 @@ def build_fetch_router(
     fetch_config: FetchConfig,
     search_config: SearchConfig,
     vault: Path | SyvrioPaths | None = None,
+    read_key: Callable[[str], str] = read_api_key,
 ) -> FetchRouter:
     pauses = None
     if vault is not None:
@@ -168,7 +170,7 @@ def build_fetch_router(
         paths.validate()
         pauses = ProviderPauses(paths)
     return FetchRouter(
-        build_fetch_registry(fetch_config, search_config),
+        build_fetch_registry(fetch_config, search_config, read_key),
         order=fetch_config.providers,
         provider_pauses=pauses,
     )

@@ -69,7 +69,7 @@ def test_normal_agent_fetch_uses_independent_config(service, monkeypatch, name):
     from syvrio.infra.session import SessionStore
 
     provider = _FetchProvider(name)
-    monkeypatch.setattr(config_module, "read_api_key", lambda _: "synthetic-key")
+    monkeypatch.setattr(config_module, "stored_key", lambda _: "synthetic-key")
     seen = []
 
     def build(provider_name, key, timeout):
@@ -87,6 +87,28 @@ def test_normal_agent_fetch_uses_independent_config(service, monkeypatch, name):
     assert tools.execute("fetch_web", {"url": "https://example.com/a"}).ok
     assert provider.calls == ["https://example.com/a", "https://example.com/a"]
     assert seen == [(name, 47)]
+
+
+def test_search_and_fetch_share_credential_reads_only_within_registration(service, monkeypatch):
+    from syvrio.agent.tools import build_tools
+    from syvrio.infra import config
+    from syvrio.infra.session import SessionStore
+
+    names = []
+
+    def read(name):
+        names.append(name)
+        return "synthetic-value"
+
+    monkeypatch.setattr(config, "stored_key", read)
+    service.config.search.enabled = True
+    service.config.search.providers = service.config.fetch.providers = ["exa", "tavily"]
+    session = SessionStore(service.config.vault).create()
+    for _ in range(2):
+        names.clear()
+        tools = build_tools(service, session, config=service.config)
+        assert {"search", "fetch_web"} <= {row["function"]["name"] for row in tools.schemas()}
+        assert sorted(names) == ["EXA_API_KEY", "TAVILY_API_KEY"]
 
 
 def test_build_tools_official_pause_shared_across_search_fetch(service, monkeypatch):
@@ -110,7 +132,9 @@ def test_build_tools_official_pause_shared_across_search_fetch(service, monkeypa
     )
     fetch = _FetchProvider("exa")
     monkeypatch.setattr(
-        search_module, "build_registry", lambda config: {"exa": search, "fallback": fallback}
+        search_module,
+        "build_registry",
+        lambda config, reader: {"exa": search, "fallback": fallback},
     )
     monkeypatch.setattr(fetch_module, "build_fetch_registry", lambda *args: {"exa": fetch})
     service.config.search.providers = ["exa", "fallback"]

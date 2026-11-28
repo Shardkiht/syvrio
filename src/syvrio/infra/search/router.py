@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
@@ -197,7 +197,9 @@ def weak_share_hint(merged: list[SearchResult], analysis: QueryAnalysis) -> str:
     return ""
 
 
-def build_registry(config: SearchConfig) -> dict[str, SearchProvider]:
+def build_registry(
+    config: SearchConfig, read_key: Callable[[str], str] = read_api_key
+) -> dict[str, SearchProvider]:
     registry: dict[str, SearchProvider] = {}
     for name in config.providers:
         if name == OPEN_WEBSEARCH:
@@ -209,7 +211,7 @@ def build_registry(config: SearchConfig) -> dict[str, SearchProvider]:
                 fetch_timeout=config.fetch_timeout,
             )
         elif (spec := PROVIDERS.get(name)) and spec.key_env:
-            key = read_api_key(spec.key_env)
+            key = read_key(spec.key_env)
             if spec.optional_key:
                 registry[name] = _build_optional_provider(name, key, config)
             elif key:
@@ -226,6 +228,7 @@ def build_registry(config: SearchConfig) -> dict[str, SearchProvider]:
 def build_search_router(
     config: SearchConfig,
     vault: Path | SyvrioPaths | None = None,
+    read_key: Callable[[str], str] = read_api_key,
 ) -> "SearchRouter":
     cache = None
     pauses = None
@@ -236,7 +239,7 @@ def build_search_router(
             cache = SearchCache(paths, config.cache_ttl)
         pauses = ProviderPauses(paths)
     return SearchRouter(
-        build_registry(config),
+        build_registry(config, read_key),
         order=config.providers,
         max_results=config.max_results,
         cache=cache,
