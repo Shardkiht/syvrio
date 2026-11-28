@@ -209,7 +209,12 @@ class ConversationScheduler:
         return text
 
     def submit(
-        self, message: str, session_id: str | None, attachments: AttachmentBatch | None = None
+        self,
+        message: str,
+        session_id: str | None,
+        attachments: AttachmentBatch | None = None,
+        *,
+        submission_id: str | None = None,
     ) -> ConversationTurn:
         text = self._chat_text(message)
         with self._lock:
@@ -224,7 +229,7 @@ class ConversationScheduler:
             self.check_session(session_id, exact=True)
             if session_id is None:
                 session_id = self.conversation.runtime.ensure_session().id
-            turn = ConversationTurn(session_id, text, attachments)
+            turn = ConversationTurn(session_id, text, attachments, submission_id=submission_id)
             if self.conversation.active_turn or (
                 self.conversation.has_queued and not self.conversation.queue_paused_after_undo
             ):
@@ -248,7 +253,7 @@ class ConversationScheduler:
             message,
             session_id,
             attachments,
-            lambda: self.submit(message, session_id, attachments),
+            lambda: self.submit(message, session_id, attachments, submission_id=submission_id),
         )
 
     def replace(
@@ -373,6 +378,7 @@ class ConversationScheduler:
             record_event("web.turn_failed", exc)
             result = TurnResult(status="failed", error="Request failed unexpectedly.")
 
+        self.registry.confirm_saved(self.conversation.sessions.receipts, turn)
         with self._lock:
             try:
                 self._finish_result(turn, result, events)

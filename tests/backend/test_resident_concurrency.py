@@ -84,13 +84,15 @@ def test_delivery_wait_does_not_block_other_view_or_rebind_after_navigation(serv
     b = directory.channel("b").scheduling
     entered, finish = Event(), Event()
 
-    def paused(text, sid, files):
+    def paused(text, sid, files, *, submission_id):
         entered.set()
         assert finish.wait(10)
-        return ConversationTurn(sid, text)
+        return ConversationTurn(sid, text, submission_id=submission_id)
 
     monkeypatch.setattr(a, "submit", paused)
-    monkeypatch.setattr(b, "submit", lambda text, sid, files: ConversationTurn(sid, text))
+    monkeypatch.setattr(
+        b, "submit", lambda text, sid, files, **kwargs: ConversationTurn(sid, text, **kwargs)
+    )
     with ThreadPoolExecutor() as pool:
         pending = pool.submit(directory.submit_once, "a", "ab" * 16, "first", first)
         try:
