@@ -373,12 +373,12 @@ class ConversationScheduler:
                 turn.session_id,
                 **({"attachments": turn.attachments} if turn.attachments else {}),
                 **({"replace_message_id": turn.edit.message_id} if turn.edit else {}),
+                **({"submission_id": turn.submission_id} if turn.submission_id is not None else {}),
             )
         except Exception as exc:
             record_event("web.turn_failed", exc)
             result = TurnResult(status="failed", error="Request failed unexpectedly.")
 
-        self.registry.confirm_saved(self.conversation.sessions.receipts, turn)
         with self._lock:
             try:
                 self._finish_result(turn, result, events)

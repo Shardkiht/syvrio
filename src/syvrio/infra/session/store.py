@@ -263,6 +263,14 @@ class SessionStore(SessionQuery):
             on_commit(lambda: session.records.append(result))
             return result
 
+    def append_delivery(
+        self, session: Session, record: dict, submission_id: str, turn_id: int
+    ) -> None:
+        """在同一事务保存用户消息并确认送达；回复不在这个事务内。"""
+        with transaction(self.paths):
+            self.append(session, record)
+            self.receipts.complete(submission_id, session.id, turn_id)
+
     def append_event_transactionally(self, session, event, *following):
         with transaction(self.paths) as db:
             return self._append_events(db, session.id, (event, *following))

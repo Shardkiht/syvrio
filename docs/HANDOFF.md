@@ -4,7 +4,7 @@
 
 `main` 使用 SQLite 持久化。功能与修复从 `main` 建立短期分支，经 PR 和 CI 合入。
 
-验证读写边界可运行 `tests/application/test_read_views.py`、`tests/infra/test_chat_search.py` 和 `tests/infra/test_export.py`。依赖测试还会检查模型循环、命令和 HTTP 视图是否直接依赖数据库。回执位于 `infra/session/receipts.py`，撤销持久化位于 `memory/undo_store.py`。
+验证读写边界可运行 `tests/application/test_read_views.py`、`tests/infra/test_chat_search.py` 和 `tests/infra/test_export.py`。依赖测试还会检查模型循环、命令和 HTTP 视图是否直接依赖数据库。回执位于 `infra/session/receipts.py`，用户消息和送达确认在同一事务提交，回复独立写入。撤销持久化位于 `memory/undo_store.py`。
 
 业务读写统一经后端。查会话、召回记忆、查看候选和更改设置时，先看 `backend/api/` 与 `application/`；离线初始化、诊断启动和附件核验在 `backend/`。会话、检索、配置、模型适配与搜索的实现见 `infra/` 对应子目录，后台记忆任务在 `memory/background/`。依赖边界测试在 `tests/application/test_application_architecture.py`。Web 组件与对应的交互测试同放在 `web/src/features/` 下。
 

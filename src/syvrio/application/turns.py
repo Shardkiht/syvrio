@@ -18,7 +18,6 @@ from weakref import WeakValueDictionary
 from pydantic import BaseModel
 
 from ..agent.runtime import ThinkingUpdate
-from ..infra.observability.diagnostics import record_event
 from ..infra.session.attachments import AttachmentBatch
 from ..infra.session.errors import ConversationError
 from ..infra.session.receipts import ReceiptStore
@@ -202,16 +201,6 @@ class TurnRegistry:
             if lock is None:
                 lock = self._delivery_locks[submission_id] = threading.Lock()
             return lock
-
-    def confirm_saved(self, receipts: ReceiptStore, turn: ConversationTurn) -> None:
-        if turn.submission_id is None or turn.message_id is None:
-            return
-        # 只有用户消息已落盘的回合才能在内存回执淘汰后指向历史。
-        try:
-            with self._delivery_lock(turn.submission_id):
-                receipts.complete(turn.submission_id, turn.session_id, turn.turn_id)
-        except Exception as exc:
-            record_event("web.submission_receipt_failed", exc)
 
     def _submitted_turn(
         self, submission_id: str, saved_turn_id: int | None
