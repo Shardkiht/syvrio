@@ -50,6 +50,15 @@ def visible_facts(db: sqlite3.Connection, commit: int) -> list[sqlite3.Row]:
     ).fetchall()
 
 
+def active_versions(db: sqlite3.Connection, commit: int) -> list[sqlite3.Row]:
+    """与 Dream 使用同一可见性切点，读取配对审核需要的版本和来源。"""
+    return db.execute(
+        f"""WITH cuts(commit_id) AS (VALUES(?))
+            SELECT v.*,v.memory_id AS id,'' AS title {_VISIBLE_FACTS} ORDER BY m.id""",
+        (commit,),
+    ).fetchall()
+
+
 def is_fact_pinned(db: sqlite3.Connection, memory_id: str) -> bool:
     """未结束任务持有固定读视图；完成行仅保留出处，放弃任务时删除其检查点。"""
     return (

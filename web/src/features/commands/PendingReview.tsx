@@ -6,6 +6,7 @@ import { api } from '../../api/client';
 import type { SourceVersion } from '../../types';
 import { usePanelRead } from './usePanelRead';
 import { formatLocalTimestamp } from '../../shared/time';
+import { MaintenanceReview } from './MaintenanceReview';
 
 const INFERENCE_FILTERS = [
   ['hypothesis', 'Pending'], ['confirmed', 'Confirmed'], ['deprecated', 'Deprecated'],
@@ -83,6 +84,7 @@ export function PendingReview({
   const [action, setAction] = useState<PendingAction | null>(null);
   const [busy, setBusy] = useState(false);
   const [filter, setFilter] = useState(0);
+  const [maintenance, setMaintenance] = useState(false);
   const [query, setQuery] = useState('');
   const [error, setError] = useState('');
   const list = useRef<HTMLDivElement>(null);
@@ -129,6 +131,7 @@ export function PendingReview({
     }
   }
 
+  if (pending && maintenance) return <MaintenanceReview onBack={() => setMaintenance(false)} onClose={onClose} />;
   return (
     <CommandDialog title={panel.title} className={`command-panel pending-review${pending ? ' pending-drawer' : ''}`}
       overlayClass={pending ? 'pending-drawer-overlay' : ''} onClose={() => { if (!busy && !editing && !action) onClose(); }}
@@ -187,6 +190,8 @@ export function PendingReview({
           <button type="button" className="icon-button" aria-label={`Close ${panel.title.toLowerCase()}`}
             disabled={busy} onClick={onClose}>×</button>
         </header>
+        {pending && <button type="button" className="maintenance-tab" disabled={busy || editing || action !== null}
+          onClick={() => setMaintenance(true)}>Maintenance suggestions</button>}
         {panel.loadError && (
           <div className="review-load-error">
             <span role="alert">{panel.loadError}</span>

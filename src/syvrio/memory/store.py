@@ -291,6 +291,7 @@ class MemoryStore:
         change: MemoryDraft | MemoryUpdate,
         *,
         source: dict[str, str] | None = None,
+        supersedes: str | None = None,
     ) -> Entry:
         """在同一事务保存新版本、当前事实、审计和撤销依据。"""
         with transaction(self.paths) as db:
@@ -302,6 +303,8 @@ class MemoryStore:
             if row is None:
                 raise KeyError(f"Memory not found: {entry_id}")
             old = self._entry(row)
+            if supersedes is not None and not isinstance(change, MemoryUpdate):
+                raise ValueError("Only a supplemental update can link two existing facts.")
             if isinstance(change, MemoryUpdate):
                 if change.id != entry_id or source is not None:
                     raise ValueError(
@@ -312,6 +315,19 @@ class MemoryStore:
                 detail = {"context": additions} if additions else {}
                 if status != old.status:
                     detail["status"] = status
+                if supersedes is not None and supersedes != old.supersedes:
+                    if old.supersedes is not None:
+                        raise ValueError("This fact already has a different predecessor.")
+                    cyclic = db.execute(
+                        """WITH RECURSIVE chain(id) AS (
+                            VALUES(?) UNION SELECT m.supersedes FROM memories m
+                            JOIN chain c ON m.id=c.id WHERE m.supersedes IS NOT NULL)
+                            SELECT 1 FROM chain WHERE id=?""",
+                        (supersedes, entry_id),
+                    ).fetchone()
+                    if cyclic:
+                        raise ValueError("The transition would create a cycle.")
+                    detail["supersedes"] = supersedes
                 if not detail:
                     return old
                 text, topic = old.text, old.topic
@@ -345,7 +361,7 @@ class MemoryStore:
             del before["title"]
             db.execute(
                 """UPDATE memories SET text=?,topic=?,context=?,status=?,session_id=?,message_id=?,
-                   revision=? WHERE id=?""",
+                   revision=?,supersedes=coalesce(?,supersedes) WHERE id=?""",
                 (
                     text,
                     topic,
@@ -354,6 +370,7 @@ class MemoryStore:
                     sid,
                     mid,
                     revision,
+                    supersedes,
                     entry_id,
                 ),
             )
@@ -367,6 +384,10 @@ class MemoryStore:
     def evidence_commit(self) -> int:
         with transaction(self.paths, write=False) as db:
             return evidence_versions.current(db)
+
+    def active_entries_at(self, commit: int) -> list[Entry]:
+        with transaction(self.paths, write=False) as db:
+            return [self._entry(row) for row in evidence_versions.active_versions(db, commit)]
 
     def facts_at(self, commit: int) -> list[dict]:
         with transaction(self.paths, write=False) as db:

@@ -119,8 +119,28 @@ CREATE TABLE revisions (
 );
 INSERT INTO revisions(domain,version) VALUES ('memories',0),('inferences',0),('candidates',0),('evidence',0);
 
+CREATE TABLE maintenance_suggestions (
+    id INTEGER PRIMARY KEY,
+    first_id TEXT NOT NULL,
+    first_revision INTEGER NOT NULL,
+    second_id TEXT NOT NULL,
+    second_revision INTEGER NOT NULL,
+    kind TEXT NOT NULL CHECK(kind IN ('duplicate','conflict')),
+    reason TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'pending' CHECK(state IN ('pending','ignored','applied')),
+    CHECK(first_id < second_id),
+    UNIQUE(first_id,first_revision,second_id,second_revision)
+);
+CREATE INDEX maintenance_pending ON maintenance_suggestions(state,id);
+
+CREATE TABLE maintenance_rechecks (
+    memory_id TEXT PRIMARY KEY,
+    after_commit INTEGER NOT NULL
+);
+CREATE INDEX maintenance_recheck_cut ON maintenance_rechecks(after_commit,memory_id);
+
 CREATE TABLE jobs (
-    kind TEXT NOT NULL CHECK(kind IN ('title', 'distillation', 'context', 'dream')),
+    kind TEXT NOT NULL CHECK(kind IN ('title', 'distillation', 'context', 'dream','maintenance')),
     target TEXT NOT NULL,
     state TEXT,
     retry_at REAL,

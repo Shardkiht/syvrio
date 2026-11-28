@@ -48,6 +48,20 @@ def latest_sequence(db: sqlite3.Connection) -> int:
     return db.execute("SELECT coalesce(max(seq),0) FROM audit").fetchone()[0]
 
 
+def next_memory_change(db: sqlite3.Connection, after: int, through: int) -> tuple[int, str] | None:
+    """沿原始审计序列读取，补偿行按原操作的事实 ID 重新检测。"""
+    row = db.execute(
+        """SELECT a.seq, coalesce(json_extract(a.details,'$.memory_id'),
+                                  json_extract(original.details,'$.memory_id')) AS id
+           FROM audit a LEFT JOIN audit original ON original.seq=a.reverts
+           WHERE a.seq>? AND a.seq<=? AND id IS NOT NULL
+             AND (a.memory_change IS NOT NULL OR original.memory_change IS NOT NULL)
+           ORDER BY a.seq LIMIT 1""",
+        (after, through),
+    ).fetchone()
+    return (row[0], row[1]) if row else None
+
+
 def changed_memory_ids(
     db: sqlite3.Connection,
     *,

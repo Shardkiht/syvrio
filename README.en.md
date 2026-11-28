@@ -100,7 +100,7 @@ Formal memories are SQLite records organized by topic. Each has a stable ID, tex
 | Action | Result |
 | --- | --- |
 | Record and manage a fact | `memorize` saves a fact. `correct` revises the same fact and keeps its earlier versions. `transition` records a change over time. `deprecate` retires a fact while retaining its history. |
-| `/pending` | Open Pending in the upper right of the web app. Search by topic, text or ID. `/pending edit <id>` opens the full text. Saving the original wording requires choosing Save unchanged. Edited facts can receive context from their trusted source in the background. |
+| `/pending` | Open Pending in the upper right of the web app. Search by topic, text or ID. `/pending edit <id>` opens the full text. Saving the original wording requires choosing Save unchanged. Edited facts can receive context from their trusted source in the background. Open Maintenance suggestions to check for duplicate or conflicting facts, compare their sources and confirm or ignore a proposed resolution. |
 | `/inferences` | Scroll the full list, filter by status, and search by text, category or ID. Confirmed inferences are stored separately from formal facts. |
 | `/profile` | Read the most recently published full profile. |
 | `/topics` | Browse and search active memory text across topics or within one topic. Results are paginated. Add memories or edit their text and confirm before saving. In inference details, **Compare sources** shows the cited and current version of each source. |
@@ -119,6 +119,8 @@ syvrio memorize "I prefer unsweetened hot drinks" --topic preferences
 syvrio recall "drink preferences"
 syvrio recall "museum visits" --from 2024 --to 2025 --location Hangzhou
 syvrio pending
+syvrio maintenance run
+syvrio maintenance status
 syvrio profile
 syvrio dream status
 syvrio status

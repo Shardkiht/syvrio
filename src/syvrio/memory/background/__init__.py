@@ -13,6 +13,7 @@ from ...infra.storage.database import transaction
 from . import context_fill, distillation, titles
 from .dream import Dream
 from .jobs import JobKey, list_jobs, pending_title_ids, read_job, save_job
+from .maintenance import Maintenance
 from .schedule import DreamSchedule
 
 
@@ -31,10 +32,12 @@ class BackgroundMemory:
         self.live_session: Callable[[str], Session | None] = lambda session_id: None
         self.dream = Dream(service)
         self.schedule = DreamSchedule(service, self.dream)
+        self.maintenance = Maintenance(service)
         self._lock = threading.Lock()
         self._stop: threading.Event | None = None
         self._signals = {
-            name: threading.Event() for name in ("distillation", "context", "dream", "title")
+            name: threading.Event()
+            for name in ("distillation", "context", "dream", "title", "maintenance")
         }
         self._threads: list[threading.Thread] = []
         # 在 Vault 写锁内修改，模型调用的准入阶段也遵循这一约定。
@@ -50,6 +53,7 @@ class BackgroundMemory:
         with self._lock:
             if self._stop is not None:
                 return
+            self.maintenance.schedule_first_run()
             stop = self._stop = threading.Event()
             self._threads = [
                 threading.Thread(
@@ -87,6 +91,11 @@ class BackgroundMemory:
     def request_title(self, session_id: str) -> None:
         titles.request(self.sessions, session_id)
         self._signals["title"].set()
+
+    def request_maintenance(self) -> dict:
+        status = self.maintenance.request()
+        self._signals["maintenance"].set()
+        return status
 
     def pending_titles(self, session_ids: list[str]) -> set[str]:
         return pending_title_ids(self.service.paths, session_ids)
@@ -136,7 +145,12 @@ class BackgroundMemory:
                         if admitted:
                             self._discover(stop)
                             discover = False
-                if lane == "dream":
+                if lane == "maintenance":
+                    if self.maintenance.due(time.time()):
+                        with self._work_slot() as admitted:
+                            if admitted:
+                                progressed = self.maintenance.tick(stop)
+                elif lane == "dream":
                     if (
                         self.service.config.chat.auto_reflect
                         and (self.schedule.next_at() or 0) <= time.time()

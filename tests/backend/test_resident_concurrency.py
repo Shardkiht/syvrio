@@ -19,6 +19,54 @@ from syvrio.memory.background.jobs import job_key
 pytestmark = pytest.mark.web
 
 
+def test_manual_maintenance_wakes_resident_and_allows_writes_during_comparison(
+    service, resident_backend, monkeypatch
+):
+    import time
+
+    from typer.testing import CliRunner
+
+    from syvrio.app import cli
+
+    _, client = resident_backend
+    service.note("The lab supplies station tea")
+    service.note("Station tea supplied by the lab")
+    entered, release = Event(), Event()
+
+    def compare(config, prompt, payload, schema):
+        entered.set()
+        assert release.wait(5)
+        return schema(
+            suggestions=[
+                dict(
+                    candidate_id=payload["candidates"][0]["id"],
+                    kind="duplicate",
+                    reason="Same supplier and tea",
+                )
+            ]
+        )
+
+    monkeypatch.setattr("syvrio.memory.background.maintenance.model.ask", compare)
+    monkeypatch.setattr(cli, "_service", lambda config: client)
+    runner = CliRunner()
+    try:
+        started = runner.invoke(cli.app, ["maintenance", "run"])
+        assert started.exit_code == 0 and "queued" in started.stdout
+        assert entered.wait(5)
+        service.note("Independent synthetic foreground write")
+        status = runner.invoke(cli.app, ["maintenance", "status"])
+        assert status.exit_code == 0 and "queued" in status.stdout
+    finally:
+        release.set()
+    deadline = time.monotonic() + 8
+    while time.monotonic() < deadline:
+        page = client.request("GET", "/api/maintenance")
+        if page["job"]["state"] == "completed":
+            break
+        time.sleep(0.05)
+    assert page["job"]["state"] == "completed" and len(page["items"]) == 1
+
+
 def test_update_waits_for_title_and_prevents_new_background_work(service, tmp_path, monkeypatch):
     service.initialize_files()
     owner = APIChannel(service=service)

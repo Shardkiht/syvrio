@@ -105,7 +105,7 @@ Dream 运行中切换模型会从下一批生效。任务失败后换模型再�
 | 操作 | 行为 |
 | --- | --- |
 | 记录、修正、状态变化 | `memorize` 新增明确事实；`correct` 在原 ID 上更正错误并保留版本；`transition` 记录随时间变化的事实；`deprecate` 弃用正式记忆，保留其历史。 |
-| `/pending` | 网页右上角的 Pending 可打开待审列表，按主题、正文或 ID 搜索。`/pending edit <id>` 打开完整正文。保留原文时需确认“保存原文”，改写后从最终事实及可信来源异步补全空字段。 |
+| `/pending` | 网页右上角的 Pending 可打开待审列表，按主题、正文或 ID 搜索。`/pending edit <id>` 打开完整正文。保留原文时需确认“保存原文”，改写后从最终事实及可信来源异步补全空字段。选择 Maintenance suggestions 可检查正式记忆中的重复和矛盾，对照原文和来源后确认处理或忽略。 |
 | `/inferences` | 在可滚动的完整列表中按状态筛选，并搜索正文、类别或 ID。用户确认的推断和正式事实分别保存。 |
 | `/profile` | 读取最近一次发布的完整画像。 |
 | `/topics` | Web 按主题或跨主题分页浏览、搜索有效记忆正文。可新增记忆或就地编辑正文，确认后保存。推断详情的「Compare sources」可查看每条来源在引用时与当前的版本。 |
@@ -124,6 +124,8 @@ syvrio memorize "我喜欢无糖热饮" --topic preferences
 syvrio recall "饮品偏好"
 syvrio recall "参观展览" --from 2024 --to 2025 --location 杭州
 syvrio pending
+syvrio maintenance run
+syvrio maintenance status
 syvrio profile
 syvrio dream status
 syvrio status

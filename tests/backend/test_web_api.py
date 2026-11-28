@@ -238,6 +238,44 @@ def client(backend):
     return TestClient(create_app(backend, autostart=False), base_url=BASE_URL)
 
 
+def test_maintenance_web_queue_and_review(client, backend, monkeypatch):
+    task = backend._background.maintenance
+    a = backend._service.note("Station coffee is free")
+    b = backend._service.note("Coffee is free at the station")
+
+    def compare(config, prompt, payload, schema):
+        return schema(
+            suggestions=[
+                dict(
+                    candidate_id=payload["candidates"][0]["id"],
+                    kind="duplicate",
+                    reason="Same station and offer",
+                )
+            ]
+        )
+
+    monkeypatch.setattr("syvrio.memory.background.maintenance.model.ask", compare)
+    assert client.post("/api/maintenance/run").json()["state"] == "queued"
+    assert client.get("/api/maintenance/status").json()["state"] == "queued"
+    for _ in range(4):
+        if task.status()["state"] == "completed":
+            break
+        task.tick(threading.Event())
+    page = client.get("/api/maintenance").json()
+    assert page["job"]["state"] == "completed"
+    (row,) = page["items"]
+    assert {f["id"] for f in row["facts"]} == {a.id, b.id}
+    path = f"/api/maintenance/{row['id']}/review"
+    payload = {"action": "deprecate", "selected_id": b.id, "confirmed": False}
+    assert client.post(path, json=payload).status_code == 409
+    assert backend._service.store.find(a.id) == a
+    payload["confirmed"] = True
+    assert client.post(path, json=payload).json() == {"state": "applied"}
+    assert client.post(path, json=payload).status_code == 409
+    assert client.get("/api/maintenance").json()["items"] == []
+    assert backend._service.store.find(a.id).status == "deprecated"
+
+
 def test_manual_memory_browser_and_source_comparison(client, backend):
     def create(topic, text):
         payload = dict(topic=topic, text=text, request_id=uuid4().hex, confirmed=False)

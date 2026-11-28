@@ -1,0 +1,11 @@
+.maintenance-tab { align-self: flex-start; }
+.maintenance-list { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.maintenance-controls, .maintenance-confirm { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.maintenance-confirm p { width: 100%; }
+.maintenance-card { display: grid; gap: 10px; padding: 14px 2px; border-block-end: 1px solid var(--border); overflow-wrap: anywhere; }
+.maintenance-card h3, .maintenance-card p { margin: 0; }
+.maintenance-card label { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.maintenance-card .source-fact { padding: 10px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; }
+.maintenance-card .source-fact p { margin-block: 6px; white-space: pre-wrap; }
+.maintenance-card .source-fact small { color: var(--muted); }
+.maintenance-card button + button { margin-inline-start: 6px; }
