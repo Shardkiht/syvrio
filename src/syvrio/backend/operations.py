@@ -13,7 +13,7 @@ from ..application.contracts import ImportDocument
 from ..application.memory import MemoryUseCases
 from ..application.reflection import ReflectionUseCases
 from ..infra.config import WebShareConfig, update_config
-from ..infra.search import SearchQuery, build_search_router
+from ..infra.search import SearchQuery, build_search_router, provider_selection_guidance
 from ..infra.search.tool_request import run_tool_search
 from ..infra.session import SessionStore
 from ..infra.vault.sync import GitSyncService
@@ -54,10 +54,7 @@ class ResidentOperations:
             "web_share": self.web_share,
             "memorize": service.memorize,
             "verify_attachments": self.sessions.verify_attachments,
-            "mcp_capabilities": lambda: {
-                "search": service.config.search.enabled,
-                "max_results": service.config.search.max_results,
-            },
+            "mcp_capabilities": self.mcp_capabilities,
             "recall": service.recall,
             "read_topic": service.read_topic,
             "deprecate": service.deprecate,
@@ -115,6 +112,19 @@ class ResidentOperations:
         # 在开始任何写入前验证上传的每条记录；遍历二次以免一次性载入整个目录。
         count = sum(1 for _ in documents())
         return self.memory.import_documents(documents(), apply, total_files=count)
+
+    def mcp_capabilities(self) -> dict:
+        enabled = self.service.config.search.enabled
+        providers = []
+        if enabled:
+            router = self._router()
+            providers = [name for name in router.order if name in router.registry]
+        return {
+            "search": enabled,
+            "max_results": self.service.config.search.max_results,
+            "search_providers": providers,
+            "search_provider_guidance": provider_selection_guidance(providers),
+        }
 
     def _router(self):
         if not self.service.config.search.enabled:

@@ -12,6 +12,7 @@ from .base import (
     normalize_search_providers,
 )
 from .fetch_router import FetchProvider, FetchRouter, build_fetch_router
+from .providers.catalog import provider_selection_guidance
 from .providers.open_websearch import SEARCH_ENGINES, OpenWebSearchProvider
 from .router import SearchRouter, build_search_router
 
@@ -34,4 +35,5 @@ __all__ = [
     "build_search_router",
     "normalize_search_engines",
     "normalize_search_providers",
+    "provider_selection_guidance",
 ]
