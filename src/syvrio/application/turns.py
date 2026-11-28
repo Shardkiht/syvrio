@@ -18,6 +18,7 @@ from weakref import WeakValueDictionary
 from pydantic import BaseModel
 
 from ..agent.runtime import ThinkingUpdate
+from ..infra.observability.diagnostics import record_event
 from ..infra.session.attachments import AttachmentBatch
 from ..infra.session.errors import ConversationError
 from ..infra.session.receipts import ReceiptStore
@@ -202,6 +203,26 @@ class TurnRegistry:
                 lock = self._delivery_locks[submission_id] = threading.Lock()
             return lock
 
+    def confirm_saved(self, receipts: ReceiptStore, turn: ConversationTurn) -> None:
+        if turn.submission_id is None or turn.message_id is None:
+            return
+        # 只有用户消息已落盘的回合才能在内存回执淘汰后指向历史。
+        try:
+            with self._delivery_lock(turn.submission_id):
+                receipts.complete(turn.submission_id, turn.session_id, turn.turn_id)
+        except Exception as exc:
+            record_event("web.submission_receipt_failed", exc)
+
+    def _submitted_turn(
+        self, submission_id: str, saved_turn_id: int | None
+    ) -> ConversationTurn | None:
+        with self._lock:
+            if saved_turn_id is not None:
+                return self._turns.get(saved_turn_id)
+            return next(
+                (turn for turn in self._turns.values() if turn.submission_id == submission_id), None
+            )
+
     def submit_once(
         self,
         receipts: ReceiptStore,
@@ -223,24 +244,24 @@ class TurnRegistry:
                     raise ConversationError(
                         "submission_conflict", "This delivery ID belongs to another message."
                     )
-                if stored.instance != self._instance or stored.turn_id is None:
-                    raise ConversationError(
-                        "delivery_unknown",
-                        "Delivery is uncertain after a backend interruption. Check the conversation before sending again.",
-                    )
-                if attachments:
-                    attachments.discard()
-                sid = stored.session_id
-                turn = self.get(stored.turn_id, sid)
-                if turn:
-                    return turn.receipt()
-                return {
-                    "session_id": sid,
-                    "submission_id": submission_id,
-                    "turn_id": stored.turn_id,
-                    "text": message,
-                    "history_only": True,
-                }
+                if stored.instance == self._instance:
+                    if attachments:
+                        attachments.discard()
+                    turn = self._submitted_turn(submission_id, stored.turn_id)
+                    if turn and (not turn.finished.is_set() or turn.message_id is not None):
+                        return turn.receipt()
+                    if stored.turn_id is not None:
+                        return {
+                            "session_id": stored.session_id,
+                            "submission_id": submission_id,
+                            "turn_id": stored.turn_id,
+                            "text": message,
+                            "history_only": True,
+                        }
+                raise ConversationError(
+                    "delivery_unknown",
+                    "Delivery could not be confirmed. Check the conversation before sending again.",
+                )
 
             # 分发前先预留，以免回执丢失后重复启动同一回合。
             try:
@@ -248,8 +269,6 @@ class TurnRegistry:
             except ConversationError:
                 receipts.release(submission_id)
                 raise
-            turn.submission_id = submission_id
-            receipts.complete(submission_id, turn.session_id, turn.turn_id)
             return turn.receipt()
 
 

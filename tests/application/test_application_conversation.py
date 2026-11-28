@@ -17,7 +17,7 @@ from syvrio.application.turns import ConversationTurn
 from syvrio.infra.config import ChatConfig, Config, LLMConfig, RetrievalConfig
 from syvrio.infra.llm import AssistantTurn
 from syvrio.infra.session import SessionStore
-from syvrio.infra.session.errors import SessionProtectedError
+from syvrio.infra.session.errors import ConversationError, SessionProtectedError
 from syvrio.infra.vault.sync import GitSyncService
 from syvrio.memory.service import MemoryService
 
@@ -165,6 +165,103 @@ def test_application_owns_admitted_turns_across_views(tmp_path, monkeypatch, fai
     assert events[-1].type == ("failed" if fail_queued_start else "done")
     expected = ["first", "third"] if fail_queued_start else ["first", "second", "third"]
     assert runtime.sessions.load(sid).user_texts() == expected
+
+
+@pytest.mark.parametrize("queued", [False, True])
+def test_submission_id_is_visible_before_admission_returns(tmp_path, monkeypatch, queued):
+    runtime, conv = build(tmp_path, [])
+    runtime.model = GatedModel([AssistantTurn(content="answer") for _ in range(2)])
+    scheduler = conv.scheduling
+    sid = runtime.ensure_session().id
+    if queued:
+        scheduler.submit("first", sid)
+    submit = scheduler.submit
+    observed = []
+
+    def observe(*args, **kwargs):
+        turn = submit(*args, **kwargs)
+        state = scheduler.queue_state()
+        observed.append(state["waiting"][0] if queued else state["active"])
+        return turn
+
+    monkeypatch.setattr(scheduler, "submit", observe)
+    key = "ab" * 16
+    try:
+        receipt = scheduler.submit_once(key, "next", sid)
+        assert observed[0]["turn_id"] == receipt["turn_id"]
+        assert observed[0].get("submission_id") == key
+    finally:
+        runtime.model.release.set()
+        scheduler.shutdown()
+
+
+def test_evicted_unsaved_submission_is_not_reported_in_history(tmp_path, monkeypatch):
+    runtime, conv = build(tmp_path, [])
+    runtime.model = GatedModel([AssistantTurn(content="answer") for _ in range(12)])
+    scheduler = conv.scheduling
+    sid = runtime.ensure_session().id
+    saved_key, failed_key = "ab" * 16, "cd" * 16
+    first = scheduler.submit_once(saved_key, "first", sid)
+    try:
+        assert runtime.model.entered.wait(5)
+        second = scheduler.submit_once(failed_key, "queued", sid)
+        queued = scheduler.registry.get(second["turn_id"], sid)
+        assert queued is not None
+        assert scheduler.submit_once(failed_key, "queued", sid) == second
+        assert len(scheduler.queue_state()["waiting"]) == 1
+        start = threading.Thread.start
+
+        def fail_queued(thread):
+            if thread.name == f"syvrio-turn-{queued.turn_id}":
+                raise RuntimeError("synthetic worker startup failure")
+            start(thread)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(threading.Thread, "start", fail_queued)
+            runtime.model.release.set()
+            assert queued.finished.wait(5)
+        assert queued.message_id is None
+        with pytest.raises(ConversationError) as failed:
+            scheduler.submit_once(failed_key, "queued", sid)
+        assert failed.value.code == "delivery_unknown"
+        for index in range(10):
+            assert scheduler.submit(f"later {index}", sid).finished.wait(5)
+        assert scheduler.registry.get(first["turn_id"], sid) is None
+        assert scheduler.registry.get(second["turn_id"], sid) is None
+        assert scheduler.submit_once(saved_key, "first", sid)["history_only"]
+        with pytest.raises(ConversationError) as unknown:
+            scheduler.submit_once(failed_key, "queued", sid)
+        assert unknown.value.code == "delivery_unknown"
+        assert runtime.sessions.load(sid).user_texts() == [
+            "first",
+            *(f"later {i}" for i in range(10)),
+        ]
+    finally:
+        runtime.model.release.set()
+        scheduler.shutdown()
+
+
+def test_failed_receipt_write_keeps_saved_message_and_prevents_duplicate(tmp_path, monkeypatch):
+    runtime, conv = build(tmp_path, [AssistantTurn(content="answer") for _ in range(11)])
+    scheduler = conv.scheduling
+    sid = runtime.ensure_session().id
+    key = "ef" * 16
+
+    def fail_receipt_write(*args):
+        raise OSError("synthetic receipt write failure")
+
+    monkeypatch.setattr(runtime.sessions.receipts, "complete", fail_receipt_write)
+    receipt = scheduler.submit_once(key, "first", sid)
+    turn = scheduler.registry.get(receipt["turn_id"], sid)
+    assert turn is not None and turn.finished.wait(5)
+    assert turn.message_id is not None
+    assert scheduler.submit_once(key, "first", sid)["message_id"] == turn.message_id
+    for index in range(10):
+        assert scheduler.submit(f"later {index}", sid).finished.wait(5)
+    with pytest.raises(ConversationError) as unknown:
+        scheduler.submit_once(key, "first", sid)
+    assert unknown.value.code == "delivery_unknown"
+    assert runtime.sessions.load(sid).user_texts().count("first") == 1
 
 
 def test_turn_settings_are_fixed_before_the_worker_starts(tmp_path, monkeypatch):
