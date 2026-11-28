@@ -760,6 +760,50 @@ def test_build_retriever_api_backend(tmp_path, monkeypatch, isolate_llm_credenti
     assert mode == "hybrid-fallback-keyword"
 
 
+def test_api_endpoint_change_rebuilds_persisted_vectors_for_same_model(
+    tmp_path, monkeypatch, isolate_llm_credentials
+):
+    endpoint_a = "https://embedding-a.example.invalid/v1"
+    endpoint_b = "https://embedding-b.example.invalid/v1"
+    isolate_llm_credentials["TEST_EMBED_KEY"] = "synthetic"
+    served = []
+
+    def fake_embed(config, texts, *, batch_size):
+        served.append((config.base_url, tuple(texts)))
+        return [
+            ([1.0, 0.0] if ("pear" in text) == (config.base_url == endpoint_a) else [0.0, 1.0])
+            for text in texts
+        ]
+
+    monkeypatch.setattr("syvrio.infra.llm.client.embed_texts", fake_embed)
+    store = MemoryStore(tmp_path)
+    store.append("fixtures", "pear")
+    store.append("fixtures", "wrench")
+
+    def build(endpoint):
+        config = Config(
+            vault=tmp_path,
+            retrieval=RetrievalConfig(
+                method="vector",
+                embedding=EmbeddingConfig(
+                    backend="api",
+                    provider="custom",
+                    model="same-model",
+                    base_url=endpoint,
+                    api_key_env="TEST_EMBED_KEY",
+                ),
+            ),
+        )
+        return service_module.build_retriever(config, store)[0]
+
+    for endpoint in (endpoint_a, endpoint_b):
+        assert build(endpoint).search("pear")[0].text == "pear"
+        assert any(url == endpoint and len(texts) == 2 for url, texts in served)
+    served.clear()
+    assert build(endpoint_b).search("pear")[0].text == "pear"
+    assert served == [(endpoint_b, ("pear",))]
+
+
 def test_vector_cache_is_outside_vault_git_worktree(tmp_path):
     from syvrio.memory.service import MemoryService
 

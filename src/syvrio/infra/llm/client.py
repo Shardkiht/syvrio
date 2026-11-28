@@ -256,6 +256,12 @@ class LiteLLMEmbedder:
     def model_id(self) -> str:
         return self.config.litellm_model()
 
+    @property
+    def cache_id(self) -> str:
+        # 同名远程模型的向量空间可能不同；不把凭据或地址明文写入缓存。
+        identity = (self.config.provider, self.config.base_url, self.model_id)
+        return "api:" + hashlib.sha256(json.dumps(identity).encode()).hexdigest()
+
     def embed(self, texts: Sequence[str]) -> list[list[float]]:
         return embed_texts(self.config, list(texts), batch_size=self.batch_size)
 
