@@ -82,6 +82,7 @@ class VectorRetriever:
         self.paths = paths
         self._current_revision = current_revision or (lambda: store.snapshot().revision)
         self.embedder = embedder
+        self._cache_id = getattr(embedder, "cache_id", embedder.model_id)
         self.batch_size = batch_size
         self._index = _VectorIndex(-1, [], None)
         self._degraded = False
@@ -266,7 +267,7 @@ class VectorRetriever:
         with cache_transaction(self.paths, "vectors", write=False) as db:
             rows = db.execute(
                 "SELECT memory_id,input_digest,dimensions,vector FROM vectors WHERE model=? ORDER BY memory_id",
-                (self.embedder.model_id,),
+                (self._cache_id,),
             ).fetchall()
         if not rows:
             return [], [], None
@@ -300,7 +301,7 @@ class VectorRetriever:
             if removed:
                 db.executemany(
                     "DELETE FROM vectors WHERE model=? AND memory_id=?",
-                    ((self.embedder.model_id, key) for key in removed),
+                    ((self._cache_id, key) for key in removed),
                 )
             if matrix is not None:
                 db.executemany(
@@ -311,7 +312,7 @@ class VectorRetriever:
                     (
                         (
                             e.id,
-                            self.embedder.model_id,
+                            self._cache_id,
                             digest,
                             len(v),
                             v.astype("<f4").tobytes(),
