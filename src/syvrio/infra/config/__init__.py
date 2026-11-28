@@ -478,11 +478,4 @@ def write_example_config(path: Path, vault: Path) -> None:
 def resolve_config_path(config_path: Path | None) -> Path:
     if config_path:
         return config_path.expanduser()
-    env_path = os.environ.get("SYVRIO_CONFIG")
-    if env_path:
-        # 环境变量优先于 CWD：测试隔离与显式选择配置都不应被仓库里的本地配置抢走。
-        return Path(env_path).expanduser()
-    local = Path.cwd() / CONFIG_FILENAME
-    if local.exists():
-        return local
     return default_config_path()
